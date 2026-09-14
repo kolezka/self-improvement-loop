@@ -18399,13 +18399,13 @@ async function llmStatus(args) {
 import { closeSync as closeSync3, existsSync as existsSync10, openSync as openSync3, readSync, statSync as statSync9 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
 var REAL_TAIL_IO = { existsSync: existsSync10, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync9 };
-function tailLines(path, n, io = REAL_TAIL_IO) {
-  if (!io.existsSync(path))
+function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
+  if (knownSize === undefined && !io.existsSync(path))
     return [];
   const fd = io.openSync(path, "r");
   let data;
   try {
-    const fileSize = io.statSync(path).size;
+    const fileSize = knownSize ?? io.statSync(path).size;
     let pos = fileSize;
     const chunks = [];
     let newlineCount = 0;
@@ -18432,8 +18432,14 @@ function tailLines(path, n, io = REAL_TAIL_IO) {
 }
 function logsTail(args) {
   const path = logFile(args.name);
-  const exists = existsSync10(path);
-  return { name: args.name, path, exists, size: exists ? statSync9(path).size : 0, lines: tailLines(path, args.lines) };
+  let size = 0;
+  let exists = true;
+  try {
+    size = statSync9(path).size;
+  } catch {
+    exists = false;
+  }
+  return { name: args.name, path, exists, size, lines: exists ? tailLines(path, args.lines, REAL_TAIL_IO, size) : [] };
 }
 
 // packages/ops/src/handlers/queue.ts

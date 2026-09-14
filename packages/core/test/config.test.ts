@@ -9,6 +9,7 @@ import {
   ConfigError,
   LlmConfig,
   loadConfig,
+  loadLlm,
   LocalityViolation,
   modelFor,
   ModelNotConfigured,
@@ -111,3 +112,16 @@ describe("hook snapshot", () => {
     expect(snap.worker.auto_kick).toBe(true);
   });
 });
+
+describe("broken yaml", () => {
+  test("a yaml syntax error is a ConfigError naming the file, for both files", () => {
+    const { writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs");
+    mkdirSync(paths.configDir(), { recursive: true });
+    writeFileSync(paths.llmFile(), "endpoints:\n  - name: a\n    kind: openai\n  extra_body:\n    x: 1\n");
+    writeFileSync(paths.configFile(), "worlds: [\n");
+    expect(() => loadLlm()).toThrow(ConfigError);
+    expect(() => loadLlm()).toThrow(/llm\.yaml/);
+    expect(() => loadConfig()).toThrow(ConfigError);
+  });
+});
+

@@ -11,9 +11,19 @@ import { Config, type Endpoint, type HookSnapshot, LlmConfig, type World } from 
 
 // --- config.yaml --------------------------------------------------------
 
+function parseYamlFile(path: string): unknown {
+  try {
+    return YAML.parse(readText(path)) ?? {};
+  } catch (e) {
+    // A broken config file is an operator problem, not a crash: callers map
+    // ConfigError to a retry or a 503, a raw YAMLParseError to a hard failure.
+    throw new ConfigError(`invalid ${path}: ${(e as Error).message.split("\n")[0]}`);
+  }
+}
+
 export function loadConfig(path: string = paths.configFile()): Config {
   if (!exists(path)) return Config.parse({});
-  const raw = YAML.parse(readText(path)) ?? {};
+  const raw = parseYamlFile(path);
   const parsed = Config.safeParse(raw);
   if (!parsed.success) throw new ConfigError(`invalid ${path}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
   return parsed.data;
@@ -82,7 +92,7 @@ export function isBuiltinTarget(world: World): boolean {
 export function loadLlm(world?: World | null, path?: string): LlmConfig {
   const p = paths.expandHome(path ?? world?.llm_config ?? paths.llmFile());
   if (!exists(p)) return LlmConfig.parse({});
-  const raw = YAML.parse(readText(p)) ?? {};
+  const raw = parseYamlFile(p);
   const parsed = LlmConfig.safeParse(raw);
   if (!parsed.success) throw new ConfigError(`invalid ${p}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
   return parsed.data;

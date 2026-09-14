@@ -15484,10 +15484,18 @@ var $visit = visit.visit;
 var $visitAsync = visit.visitAsync;
 
 // packages/core/src/config.ts
+function parseYamlFile(path) {
+  try {
+    return exports_dist.parse(readText(path)) ?? {};
+  } catch (e) {
+    throw new ConfigError(`invalid ${path}: ${e.message.split(`
+`)[0]}`);
+  }
+}
 function loadConfig(path = configFile()) {
   if (!exists(path))
     return Config.parse({});
-  const raw = exports_dist.parse(readText(path)) ?? {};
+  const raw = parseYamlFile(path);
   const parsed = Config.safeParse(raw);
   if (!parsed.success)
     throw new ConfigError(`invalid ${path}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
@@ -15547,7 +15555,7 @@ function loadLlm(world, path) {
   const p = expandHome(path ?? world?.llm_config ?? llmFile());
   if (!exists(p))
     return LlmConfig.parse({});
-  const raw = exports_dist.parse(readText(p)) ?? {};
+  const raw = parseYamlFile(p);
   const parsed = LlmConfig.safeParse(raw);
   if (!parsed.success)
     throw new ConfigError(`invalid ${p}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);

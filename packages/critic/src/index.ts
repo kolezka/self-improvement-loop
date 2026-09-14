@@ -354,20 +354,31 @@ function appendFeedbackEvents(world: string, reflectionId: string, answer: Criti
   for (const ref of answer.artifacts_used) lines.push({ ref, verdict: "used", reflection_id: reflectionId, ts, world });
   for (const ref of answer.artifacts_helpful) lines.push({ ref, verdict: "helpful", reflection_id: reflectionId, ts, world });
   for (const m of answer.artifacts_misfired) lines.push({ ref: m.ref, verdict: "misfired", reflection_id: reflectionId, ts, world, reason: m.reason });
-  for (const ref of answer.rules_relevant) lines.push({ ref, verdict: "relevant", reflection_id: reflectionId, ts, world });
+  // The model often names a rule by its slug alone; scorecards join on `rule:<slug>`.
+  for (const ref of answer.rules_relevant) lines.push({ ref: ref.includes(":") ? ref : `rule:${ref}`, verdict: "relevant", reflection_id: reflectionId, ts, world });
   if (lines.length === 0) return;
   const path = paths.criticFeedbackFile();
   for (const line of lines) fsx.appendJsonl(path, line);
 }
 
+/** The main checkout that owns `cwd`, also from inside a linked worktree.
+ *
+ * A session that entered a worktree ends with cwd under `.claude/worktrees/`.
+ * Keying the lesson on that path made the next session in the main checkout
+ * never receive it, so resolve through the common git dir instead. */
 function gitToplevel(cwd: string): string | null {
-  try {
-    const r = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd, timeout: 5000, stdout: "pipe", stderr: "pipe" });
-    if (!r.success) return null;
-    const out = r.stdout.toString("utf8").trim();
-    return out || null;
-  } catch {
-    return null;
-  }
+  const run = (args: string[]): string | null => {
+    try {
+      const r = Bun.spawnSync(["git", ...args], { cwd, timeout: 5000, stdout: "pipe", stderr: "pipe" });
+      if (!r.success) return null;
+      const out = r.stdout.toString("utf8").trim();
+      return out || null;
+    } catch {
+      return null;
+    }
+  };
+  const common = run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (common && common.endsWith("/.git")) return common.slice(0, -"/.git".length);
+  return run(["rev-parse", "--show-toplevel"]);
 }
 

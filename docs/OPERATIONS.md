@@ -97,3 +97,12 @@ endpoints:
 critic call burned 3994 reasoning tokens and returned nothing after 110 s; with
 `reasoning_effort: low` the same call answers in a few seconds.
 
+### The proxy answers HTTP 524 or the call takes longer than 100 s
+
+A Cloudflare tunnel in front of LiteLLM cuts requests at 100 s. Pick a model
+that answers the critic prompt well inside that window (measured: a non
+reasoning 14B model in 23 s, `claude-cli` sonnet in about 80 s, a reasoning
+model that hides 4000 tokens of thinking never). Verify that a reasoning knob in
+`extra_body` reaches the provider by reading `reasoning_tokens` in the error
+message; if it does not move, the proxy is dropping the parameter.
+

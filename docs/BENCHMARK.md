@@ -93,3 +93,38 @@ method is independent and cleans up its own temp directory, so any one can
 be awaited on its own, for example from a REPL or a focused test (see
 `tests/bench.test.ts`, which runs the hook "fresh" scenario with a small
 fixed `n` as a smoke test so the script cannot silently rot).
+
+## Live run, 2026-09-14
+
+Two real Claude Code sessions with the plugin loaded (`claude --plugin-dir`),
+isolated `SIL_*` dirs, then the worker and the curriculum against real models.
+Numbers are wall clock on this machine.
+
+| step | result | time |
+|---|---|---|
+| session 1: add a function, run it | queued, 8 tool uses, hooks exit 0 | 42 s |
+| session 2: fix an off by one with a hidden second caller | queued, 24 tool uses | 115 s |
+| hook inside Claude Code, PreToolUse (recorded durationMs) | 21 ms | |
+| hook inside Claude Code, SessionStart cold (recorded durationMs) | 179 ms | |
+| critic, claude-cli `sonnet`, session 2 | reflection `edit-before-worktree-entry`, lesson, 5 feedback lines | 81 s |
+| critic, claude-cli `sonnet`, session 1 | `not-recorded: no reusable lesson found` (trivial session, correct) | 57 s |
+| critic, LiteLLM `zai/glm-5.3-flash` | empty content, 3996 reasoning tokens, `finish_reason: length` | 110 s |
+| critic, LiteLLM `qwen2.5-coder:14b` (no reasoning) | valid JSON, `record: false` | 23 s |
+| curriculum run, LiteLLM `zai/glm-5.3-flash`, 3 seeded reflections | drafter + judge, staged `verify-callsites` as a rule | 41 s |
+| review accept via CLI | ff merge, ledger promoted, rules block live in the next SessionStart | under 1 s |
+
+What the live run taught:
+
+- Reasoning models through LiteLLM spend the whole `max_tokens` on hidden
+  reasoning for the critic prompt. `reasoning_effort` and `thinking: disabled`
+  did not change the reasoning token count on this proxy, so the knobs are not
+  reaching the provider. Check `usage.completion_tokens_details.reasoning_tokens`
+  in the provider error before blaming the prompt. A non reasoning model
+  (`qwen2.5-coder:14b`) or the `claude-cli` endpoint works.
+- A Cloudflare tunnel in front of the proxy cuts any call over 100 s with an
+  HTTP 524 HTML page. The transport reports it as `answered HTTP 524`; the
+  worker retries the session up to three times.
+- The critic recognised the rule promoted minutes earlier (`rule:verify-callsites`)
+  as used and helpful in session 2, so the scorecard for that rule shows
+  `helpful: 1` after one cycle.
+

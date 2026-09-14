@@ -16538,7 +16538,7 @@ function appendFeedbackEvents(world, reflectionId, answer, ts) {
   for (const m of answer.artifacts_misfired)
     lines.push({ ref: m.ref, verdict: "misfired", reflection_id: reflectionId, ts, world, reason: m.reason });
   for (const ref of answer.rules_relevant)
-    lines.push({ ref, verdict: "relevant", reflection_id: reflectionId, ts, world });
+    lines.push({ ref: ref.includes(":") ? ref : `rule:${ref}`, verdict: "relevant", reflection_id: reflectionId, ts, world });
   if (lines.length === 0)
     return;
   const path = criticFeedbackFile();
@@ -16546,15 +16546,21 @@ function appendFeedbackEvents(world, reflectionId, answer, ts) {
     appendJsonl(path, line);
 }
 function gitToplevel(cwd) {
-  try {
-    const r = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd, timeout: 5000, stdout: "pipe", stderr: "pipe" });
-    if (!r.success)
+  const run = (args) => {
+    try {
+      const r = Bun.spawnSync(["git", ...args], { cwd, timeout: 5000, stdout: "pipe", stderr: "pipe" });
+      if (!r.success)
+        return null;
+      const out = r.stdout.toString("utf8").trim();
+      return out || null;
+    } catch {
       return null;
-    const out = r.stdout.toString("utf8").trim();
-    return out || null;
-  } catch {
-    return null;
-  }
+    }
+  };
+  const common = run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (common && common.endsWith("/.git"))
+    return common.slice(0, -"/.git".length);
+  return run(["rev-parse", "--show-toplevel"]);
 }
 
 // packages/feedback/src/index.ts

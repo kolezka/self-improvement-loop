@@ -249,3 +249,40 @@ describe("installedArtifacts", () => {
     expect(refs).not.toContain("skill:staged-thing");
   });
 });
+
+describe("reflectSession feedback refs and lesson repo", () => {
+  test("a rule named by its bare slug is recorded as rule:<slug>", async () => {
+    const w = world();
+    const c = cfg(w);
+    const answer = { ...JSON.parse(goodAnswer()), rules_relevant: ["verify-callsites", "rule:already-prefixed"] };
+    const fakeChat = async () => JSON.stringify(answer);
+    await reflectSession(entry(), { cfg: c, world: w, llm: llm(), chat: fakeChat });
+    const lines = fsx.readJsonl<{ ref: string; verdict: string }>(paths.criticFeedbackFile());
+    const relevant = lines.filter((l) => l.verdict === "relevant").map((l) => l.ref).sort();
+    expect(relevant).toEqual(["rule:already-prefixed", "rule:verify-callsites"]);
+  });
+
+  test("a session that ended inside a linked worktree keys its lesson on the main checkout", async () => {
+    const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+    const main = join(tmpDir, "repo");
+    mkdirSync(main, { recursive: true });
+    const git = (args: string[], cwd = main) => {
+      const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+      if (!r.success) throw new Error(r.stderr.toString());
+    };
+    git(["init", "-q", "-b", "main"]);
+    writeFileSync(join(main, "a.txt"), "a\n");
+    git(["-c", "user.email=t@t", "-c", "user.name=t", "add", "a.txt"]);
+    git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]);
+    const wt = join(main, ".claude", "worktrees", "fix");
+    git(["worktree", "add", "-q", "-b", "fix", wt]);
+
+    const e = { ...entry(), cwd: wt };
+    const w = world();
+    const fakeChat = async () => goodAnswer();
+    await reflectSession(e, { cfg: cfg(w), world: w, llm: llm(), chat: fakeChat });
+    const lessons = listLessons("default");
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]!.repo).toBe(require("node:fs").realpathSync(main));
+  });
+});

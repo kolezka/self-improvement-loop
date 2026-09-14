@@ -123,4 +123,4 @@ that.
 
 ## License
 
-MIT. See `LICENSE`.
+Proprietary. All rights reserved. See `LICENSE`; contact mariusz@raqz.pl for a license.

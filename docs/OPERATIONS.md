@@ -30,6 +30,33 @@ sil feedback add skill:verify-callsites good --note "caught a real bug"
 This binds the accept to exactly what you looked at; if the branch changed
 underneath you, accept fails and asks you to reload.
 
+## Switching providers
+
+```
+sil llm list                             endpoints, reachability, and who serves each role
+sil llm use claude                       send every role to `claude -p`
+sil llm use litellm --role drafter       send one role to LiteLLM
+sil llm set-model critic sonnet --endpoint claude
+```
+
+`sil llm use <endpoint>` sets `active` and clears the per role overrides, so it is a
+full switch. Adding `--role` touches that one role and leaves `active` alone. Model
+names live on the endpoint, so a switch never rewrites them: LiteLLM keeps
+`zai/glm-5.3-flash` while the claude endpoint keeps `sonnet`.
+
+The split that worked in the live run: critic on claude-cli, drafter and judge on
+LiteLLM. The critic reads a whole transcript and has to return strict JSON, which
+`claude -p` handles well; the drafter and judge are cheaper and faster through the
+proxy.
+
+```
+sil llm use litellm
+sil llm use claude --role critic
+```
+
+The same switch is available in the web UI under Models, per endpoint ("Use for all
+roles") and per role (the Roles block).
+
 ## Rotating API keys
 
 Edit the env var named by `llm.yaml`'s `api_key_env` (or your shell profile), then

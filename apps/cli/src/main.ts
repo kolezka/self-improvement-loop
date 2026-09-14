@@ -17,6 +17,7 @@ import { cmdHookSnapshot } from "./commands/hookSnapshot.ts";
 import { cmdImportLedger, cmdImportReflections } from "./commands/import.ts";
 import { cmdInit } from "./commands/init.ts";
 import { cmdLessons } from "./commands/lessons.ts";
+import { cmdLlmList, cmdLlmSetModel, cmdLlmUse } from "./commands/llm.ts";
 import { cmdLogs } from "./commands/logs.ts";
 import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
@@ -47,6 +48,7 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .option("--llm-base-url <url>")
     .option("--api-key-env <name>")
     .option("--model <name>")
+    .option("--claude-model <name>")
     .action(wire((opts) => cmdInit(opts)));
 
   program
@@ -162,6 +164,24 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .command("lessons")
     .option("--world <name>")
     .action(wire((opts) => cmdLessons(opts)));
+
+  const llm = program.command("llm");
+  llm
+    .command("list")
+    .option("--json")
+    .option("--world <name>")
+    .action(wire((opts) => cmdLlmList(opts, deps)));
+  llm
+    .command("use")
+    .argument("<endpoint>")
+    .option("--role <role>", "critic, drafter or judge; omit to switch every role")
+    .action(wire((endpoint: string, opts) => cmdLlmUse(endpoint, opts)));
+  llm
+    .command("set-model")
+    .argument("<role>")
+    .argument("<model>")
+    .option("--endpoint <name>", "defaults to the endpoint that currently serves the role")
+    .action(wire((role: string, model: string, opts) => cmdLlmSetModel(role, model, opts)));
 
   program
     .command("web")

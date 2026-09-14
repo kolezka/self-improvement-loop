@@ -170,7 +170,7 @@ describe("health.report", () => {
         ...deps.providers,
         status: async (world: World) => {
           seen.push(world);
-          return { endpoint: null, kind: null, base_url: null, models: {}, reachable: true, error: null };
+          return { endpoint: null, kind: null, base_url: null, models: {}, reachable: true, error: null, endpoints: [] };
         },
       },
     });
@@ -284,5 +284,85 @@ describe("feedback.add", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("llm.use", () => {
+  function twoEndpoints() {
+    saveLlm(
+      LlmConfig.parse({
+        endpoints: [
+          { name: "litellm", kind: "openai", base_url: "http://100.64.0.3:4000", models: { critic: "zai/glm-5.3-flash", drafter: "zai/glm-5.3-flash", judge: "zai/glm-5.3-flash" } },
+          { name: "claude", kind: "claude-cli", models: { critic: "sonnet", drafter: "sonnet", judge: "sonnet" } },
+        ],
+        active: "litellm",
+      }),
+    );
+  }
+
+  test("switching every role sets active and clears the role overrides", async () => {
+    twoEndpoints();
+    await invoke("llm.use", { endpoint: "claude", role: "drafter" });
+    expect(loadLlm().role_endpoints).toEqual({ drafter: "claude" });
+
+    const result = (await invoke("llm.use", { endpoint: "claude" })) as { active: string | null };
+    expect(result.active).toBe("claude");
+    const llm = loadLlm();
+    expect(llm.active).toBe("claude");
+    expect(llm.role_endpoints).toEqual({});
+  });
+
+  test("a role switch leaves active alone", async () => {
+    twoEndpoints();
+    await invoke("llm.use", { endpoint: "claude", role: "critic" });
+    const llm = loadLlm();
+    expect(llm.active).toBe("litellm");
+    expect(llm.role_endpoints).toEqual({ critic: "claude" });
+  });
+
+  test("an unknown endpoint is a ConfigError and writes nothing", async () => {
+    twoEndpoints();
+    await expect(invoke("llm.use", { endpoint: "nope" })).rejects.toThrow(/nope/);
+    expect(loadLlm().active).toBe("litellm");
+  });
+
+  test("an unknown role fails validation before any handler runs", async () => {
+    twoEndpoints();
+    await expect(invoke("llm.use", { endpoint: "claude", role: "painter" })).rejects.toThrow();
+    expect(loadLlm().role_endpoints).toEqual({});
+  });
+});
+
+describe("llm.status", () => {
+  test("reports one row per endpoint plus the critic endpoint at the top level", async () => {
+    // No base_url and no claude-cli endpoint: the probe never touches the
+    // network or spawns anything.
+    saveLlm(
+      LlmConfig.parse({
+        endpoints: [
+          { name: "a", kind: "openai", models: { critic: "m-a" } },
+          { name: "b", kind: "openai", models: { drafter: "m-b", judge: "m-b" } },
+        ],
+        active: "a",
+        role_endpoints: { drafter: "b", judge: "b" },
+      }),
+    );
+
+    const result = (await invoke("llm.status", { world: "default" })) as {
+      endpoint: string | null;
+      models: Record<string, string | null>;
+      endpoints: { name: string; kind: string; active: boolean; roles: string[]; models: Record<string, string>; reachable: boolean | null; error: string | null }[];
+    };
+
+    expect(result.endpoint).toBe("a");
+    expect(result.models).toEqual({ critic: "m-a", drafter: "m-b", judge: "m-b" });
+    expect(result.endpoints.map((e) => e.name)).toEqual(["a", "b"]);
+    expect(result.endpoints[0]!.active).toBe(true);
+    expect(result.endpoints[0]!.roles).toEqual(["critic"]);
+    expect(result.endpoints[1]!.active).toBe(false);
+    expect(result.endpoints[1]!.roles).toEqual(["drafter", "judge"]);
+    expect(result.endpoints[1]!.models).toEqual({ drafter: "m-b", judge: "m-b" });
+    expect(result.endpoints[0]!.reachable).toBe(false);
+    expect(result.endpoints[0]!.error).toContain("base_url");
   });
 });

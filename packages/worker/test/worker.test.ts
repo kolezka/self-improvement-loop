@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import { fsx, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
+import { fsx, LlmConfig, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
 import { listQueue, loadEntry, writeEntry } from "@sil/store";
 import {
   eligible,
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 function prepareEnv(): void {
-  saveLlm({ endpoints: [], active: null, local_models: [], models: { critic: "test-model" } });
+  saveLlm(LlmConfig.parse({ endpoints: [{ name: "test", base_url: "http://test" }], active: "test", models: { critic: "test-model" } }));
 }
 
 function writePending(

@@ -111,15 +111,65 @@ export function activeEndpoint(llm: LlmConfig): Endpoint {
   return e;
 }
 
-/** The model name for a role. Never defaults. Enforces locality. */
-export function modelFor(llm: LlmConfig, role: Role, world?: World | null): string {
+function requireRole(role: Role): void {
   if (!(ROLES as readonly string[]).includes(role)) throw new ConfigError(`unknown model role ${role}; roles are ${ROLES.join(", ")}`);
-  const model = llm.models[role];
-  if (!model) throw new ModelNotConfigured(`llm.yaml models.${role} is not set`);
+}
+
+/** The endpoint that serves a role: `role_endpoints[role]`, else `active`,
+ * else the first endpoint. An endpoint name that is not defined is an
+ * operator mistake, never a silent fall through to another endpoint. */
+export function endpointFor(llm: LlmConfig, role: Role): Endpoint {
+  requireRole(role);
+  if (llm.endpoints.length === 0) throw new ModelNotConfigured("llm.yaml has no endpoints; run `sil init` or edit it");
+  const override = llm.role_endpoints[role];
+  const name = override ?? llm.active ?? llm.endpoints[0]!.name;
+  const e = llm.endpoints.find((x) => x.name === name);
+  if (!e) {
+    const where = override ? `role_endpoints.${role}` : "active";
+    throw new ModelNotConfigured(`llm.yaml ${where} endpoint ${JSON.stringify(name)} is not defined`);
+  }
+  return e;
+}
+
+export interface ResolvedRole {
+  endpoint: Endpoint;
+  model: string;
+}
+
+/** Endpoint plus model name for a role. The endpoint's own `models` wins; the
+ * top level `models` map is the fallback so a pre-switching llm.yaml keeps
+ * working. Never defaults. Enforces locality. */
+export function resolveRole(llm: LlmConfig, role: Role, world?: World | null): ResolvedRole {
+  requireRole(role);
+  const endpoint = endpointFor(llm, role);
+  const model = endpoint.models[role] ?? llm.models[role];
+  if (!model) {
+    throw new ModelNotConfigured(
+      `no model for role ${role} on endpoint ${endpoint.name}; ` +
+        `set endpoints[${endpoint.name}].models.${role} in llm.yaml or run sil llm set-model`,
+    );
+  }
   if (world && world.llm === "local" && !llm.local_models.includes(model)) {
     throw new LocalityViolation(`world ${world.name} is llm: local but models.${role}=${model} is not in local_models`);
   }
-  return model;
+  return { endpoint, model };
+}
+
+/** The model name for a role. Never defaults. Enforces locality. */
+export function modelFor(llm: LlmConfig, role: Role, world?: World | null): string {
+  return resolveRole(llm, role, world).model;
+}
+
+/** Point `active` at an endpoint, or route a single role to it. Switching
+ * every role clears the per role overrides: a full switch, not a half one. */
+export function useEndpoint(llm: LlmConfig, name: string, role?: Role): LlmConfig {
+  if (!llm.endpoints.some((e) => e.name === name)) {
+    const known = llm.endpoints.map((e) => e.name).join(", ") || "none";
+    throw new ConfigError(`unknown endpoint ${JSON.stringify(name)}; llm.yaml defines ${known}`);
+  }
+  if (role === undefined) return { ...llm, active: name, role_endpoints: {} };
+  requireRole(role);
+  return { ...llm, role_endpoints: { ...llm.role_endpoints, [role]: name } };
 }
 
 /** The credential for an endpoint, or null when it needs none. Throws when a

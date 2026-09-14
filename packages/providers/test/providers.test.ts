@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ConfigError, LocalityViolation, ModelNotConfigured, ProviderError, ProviderTimeout } from "@sil/core";
 import type { Endpoint, LlmConfig, World } from "@sil/core";
-import { chat, spawnSyncImpl, type SpawnSyncResult } from "../src/index.ts";
+import { chat, spawnSyncImpl, status, type SpawnSyncResult } from "../src/index.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -14,11 +14,11 @@ function world(overrides: Partial<World> = {}): World {
 }
 
 function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
-  return { endpoints: [], active: null, local_models: [], models: {}, ...overrides };
+  return { endpoints: [], active: null, role_endpoints: {}, local_models: [], models: {}, ...overrides };
 }
 
 function endpoint(overrides: Partial<Endpoint> = {}): Endpoint {
-  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, extra_body: {}, ...overrides };
+  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, models: {}, extra_body: {}, ...overrides };
 }
 
 function fakeResponse(body: unknown, init: { status?: number } = {}): Response {
@@ -247,3 +247,148 @@ describe("chat openai extra_body and empty replies", () => {
   });
 });
 
+
+// --- per role endpoint routing ----------------------------------------------
+
+describe("chat routes each role to its own endpoint", () => {
+  const originalRun = spawnSyncImpl.run;
+  afterEach(() => {
+    spawnSyncImpl.run = originalRun;
+  });
+
+  test("critic goes to the role endpoint, drafter to the active one", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      urls.push(String(url) + " " + String(JSON.parse(String(init.body)).model));
+      return fakeResponse({ choices: [{ message: { content: "openai answer" } }] });
+    }) as typeof fetch;
+
+    const llm = llmConfig({
+      endpoints: [
+        endpoint({ name: "fast", base_url: "http://fast:4000", models: { critic: "fast-critic", drafter: "fast-drafter", judge: "fast-judge" } }),
+        endpoint({ name: "slow", base_url: "http://slow:4000", models: { critic: "slow-critic", drafter: "slow-drafter", judge: "slow-judge" } }),
+      ],
+      active: "fast",
+      role_endpoints: { critic: "slow" },
+    });
+
+    expect(await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm })).toBe("openai answer");
+    expect(await chat("drafter", [{ role: "user", content: "hi" }], { world: world(), llm })).toBe("openai answer");
+
+    expect(urls).toEqual([
+      "http://slow:4000/v1/chat/completions slow-critic",
+      "http://fast:4000/v1/chat/completions fast-drafter",
+    ]);
+  });
+
+  test("critic can run on claude-cli while drafter stays on the openai endpoint", async () => {
+    const spawned: string[][] = [];
+    spawnSyncImpl.run = (cmd) => {
+      spawned.push(cmd);
+      return { success: true, exitCode: 0, stdout: Buffer.from(JSON.stringify({ result: "cli answer" })), stderr: Buffer.from("") };
+    };
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return fakeResponse({ choices: [{ message: { content: "proxy answer" } }] });
+    }) as typeof fetch;
+
+    const llm = llmConfig({
+      endpoints: [
+        endpoint({ name: "litellm", base_url: "http://100.64.0.3:4000", models: { critic: "zai/glm-5.3-flash", drafter: "zai/glm-5.3-flash", judge: "zai/glm-5.3-flash" } }),
+        endpoint({ name: "claude", kind: "claude-cli", models: { critic: "sonnet", drafter: "sonnet", judge: "sonnet" } }),
+      ],
+      active: "litellm",
+      role_endpoints: { critic: "claude" },
+    });
+
+    expect(await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm })).toBe("cli answer");
+    expect(await chat("drafter", [{ role: "user", content: "hi" }], { world: world(), llm })).toBe("proxy answer");
+
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toContain("sonnet");
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]!["model"]).toBe("zai/glm-5.3-flash");
+  });
+});
+
+// --- status ------------------------------------------------------------------
+
+describe("status", () => {
+  const originalRun = spawnSyncImpl.run;
+  afterEach(() => {
+    spawnSyncImpl.run = originalRun;
+  });
+
+  function twoEndpoints() {
+    return llmConfig({
+      endpoints: [
+        endpoint({ name: "litellm", base_url: "http://100.64.0.3:4000", models: { drafter: "zai/glm-5.3-flash", judge: "zai/glm-5.3-flash" } }),
+        endpoint({ name: "claude", kind: "claude-cli", models: { critic: "sonnet" } }),
+      ],
+      active: "litellm",
+      role_endpoints: { critic: "claude" },
+    });
+  }
+
+  test("lists both endpoints with reachability and never throws when one is down", async () => {
+    globalThis.fetch = (async (_input: unknown, _init?: unknown) => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+    spawnSyncImpl.run = () => ({ success: true, exitCode: 0, stdout: Buffer.from("2.1.0\n"), stderr: Buffer.from("") });
+
+    const result = await status(world(), twoEndpoints());
+
+    expect(result.endpoints.map((e) => e.name)).toEqual(["litellm", "claude"]);
+
+    const litellm = result.endpoints.find((e) => e.name === "litellm")!;
+    expect(litellm.kind).toBe("openai");
+    expect(litellm.base_url).toBe("http://100.64.0.3:4000");
+    expect(litellm.active).toBe(true);
+    expect(litellm.roles).toEqual(["drafter", "judge"]);
+    expect(litellm.models).toEqual({ drafter: "zai/glm-5.3-flash", judge: "zai/glm-5.3-flash" });
+    expect(litellm.reachable).toBe(false);
+    expect(litellm.error).toContain("connection refused");
+
+    const claude = result.endpoints.find((e) => e.name === "claude")!;
+    expect(claude.kind).toBe("claude-cli");
+    expect(claude.active).toBe(false);
+    expect(claude.roles).toEqual(["critic"]);
+    expect(claude.reachable).toBe(true);
+    expect(claude.error).toBeNull();
+  });
+
+  test("keeps the top level fields pointed at the endpoint that serves critic", async () => {
+    globalThis.fetch = (async (_input: unknown, _init?: unknown) => fakeResponse({ data: [] })) as unknown as typeof fetch;
+    spawnSyncImpl.run = () => ({ success: false, exitCode: 127, stdout: Buffer.from(""), stderr: Buffer.from("not found") });
+
+    const result = await status(world(), twoEndpoints());
+
+    expect(result.endpoint).toBe("claude");
+    expect(result.kind).toBe("claude-cli");
+    expect(result.base_url).toBeNull();
+    expect(result.reachable).toBe(false);
+    expect(result.models).toEqual({ critic: "sonnet", drafter: "zai/glm-5.3-flash", judge: "zai/glm-5.3-flash" });
+  });
+
+  test("a claude-cli binary that is missing is reported, not thrown", async () => {
+    spawnSyncImpl.run = () => {
+      throw new Error("ENOENT");
+    };
+    const llm = llmConfig({ endpoints: [endpoint({ name: "claude", kind: "claude-cli", models: { critic: "sonnet" } })], active: "claude" });
+
+    const result = await status(world(), llm);
+
+    expect(result.endpoints).toHaveLength(1);
+    expect(result.endpoints[0]!.reachable).toBe(false);
+    expect(result.endpoints[0]!.error).toContain("ENOENT");
+  });
+
+  test("an llm.yaml with no endpoints reports the problem instead of throwing", async () => {
+    const result = await status(world(), llmConfig());
+    expect(result.endpoints).toEqual([]);
+    expect(result.endpoint).toBeNull();
+    expect(result.error).toContain("no endpoints");
+    expect(result.models).toEqual({ critic: null, drafter: null, judge: null });
+  });
+});

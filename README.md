@@ -70,7 +70,9 @@ or `retire-candidate`; a human still decides.
 - `~/.config/self-improvement-loop/config.yaml`: worlds, promotion thresholds,
   worker cadence, web UI port.
 - `~/.config/self-improvement-loop/llm.yaml`: model endpoints and the three model
-  roles (`critic`, `drafter`, `judge`).
+  roles (`critic`, `drafter`, `judge`). Each endpoint carries its own model names.
+  `sil llm list` shows which endpoint serves each role, `sil llm use <endpoint>`
+  switches all three, and `sil llm use <endpoint> --role critic` switches one.
 
 ## Worlds
 
@@ -100,7 +102,9 @@ sil worlds import-kb ~/.config/kb/worlds.yaml
 
 Two endpoint kinds in `llm.yaml`: `openai` (any OpenAI-compatible endpoint,
 including a local LiteLLM proxy or Ollama) and `claude-cli` (shells out to
-`claude -p --model <model>`, no proxy needed). Every drafter/judge/critic call
+`claude -p --model <model>`, no proxy needed). A role picks its endpoint from
+`role_endpoints`, else `active`, so the critic can run on `claude -p` while the
+drafter and judge stay on the proxy. Every drafter/judge/critic call
 runs at temperature 0 for reproducibility. A world set to `llm: local` may only
 use models in `llm.yaml`'s `local_models` allowlist; the loop refuses rather than
 silently falling back to a cloud model.

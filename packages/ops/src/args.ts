@@ -4,7 +4,7 @@
 // from callers.
 
 import { z } from "zod";
-import { ARTIFACT_REF_RE, LOG_NAMES, SLUG_RE, slug } from "@sil/core";
+import { ARTIFACT_REF_RE, LOG_NAMES, ROLES, SLUG_RE, slug } from "@sil/core";
 
 export const REVIEWED_STATE_RE = /^[0-9a-f]{64}$/;
 // Must start with alnum so a value like "--no-curriculum" (argv-flag shaped)
@@ -49,6 +49,9 @@ export type LogArgs = z.infer<typeof LogArgs>;
 
 export const LlmArgs = z.object({ llm: z.record(z.string(), z.unknown()) });
 export type LlmArgs = z.infer<typeof LlmArgs>;
+
+export const LlmUseArgs = z.object({ endpoint: z.string().min(1).max(64), role: z.enum(ROLES).optional() });
+export type LlmUseArgs = z.infer<typeof LlmUseArgs>;
 
 export const ConfigArgs = z.object({ config: z.record(z.string(), z.unknown()) });
 export type ConfigArgs = z.infer<typeof ConfigArgs>;

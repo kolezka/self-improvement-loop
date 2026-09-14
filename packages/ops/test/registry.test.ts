@@ -1,7 +1,7 @@
-// Registry self-checks and the full 30-op tier/gate table. Every test that
+// Registry self-checks and the full 31-op tier/gate table. Every test that
 // mutates REGISTRY (self-check tests register throwaway ops) restores the
 // snapshot taken at the start of the test so other test files still see the
-// real 30 ops registered by the side-effecting "../src/index.ts" import.
+// real 31 ops registered by the side-effecting "../src/index.ts" import.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
@@ -50,7 +50,7 @@ describe("register() self-checks", () => {
   });
 });
 
-// Name -> [tier, gate], same 30 ops as sil/ops.py.
+// Name -> [tier, gate]: the 30 ops of sil/ops.py plus llm.use.
 const EXPECTED: Record<string, [Tier, GateKind]> = {
   "health.report": ["read", "none"],
   "worlds.list": ["read", "none"],
@@ -59,6 +59,7 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "llm.get": ["read", "none"],
   "llm.set": ["local", "none"],
   "llm.status": ["read", "none"],
+  "llm.use": ["local", "none"],
   "queue.list": ["read", "none"],
   "queue.skip": ["local", "none"],
   "worker.status": ["read", "none"],
@@ -84,7 +85,7 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "logs.tail": ["read", "none"],
 };
 
-describe("the 30 real ops", () => {
+describe("the 31 real ops", () => {
   test("registry has exactly the expected op names", () => {
     expect(new Set(REGISTRY.keys())).toEqual(new Set(Object.keys(EXPECTED)));
   });

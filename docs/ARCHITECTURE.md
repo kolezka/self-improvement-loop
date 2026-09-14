@@ -141,24 +141,42 @@ layout (`claude/skills`, `claude/hooks/nudges`, `claude/agents`, `global.CLAUDE.
 endpoints:
   - name: litellm
     kind: openai                   # openai | claude-cli
-    base_url: http://127.0.0.1:4000
+    base_url: http://100.64.0.3:4000
     api_key_env: LITELLM_API_KEY
+    models:                        # model names are per endpoint
+      critic: zai/glm-5.3-flash
+      drafter: zai/glm-5.3-flash
+      judge: zai/glm-5.3-flash
     extra_body: {}                 # merged into each request, e.g. reasoning_effort: low
   - name: claude
     kind: claude-cli               # `claude -p --model <m>`; no proxy needed
-active: litellm
+    models:
+      critic: sonnet
+      drafter: sonnet
+      judge: sonnet
+active: litellm                    # the default endpoint for every role
+role_endpoints:                    # per role override of `active`
+  critic: claude
 local_models: []                   # allowlist that a `llm: local` world may use
-models:
-  critic: anthropic/claude-sonnet-5
-  drafter: anthropic/claude-sonnet-5
-  judge: anthropic/claude-sonnet-5
+models: {}                         # fallback for a role no endpoint names
 ```
 
-`chat(role, messages, { world })` in `@sil/providers` is the single transport. It resolves
-the role through `models`, checks `local_models` for a `llm: local` world, and
+A role resolves in two steps: the endpoint is `role_endpoints[role]`, else `active`,
+else the first endpoint; the model is that endpoint's `models[role]`, else the top
+level `models[role]`. Nothing defaults past that, so a missing model is an error
+naming the role and the endpoint, not a silent fallback. Model names live on the
+endpoint because LiteLLM wants `zai/glm-5.3-flash` where claude-cli wants `sonnet`,
+so switching provider never rewrites them.
+
+`chat(role, messages, { world })` in `@sil/providers` is the single transport. It
+resolves the role on every call, checks `local_models` for a `llm: local` world, and
 posts to `<base_url>/v1/chat/completions` (LiteLLM, OpenAI, Ollama, anything
-OpenAI-compatible) or shells out to `claude -p`. Temperature 0. No fallback URL,
-no placeholder key.
+OpenAI-compatible) or shells out to `claude -p`. Because resolution is per call, the
+critic can run on `claude -p` while the drafter and judge stay on LiteLLM.
+Temperature 0. No fallback URL, no placeholder key.
+
+`sil llm use <endpoint>` and `sil llm set-model <role> <model>` edit this file, as
+does the `llm.use` op behind the web Models pane.
 
 ## Hook fast path (`apps/hook`, bundled to `dist/hook.js`)
 

@@ -15052,11 +15052,13 @@ var Endpoint = object({
   base_url: string2().nullable().default(null),
   api_key_env: string2().nullable().default(null),
   timeout_s: number2().int().min(1).default(240),
+  models: partialRecord(_enum(ROLES), string2()).default({}),
   extra_body: record(string2(), unknown()).default({})
 });
 var LlmConfig = object({
   endpoints: array(Endpoint).default([]),
   active: string2().nullable().default(null),
+  role_endpoints: partialRecord(_enum(ROLES), string2()).default({}),
   local_models: array(string2()).default([]),
   models: partialRecord(_enum(ROLES), string2()).default({})
 });
@@ -15574,16 +15576,47 @@ function activeEndpoint(llm) {
     throw new ModelNotConfigured(`llm.yaml active endpoint ${JSON.stringify(name)} is not defined`);
   return e;
 }
-function modelFor(llm, role, world) {
+function requireRole(role) {
   if (!ROLES.includes(role))
     throw new ConfigError(`unknown model role ${role}; roles are ${ROLES.join(", ")}`);
-  const model = llm.models[role];
-  if (!model)
-    throw new ModelNotConfigured(`llm.yaml models.${role} is not set`);
+}
+function endpointFor(llm, role) {
+  requireRole(role);
+  if (llm.endpoints.length === 0)
+    throw new ModelNotConfigured("llm.yaml has no endpoints; run `sil init` or edit it");
+  const override = llm.role_endpoints[role];
+  const name = override ?? llm.active ?? llm.endpoints[0].name;
+  const e = llm.endpoints.find((x) => x.name === name);
+  if (!e) {
+    const where = override ? `role_endpoints.${role}` : "active";
+    throw new ModelNotConfigured(`llm.yaml ${where} endpoint ${JSON.stringify(name)} is not defined`);
+  }
+  return e;
+}
+function resolveRole(llm, role, world) {
+  requireRole(role);
+  const endpoint = endpointFor(llm, role);
+  const model = endpoint.models[role] ?? llm.models[role];
+  if (!model) {
+    throw new ModelNotConfigured(`no model for role ${role} on endpoint ${endpoint.name}; ` + `set endpoints[${endpoint.name}].models.${role} in llm.yaml or run sil llm set-model`);
+  }
   if (world && world.llm === "local" && !llm.local_models.includes(model)) {
     throw new LocalityViolation(`world ${world.name} is llm: local but models.${role}=${model} is not in local_models`);
   }
-  return model;
+  return { endpoint, model };
+}
+function modelFor(llm, role, world) {
+  return resolveRole(llm, role, world).model;
+}
+function useEndpoint(llm, name, role) {
+  if (!llm.endpoints.some((e) => e.name === name)) {
+    const known = llm.endpoints.map((e) => e.name).join(", ") || "none";
+    throw new ConfigError(`unknown endpoint ${JSON.stringify(name)}; llm.yaml defines ${known}`);
+  }
+  if (role === undefined)
+    return { ...llm, active: name, role_endpoints: {} };
+  requireRole(role);
+  return { ...llm, role_endpoints: { ...llm.role_endpoints, [role]: name } };
 }
 function apiKey(endpoint) {
   if (endpoint.kind === "claude-cli")
@@ -17836,8 +17869,7 @@ var spawnSyncImpl = {
 };
 var chat = async (role, messages, opts) => {
   const llm = opts.llm ?? loadLlm(opts.world);
-  const endpoint = activeEndpoint(llm);
-  const model = modelFor(llm, role, opts.world);
+  const { endpoint, model } = resolveRole(llm, role, opts.world);
   if (endpoint.kind === "openai")
     return chatOpenai(endpoint, model, messages, { jsonMode: opts.jsonMode ?? false, maxTokens: opts.maxTokens ?? 4000 });
   if (endpoint.kind === "claude-cli")
@@ -17845,60 +17877,95 @@ var chat = async (role, messages, opts) => {
   throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} has unknown kind ${JSON.stringify(endpoint.kind)}`);
 };
 async function status(world, llm) {
-  const result = { endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: null };
-  const llmCfg = llm ?? loadLlm(world);
-  let endpoint;
+  const result = { endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: null, endpoints: [] };
+  let llmCfg;
   try {
-    endpoint = activeEndpoint(llmCfg);
+    llmCfg = llm ?? loadLlm(world);
   } catch (e) {
     result.error = e.message;
     return result;
   }
-  result.endpoint = endpoint.name;
-  result.kind = endpoint.kind;
-  result.base_url = endpoint.base_url;
+  const servedBy = new Map;
   for (const role of ROLES) {
     try {
-      result.models[role] = modelFor(llmCfg, role, world);
-    } catch (e) {
-      if (e instanceof ConfigError)
-        result.models[role] = null;
-      else
-        throw e;
+      servedBy.set(role, endpointFor(llmCfg, role).name);
+    } catch {}
+    try {
+      result.models[role] = resolveRole(llmCfg, role, world).model;
+    } catch {
+      result.models[role] = null;
     }
   }
-  if (endpoint.kind !== "openai")
-    return result;
-  const base = (endpoint.base_url ?? "").replace(/\/+$/, "");
-  if (!base) {
-    result.reachable = false;
-    result.error = "no base_url configured";
-    return result;
+  let activeName = null;
+  try {
+    activeName = activeEndpoint(llmCfg).name;
+  } catch {}
+  result.endpoints = await Promise.all(llmCfg.endpoints.map(async (ep) => {
+    const probe = await probeEndpoint(ep);
+    return {
+      name: ep.name,
+      kind: ep.kind,
+      base_url: ep.base_url,
+      active: ep.name === activeName,
+      roles: ROLES.filter((r) => servedBy.get(r) === ep.name),
+      models: { ...ep.models },
+      reachable: probe.reachable,
+      error: probe.error
+    };
+  }));
+  const criticEndpoint = result.endpoints.find((e) => e.name === servedBy.get("critic")) ?? null;
+  if (criticEndpoint) {
+    result.endpoint = criticEndpoint.name;
+    result.kind = criticEndpoint.kind;
+    result.base_url = criticEndpoint.base_url;
+    result.reachable = criticEndpoint.reachable;
+    result.error = criticEndpoint.error;
+  } else {
+    try {
+      endpointFor(llmCfg, "critic");
+    } catch (e) {
+      result.error = e.message;
+    }
   }
+  return result;
+}
+async function probeEndpoint(endpoint) {
+  if (endpoint.kind === "claude-cli")
+    return probeClaudeCli();
+  if (endpoint.kind !== "openai")
+    return { reachable: null, error: `unknown endpoint kind ${JSON.stringify(endpoint.kind)}` };
+  const base = (endpoint.base_url ?? "").replace(/\/+$/, "");
+  if (!base)
+    return { reachable: false, error: "no base_url configured" };
   let key;
   try {
     key = apiKey(endpoint);
   } catch (e) {
-    result.reachable = false;
-    result.error = e.message;
-    return result;
+    return { reachable: false, error: e.message };
   }
   const headers = key ? { Authorization: `Bearer ${key}` } : {};
   const url = v1Url(base) + "/models";
   try {
     const resp = await fetch(url, { headers, signal: AbortSignal.timeout(3000) });
-    if (!resp.ok) {
-      result.reachable = false;
-      result.error = `HTTP ${resp.status}`;
-    } else {
-      result.reachable = true;
-    }
+    if (!resp.ok)
+      return { reachable: false, error: `HTTP ${resp.status}` };
+    return { reachable: true, error: null };
   } catch (e) {
-    result.reachable = false;
     const err = e;
-    result.error = `${err.name}: ${err.message}`;
+    return { reachable: false, error: `${err.name}: ${err.message}` };
   }
-  return result;
+}
+function probeClaudeCli() {
+  try {
+    const r = spawnSyncImpl.run(["claude", "--version"], { timeout: 5000 });
+    if (r.exitedDueToTimeout)
+      return { reachable: false, error: "claude --version timed out after 5s" };
+    if (!r.success)
+      return { reachable: false, error: `claude --version exited ${r.exitCode}: ${r.stderr.toString("utf8").slice(0, 200)}` };
+    return { reachable: true, error: null };
+  } catch (e) {
+    return { reachable: false, error: `could not run claude --version: ${e.message}` };
+  }
 }
 function v1Url(base) {
   return base.endsWith("/v1") ? base : base + "/v1";
@@ -20457,21 +20524,27 @@ function cmdInit(opts) {
   if (exists(llmPath)) {
     console.log(`llm.yaml already exists at ${llmPath}, leaving it as is`);
   } else {
+    const litellmModels = opts.model ? { critic: opts.model, drafter: opts.model, judge: opts.model } : {};
+    const claudeModel = opts.claudeModel || "sonnet";
     const endpoints = [
       Endpoint.parse({
         name: "litellm",
         kind: "openai",
-        base_url: opts.llmBaseUrl || "http://127.0.0.1:4000",
-        api_key_env: opts.apiKeyEnv || "LITELLM_API_KEY"
+        base_url: opts.llmBaseUrl || "http://100.64.0.3:4000",
+        api_key_env: opts.apiKeyEnv || "LITELLM_API_KEY",
+        models: litellmModels
       }),
-      Endpoint.parse({ name: "claude", kind: "claude-cli" })
+      Endpoint.parse({
+        name: "claude",
+        kind: "claude-cli",
+        models: { critic: claudeModel, drafter: claudeModel, judge: claudeModel }
+      })
     ];
-    const models = opts.model ? { critic: opts.model, drafter: opts.model, judge: opts.model } : {};
-    const llm = LlmConfig.parse({ endpoints, active: "litellm", models });
+    const llm = LlmConfig.parse({ endpoints, active: "litellm" });
     saveLlm(llm);
     console.log(`wrote ${llmPath}`);
-    if (Object.keys(models).length === 0) {
-      console.log("llm.yaml has no models set. Edit it and set models.critic, " + "models.drafter and models.judge before running the worker, " + "e.g. anthropic/claude-sonnet-5.");
+    if (Object.keys(litellmModels).length === 0) {
+      console.log("The litellm endpoint has no models set. Run " + "`sil llm set-model critic <model> --endpoint litellm` for each role, " + "or switch to the claude endpoint with `sil llm use claude`.");
     }
   }
   for (const world of cfg.worlds) {
@@ -20489,6 +20562,9 @@ function cmdInit(opts) {
   console.log();
   console.log("Next steps:");
   console.log("  sil status                              check worker and provider status");
+  console.log("  sil llm list                            show endpoints and which one serves each role");
+  console.log("  sil llm use claude                      send every role to `claude -p`");
+  console.log("  sil llm use litellm --role drafter      send one role back to LiteLLM");
   console.log("  sil web                                 open the review UI");
   console.log("  sil schedule install --systemd --web    run the worker and web UI on a schedule");
   return 0;
@@ -20507,6 +20583,88 @@ function cmdLessons(opts) {
     console.log(`${lesson.id}  ${lesson.pattern}`);
     console.log(`  ${lesson.text}`);
   }
+  return 0;
+}
+
+// apps/cli/src/commands/llm.ts
+function requireRole2(value) {
+  if (ROLES.includes(value))
+    return value;
+  throw new ConfigError(`unknown role ${JSON.stringify(value)}; roles are ${ROLES.join(", ")}`);
+}
+function roleRows(llm) {
+  return ROLES.map((role) => {
+    try {
+      const resolved = resolveRole(llm, role);
+      return { role, endpoint: resolved.endpoint.name, model: resolved.model, error: null };
+    } catch (e) {
+      let endpoint = null;
+      try {
+        endpoint = endpointFor(llm, role).name;
+      } catch {}
+      return { role, endpoint, model: null, error: e.message };
+    }
+  });
+}
+function printRoles(llm) {
+  for (const row of roleRows(llm)) {
+    const target = row.error ? row.error : `${row.endpoint}: ${row.model}`;
+    console.log(`${row.role.padEnd(7)} -> ${target}`);
+  }
+}
+function addressOf(kind, baseUrl) {
+  if (kind === "claude-cli")
+    return "claude -p";
+  return baseUrl ?? "(no base_url)";
+}
+async function cmdLlmList(opts, deps = defaultDeps) {
+  const llm = loadLlm();
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const status = await deps.providers.status(world, llm);
+  const rows = roleRows(llm);
+  if (opts.json) {
+    console.log(JSON.stringify({ active: llm.active, endpoints: status.endpoints, roles: rows }, null, 2));
+    return 0;
+  }
+  console.log(`${"endpoint".padEnd(18)} ${"kind".padEnd(11)} ${"address".padEnd(30)} reachable`);
+  for (const ep of status.endpoints) {
+    const name = ep.active ? `${ep.name} *` : ep.name;
+    const reach = ep.error ? `${ep.reachable} (${ep.error})` : String(ep.reachable);
+    console.log(`${name.padEnd(18)} ${ep.kind.padEnd(11)} ${addressOf(ep.kind, ep.base_url).padEnd(30)} ${reach}`);
+  }
+  if (status.endpoints.length === 0)
+    console.log("(llm.yaml defines no endpoints; run `sil init`)");
+  console.log();
+  for (const row of rows) {
+    console.log(`${row.role.padEnd(7)} -> ${row.error ? row.error : `${row.endpoint}: ${row.model}`}`);
+  }
+  return 0;
+}
+function cmdLlmUse(name, opts) {
+  const role = opts.role === undefined ? undefined : requireRole2(opts.role);
+  const llm = useEndpoint(loadLlm(), name, role);
+  saveLlm(llm);
+  writeHookSnapshot();
+  if (role)
+    console.log(`role_endpoints.${role} = ${name}`);
+  else
+    console.log(`active = ${name} (per role overrides cleared)`);
+  printRoles(llm);
+  return 0;
+}
+function cmdLlmSetModel(roleArg, model, opts) {
+  const role = requireRole2(roleArg);
+  const llm = loadLlm();
+  const name = opts.endpoint ?? endpointFor(llm, role).name;
+  const endpoint = llm.endpoints.find((e) => e.name === name);
+  if (!endpoint) {
+    const known = llm.endpoints.map((e) => e.name).join(", ") || "none";
+    throw new ConfigError(`unknown endpoint ${JSON.stringify(name)}; llm.yaml defines ${known}`);
+  }
+  endpoint.models = { ...endpoint.models, [role]: model };
+  saveLlm(llm);
+  console.log(`endpoints[${name}].models.${role} = ${model}`);
   return 0;
 }
 
@@ -21022,6 +21180,7 @@ var LogArgs = object({
   lines: exports_coerce.number().int().min(1).max(2000).default(200)
 });
 var LlmArgs = object({ llm: record(string2(), unknown()) });
+var LlmUseArgs = object({ endpoint: string2().min(1).max(64), role: _enum(ROLES).optional() });
 var ConfigArgs = object({ config: record(string2(), unknown()) });
 var AliasArgs = object({
   world: string2().min(1),
@@ -21160,6 +21319,12 @@ function llmGet(_args) {
 function llmSet(args) {
   const llm = LlmConfig.parse(args.llm);
   saveLlm(llm);
+  return llm;
+}
+function llmUse(args) {
+  const llm = useEndpoint(loadLlm(), args.endpoint, args.role);
+  saveLlm(llm);
+  writeHookSnapshot();
   return llm;
 }
 async function llmStatus(args) {
@@ -21336,7 +21501,8 @@ register({ name: "config.get", tier: "read", gate: "none", args: NoArgs, fn: con
 register({ name: "config.set", tier: "local", gate: "none", args: ConfigArgs, fn: configSet, doc: "Validate and write config.yaml; refresh the hook snapshot." });
 register({ name: "llm.get", tier: "read", gate: "none", args: NoArgs, fn: llmGet, doc: "Read llm.yaml. Never includes secret values, only env var names." });
 register({ name: "llm.set", tier: "local", gate: "none", args: LlmArgs, fn: llmSet, doc: "Validate and write llm.yaml." });
-register({ name: "llm.status", tier: "read", gate: "none", args: WorldArgs, fn: llmStatus, doc: "Provider reachability for a world." });
+register({ name: "llm.status", tier: "read", gate: "none", args: WorldArgs, fn: llmStatus, doc: "Provider reachability for a world, per endpoint." });
+register({ name: "llm.use", tier: "local", gate: "none", args: LlmUseArgs, fn: llmUse, doc: "Switch the active endpoint, or route one role to an endpoint." });
 register({ name: "queue.list", tier: "read", gate: "none", args: NoArgs, fn: queueList, doc: "Pending, done and failed queue entries." });
 register({ name: "queue.skip", tier: "local", gate: "none", args: SessionArgs, fn: queueSkip, doc: "Skip a pending session." });
 register({ name: "worker.status", tier: "read", gate: "none", args: NoArgs, fn: workerStatus, doc: "Worker lock/last-run status." });
@@ -21611,7 +21777,7 @@ function buildProgram(deps, onExit, onRun) {
       onExit(await fn(...args));
     };
   };
-  program.command("init").option("--world <name>").option("--target <path>").option("--llm-base-url <url>").option("--api-key-env <name>").option("--model <name>").action(wire((opts) => cmdInit(opts)));
+  program.command("init").option("--world <name>").option("--target <path>").option("--llm-base-url <url>").option("--api-key-env <name>").option("--model <name>").option("--claude-model <name>").action(wire((opts) => cmdInit(opts)));
   program.command("status").option("--json").action(wire((opts) => cmdStatus(opts, deps)));
   program.command("reflect").option("--session <id>").option("--cwd <path>").option("--now").action(wire((opts) => cmdReflect(opts, deps)));
   program.command("worker").option("--once").option("--loop").option("--interval-s <n>", "seconds between loop passes", intOption).option("--world <name>").option("--no-curriculum").action(wire((opts) => {
@@ -21640,6 +21806,10 @@ function buildProgram(deps, onExit, onRun) {
   }));
   feedback.command("list").action(wire(() => cmdFeedbackList(deps)));
   program.command("lessons").option("--world <name>").action(wire((opts) => cmdLessons(opts)));
+  const llm = program.command("llm");
+  llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
+  llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
+  llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
   program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));

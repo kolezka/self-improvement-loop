@@ -11,6 +11,7 @@ export interface InitOptions {
   llmBaseUrl?: string;
   apiKeyEnv?: string;
   model?: string;
+  claudeModel?: string;
 }
 
 export function cmdInit(opts: InitOptions): number {
@@ -33,24 +34,32 @@ export function cmdInit(opts: InitOptions): number {
   if (fsx.exists(llmPath)) {
     console.log(`llm.yaml already exists at ${llmPath}, leaving it as is`);
   } else {
+    // Each endpoint carries its own model names: a switch changes the
+    // endpoint, never the model strings.
+    const litellmModels = opts.model ? { critic: opts.model, drafter: opts.model, judge: opts.model } : {};
+    const claudeModel = opts.claudeModel || "sonnet";
     const endpoints = [
       Endpoint.parse({
         name: "litellm",
         kind: "openai",
-        base_url: opts.llmBaseUrl || "http://127.0.0.1:4000",
+        base_url: opts.llmBaseUrl || "http://100.64.0.3:4000",
         api_key_env: opts.apiKeyEnv || "LITELLM_API_KEY",
+        models: litellmModels,
       }),
-      Endpoint.parse({ name: "claude", kind: "claude-cli" }),
+      Endpoint.parse({
+        name: "claude",
+        kind: "claude-cli",
+        models: { critic: claudeModel, drafter: claudeModel, judge: claudeModel },
+      }),
     ];
-    const models = opts.model ? { critic: opts.model, drafter: opts.model, judge: opts.model } : {};
-    const llm = LlmConfig.parse({ endpoints, active: "litellm", models });
+    const llm = LlmConfig.parse({ endpoints, active: "litellm" });
     saveLlm(llm);
     console.log(`wrote ${llmPath}`);
-    if (Object.keys(models).length === 0) {
+    if (Object.keys(litellmModels).length === 0) {
       console.log(
-        "llm.yaml has no models set. Edit it and set models.critic, " +
-          "models.drafter and models.judge before running the worker, " +
-          "e.g. anthropic/claude-sonnet-5.",
+        "The litellm endpoint has no models set. Run " +
+          "`sil llm set-model critic <model> --endpoint litellm` for each role, " +
+          "or switch to the claude endpoint with `sil llm use claude`.",
       );
     }
   }
@@ -68,6 +77,9 @@ export function cmdInit(opts: InitOptions): number {
   console.log();
   console.log("Next steps:");
   console.log("  sil status                              check worker and provider status");
+  console.log("  sil llm list                            show endpoints and which one serves each role");
+  console.log("  sil llm use claude                      send every role to `claude -p`");
+  console.log("  sil llm use litellm --role drafter      send one role back to LiteLLM");
   console.log("  sil web                                 open the review UI");
   console.log("  sil schedule install --systemd --web    run the worker and web UI on a schedule");
   return 0;

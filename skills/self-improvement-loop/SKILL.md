@@ -36,6 +36,10 @@ used, and feeds that back into the next promotion decision.
 - `/feedback <type>:<name> good|bad [note]` records a human vote on an
   artifact, e.g. `/feedback skill:verify-callsites bad wrong call site`.
 
+`sil llm use <endpoint>` switches the provider for every role, and
+`sil llm use <endpoint> --role critic` switches one; `sil llm list` shows
+which endpoint and model each role resolves to.
+
 ## Where files live
 
 - Config: `$SIL_CONFIG_DIR` (default `~/.config/self-improvement-loop/`):

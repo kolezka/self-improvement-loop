@@ -1,4 +1,4 @@
-// Registers the 30 ops the web UI and CLI invoke. Every handler validates its
+// Registers the 31 ops the web UI and CLI invoke. Every handler validates its
 // own payload via args.ts before touching disk, git or a spawned process.
 // Same names, tiers and gates as the Python port (sil/ops.py).
 
@@ -21,7 +21,8 @@ register({ name: "config.get", tier: "read", gate: "none", args: Args.NoArgs, fn
 register({ name: "config.set", tier: "local", gate: "none", args: Args.ConfigArgs, fn: worlds.configSet, doc: "Validate and write config.yaml; refresh the hook snapshot." });
 register({ name: "llm.get", tier: "read", gate: "none", args: Args.NoArgs, fn: llm.llmGet, doc: "Read llm.yaml. Never includes secret values, only env var names." });
 register({ name: "llm.set", tier: "local", gate: "none", args: Args.LlmArgs, fn: llm.llmSet, doc: "Validate and write llm.yaml." });
-register({ name: "llm.status", tier: "read", gate: "none", args: Args.WorldArgs, fn: llm.llmStatus, doc: "Provider reachability for a world." });
+register({ name: "llm.status", tier: "read", gate: "none", args: Args.WorldArgs, fn: llm.llmStatus, doc: "Provider reachability for a world, per endpoint." });
+register({ name: "llm.use", tier: "local", gate: "none", args: Args.LlmUseArgs, fn: llm.llmUse, doc: "Switch the active endpoint, or route one role to an endpoint." });
 register({ name: "queue.list", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.queueList, doc: "Pending, done and failed queue entries." });
 register({ name: "queue.skip", tier: "local", gate: "none", args: Args.SessionArgs, fn: queue.queueSkip, doc: "Skip a pending session." });
 register({ name: "worker.status", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.workerStatus, doc: "Worker lock/last-run status." });

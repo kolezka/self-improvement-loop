@@ -83,6 +83,9 @@ export const Endpoint = z.object({
   base_url: z.string().nullable().default(null),
   api_key_env: z.string().nullable().default(null),
   timeout_s: z.number().int().min(1).default(240),
+  // Model names are per endpoint: LiteLLM wants zai/glm-5.3-flash where
+  // claude-cli wants sonnet, so switching provider must not rewrite them.
+  models: z.partialRecord(z.enum(ROLES), z.string()).default({}),
   // Merged into every chat request body last, so it can override max_tokens or
   // add provider knobs such as reasoning_effort or thinking.
   extra_body: z.record(z.string(), z.unknown()).default({}),
@@ -92,7 +95,12 @@ export type Endpoint = z.infer<typeof Endpoint>;
 export const LlmConfig = z.object({
   endpoints: z.array(Endpoint).default([]),
   active: z.string().nullable().default(null),
+  // Per role override of `active`, so the critic can run on one endpoint while
+  // the drafter and judge run on another.
+  role_endpoints: z.partialRecord(z.enum(ROLES), z.string()).default({}),
   local_models: z.array(z.string()).default([]),
+  // Fallback for a role an endpoint does not name. Pre-switching llm.yaml
+  // files carry their models only here.
   models: z.partialRecord(z.enum(ROLES), z.string()).default({}),
 });
 export type LlmConfig = z.infer<typeof LlmConfig>;

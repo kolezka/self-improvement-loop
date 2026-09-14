@@ -77,7 +77,13 @@ function cfg(w: World): Config {
 }
 
 function llm(): LlmConfig {
-  return { endpoints: [], active: null, local_models: [], models: { critic: "test-model" } };
+  return {
+    endpoints: [{ name: "test", kind: "openai", base_url: "http://test", api_key_env: null, timeout_s: 240, models: {}, extra_body: {} }],
+    active: "test",
+    role_endpoints: {},
+    local_models: [],
+    models: { critic: "test-model" },
+  };
 }
 
 // --- parseAnswer -----------------------------------------------------------

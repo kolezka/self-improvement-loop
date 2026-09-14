@@ -1,13 +1,34 @@
 // The single model transport. `chat` is the only way any engine code talks to
 // a model. No base_url fallback, no placeholder key, no default model.
 
-import { activeEndpoint, apiKey, ConfigError, loadLlm, modelFor, ProviderError, ProviderTimeout, ROLES } from "@sil/core";
+import { activeEndpoint, apiKey, endpointFor, loadLlm, ProviderError, ProviderTimeout, resolveRole, ROLES } from "@sil/core";
 import type { Endpoint, LlmConfig, Role, World } from "@sil/core";
 
 export interface ChatMessage { role: "system" | "user" | "assistant"; content: string }
 export interface ChatOptions { world: World; llm?: LlmConfig; jsonMode?: boolean; maxTokens?: number }
 export type ChatFn = (role: Role, messages: ChatMessage[], opts: ChatOptions) => Promise<string>;
-export interface ProviderStatus { endpoint: string | null; kind: string | null; base_url: string | null; models: Record<string, string | null>; reachable: boolean | null; error: string | null }
+export interface EndpointStatus {
+  name: string;
+  kind: string;
+  base_url: string | null;
+  active: boolean;
+  roles: Role[];
+  models: Partial<Record<Role, string>>;
+  reachable: boolean | null;
+  error: string | null;
+}
+/** Top level fields describe the endpoint that serves `critic`, so the CLI
+ * status column and the web Overview keep reading one endpoint. `endpoints`
+ * carries the whole picture. */
+export interface ProviderStatus {
+  endpoint: string | null;
+  kind: string | null;
+  base_url: string | null;
+  models: Record<string, string | null>;
+  reachable: boolean | null;
+  error: string | null;
+  endpoints: EndpointStatus[];
+}
 
 // spawnSync indirection for claude-cli: tests reassign `spawnSyncImpl.run`
 // instead of patching the Bun global.
@@ -19,69 +40,117 @@ export const spawnSyncImpl: { run: SpawnSyncFn } = {
 
 export const chat: ChatFn = async (role, messages, opts) => {
   const llm = opts.llm ?? loadLlm(opts.world);
-  const endpoint = activeEndpoint(llm);
-  const model = modelFor(llm, role, opts.world); // enforces locality, raises on misconfig
+  // Resolved per call, so the critic can sit on claude-cli while the drafter
+  // and judge stay on LiteLLM. Enforces locality, raises on misconfig.
+  const { endpoint, model } = resolveRole(llm, role, opts.world);
   if (endpoint.kind === "openai") return chatOpenai(endpoint, model, messages, { jsonMode: opts.jsonMode ?? false, maxTokens: opts.maxTokens ?? 4000 });
   if (endpoint.kind === "claude-cli") return chatClaudeCli(endpoint, model, messages, { maxTokens: opts.maxTokens ?? 4000 });
   throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} has unknown kind ${JSON.stringify(endpoint.kind)}`);
 };
 
+/** Reachability and routing for every endpoint. Reports, never raises: a
+ * broken llm.yaml or a dead proxy is a field in the answer, not an exception,
+ * because `sil status` and the web Overview call this on every refresh. */
 export async function status(world: World, llm?: LlmConfig): Promise<ProviderStatus> {
-  const result: ProviderStatus = { endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: null };
-  const llmCfg = llm ?? loadLlm(world);
-  let endpoint: Endpoint;
+  const result: ProviderStatus = { endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: null, endpoints: [] };
+
+  let llmCfg: LlmConfig;
   try {
-    endpoint = activeEndpoint(llmCfg);
+    llmCfg = llm ?? loadLlm(world);
   } catch (e) {
     result.error = (e as Error).message;
     return result;
   }
 
-  result.endpoint = endpoint.name;
-  result.kind = endpoint.kind;
-  result.base_url = endpoint.base_url;
+  const servedBy = new Map<Role, string>();
   for (const role of ROLES) {
     try {
-      result.models[role] = modelFor(llmCfg, role, world);
-    } catch (e) {
-      if (e instanceof ConfigError) result.models[role] = null;
-      else throw e;
+      servedBy.set(role, endpointFor(llmCfg, role).name);
+    } catch {
+      // role has no usable endpoint; result.error below names why
+    }
+    try {
+      result.models[role] = resolveRole(llmCfg, role, world).model;
+    } catch {
+      result.models[role] = null;
     }
   }
 
-  if (endpoint.kind !== "openai") return result;
+  let activeName: string | null = null;
+  try {
+    activeName = activeEndpoint(llmCfg).name;
+  } catch {
+    // no active endpoint: every row reports active false
+  }
+
+  result.endpoints = await Promise.all(
+    llmCfg.endpoints.map(async (ep): Promise<EndpointStatus> => {
+      const probe = await probeEndpoint(ep);
+      return {
+        name: ep.name,
+        kind: ep.kind,
+        base_url: ep.base_url,
+        active: ep.name === activeName,
+        roles: ROLES.filter((r) => servedBy.get(r) === ep.name),
+        models: { ...ep.models },
+        reachable: probe.reachable,
+        error: probe.error,
+      };
+    }),
+  );
+
+  const criticEndpoint = result.endpoints.find((e) => e.name === servedBy.get("critic")) ?? null;
+  if (criticEndpoint) {
+    result.endpoint = criticEndpoint.name;
+    result.kind = criticEndpoint.kind;
+    result.base_url = criticEndpoint.base_url;
+    result.reachable = criticEndpoint.reachable;
+    result.error = criticEndpoint.error;
+  } else {
+    try {
+      endpointFor(llmCfg, "critic");
+    } catch (e) {
+      result.error = (e as Error).message;
+    }
+  }
+  return result;
+}
+
+interface Probe { reachable: boolean | null; error: string | null }
+
+async function probeEndpoint(endpoint: Endpoint): Promise<Probe> {
+  if (endpoint.kind === "claude-cli") return probeClaudeCli();
+  if (endpoint.kind !== "openai") return { reachable: null, error: `unknown endpoint kind ${JSON.stringify(endpoint.kind)}` };
 
   const base = (endpoint.base_url ?? "").replace(/\/+$/, "");
-  if (!base) {
-    result.reachable = false;
-    result.error = "no base_url configured";
-    return result;
-  }
+  if (!base) return { reachable: false, error: "no base_url configured" };
   let key: string | null;
   try {
     key = apiKey(endpoint);
   } catch (e) {
-    result.reachable = false;
-    result.error = (e as Error).message;
-    return result;
+    return { reachable: false, error: (e as Error).message };
   }
   const headers: Record<string, string> = key ? { Authorization: `Bearer ${key}` } : {};
   const url = v1Url(base) + "/models";
   try {
     const resp = await fetch(url, { headers, signal: AbortSignal.timeout(3000) });
-    if (!resp.ok) {
-      result.reachable = false;
-      result.error = `HTTP ${resp.status}`;
-    } else {
-      result.reachable = true;
-    }
+    if (!resp.ok) return { reachable: false, error: `HTTP ${resp.status}` };
+    return { reachable: true, error: null };
   } catch (e) {
-    // a probe reports, never raises
-    result.reachable = false;
     const err = e as Error;
-    result.error = `${err.name}: ${err.message}`;
+    return { reachable: false, error: `${err.name}: ${err.message}` };
   }
-  return result;
+}
+
+function probeClaudeCli(): Probe {
+  try {
+    const r = spawnSyncImpl.run(["claude", "--version"], { timeout: 5000 });
+    if (r.exitedDueToTimeout) return { reachable: false, error: "claude --version timed out after 5s" };
+    if (!r.success) return { reachable: false, error: `claude --version exited ${r.exitCode}: ${r.stderr.toString("utf8").slice(0, 200)}` };
+    return { reachable: true, error: null };
+  } catch (e) {
+    return { reachable: false, error: `could not run claude --version: ${(e as Error).message}` };
+  }
 }
 
 function v1Url(base: string): string {

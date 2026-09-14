@@ -7,6 +7,7 @@ import {
   apiKey,
   Config,
   ConfigError,
+  endpointFor,
   LlmConfig,
   loadConfig,
   loadLlm,
@@ -14,7 +15,9 @@ import {
   modelFor,
   ModelNotConfigured,
   paths,
+  resolveRole,
   saveConfig,
+  saveLlm,
   World,
   worldForCwd,
   writeHookSnapshot,
@@ -98,8 +101,8 @@ describe("llm", () => {
 
   test("apiKey refuses a placeholder", () => {
     delete process.env["SIL_TEST_KEY_X"];
-    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1, extra_body: {} })).toThrow(ModelNotConfigured);
-    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1, extra_body: {} })).toBeNull();
+    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1, models: {}, extra_body: {} })).toThrow(ModelNotConfigured);
+    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1, models: {}, extra_body: {} })).toBeNull();
   });
 });
 
@@ -125,3 +128,97 @@ describe("broken yaml", () => {
   });
 });
 
+
+describe("endpoint routing", () => {
+  const two = () =>
+    LlmConfig.parse({
+      endpoints: [
+        { name: "litellm", kind: "openai", base_url: "http://100.64.0.3:4000", models: { critic: "zai/glm-5.3-flash", drafter: "zai/glm-5.3-flash" } },
+        { name: "claude", kind: "claude-cli", models: { critic: "sonnet" } },
+      ],
+      active: "litellm",
+    });
+
+  test("endpointFor prefers role_endpoints, then active, then the first endpoint", () => {
+    const llm = two();
+    expect(endpointFor(llm, "critic").name).toBe("litellm");
+
+    llm.role_endpoints = { critic: "claude" };
+    expect(endpointFor(llm, "critic").name).toBe("claude");
+    expect(endpointFor(llm, "drafter").name).toBe("litellm");
+
+    llm.active = null;
+    expect(endpointFor(llm, "drafter").name).toBe("litellm");
+    expect(endpointFor(llm, "critic").name).toBe("claude");
+  });
+
+  test("an unknown endpoint name throws ModelNotConfigured naming it", () => {
+    const llm = two();
+    llm.role_endpoints = { critic: "nope" };
+    expect(() => endpointFor(llm, "critic")).toThrow(ModelNotConfigured);
+    expect(() => endpointFor(llm, "critic")).toThrow(/nope/);
+
+    const other = two();
+    other.active = "gone";
+    expect(() => endpointFor(other, "judge")).toThrow(/gone/);
+
+    expect(() => endpointFor(LlmConfig.parse({}), "critic")).toThrow(ModelNotConfigured);
+  });
+
+  test("resolveRole picks the endpoint's own model over the top level one", () => {
+    const llm = two();
+    llm.models = { critic: "global-model", drafter: "global-model", judge: "global-model" };
+    llm.role_endpoints = { critic: "claude" };
+
+    const critic = resolveRole(llm, "critic");
+    expect(critic.endpoint.name).toBe("claude");
+    expect(critic.model).toBe("sonnet");
+
+    const drafter = resolveRole(llm, "drafter");
+    expect(drafter.endpoint.name).toBe("litellm");
+    expect(drafter.model).toBe("zai/glm-5.3-flash");
+
+    // no endpoint model for judge: the top level map is the fallback
+    expect(resolveRole(llm, "judge").model).toBe("global-model");
+  });
+
+  test("a missing model names the role and the endpoint", () => {
+    const llm = two();
+    llm.role_endpoints = { critic: "claude" };
+    try {
+      resolveRole(llm, "judge");
+      throw new Error("expected resolveRole to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ModelNotConfigured);
+      const msg = (e as Error).message;
+      expect(msg).toContain("judge");
+      expect(msg).toContain("litellm");
+      expect(msg).toContain("llm.yaml");
+    }
+  });
+
+  test("locality is still enforced on the resolved model", () => {
+    const llm = two();
+    llm.role_endpoints = { critic: "claude" };
+    const local = World.parse({ name: "l", llm: "local" });
+    expect(() => resolveRole(llm, "critic", local)).toThrow(LocalityViolation);
+
+    llm.local_models = ["sonnet"];
+    expect(resolveRole(llm, "critic", local).model).toBe("sonnet");
+  });
+
+  test("a legacy llm.yaml with only active and top level models still resolves", () => {
+    saveLlm(
+      LlmConfig.parse({
+        endpoints: [{ name: "litellm", kind: "openai", base_url: "http://127.0.0.1:4000" }],
+        active: "litellm",
+        models: { critic: "m-critic", drafter: "m-drafter", judge: "m-judge" },
+      }),
+    );
+    const back = loadLlm();
+    expect(back.role_endpoints).toEqual({});
+    expect(resolveRole(back, "critic").endpoint.name).toBe("litellm");
+    expect(resolveRole(back, "critic").model).toBe("m-critic");
+    expect(modelFor(back, "judge")).toBe("m-judge");
+  });
+});

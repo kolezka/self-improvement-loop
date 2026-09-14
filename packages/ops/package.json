@@ -1,0 +1,20 @@
+{
+  "name": "@sil/ops",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@sil/core": "workspace:*",
+    "@sil/store": "workspace:*",
+    "@sil/worker": "workspace:*",
+    "@sil/feedback": "workspace:*",
+    "@sil/providers": "workspace:*",
+    "@sil/review": "workspace:*",
+    "@sil/curriculum": "workspace:*",
+    "@sil/critic": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

@@ -8,6 +8,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import YAML from "yaml";
+import { z } from "zod";
 import { type Config, type World, Layout, World as WorldSchema, fsx, ledgerPath, paths } from "@sil/core";
 import { parseLedger, reflectionPattern, saveLedger } from "@sil/store";
 
@@ -92,6 +93,8 @@ interface V1World {
   projects?: V1Project[];
 }
 
+const KbManifest = z.object({ worlds: z.array(WorldSchema) });
+
 /** Read a V1 `kb list` manifest and return one sil World per V1 world. Each
  * V1 project's `repo` becomes a `repos` prefix. No `target` is set: an
  * imported world writes artifacts into the built-in `learned/` repo until an
@@ -99,20 +102,16 @@ interface V1World {
 export function importKbWorlds(path: string): World[] {
   const text = fsx.readText(paths.expandHome(path));
   const raw = (YAML.parse(text) ?? {}) as { worlds?: V1World[] };
-  const worlds: World[] = [];
-  for (const w of raw.worlds ?? []) {
-    const repos = (w.projects ?? []).filter((p) => p.repo).map((p) => paths.expandHome(p.repo!));
-    worlds.push(
-      WorldSchema.parse({
-        name: w.name,
-        llm: w.llm ?? "cloud",
-        repos,
-        target: null,
-        layout: Layout.parse({}),
-      }),
-    );
-  }
-  return worlds;
+  const mapped = (raw.worlds ?? []).map((w) => ({
+    name: w.name,
+    llm: w.llm ?? "cloud",
+    repos: (w.projects ?? []).filter((p) => p.repo).map((p) => paths.expandHome(p.repo!)),
+    target: null,
+    layout: Layout.parse({}),
+  }));
+  // Parsed as one list rather than world by world so a rejected entry reports
+  // its position: worlds[2].name, not name.
+  return KbManifest.parse({ worlds: mapped }).worlds;
 }
 
 /** Add imported worlds not already present by name. Returns the added count. */

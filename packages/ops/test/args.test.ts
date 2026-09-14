@@ -50,6 +50,12 @@ describe("WorldArgs", () => {
   test("accepts a normal world name", () => {
     expect(() => Args.WorldArgs.parse({ world: "default" })).not.toThrow();
   });
+  test("accepts a unicode world name, so the web UI can reach it", () => {
+    expect(() => Args.WorldArgs.parse({ world: "Koleżka" })).not.toThrow();
+  });
+  test("rejects a path separator", () => {
+    expect(() => Args.WorldArgs.parse({ world: "a/b" })).toThrow();
+  });
 });
 
 describe("RetireArgs", () => {

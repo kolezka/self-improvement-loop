@@ -1,7 +1,7 @@
 // Domain schemas. zod is the single source of truth; types are inferred.
 
 import { z } from "zod";
-import { ROLES, SLUG_RE } from "./consts.ts";
+import { ROLES, SLUG_RE, WORLD_NAME_RE } from "./consts.ts";
 
 export const slug = z.string().regex(SLUG_RE).max(64);
 export const isoTs = z.string();
@@ -37,7 +37,7 @@ export const OutlineExport = z.object({
 export type OutlineExport = z.infer<typeof OutlineExport>;
 
 export const World = z.object({
-  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+  name: z.string().regex(WORLD_NAME_RE),
   llm: z.enum(["local", "cloud"]).default("cloud"),
   repos: z.array(z.string()).default([]),
   target: z.string().nullable().default(null),

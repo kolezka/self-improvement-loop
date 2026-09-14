@@ -15051,7 +15051,8 @@ var Endpoint = object({
   kind: _enum(["openai", "claude-cli"]).default("openai"),
   base_url: string2().nullable().default(null),
   api_key_env: string2().nullable().default(null),
-  timeout_s: number2().int().min(1).default(240)
+  timeout_s: number2().int().min(1).default(240),
+  extra_body: record(string2(), unknown()).default({})
 });
 var LlmConfig = object({
   endpoints: array(Endpoint).default([]),
@@ -17902,6 +17903,7 @@ async function chatOpenai(endpoint, model, messages, opts) {
   const body = { model, messages, temperature: 0, max_tokens: opts.maxTokens };
   if (opts.jsonMode)
     body["response_format"] = { type: "json_object" };
+  Object.assign(body, endpoint.extra_body ?? {});
   const headers = { "Content-Type": "application/json" };
   const key = apiKey(endpoint);
   if (key)
@@ -17935,7 +17937,21 @@ async function chatOpenai(endpoint, model, messages, opts) {
   const content = extractChoiceContent(data);
   if (content === null)
     throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} reply has no choices[0].message.content`);
+  if (content.trim() === "") {
+    const meta = choiceMeta(data);
+    throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} model ${JSON.stringify(model)} returned empty content ` + `(finish_reason ${JSON.stringify(meta.finishReason)}, ${meta.reasoningTokens} reasoning tokens, ` + `${meta.completionTokens} completion tokens). Set extra_body on the endpoint in llm.yaml, ` + `for example { reasoning_effort: "low" } or { thinking: { type: "disabled" } }, or raise max_tokens there.`);
+  }
   return content;
+}
+function choiceMeta(data) {
+  const d = data ?? {};
+  const fr = d.choices?.[0]?.finish_reason;
+  const num = (v) => typeof v === "number" ? v : 0;
+  return {
+    finishReason: typeof fr === "string" ? fr : null,
+    reasoningTokens: num(d.usage?.completion_tokens_details?.reasoning_tokens),
+    completionTokens: num(d.usage?.completion_tokens)
+  };
 }
 function extractChoiceContent(data) {
   if (!data || typeof data !== "object")

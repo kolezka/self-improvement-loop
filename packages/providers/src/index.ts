@@ -100,6 +100,8 @@ async function chatOpenai(
 
   const body: Record<string, unknown> = { model, messages, temperature: 0, max_tokens: opts.maxTokens };
   if (opts.jsonMode) body["response_format"] = { type: "json_object" };
+  // Operator knobs win over the defaults above (reasoning_effort, thinking, max_tokens).
+  Object.assign(body, endpoint.extra_body ?? {});
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const key = apiKey(endpoint);
@@ -136,7 +138,30 @@ async function chatOpenai(
 
   const content = extractChoiceContent(data);
   if (content === null) throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} reply has no choices[0].message.content`);
+  if (content.trim() === "") {
+    // A reasoning model that spent the whole budget thinking returns an empty
+    // content with finish_reason "length". Name that instead of letting the
+    // caller report "no JSON object found".
+    const meta = choiceMeta(data);
+    throw new ProviderError(
+      `provider ${JSON.stringify(endpoint.name)} model ${JSON.stringify(model)} returned empty content ` +
+        `(finish_reason ${JSON.stringify(meta.finishReason)}, ${meta.reasoningTokens} reasoning tokens, ` +
+        `${meta.completionTokens} completion tokens). Set extra_body on the endpoint in llm.yaml, ` +
+        `for example { reasoning_effort: "low" } or { thinking: { type: "disabled" } }, or raise max_tokens there.`,
+    );
+  }
   return content;
+}
+
+function choiceMeta(data: unknown): { finishReason: string | null; reasoningTokens: number; completionTokens: number } {
+  const d = (data ?? {}) as { choices?: Array<{ finish_reason?: unknown }>; usage?: { completion_tokens?: unknown; completion_tokens_details?: { reasoning_tokens?: unknown } } };
+  const fr = d.choices?.[0]?.finish_reason;
+  const num = (v: unknown) => (typeof v === "number" ? v : 0);
+  return {
+    finishReason: typeof fr === "string" ? fr : null,
+    reasoningTokens: num(d.usage?.completion_tokens_details?.reasoning_tokens),
+    completionTokens: num(d.usage?.completion_tokens),
+  };
 }
 
 function extractChoiceContent(data: unknown): string | null {

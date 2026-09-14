@@ -18,7 +18,7 @@ function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
 }
 
 function endpoint(overrides: Partial<Endpoint> = {}): Endpoint {
-  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, ...overrides };
+  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, extra_body: {}, ...overrides };
 }
 
 function fakeResponse(body: unknown, init: { status?: number } = {}): Response {
@@ -205,3 +205,45 @@ describe("chat claude-cli kind", () => {
     await expect(chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm })).rejects.toBeInstanceOf(ProviderTimeout);
   });
 });
+
+// --- openai kind: reasoning models ------------------------------------------
+
+describe("chat openai extra_body and empty replies", () => {
+  test("extra_body is merged into the request last", async () => {
+    const calls: { init: RequestInit }[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      calls.push({ init });
+      return fakeResponse({ choices: [{ message: { content: "ok" } }] });
+    }) as typeof fetch;
+    const ep = endpoint({ base_url: "http://localhost:4000", extra_body: { reasoning_effort: "low", max_tokens: 9000 } });
+    const llm = llmConfig({ endpoints: [ep], active: "e1", models: { critic: "m" } });
+    await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm, jsonMode: true });
+    const body = JSON.parse(String(calls[0]!.init.body));
+    expect(body.reasoning_effort).toBe("low");
+    expect(body.max_tokens).toBe(9000);
+    expect(body.response_format).toEqual({ type: "json_object" });
+  });
+
+  test("an empty content from a reasoning model is a ProviderError that names the remedy", async () => {
+    globalThis.fetch = (async (_input: unknown, _init?: unknown) =>
+      fakeResponse({
+        choices: [{ finish_reason: "length", message: { content: "", reasoning_content: "thinking..." } }],
+        usage: { completion_tokens: 4000, completion_tokens_details: { reasoning_tokens: 3994 } },
+      })) as unknown as typeof fetch;
+    const ep = endpoint({ base_url: "http://localhost:4000" });
+    const llm = llmConfig({ endpoints: [ep], active: "e1", models: { critic: "glm" } });
+    let err: unknown;
+    try {
+      await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm, jsonMode: true });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ProviderError);
+    const msg = String((err as Error).message);
+    expect(msg).toContain("empty content");
+    expect(msg).toContain("length");
+    expect(msg).toContain("3994 reasoning tokens");
+    expect(msg).toContain("extra_body");
+  });
+});
+

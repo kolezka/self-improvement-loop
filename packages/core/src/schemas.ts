@@ -83,6 +83,9 @@ export const Endpoint = z.object({
   base_url: z.string().nullable().default(null),
   api_key_env: z.string().nullable().default(null),
   timeout_s: z.number().int().min(1).default(240),
+  // Merged into every chat request body last, so it can override max_tokens or
+  // add provider knobs such as reasoning_effort or thinking.
+  extra_body: z.record(z.string(), z.unknown()).default({}),
 });
 export type Endpoint = z.infer<typeof Endpoint>;
 

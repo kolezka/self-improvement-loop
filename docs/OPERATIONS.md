@@ -74,3 +74,26 @@ endpoint needs its `base_url` reachable and `api_key_env` set.
 **Curriculum keeps gating a pattern out.** `sil curriculum plan --world <w>`
 prints the reason per pattern with no model calls. `sil curriculum run --world <w>`
 (no `--apply`) does the same after a real draft, without staging anything.
+
+### The critic or drafter fails with "returned empty content"
+
+The model is a reasoning model and spent the whole `max_tokens` budget on its
+hidden reasoning (the error names the `finish_reason` and the reasoning token
+count). Give the endpoint in `llm.yaml` an `extra_body` that the proxy forwards
+to the provider, for example:
+
+```yaml
+endpoints:
+  - name: litellm
+    kind: openai
+    base_url: https://litellm.example
+    api_key_env: LITELLM_API_KEY
+    extra_body:
+      reasoning_effort: low      # or: thinking: { type: disabled }
+```
+
+`extra_body` is merged into every chat request last, so it can also raise
+`max_tokens`. Measured on `zai/glm-5.3-flash` through LiteLLM: without it a
+critic call burned 3994 reasoning tokens and returned nothing after 110 s; with
+`reasoning_effort: low` the same call answers in a few seconds.
+

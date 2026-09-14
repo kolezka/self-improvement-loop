@@ -143,6 +143,7 @@ endpoints:
     kind: openai                   # openai | claude-cli
     base_url: http://127.0.0.1:4000
     api_key_env: LITELLM_API_KEY
+    extra_body: {}                 # merged into each request, e.g. reasoning_effort: low
   - name: claude
     kind: claude-cli               # `claude -p --model <m>`; no proxy needed
 active: litellm

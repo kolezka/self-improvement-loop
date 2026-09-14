@@ -97,8 +97,8 @@ describe("llm", () => {
 
   test("apiKey refuses a placeholder", () => {
     delete process.env["SIL_TEST_KEY_X"];
-    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1 })).toThrow(ModelNotConfigured);
-    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1 })).toBeNull();
+    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1, extra_body: {} })).toThrow(ModelNotConfigured);
+    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1, extra_body: {} })).toBeNull();
   });
 });
 

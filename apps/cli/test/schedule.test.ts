@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   install,
   launchdDir,
+  LEGACY_LAUNCHD_PLISTS,
   renderLaunchd,
   renderSystemd,
   shimPath,
@@ -104,5 +105,32 @@ describe("install", () => {
     expect(written.length).toBe(1);
     expect(written[0]!.startsWith(launchdDir())).toBe(true);
     expect(calls.some((c) => c[0] === "launchctl" && c[1] === "load")).toBe(true);
+  });
+
+  test("launchd plists carry the com.raqz label, never the old com.kolezka one", () => {
+    const units = renderLaunchd(60, true);
+    expect(Object.keys(units)).toEqual(["com.raqz.sil-worker.plist", "com.raqz.sil-web.plist"]);
+    for (const content of Object.values(units)) {
+      expect(content).toContain("<string>com.raqz.sil-");
+      expect(content).not.toContain("kolezka");
+    }
+  });
+
+  test("launchd uninstall also unloads and removes legacy com.kolezka plists", () => {
+    const d = launchdDir();
+    mkdirSync(d, { recursive: true });
+    const legacy = LEGACY_LAUNCHD_PLISTS.map((n) => join(d, n));
+    for (const p of legacy) writeFileSync(p, "<plist/>", "utf8");
+    expect(show().launchd).toEqual([...LEGACY_LAUNCHD_PLISTS].sort());
+    const calls: string[][] = [];
+    const removed = uninstall("launchd", (cmd) => {
+      calls.push(cmd);
+    });
+    expect(removed.sort()).toEqual([...legacy].sort());
+    for (const p of legacy) {
+      expect(existsSync(p)).toBe(false);
+      expect(calls).toContainEqual(["launchctl", "unload", p]);
+    }
+    expect(show().launchd).toEqual([]);
   });
 });

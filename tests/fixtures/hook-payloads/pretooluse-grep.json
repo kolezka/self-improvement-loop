@@ -1,0 +1,1 @@
+{"session_id": "fixture-9", "hook_event_name": "PreToolUse", "tool_name": "Grep", "tool_input": {"pattern": "TODO", "path": "/repo/kb"}}

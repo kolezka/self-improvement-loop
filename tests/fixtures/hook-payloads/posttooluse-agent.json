@@ -1,0 +1,1 @@
+{"session_id": "fixture-18", "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_input": {"subagent_type": "critic", "description": "Reflect", "prompt": "Reflect"}, "tool_response": {"success": true}}

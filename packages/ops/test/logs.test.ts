@@ -71,6 +71,23 @@ describe("tailLines", () => {
     // instead of reading the file from the start.
     expect(bytesRead).toBeLessThan(200_000);
   });
+
+  test("skips its own statSync when the caller already knows the size", () => {
+    const path = join(tmp, "known-size.log");
+    writeFileSync(path, ["x", "y"].join("\n") + "\n");
+    let statCalls = 0;
+    const countingStatIo: TailIo = {
+      ...REAL_TAIL_IO,
+      statSync: (p) => {
+        statCalls++;
+        return statSync(p);
+      },
+    };
+    const size = statSync(path).size;
+    const result = tailLines(path, 10, countingStatIo, size);
+    expect(result).toEqual(["x", "y"]);
+    expect(statCalls).toBe(0);
+  });
 });
 
 describe("logs.tail op", () => {

@@ -8,13 +8,31 @@ describe("formatTime", () => {
     expect(formatTime(null)).toBe("never");
   });
 
-  test("returns the same placeholder for an unparseable timestamp", () => {
-    expect(formatTime("not a date")).toBe("never");
+  test("returns invalid date for an unparseable timestamp, not the null placeholder", () => {
+    expect(formatTime("not a date")).toBe("invalid date");
   });
 
+  // The short-date half of the output is locale-formatted (Intl.DateTimeFormat),
+  // so these assertions check only the relative suffix with toContain rather
+  // than pinning the whole string, which would break under a different locale.
   test("marks a timestamp from seconds ago as just now", () => {
     const iso = new Date(Date.now() - 2000).toISOString();
     expect(formatTime(iso)).toContain("just now");
+  });
+
+  test("keeps just now up to and including 59.7 s ago", () => {
+    const iso = new Date(Date.now() - 59_700).toISOString();
+    expect(formatTime(iso)).toContain("just now");
+  });
+
+  test("keeps just now at 59 s ago", () => {
+    const iso = new Date(Date.now() - 59_000).toISOString();
+    expect(formatTime(iso)).toContain("just now");
+  });
+
+  test("switches to minutes ago right at 60 s", () => {
+    const iso = new Date(Date.now() - 60_000).toISOString();
+    expect(formatTime(iso)).toContain("1 min ago");
   });
 
   test("adds a minutes-ago suffix for anything under an hour", () => {
@@ -25,6 +43,11 @@ describe("formatTime", () => {
   test("adds an hours-ago suffix for anything under a day", () => {
     const iso = new Date(Date.now() - 5 * 60 * 60_000).toISOString();
     expect(formatTime(iso)).toContain("5 h ago");
+  });
+
+  test("floors 23.8 h ago to 23 h ago instead of rounding up to 24", () => {
+    const iso = new Date(Date.now() - 23.8 * 60 * 60_000).toISOString();
+    expect(formatTime(iso)).toContain("23 h ago");
   });
 
   test("drops the relative suffix once a day has passed", () => {
@@ -46,6 +69,14 @@ describe("formatDuration", () => {
 
   test("rounds to whole seconds between 10 and 60", () => {
     expect(formatDuration(45)).toBe("45 s");
+  });
+
+  test("rolls 59.7 s over to 1 min 0 s instead of rounding to 60 s", () => {
+    expect(formatDuration(59.7)).toBe("1 min 0 s");
+  });
+
+  test("keeps 59 s under the minute boundary", () => {
+    expect(formatDuration(59)).toBe("59 s");
   });
 
   test("switches to minutes and seconds at 60 and above", () => {

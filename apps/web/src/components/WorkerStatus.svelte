@@ -1,39 +1,8 @@
 <script lang="ts">
   import { formatDuration, formatTime } from "../lib/format.ts";
+  import { normalizeCurriculum, type RunReport, type WorkerStatusData } from "../lib/worker-types.ts";
 
-  interface RunReport {
-    world: string;
-    dry_run: boolean;
-    staged: string[];
-    merged: string[];
-    gated_out: Record<string, string>;
-    dropped: Record<string, number>;
-    started: string;
-    finished: string | null;
-    error: string | null;
-  }
-
-  interface RunSummary {
-    reflected: string[];
-    failed: string[];
-    skipped: string[];
-    curriculum: Record<string, RunReport>;
-    duration_s: number;
-    locked?: boolean;
-  }
-
-  interface WorkerStatus {
-    lock_held: boolean;
-    lock_pid: number | null;
-    pending: number;
-    done: number;
-    failed: number;
-    last_run: string | null;
-    last_summary: RunSummary | null;
-    last_curriculum: Record<string, string>;
-  }
-
-  let { status, compact = false }: { status: WorkerStatus | null; compact?: boolean } = $props();
+  let { status, compact = false }: { status: WorkerStatusData | null; compact?: boolean } = $props();
 
   function runDuration(report: RunReport): string {
     if (!report.finished) return "not finished";
@@ -72,7 +41,6 @@
       {#if status.last_summary}
         <div class="ws-head">
           <span class="chip">duration {formatDuration(status.last_summary.duration_s)}</span>
-          {#if status.last_summary.locked}<span class="chip warn-text">locked</span>{/if}
         </div>
         <div class="ws-lists">
           <div>
@@ -118,39 +86,44 @@
           <table>
             <thead>
               <tr>
-                <th>world</th>
-                <th>staged</th>
-                <th>merged</th>
-                <th>gated out</th>
-                <th>dropped</th>
-                <th>started</th>
-                <th>duration</th>
-                <th>error</th>
+                <th scope="col">world</th>
+                <th scope="col">staged</th>
+                <th scope="col">merged</th>
+                <th scope="col">gated out</th>
+                <th scope="col">dropped</th>
+                <th scope="col">started</th>
+                <th scope="col">duration</th>
+                <th scope="col">error</th>
               </tr>
             </thead>
             <tbody>
-              {#each Object.values(status.last_summary.curriculum) as report (report.world)}
+              {#each normalizeCurriculum(status.last_summary.curriculum) as entry (entry.world)}
                 <tr>
                   <td>
-                    {report.world}
-                    {#if report.dry_run}<span class="chip">dry run</span>{/if}
+                    {entry.world}
+                    {#if entry.report?.dry_run}<span class="chip">dry run</span>{/if}
                   </td>
-                  <td title={report.staged.join(", ") || "none"}>{report.staged.length}</td>
-                  <td>{report.merged.length}</td>
-                  <td>
-                    {Object.keys(report.gated_out).length}
-                    {#if Object.keys(report.gated_out).length > 0}
-                      <ul class="list muted">
-                        {#each Object.entries(report.gated_out) as [pattern, reason] (pattern)}
-                          <li>{pattern}: {reason}</li>
-                        {/each}
-                      </ul>
-                    {/if}
-                  </td>
-                  <td title={droppedTitle(report)}>{droppedTotal(report)}</td>
-                  <td>{formatTime(report.started)}</td>
-                  <td>{runDuration(report)}</td>
-                  <td class={report.error ? "error-text" : ""}>{report.error ?? ""}</td>
+                  {#if entry.report}
+                    {@const report = entry.report}
+                    <td title={report.staged.join(", ") || "none"}>{report.staged.length}</td>
+                    <td>{report.merged.length}</td>
+                    <td>
+                      {Object.keys(report.gated_out).length}
+                      {#if Object.keys(report.gated_out).length > 0}
+                        <ul class="list muted">
+                          {#each Object.entries(report.gated_out) as [pattern, reason] (pattern)}
+                            <li>{pattern}: {reason}</li>
+                          {/each}
+                        </ul>
+                      {/if}
+                    </td>
+                    <td title={droppedTitle(report)}>{droppedTotal(report)}</td>
+                    <td>{formatTime(report.started)}</td>
+                    <td>{runDuration(report)}</td>
+                    <td class={report.error ? "error-text" : ""}>{report.error ?? ""}</td>
+                  {:else}
+                    <td colspan="7" class="error-text">{entry.error ?? "unknown error"}</td>
+                  {/if}
                 </tr>
               {/each}
             </tbody>
@@ -167,8 +140,8 @@
         <table>
           <thead>
             <tr>
-              <th>world</th>
-              <th>last pass</th>
+              <th scope="col">world</th>
+              <th scope="col">last pass</th>
             </tr>
           </thead>
           <tbody>

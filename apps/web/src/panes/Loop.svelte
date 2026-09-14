@@ -3,38 +3,7 @@
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import WorkerStatus from "../components/WorkerStatus.svelte";
-
-  interface RunReport {
-    world: string;
-    dry_run: boolean;
-    staged: string[];
-    merged: string[];
-    gated_out: Record<string, string>;
-    dropped: Record<string, number>;
-    started: string;
-    finished: string | null;
-    error: string | null;
-  }
-
-  interface RunSummary {
-    reflected: string[];
-    failed: string[];
-    skipped: string[];
-    curriculum: Record<string, RunReport>;
-    duration_s: number;
-    locked?: boolean;
-  }
-
-  interface WorkerStatusData {
-    lock_held: boolean;
-    lock_pid: number | null;
-    pending: number;
-    done: number;
-    failed: number;
-    last_run: string | null;
-    last_summary: RunSummary | null;
-    last_curriculum: Record<string, string>;
-  }
+  import type { WorkerStatusData } from "../lib/worker-types.ts";
 
   interface PlanAction {
     pattern: string;

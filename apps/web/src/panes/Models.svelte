@@ -39,6 +39,7 @@
     endpoint: string | null;
     models: Record<string, string | null>;
     endpoints: EndpointStatus[];
+    error: string | null;
   }
 
   interface WorldStatus {
@@ -298,18 +299,19 @@
             <span class="muted">no active endpoint</span>
           {/if}
         </div>
+        {#if s.status.error}<p class="error-text">{s.status.error}</p>{/if}
         {#if active?.error}<p class="error-text">{active.error}</p>{/if}
         <table>
           <thead>
             <tr>
-              <th>endpoint</th>
-              <th>kind</th>
-              <th>address</th>
-              <th>roles</th>
-              <th>critic</th>
-              <th>drafter</th>
-              <th>judge</th>
-              <th>reachable</th>
+              <th scope="col">endpoint</th>
+              <th scope="col">kind</th>
+              <th scope="col">address</th>
+              <th scope="col">roles</th>
+              <th scope="col">critic</th>
+              <th scope="col">drafter</th>
+              <th scope="col">judge</th>
+              <th scope="col">reachable</th>
             </tr>
           </thead>
           <tbody>

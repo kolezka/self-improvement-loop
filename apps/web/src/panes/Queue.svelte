@@ -3,6 +3,39 @@
   import { call } from "../lib/api.ts";
   import { toast } from "../lib/state.svelte.ts";
   import QueueBucket from "../components/QueueBucket.svelte";
+  import WorkerStatus from "../components/WorkerStatus.svelte";
+
+  interface RunReport {
+    world: string;
+    dry_run: boolean;
+    staged: string[];
+    merged: string[];
+    gated_out: Record<string, string>;
+    dropped: Record<string, number>;
+    started: string;
+    finished: string | null;
+    error: string | null;
+  }
+
+  interface RunSummary {
+    reflected: string[];
+    failed: string[];
+    skipped: string[];
+    curriculum: Record<string, RunReport>;
+    duration_s: number;
+    locked?: boolean;
+  }
+
+  interface WorkerStatusData {
+    lock_held: boolean;
+    lock_pid: number | null;
+    pending: number;
+    done: number;
+    failed: number;
+    last_run: string | null;
+    last_summary: RunSummary | null;
+    last_curriculum: Record<string, string>;
+  }
 
   interface QueueEntry {
     session_id: string;
@@ -20,7 +53,7 @@
     failed: QueueEntry[];
   }
 
-  let workerLine = $state("worker: loading...");
+  let workerStatus = $state<WorkerStatusData | null>(null);
   let pending = $state<QueueEntry[]>([]);
   let done = $state<QueueEntry[]>([]);
   let failed = $state<QueueEntry[]>([]);
@@ -28,10 +61,9 @@
 
   async function refreshWorker() {
     try {
-      const s = await call("worker.status", {});
-      workerLine = `worker: ${JSON.stringify(s)}`;
+      workerStatus = (await call("worker.status", {})) as WorkerStatusData;
     } catch {
-      workerLine = "worker: unknown";
+      workerStatus = null;
     }
   }
 
@@ -76,7 +108,7 @@
 
 <h2>Queue</h2>
 <div class="actions"><button onclick={refreshAll}>Refresh</button></div>
-<div class="card">{workerLine}</div>
+<div class="card"><WorkerStatus status={workerStatus} compact={true} /></div>
 
 <QueueBucket name="pending" entries={pending} skippable={true} onSkip={skip} />
 <QueueBucket name="done" entries={done} />

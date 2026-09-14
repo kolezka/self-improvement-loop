@@ -13,27 +13,42 @@ import { paths } from "@sil/core";
 
 export const SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"] as const;
 export const SYSTEMD_WEB_UNIT = "sil-web.service";
-export const LAUNCHD_WORKER_PLIST = "com.kolezka.sil-worker.plist";
-export const LAUNCHD_WEB_PLIST = "com.kolezka.sil-web.plist";
+export const LAUNCHD_WORKER_PLIST = "com.raqz.sil-worker.plist";
+export const LAUNCHD_WEB_PLIST = "com.raqz.sil-web.plist";
+/** Labels written by earlier releases; uninstall still removes them. */
+export const LEGACY_LAUNCHD_PLISTS = ["com.kolezka.sil-worker.plist", "com.kolezka.sil-web.plist"] as const;
+const LAUNCHD_PREFIXES = ["com.raqz.sil-", "com.kolezka.sil-"] as const;
 
 /** Runs a command and never throws; tests inject a fake so no real
  * systemctl/launchctl is ever invoked. */
 export type Runner = (cmd: string[]) => void;
 
 export const realRunner: Runner = (cmd) => {
-  Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  // Bun.spawnSync throws when the binary is missing, which is the normal case
+  // for systemctl on macOS and launchctl on Linux. Uninstall runs both kinds.
+  try {
+    Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  } catch {
+    // Missing tool means nothing of that kind is installed. Nothing to do.
+  }
 };
 
+// Bun's homedir() does not follow a HOME change made after startup, so a test
+// that points HOME at a temp dir would still write into the real LaunchAgents.
+function home(): string {
+  return process.env["HOME"] || homedir();
+}
+
 export function shimPath(): string {
-  return join(homedir(), ".local", "bin", "sil");
+  return join(home(), ".local", "bin", "sil");
 }
 
 export function systemdDir(): string {
-  return join(homedir(), ".config", "systemd", "user");
+  return join(home(), ".config", "systemd", "user");
 }
 
 export function launchdDir(): string {
-  return join(homedir(), "Library", "LaunchAgents");
+  return join(home(), "Library", "LaunchAgents");
 }
 
 export function renderSystemd(intervalMin: number, web: boolean): Record<string, string> {
@@ -87,7 +102,7 @@ export function renderLaunchd(intervalMin: number, web: boolean): Record<string,
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       '<plist version="1.0"><dict>',
-      "  <key>Label</key><string>com.kolezka.sil-worker</string>",
+      "  <key>Label</key><string>com.raqz.sil-worker</string>",
       "  <key>ProgramArguments</key><array>",
       `    <string>${shim}</string>`,
       "    <string>worker</string>",
@@ -104,7 +119,7 @@ export function renderLaunchd(intervalMin: number, web: boolean): Record<string,
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       '<plist version="1.0"><dict>',
-      "  <key>Label</key><string>com.kolezka.sil-web</string>",
+      "  <key>Label</key><string>com.raqz.sil-web</string>",
       "  <key>ProgramArguments</key><array>",
       `    <string>${shim}</string>`,
       "    <string>web</string>",
@@ -181,7 +196,7 @@ export function uninstall(kind: "systemd" | "launchd", run: Runner = realRunner)
   if (kind === "launchd") {
     const d = launchdDir();
     const removed: string[] = [];
-    for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST]) {
+    for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST, ...LEGACY_LAUNCHD_PLISTS]) {
       const p = join(d, name);
       if (existsSync(p)) {
         run(["launchctl", "unload", p]);
@@ -199,6 +214,6 @@ export function show(): { systemd: string[]; launchd: string[] } {
   const d = systemdDir();
   const systemd = existsSync(d) ? readdirSync(d).filter((n) => n.startsWith("sil-")).sort() : [];
   const ld = launchdDir();
-  const launchd = existsSync(ld) ? readdirSync(ld).filter((n) => n.startsWith("com.kolezka.sil-") && n.endsWith(".plist")).sort() : [];
+  const launchd = existsSync(ld) ? readdirSync(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
   return { systemd, launchd };
 }

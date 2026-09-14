@@ -22,7 +22,7 @@
     },
     "apps/cli": {
       "name": "@sil/cli",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",
@@ -40,7 +40,7 @@
     },
     "apps/hook": {
       "name": "@sil/hook",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/nudges": "workspace:*",
@@ -48,7 +48,7 @@
     },
     "apps/server": {
       "name": "@sil/server",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/ops": "workspace:*",
@@ -57,7 +57,7 @@
     },
     "apps/web": {
       "name": "@sil/web",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.3.0",
         "svelte": "^5.57.0",
@@ -68,7 +68,7 @@
     },
     "packages/core": {
       "name": "@sil/core",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "yaml": "^2.9.1",
         "zod": "^4.6.5",
@@ -76,7 +76,7 @@
     },
     "packages/critic": {
       "name": "@sil/critic",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/providers": "workspace:*",
@@ -86,7 +86,7 @@
     },
     "packages/curriculum": {
       "name": "@sil/curriculum",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/feedback": "workspace:*",
@@ -98,7 +98,7 @@
     },
     "packages/feedback": {
       "name": "@sil/feedback",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",
@@ -107,14 +107,14 @@
     },
     "packages/nudges": {
       "name": "@sil/nudges",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
     },
     "packages/ops": {
       "name": "@sil/ops",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",
@@ -129,14 +129,14 @@
     },
     "packages/providers": {
       "name": "@sil/providers",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
     },
     "packages/review": {
       "name": "@sil/review",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/curriculum": "workspace:*",
@@ -148,7 +148,7 @@
     },
     "packages/store": {
       "name": "@sil/store",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "yaml": "^2.9.1",
@@ -156,14 +156,14 @@
     },
     "packages/transcript": {
       "name": "@sil/transcript",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
     },
     "packages/worker": {
       "name": "@sil/worker",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",

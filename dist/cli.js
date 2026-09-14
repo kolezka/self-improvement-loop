@@ -20857,19 +20857,26 @@ import { homedir as homedir2 } from "os";
 import { dirname as dirname7, join as join20 } from "path";
 var SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"];
 var SYSTEMD_WEB_UNIT = "sil-web.service";
-var LAUNCHD_WORKER_PLIST = "com.kolezka.sil-worker.plist";
-var LAUNCHD_WEB_PLIST = "com.kolezka.sil-web.plist";
+var LAUNCHD_WORKER_PLIST = "com.raqz.sil-worker.plist";
+var LAUNCHD_WEB_PLIST = "com.raqz.sil-web.plist";
+var LEGACY_LAUNCHD_PLISTS = ["com.kolezka.sil-worker.plist", "com.kolezka.sil-web.plist"];
+var LAUNCHD_PREFIXES = ["com.raqz.sil-", "com.kolezka.sil-"];
 var realRunner = (cmd) => {
-  Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  try {
+    Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  } catch {}
 };
+function home() {
+  return process.env["HOME"] || homedir2();
+}
 function shimPath() {
-  return join20(homedir2(), ".local", "bin", "sil");
+  return join20(home(), ".local", "bin", "sil");
 }
 function systemdDir() {
-  return join20(homedir2(), ".config", "systemd", "user");
+  return join20(home(), ".config", "systemd", "user");
 }
 function launchdDir() {
-  return join20(homedir2(), "Library", "LaunchAgents");
+  return join20(home(), "Library", "LaunchAgents");
 }
 function renderSystemd(intervalMin, web) {
   const shim = shimPath();
@@ -20924,7 +20931,7 @@ function renderLaunchd(intervalMin, web) {
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       '<plist version="1.0"><dict>',
-      "  <key>Label</key><string>com.kolezka.sil-worker</string>",
+      "  <key>Label</key><string>com.raqz.sil-worker</string>",
       "  <key>ProgramArguments</key><array>",
       `    <string>${shim}</string>`,
       "    <string>worker</string>",
@@ -20942,7 +20949,7 @@ function renderLaunchd(intervalMin, web) {
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       '<plist version="1.0"><dict>',
-      "  <key>Label</key><string>com.kolezka.sil-web</string>",
+      "  <key>Label</key><string>com.raqz.sil-web</string>",
       "  <key>ProgramArguments</key><array>",
       `    <string>${shim}</string>`,
       "    <string>web</string>",
@@ -21014,7 +21021,7 @@ function uninstall(kind, run = realRunner) {
   if (kind === "launchd") {
     const d = launchdDir();
     const removed = [];
-    for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST]) {
+    for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST, ...LEGACY_LAUNCHD_PLISTS]) {
       const p = join20(d, name);
       if (existsSync12(p)) {
         run(["launchctl", "unload", p]);
@@ -21030,7 +21037,7 @@ function show2() {
   const d = systemdDir();
   const systemd = existsSync12(d) ? readdirSync11(d).filter((n) => n.startsWith("sil-")).sort() : [];
   const ld = launchdDir();
-  const launchd = existsSync12(ld) ? readdirSync11(ld).filter((n) => n.startsWith("com.kolezka.sil-") && n.endsWith(".plist")).sort() : [];
+  const launchd = existsSync12(ld) ? readdirSync11(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
   return { systemd, launchd };
 }
 
@@ -21295,7 +21302,7 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
-var SIL_VERSION = "0.2.0";
+var SIL_VERSION = "0.2.1";
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};

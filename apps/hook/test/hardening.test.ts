@@ -171,8 +171,16 @@ describe("an unlintable nudge planted in nudges_dir", () => {
   });
 });
 
+/** Wait for a file a detached child writes after the parent has already gone.
+ * Polling is the only option: the kick is deliberately fire and forget, so the
+ * hook exits without waiting for it and there is nothing to await. */
+async function waitForFile(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !existsSync(path)) await Bun.sleep(25);
+}
+
 describe("the spawn log test hook", () => {
-  test("is not reachable from the environment", () => {
+  test("is not reachable from the environment", async () => {
     // An env-var switch ships in the bundle: anything that can set a variable
     // on the hook could make it write to a path of its choosing, and a kick
     // that should have happened silently did not.
@@ -198,8 +206,15 @@ describe("the spawn log test hook", () => {
     });
 
     expect(proc.exitCode).toBe(0);
+    // The env branch would have written this from inside the hook process, so
+    // it is already decided by the time the hook exits.
     expect(existsSync(envLog)).toBe(false);
-    // The kick still happened, so the missing file is the env branch being
+
+    // The record is not: the kick spawns detached and unrefs, so the fake bun
+    // runs after the hook has exited. Measured on macOS it lands 290 to 510 ms
+    // later, which an immediate existsSync always loses.
+    await waitForFile(record);
+    // The kick still happened, so the missing envLog is the env branch being
     // gone rather than the kick being skipped.
     expect(existsSync(record)).toBe(true);
     expect(readFileSync(record, "utf8")).toContain("worker --once");

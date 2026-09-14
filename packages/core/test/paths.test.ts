@@ -3,7 +3,7 @@
 // a systemd unit.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,7 +14,11 @@ const SIL_SH = join(REPO_ROOT, "scripts", "sil");
 let tmp: string;
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "sil-paths-"));
+  // realpath, because on macOS tmpdir() is /var/... and that is a symlink to
+  // /private/var/.... pluginRoot() walks up from import.meta.dir, which the
+  // module loader reports already resolved, so it returns the /private form
+  // and a plain tmpdir() expectation never matches it.
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "sil-paths-")));
 });
 
 afterEach(() => {

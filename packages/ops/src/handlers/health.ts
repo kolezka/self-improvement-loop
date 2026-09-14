@@ -2,7 +2,7 @@ import { loadConfig, paths } from "@sil/core";
 import type { NoArgs } from "../args.ts";
 import { deps } from "../deps.ts";
 
-const SIL_VERSION = "0.2.0";
+const SIL_VERSION = "0.2.1";
 
 export async function healthReport(_args: NoArgs): Promise<Record<string, unknown>> {
   const cfg = loadConfig();

@@ -2,9 +2,8 @@
 
 ## Requirements
 
-- `uv` (the plugin runs Python through `uv run --project`, never a bare `python3`
-  except inside the hook fast path).
-- `python3` on `PATH` for the hook fast path (`sil/hook.py`).
+- `bun` (>= 1.4.2) on `PATH`. Every part of the plugin runs on it: the hook
+  fast path, the CLI, the worker and the web UI.
 - `git`.
 - A model endpoint: either a local LiteLLM/OpenAI-compatible proxy, or the
   `claude` CLI on `PATH`.
@@ -38,7 +37,7 @@ developing `sil` itself.
 ## First run
 
 ```
-uv run --project . sil init
+scripts/sil init
 ```
 
 This writes `~/.config/self-improvement-loop/config.yaml` and `llm.yaml` with one
@@ -47,7 +46,7 @@ point it at a real target. Edit `llm.yaml` and set `models.critic`,
 `models.drafter` and `models.judge`, then check status:
 
 ```
-uv run --project . sil status
+scripts/sil status
 ```
 
 Once a plugin install is active, the same commands work through the installed

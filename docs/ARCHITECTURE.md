@@ -1,6 +1,6 @@
 # Architecture
 
-`self-improvement-loop` is a Claude Code plugin plus a small Python engine (`sil`).
+`self-improvement-loop` is a Claude Code plugin plus a TypeScript engine (`sil`) that runs on Bun.
 It watches sessions, reflects on them in the background, promotes recurring lessons
 into artifacts (skills, nudge hooks, rules, agents), measures whether those artifacts
 are used, and feeds that back into the next promotion decision.
@@ -11,7 +11,7 @@ behaviour worth keeping is listed in `docs/V1-PARITY.md` with where it now lives
 ## The loop in one picture
 
 ```
-session ──hooks──▶ usage events + reflection queue        (fast, stdlib, never blocks)
+session ──hooks──▶ usage events + reflection queue        (fast, one bundle, never blocks)
                           │
                           ▼
              worker (background, out of session)
@@ -30,8 +30,8 @@ session ──hooks──▶ usage events + reflection queue        (fast, stdli
 
 ## Design rules
 
-1. **Hooks never block and never call a model.** The in-session half is stdlib
-   Python only, budgeted to well under 100 ms, and emits at most an
+1. **Hooks never block and never call a model.** The in-session half is one
+   bundled script (`dist/hook.js`), budgeted to well under 60 ms, and emits at most an
    `additionalContext`. No `decision: block`, no `permissionDecision: deny`.
    V1's Stop-hook question is gone; consent is a config switch, not a prompt.
 2. **One critic implementation.** The worker builds a structured evidence pack from
@@ -58,11 +58,13 @@ Plugin root (`${CLAUDE_PLUGIN_ROOT}`, a versioned dir under `~/.claude/plugins/c
 
 ```
 .claude-plugin/plugin.json
-hooks/hooks.json            every event -> python3 ${CLAUDE_PLUGIN_ROOT}/sil/hook.py
+hooks/hooks.json            every event -> bun ${CLAUDE_PLUGIN_ROOT}/dist/hook.js
 commands/*.md               /reflect /loop /curriculum /feedback
 skills/self-improvement-loop/SKILL.md
-sil/                        python package (engine + hook fast path)
-pyproject.toml              uv project; worker/web run via `uv run --project <root>`
+packages/*                  TypeScript engine, one package per concern (@sil/core, @sil/store, ...)
+apps/{cli,hook,server,web}  entry points: the sil CLI, the hook fast path, the web API, the Svelte UI
+dist/{hook,cli,server,gate-runner}.js, dist/web/    committed single-file bundles the plugin actually runs
+scripts/sil                 shim: resolves the plugin root, execs `bun dist/cli.js` (or source, in a dev checkout)
 ```
 
 Config dir (`$SIL_CONFIG_DIR`, default `~/.config/self-improvement-loop/`):
@@ -84,7 +86,7 @@ feedback/human.jsonl                /feedback entries
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions
 sessions/<session_id>/              per-session markers (once_per, delivered, offsets)
 worker.lock
-logs/{hook,worker,web}.log
+logs/{hook,worker,web,curriculum}.log
 ```
 
 Data dir (`$SIL_DATA_DIR`, default `~/.local/share/self-improvement-loop/`):
@@ -151,16 +153,16 @@ models:
   judge: anthropic/claude-sonnet-5
 ```
 
-`sil.providers.chat(role, messages, world)` is the single transport. It resolves
+`chat(role, messages, { world })` in `@sil/providers` is the single transport. It resolves
 the role through `models`, checks `local_models` for a `llm: local` world, and
 posts to `<base_url>/v1/chat/completions` (LiteLLM, OpenAI, Ollama, anything
 OpenAI-compatible) or shells out to `claude -p`. Temperature 0. No fallback URL,
 no placeholder key.
 
-## Hook fast path (`sil/hook.py`)
+## Hook fast path (`apps/hook`, bundled to `dist/hook.js`)
 
-One entry point for every event; stdlib only; wall budget 250 ms shared by nudge
-gates. Everything is wrapped so a failure is a silent exit 0.
+One entry point for every event; imports only `@sil/core` and `@sil/nudges`; wall
+budget 250 ms shared by nudge gates. Everything is wrapped so a failure is a silent exit 0.
 
 | Event | Action |
 |---|---|
@@ -185,15 +187,15 @@ Under `worker.lock`:
 
 1. **Reflect.** For each pending queue entry that is `ended` or idle for
    `idle_minutes` and has at least `min_tool_uses`: build an evidence pack
-   (`sil.transcript.evidence_pack`), list existing pattern slugs for the world,
+   (`evidencePack` in `@sil/transcript`), list existing pattern slugs for the world,
    list installed artifacts, call the `critic` role, parse the JSON answer, write a
    reflection if `record` is true, append artifact feedback events, drop a lesson
    in the world inbox when `lesson_short` is present. Move the entry to `done`, or
    to `failed` with a reason. A provider or configuration error keeps the entry
    queued for up to three attempts, so a proxy outage does not lose the session.
-2. **Scorecards.** `sil.feedback.scorecards(world)` folds usage events, nudge
+2. **Scorecards.** `scorecards(world, cfg)` in `@sil/feedback` folds usage events, nudge
    fires, critic votes and human feedback into one record per artifact.
-3. **Curriculum.** If the interval elapsed: `sil.run.run(world, apply=True)`, the V1
+3. **Curriculum.** If the interval elapsed: `run(world, cfg, { apply: true })` in `@sil/curriculum`, the V1
    gate stack (route, rule-writability, lint, integrity, judge) against a scratch
    worktree; stages branches, never pushes.
 4. **Export.** If the world configures Outline, push new reflections (best effort).

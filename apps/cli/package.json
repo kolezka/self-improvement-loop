@@ -13,6 +13,7 @@
     "@sil/curriculum": "workspace:*",
     "@sil/critic": "workspace:*",
     "@sil/ops": "workspace:*",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "yaml": "^2.9.1"
   }
 }

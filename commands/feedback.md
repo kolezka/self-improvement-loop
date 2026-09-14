@@ -17,7 +17,7 @@ anything.
 Resolve the world from the current working directory, then record the vote:
 
 ```sh
-uv run --project "${CLAUDE_PLUGIN_ROOT}" sil feedback add "$1" "$2" --note "<note>"
+"${CLAUDE_PLUGIN_ROOT}/scripts/sil" feedback add "$1" "$2" --note "<note>"
 ```
 
 `sil feedback add` resolves `--world` from `$PWD` when not given explicitly.

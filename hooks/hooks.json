@@ -1,12 +1,12 @@
 {
-  "description": "self-improvement-loop stdlib fast path. Every event calls sil/hook.py, which never blocks and never calls a model.",
+  "description": "self-improvement-loop fast path. Every event runs dist/hook.js under bun; it never blocks and never calls a model.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/sil/hook.py\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/sil/hook.py\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/sil/hook.py\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/sil/hook.py\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/sil/hook.py\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/sil/hook.py\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/sil/hook.py\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]

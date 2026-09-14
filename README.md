@@ -7,7 +7,7 @@ next promotion decision. Nothing reaches a shared remote without a human.
 
 ## The loop, in words
 
-Hooks record what happened in a session (fast, stdlib only, never blocks, never
+Hooks record what happened in a session (fast, one bundled script, never blocks, never
 calls a model). A worker, running on a schedule outside any session, reflects on
 sessions that ended or went idle: it builds evidence from the transcript, makes
 one model call, and writes a reflection if there is a real lesson. Reflections

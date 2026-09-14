@@ -1,25 +1,27 @@
-.PHONY: test dev-install web worker lint-dashes
+.PHONY: install build test typecheck lint-dashes dev-install web worker
+
+install:
+	bun install
+
+build:
+	bun run build
 
 test:
-	uv run pytest -q
+	bun test
+
+typecheck:
+	bun run typecheck
+
+# Fail if an em dash or en dash shows up in a tracked text file. See
+# tests/plugin-manifest.test.ts for the narrower plugin-facing-text check in CI.
+lint-dashes:
+	bun run lint:dashes
 
 dev-install:
 	claude --plugin-dir $(CURDIR)
 
 web:
-	uv run --project $(CURDIR) sil web
+	scripts/sil web
 
 worker:
-	uv run --project $(CURDIR) sil worker --once
-
-# Fail if an em dash or en dash shows up in plugin-facing text. See
-# tests/test_plugin_manifest.py::test_no_em_or_en_dash for the same check in CI.
-lint-dashes:
-	@matches="$$(grep -rn --include='*.md' --include='*.json' --include='*.py' \
-		-e '—' -e '–' \
-		commands skills docs hooks .claude-plugin sil scripts README.md 2>/dev/null)"; \
-	if [ -n "$$matches" ]; then \
-		echo "$$matches"; \
-		echo "em dash or en dash found, see above" >&2; \
-		exit 1; \
-	fi
+	scripts/sil worker --once

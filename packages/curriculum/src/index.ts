@@ -1,22 +1,41 @@
-// Contract stub: replaced by the port. Signatures are the interface other packages code against.
-const notImplemented = (name: string): never => { throw new Error(`${name} is not implemented yet`); };
+// The curriculum half of the loop: cluster, plan, route, draft, gate, stage.
+//
+// Submodules: git.ts (subprocess shape), artifacts.ts (paths and writers),
+// lint.ts (the deterministic gate), router.ts (the type decision), prompts.ts
+// (drafter and judge), plan.ts (watermarks), run.ts (one tick).
 
-import type { ArtifactType, Config, Ledger, PlanReport, Reflection, RunReport, Scorecard, World } from "@sil/core";
-import type { ChatFn } from "@sil/providers";
+export * as git from "./git.ts";
+export * as artifacts from "./artifacts.ts";
+export * as prompts from "./prompts.ts";
 
-// Submodules land as: git.ts, artifacts.ts, lint.ts, router.ts, prompts.ts, plan.ts, run.ts.
-export interface RunOptions { apply: boolean; chat?: ChatFn; extraDirs?: string[]; cards?: Scorecard[] }
-export interface PlanOptions { extraDirs?: string[]; cards?: Scorecard[]; items?: Reflection[] }
-export interface Cluster { pattern: string; items: Reflection[] }
-
-export function branchName(_world: string, _pattern: string): string { return notImplemented("branchName"); }
-export function reflections(_world: World, _extraDirs?: string[]): Reflection[] { return notImplemented("reflections"); }
-export function cluster(_items: Reflection[]): Cluster[] { return notImplemented("cluster"); }
-export function sourcesText(_items: Reflection[]): string { return notImplemented("sourcesText"); }
-export function lessonTexts(_items: Reflection[]): string[] { return notImplemented("lessonTexts"); }
-export function loadLedger(_world: World): Ledger { return notImplemented("loadLedger"); }
-export function watermark(_ledger: Ledger, _pattern: string): number { return notImplemented("watermark"); }
-export function loadPayloadCorpus(_world?: World): Record<string, unknown>[] { return notImplemented("loadPayloadCorpus"); }
-export function plan(_world: World, _cfg: Config, _opts?: PlanOptions): PlanReport { return notImplemented("plan"); }
-export async function run(_world: World, _cfg: Config, _opts: RunOptions): Promise<RunReport> { return notImplemented("run"); }
-export function artifactRel(_world: World, _type: ArtifactType, _pattern: string): string { return notImplemented("artifactRel"); }
+export { artifactRel, allowedPaths, artifactPrefixes, ensureRulesFile, HOOK_KEYS, isPlaceholderBody, placeholderBody, readArtifact, removeArtifact, ruleBulletInText, rulesProblem, writeArtifact } from "./artifacts.ts";
+export { lint, lintDescriptionCap, lintGrounding, lintHook, lintRule, lintSkill, MAX_DESCRIPTION, MAX_RULE_CHARS, MIN_BODY_CHARS, MIN_SHARED_TERMS, SECRET_RE } from "./lint.ts";
+export {
+  emptyAnswer,
+  GATE_TIMEOUT_MS,
+  MIN_QUOTE_CHARS,
+  MIN_QUOTE_WORDS,
+  route,
+  RouteAnswer,
+  type RouteOptions,
+  type RouteResult,
+  splitTrigger,
+  substantiveQuote,
+} from "./router.ts";
+export { draftMessages, judgeMessages, parseDraft, parseVerdict } from "./prompts.ts";
+export {
+  type Cluster,
+  cluster,
+  lessonTexts,
+  loadLedger,
+  loadPayloadCorpus,
+  plan,
+  type PlanOptions,
+  reflections,
+  scorecardByPattern,
+  scorecards,
+  sourcesText,
+  watermark,
+} from "./plan.ts";
+export { branchName, run, type RunOptions } from "./run.ts";
+export { type GateCorpusResult, type GateRunner, type NudgeAdapter, setNudgeAdapter } from "./deps.ts";

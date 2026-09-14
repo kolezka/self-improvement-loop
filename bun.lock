@@ -5,6 +5,17 @@
     "": {
       "name": "self-improvement-loop",
       "devDependencies": {
+        "@sil/core": "workspace:*",
+        "@sil/critic": "workspace:*",
+        "@sil/curriculum": "workspace:*",
+        "@sil/feedback": "workspace:*",
+        "@sil/nudges": "workspace:*",
+        "@sil/ops": "workspace:*",
+        "@sil/providers": "workspace:*",
+        "@sil/review": "workspace:*",
+        "@sil/store": "workspace:*",
+        "@sil/transcript": "workspace:*",
+        "@sil/worker": "workspace:*",
         "@types/bun": "^1.4.2",
         "typescript": "^5.9.0",
       },
@@ -23,6 +34,7 @@
         "@sil/store": "workspace:*",
         "@sil/worker": "workspace:*",
         "commander": "^15.0.0",
+        "yaml": "^2.9.1",
       },
     },
     "apps/hook": {
@@ -39,6 +51,7 @@
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/ops": "workspace:*",
+        "zod": "^4.6.5",
       },
     },
     "apps/web": {
@@ -79,6 +92,7 @@
         "@sil/nudges": "workspace:*",
         "@sil/providers": "workspace:*",
         "@sil/store": "workspace:*",
+        "zod": "^4.6.5",
       },
     },
     "packages/feedback": {

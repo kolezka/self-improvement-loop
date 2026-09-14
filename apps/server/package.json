@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@sil/core": "workspace:*",
-    "@sil/ops": "workspace:*"
+    "@sil/ops": "workspace:*",
+    "zod": "^4.6.5"
   }
 }

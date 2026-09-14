@@ -1,6 +1,6 @@
 #!/bin/sh
 # Shim for self-improvement-loop: resolves the plugin root, then execs `sil`
-# inside it via uv. Installed to ~/.local/bin/sil by `sil schedule install`,
+# inside it via bun. Installed to ~/.local/bin/sil by `sil schedule install`,
 # so a plugin version bump never breaks an installed systemd/launchd unit
 # (those call this fixed path, not one under a versioned plugin cache dir).
 set -eu
@@ -12,27 +12,32 @@ resolve_root() {
   fi
 
   installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
-  if [ -f "$installed" ] && command -v python3 >/dev/null 2>&1; then
-    found="$(python3 - "$installed" <<'PYEOF'
-import json
-import sys
-
-try:
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-except Exception:
-    sys.exit(0)
-
-entries = data.get("plugins", {}).get("self-improvement-loop@kolezka") or []
-if entries:
-    newest = max(entries, key=lambda e: e.get("lastUpdated") or "")
-    path = newest.get("installPath") or ""
-    if path:
-        print(path)
-PYEOF
+  if [ -f "$installed" ]; then
+    runner=""
+    if command -v bun >/dev/null 2>&1; then
+      runner="bun"
+    elif command -v node >/dev/null 2>&1; then
+      runner="node"
+    fi
+    if [ -n "$runner" ]; then
+      found="$("$runner" - "$installed" <<'JSEOF'
+const fs = require("fs");
+try {
+  const data = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  const entries = (data.plugins && data.plugins["self-improvement-loop@kolezka"]) || [];
+  if (entries.length) {
+    const newest = entries.reduce((a, b) => ((a.lastUpdated || "") >= (b.lastUpdated || "") ? a : b));
+    if (newest.installPath) console.log(newest.installPath);
+  }
+} catch {
+  // fall through to the two-dirs-up fallback below
+}
+JSEOF
 )"
-    if [ -n "$found" ]; then
-      printf '%s\n' "$found"
-      return 0
+      if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        return 0
+      fi
     fi
   fi
 
@@ -42,4 +47,10 @@ PYEOF
 }
 
 ROOT="$(resolve_root)"
-exec uv run --project "$ROOT" sil "$@"
+
+if [ -f "$ROOT/dist/cli.js" ]; then
+  exec bun "$ROOT/dist/cli.js" "$@"
+fi
+
+# Dev checkout with no build yet: run the CLI straight from source.
+exec bun "$ROOT/apps/cli/src/main.ts" "$@"

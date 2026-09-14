@@ -11,6 +11,7 @@
     "@sil/store": "workspace:*",
     "@sil/nudges": "workspace:*",
     "@sil/providers": "workspace:*",
-    "@sil/feedback": "workspace:*"
+    "@sil/feedback": "workspace:*",
+    "zod": "^4.6.5"
   }
 }

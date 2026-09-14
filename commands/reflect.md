@@ -9,7 +9,7 @@ wait for it to finish.
    on the Bash tool if available, otherwise `nohup ... &`):
 
    ```sh
-   nohup uv run --project "${CLAUDE_PLUGIN_ROOT}" sil reflect \
+   nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" reflect \
      --session "$CLAUDE_SESSION_ID" --now > /dev/null 2>&1 &
    ```
 
@@ -18,7 +18,7 @@ wait for it to finish.
    this cwd as ended and kicks the worker:
 
    ```sh
-   nohup uv run --project "${CLAUDE_PLUGIN_ROOT}" sil reflect \
+   nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" reflect \
      --cwd "$PWD" --now > /dev/null 2>&1 &
    ```
 

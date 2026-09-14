@@ -9018,6 +9018,7 @@ var ruleTag = (pattern) => `<!--rule:${pattern}-->`;
 var ROLES = ["critic", "drafter", "judge"];
 var SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var isSlug = (s) => SLUG_RE.test(s) && s.length <= 64;
+var WORLD_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u;
 var SECTIONS = [
   "## What worked",
   "## What failed & why",
@@ -15016,7 +15017,7 @@ var OutlineExport = object({
   parent_document_id: string2().nullable().default(null)
 });
 var World = object({
-  name: string2().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+  name: string2().regex(WORLD_NAME_RE),
   llm: _enum(["local", "cloud"]).default("cloud"),
   repos: array(string2()).default([]),
   target: string2().nullable().default(null),
@@ -15276,8 +15277,9 @@ var reflectionsDir = (world) => join(worldDir(world), "reflections");
 var aliasesFile = (world) => join(worldDir(world), "aliases.json");
 var scorecardsFile = (world) => join(worldDir(world), "scorecards.json");
 var defaultTarget = (world) => join(worldDir(world), "learned");
+var SAFE_CHAR = /[\p{L}\p{N}._-]/u;
 function safeComponent(name) {
-  const cleaned = Array.from(name, (c) => /[A-Za-z0-9._-]/.test(c) ? c : "_").join("");
+  const cleaned = Array.from(name.normalize("NFC"), (c) => SAFE_CHAR.test(c) ? c : "_").join("");
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
 // packages/core/src/fsx.ts
@@ -15657,7 +15659,24 @@ function resolveWorld(cfg, name) {
     return worldNamed(cfg, name);
   return worldForCwd(cfg, process.cwd());
 }
+function zodField(path) {
+  let out = "";
+  for (const seg of path) {
+    if (typeof seg === "number")
+      out += `[${seg}]`;
+    else
+      out += out === "" ? String(seg) : `.${String(seg)}`;
+  }
+  return out || "(root)";
+}
+function zodDetail(err) {
+  return err.issues.map((i) => `${zodField(i.path)}: ${i.message}`).join("; ");
+}
 function mapKnownError(err) {
+  if (err instanceof ZodError) {
+    console.error(`config error: ${zodDetail(err)}`);
+    return 1;
+  }
   if (err instanceof LockHeld) {
     console.error(`error: ${err.message}`);
     return 2;
@@ -20458,21 +20477,18 @@ function importLedger(file, world) {
   saveLedger(ledgerPath(world), ledger);
   return Object.keys(ledger.entries).length;
 }
+var KbManifest = object({ worlds: array(World) });
 function importKbWorlds(path) {
   const text = readText(expandHome(path));
   const raw = exports_dist.parse(text) ?? {};
-  const worlds = [];
-  for (const w of raw.worlds ?? []) {
-    const repos = (w.projects ?? []).filter((p) => p.repo).map((p) => expandHome(p.repo));
-    worlds.push(World.parse({
-      name: w.name,
-      llm: w.llm ?? "cloud",
-      repos,
-      target: null,
-      layout: Layout.parse({})
-    }));
-  }
-  return worlds;
+  const mapped = (raw.worlds ?? []).map((w) => ({
+    name: w.name,
+    llm: w.llm ?? "cloud",
+    repos: (w.projects ?? []).filter((p) => p.repo).map((p) => expandHome(p.repo)),
+    target: null,
+    layout: Layout.parse({})
+  }));
+  return KbManifest.parse({ worlds: mapped }).worlds;
 }
 function mergeWorlds(cfg, worlds) {
   const existing = new Set(cfg.worlds.map((w) => w.name));
@@ -21159,7 +21175,7 @@ function guard(request, opts) {
 
 // packages/ops/src/args.ts
 var REVIEWED_STATE_RE = /^[0-9a-f]{64}$/;
-var WORLD_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var WORLD_RE = WORLD_NAME_RE;
 var SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 var NoArgs = object({});
 var WorldArgs = object({ world: string2().regex(WORLD_RE).max(64) });
@@ -21537,12 +21553,12 @@ function buildRoutes() {
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
-function zodDetail(err) {
+function zodDetail2(err) {
   return err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
 }
 function mapError(err) {
   if (err instanceof ZodError)
-    return jsonResponse(400, { detail: zodDetail(err) });
+    return jsonResponse(400, { detail: zodDetail2(err) });
   if (err instanceof ValidationError)
     return jsonResponse(400, { detail: err.message });
   if (err instanceof ConfigError)

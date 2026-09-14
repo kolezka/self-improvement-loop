@@ -42,7 +42,7 @@ describe("plugin.json", () => {
 
   test("has the expected fields", () => {
     expect(data.name).toBe("self-improvement-loop");
-    expect(data.version).toBe("0.2.0");
+    expect(data.version).toBe("0.2.1");
     expect(data.description).toBeTruthy();
     expect(data.author.name).toBe("Mariusz Rakus");
     expect(data.repository).toBe("https://github.com/kolezka/self-improvement-loop");

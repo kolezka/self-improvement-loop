@@ -24,7 +24,13 @@ const LAUNCHD_PREFIXES = ["com.raqz.sil-", "com.kolezka.sil-"] as const;
 export type Runner = (cmd: string[]) => void;
 
 export const realRunner: Runner = (cmd) => {
-  Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  // Bun.spawnSync throws when the binary is missing, which is the normal case
+  // for systemctl on macOS and launchctl on Linux. Uninstall runs both kinds.
+  try {
+    Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  } catch {
+    // Missing tool means nothing of that kind is installed. Nothing to do.
+  }
 };
 
 // Bun's homedir() does not follow a HOME change made after startup, so a test

@@ -27,8 +27,9 @@ var __esm = (fn, res, err) => () => {
 var __promiseAll = (args) => Promise.all(args);
 
 // packages/core/src/paths.ts
+import { existsSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 function envPath(name, fallback) {
   const raw = process.env[name];
   return raw && raw.length > 0 ? expandHome(raw) : fallback;
@@ -42,28 +43,41 @@ function stateDir() {
 function dataDir() {
   return envPath("SIL_DATA_DIR", join(envPath("XDG_DATA_HOME", join(homedir(), ".local", "share")), "self-improvement-loop"));
 }
+function findManifestRoot(start) {
+  let dir = resolve(start);
+  for (;; ) {
+    if (existsSync(join(dir, ".claude-plugin", "plugin.json")))
+      return dir;
+    const parent = dirname(dir);
+    if (parent === dir)
+      return null;
+    dir = parent;
+  }
+}
 function pluginRoot() {
   const raw = process.env["CLAUDE_PLUGIN_ROOT"];
   if (raw)
     return raw;
-  return resolve(import.meta.dir, "..", "..", "..");
+  if (manifestRoot === undefined)
+    manifestRoot = findManifestRoot(import.meta.dir);
+  return manifestRoot ?? resolve(import.meta.dir, "..", "..", "..");
 }
 function safeComponent(name) {
   const cleaned = Array.from(name, (c) => /[A-Za-z0-9._-]/.test(c) ? c : "_").join("");
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
-var queueDir = (bucket) => join(stateDir(), "queue", bucket), usageEventsFile = () => join(stateDir(), "usage", "events.jsonl"), nudgeFiresFile = () => join(stateDir(), "usage", "nudge-fires.jsonl"), inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world)), sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId)), workerLockFile = () => join(stateDir(), "worker.lock"), hookSnapshotFile = () => join(stateDir(), "hook-config.json"), logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`), worldDir = (world) => join(dataDir(), "worlds", safeComponent(world)), defaultTarget = (world) => join(worldDir(world), "learned"), builtinNudgesDir = () => join(pluginRoot(), "nudges");
+var manifestRoot, queueDir = (bucket) => join(stateDir(), "queue", bucket), usageEventsFile = () => join(stateDir(), "usage", "events.jsonl"), nudgeFiresFile = () => join(stateDir(), "usage", "nudge-fires.jsonl"), inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world)), sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId)), workerLockFile = () => join(stateDir(), "worker.lock"), hookSnapshotFile = () => join(stateDir(), "hook-config.json"), logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`), worldDir = (world) => join(dataDir(), "worlds", safeComponent(world)), defaultTarget = (world) => join(worldDir(world), "learned"), builtinNudgesDir = () => join(pluginRoot(), "nudges");
 var init_paths = () => {};
 
 // packages/core/src/fsx.ts
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
-import { dirname, join as join2 } from "path";
+import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
+import { dirname as dirname2, join as join2 } from "path";
 function ensureDir(dir) {
   mkdirSync(dir, { recursive: true });
 }
 function atomicWrite(path, text) {
-  ensureDir(dirname(path));
-  const tmp = join2(dirname(path), `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  ensureDir(dirname2(path));
+  const tmp = join2(dirname2(path), `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   writeFileSync(tmp, text, "utf8");
   renameSync(tmp, path);
 }
@@ -81,30 +95,61 @@ var init_fsx = __esm(() => {
 
 // packages/nudges/src/firelog.ts
 import { createHash } from "crypto";
-import { appendFileSync as appendFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, statSync as statSync2, writeFileSync as writeFileSync2 } from "fs";
-import { dirname as dirname2 } from "path";
-function withDirLock(lockDir, fn, staleMs = 5000) {
-  const giveUpAt = Date.now() + Math.max(staleMs * 4, 2000);
+import { appendFileSync as appendFileSync2, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, statSync as statSync2, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname3 } from "path";
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function reclaimable(lockDir, staleMs) {
+  let raw = null;
+  try {
+    raw = readFileSync2(`${lockDir}/pid`, "utf8");
+  } catch {
+    raw = null;
+  }
+  if (raw !== null) {
+    const pid = Number.parseInt(raw.trim(), 10);
+    if (!Number.isInteger(pid) || pid <= 0)
+      return true;
+    return !pidAlive(pid);
+  }
+  try {
+    return Date.now() - statSync2(lockDir).mtimeMs > staleMs;
+  } catch {
+    return false;
+  }
+}
+function withDirLock(lockDir, fn, staleMs = DEFAULT_STALE_MS) {
+  const giveUpAt = Date.now() + Math.max(staleMs, MIN_WAIT_MS);
   for (;; ) {
+    let held = false;
     try {
       mkdirSync2(lockDir);
-      break;
+      held = true;
     } catch (e) {
       if (e.code !== "EEXIST")
         throw e;
-      try {
-        const age = Date.now() - statSync2(lockDir).mtimeMs;
-        if (age > staleMs) {
-          rmSync(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() > giveUpAt)
-        throw new Error(`withDirLock: timed out waiting for ${lockDir}`);
-      Bun.sleepSync(5);
     }
+    if (held) {
+      try {
+        writeFileSync2(`${lockDir}/pid`, `${process.pid}
+`, "utf8");
+      } catch {}
+      break;
+    }
+    if (reclaimable(lockDir, staleMs)) {
+      try {
+        rmSync(lockDir, { recursive: true, force: true });
+      } catch {}
+    }
+    if (Date.now() > giveUpAt)
+      throw new Error(`withDirLock: timed out waiting for ${lockDir}`);
+    Bun.sleepSync(5);
   }
   try {
     return fn();
@@ -129,7 +174,7 @@ function rotateIfNeeded(path, rotateAt, keep) {
 }
 function appendLine(path, line, rotateAt = ROTATE_AT_BYTES2, keep = ROTATE_KEEP_LINES) {
   try {
-    mkdirSync2(dirname2(path), { recursive: true });
+    mkdirSync2(dirname3(path), { recursive: true });
     withDirLock(`${path}.lockdir`, () => {
       rotateIfNeeded(path, rotateAt, keep);
       appendFileSync2(path, line.endsWith(`
@@ -148,7 +193,7 @@ function claimMarker(sessionDir, name) {
     const markers = `${sessionDir}/nudge-markers`;
     mkdirSync2(markers, { recursive: true });
     const mark = `${markers}/${markerSlug(name)}`;
-    if (existsSync2(mark))
+    if (existsSync3(mark))
       return false;
     writeFileSync2(mark, "", { flag: "wx" });
     return true;
@@ -159,19 +204,81 @@ function claimMarker(sessionDir, name) {
 function ts() {
   return new Date().toISOString();
 }
-function writeBreadcrumb(fireLog, sessionDir, kind, sessionId, event, extra = {}) {
-  if (!claimMarker(sessionDir, `breadcrumb-${kind}-${event}`))
+function writeBreadcrumb(fireLog, sessionDir, kind, sessionId, event, extra = {}, dedupeKey) {
+  if (!claimMarker(sessionDir, `breadcrumb-${dedupeKey ?? `${kind}-${event}`}`))
     return;
   const record = { ts: ts(), kind, session_id: sessionId, event, ...extra };
   appendLine(fireLog, JSON.stringify(record));
 }
-var ROTATE_AT_BYTES2, ROTATE_KEEP_LINES = 5000;
+var ROTATE_AT_BYTES2, ROTATE_KEEP_LINES = 5000, DEFAULT_STALE_MS = 2000, MIN_WAIT_MS = 200;
 var init_firelog = __esm(() => {
   init_fsx();
   ROTATE_AT_BYTES2 = 10 * 1024 * 1024;
 });
 
 // packages/nudges/src/gates.ts
+function splitTrigger(trigger) {
+  const idx = trigger.indexOf(":");
+  const event = idx === -1 ? trigger : trigger.slice(0, idx);
+  const matcher = idx === -1 ? null : trigger.slice(idx + 1);
+  if (!Object.hasOwn(EVENTS, event))
+    return null;
+  const allowed = EVENTS[event];
+  if (!matcher)
+    return [event, null];
+  if (allowed === null || !allowed.has(matcher))
+    return null;
+  return [event, matcher];
+}
+function quantifiedGroupBodies(pattern) {
+  const bodies = [];
+  const open = [];
+  let inClass = false;
+  for (let i = 0;i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]")
+        inClass = false;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      continue;
+    }
+    if (c === "(") {
+      open.push(i);
+      continue;
+    }
+    if (c !== ")")
+      continue;
+    const start = open.pop();
+    if (start === undefined)
+      continue;
+    const next = pattern[i + 1];
+    const quantified = next === "+" || next === "*" || next === "{" && BRACE_QUANTIFIER.test(pattern.slice(i + 1));
+    if (quantified)
+      bodies.push(pattern.slice(start + 1, i));
+  }
+  return bodies;
+}
+function unsafeRegexReason(pattern) {
+  if (pattern.length > MAX_PATTERN_LEN) {
+    return `is ${pattern.length} chars; the cap is ${MAX_PATTERN_LEN}`;
+  }
+  const bodies = quantifiedGroupBodies(pattern);
+  if (bodies.length > MAX_QUANTIFIED_GROUPS) {
+    return `has ${bodies.length} quantified groups; the cap is ${MAX_QUANTIFIED_GROUPS}`;
+  }
+  const risky = bodies.find((b) => RISKY_GROUP_BODY.test(b));
+  if (risky !== undefined) {
+    return `has a quantified group ${JSON.stringify(`(${risky})`)} that can backtrack ` + `catastrophically (e.g. (a+)+, (a|aa)+); rewrite it without a quantifier, ` + `alternation or optional inside a quantified group`;
+  }
+  return null;
+}
 function isRecord(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -183,43 +290,75 @@ function filePath(payload) {
   const ti = payload["tool_input"];
   return isRecord(ti) && typeof ti["file_path"] === "string" ? ti["file_path"] : "";
 }
-function globToRegExp(glob) {
-  let out = "";
-  for (let i = 0;i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      out += ".*";
-    } else if (c === "?") {
-      out += ".";
-    } else if (c === "[") {
-      let j = i + 1;
-      let cls = "";
-      if (glob[j] === "!") {
-        cls += "^";
-        j++;
-      }
-      const start = j;
-      while (j < glob.length && (j === start || glob[j] !== "]"))
-        j++;
-      if (j >= glob.length) {
-        out += "\\[";
-      } else {
-        cls += glob.slice(start, j).replace(/\\/g, "\\\\");
-        out += `[${cls}]`;
-        i = j;
-      }
-    } else {
-      out += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
+function matchClass(pattern, start, ch) {
+  let i = start + 1;
+  let negate = false;
+  if (pattern[i] === "!" || pattern[i] === "^") {
+    negate = true;
+    i++;
   }
-  return new RegExp(`^${out}$`);
+  const first = i;
+  let matched = false;
+  while (i < pattern.length) {
+    if (pattern[i] === "]" && i > first)
+      break;
+    if (pattern[i + 1] === "-" && i + 2 < pattern.length && pattern[i + 2] !== "]") {
+      if (ch >= pattern[i] && ch <= pattern[i + 2])
+        matched = true;
+      i += 3;
+      continue;
+    }
+    if (pattern[i] === ch)
+      matched = true;
+    i++;
+  }
+  if (i >= pattern.length)
+    return null;
+  return { end: i + 1, matched: negate ? !matched : matched };
 }
 function fnmatch(path, pattern) {
-  try {
-    return globToRegExp(pattern).test(path);
-  } catch {
-    return false;
+  let si = 0;
+  let pi = 0;
+  let starSi = -1;
+  let starPi = -1;
+  while (si < path.length) {
+    const pc = pattern[pi];
+    if (pc === "*") {
+      starPi = pi;
+      starSi = si;
+      pi++;
+      continue;
+    }
+    let ok = false;
+    if (pc === "?") {
+      ok = true;
+      pi++;
+    } else if (pc === "[") {
+      const cls = matchClass(pattern, pi, path[si]);
+      if (cls === null) {
+        ok = path[si] === "[";
+        pi++;
+      } else {
+        ok = cls.matched;
+        pi = cls.end;
+      }
+    } else if (pc !== undefined && pc === path[si]) {
+      ok = true;
+      pi++;
+    }
+    if (ok) {
+      si++;
+      continue;
+    }
+    if (starPi === -1)
+      return false;
+    starSi++;
+    si = starSi;
+    pi = starPi + 1;
   }
+  while (pattern[pi] === "*")
+    pi++;
+  return pi === pattern.length;
 }
 function search(pattern, text) {
   if (typeof pattern !== "string")
@@ -248,7 +387,7 @@ function evaluateInner(gate, payload) {
     case "file_path_matches": {
       if (typeof arg !== "string")
         return false;
-      const path = filePath(payload);
+      const path = filePath(payload).slice(0, MAX_MATCH_LEN);
       return path !== "" && fnmatch(path, arg);
     }
     case "prompt_matches":
@@ -270,7 +409,114 @@ function evaluate(gate, payload) {
     return false;
   }
 }
-var MAX_MATCH_LEN = 4000, EVENTS, LOW_FREQUENCY_EVENTS, PREDICATES;
+function validateGate(gate) {
+  const problems = [];
+  if (!isRecord(gate)) {
+    problems.push(`a gate is exactly one predicate, got: ${JSON.stringify(gate)}`);
+    return problems;
+  }
+  const keys = Object.keys(gate);
+  if (keys.length !== 1) {
+    problems.push(`a gate is exactly one predicate, got: ${JSON.stringify(gate)}`);
+    return problems;
+  }
+  const name = keys[0];
+  const arg = gate[name];
+  if (!PREDICATES.has(name)) {
+    problems.push(`unknown predicate ${JSON.stringify(name)}; allowed: ${[...PREDICATES].sort().join(", ")}`);
+    return problems;
+  }
+  const checkRegex = (label) => {
+    if (typeof arg !== "string") {
+      problems.push(`${label} takes a regex string`);
+      return;
+    }
+    try {
+      new RegExp(arg);
+    } catch (e) {
+      problems.push(`${label} has bad regex ${JSON.stringify(arg)}: ${e.message}`);
+      return;
+    }
+    const reason = unsafeRegexReason(arg);
+    if (reason !== null) {
+      problems.push(`${label} regex ${JSON.stringify(arg.slice(0, MAX_PATTERN_LEN))} ${reason}`);
+    }
+  };
+  switch (name) {
+    case "always":
+      break;
+    case "tool_is":
+      if (!Array.isArray(arg))
+        problems.push("tool_is takes a list of tool names");
+      break;
+    case "command_matches":
+      checkRegex("command_matches");
+      break;
+    case "file_path_matches":
+      if (typeof arg !== "string")
+        problems.push("file_path_matches takes a glob string");
+      else if (arg.length > MAX_PATTERN_LEN)
+        problems.push(`file_path_matches glob is ${arg.length} chars; the cap is ${MAX_PATTERN_LEN}`);
+      break;
+    case "prompt_matches":
+      checkRegex("prompt_matches");
+      break;
+    case "all":
+    case "any":
+      if (!Array.isArray(arg)) {
+        problems.push(`${name} takes a list of predicates`);
+      } else {
+        for (const child of arg)
+          problems.push(...validateGate(child));
+      }
+      break;
+    case "not":
+      problems.push(...validateGate(arg));
+      break;
+  }
+  return problems;
+}
+function gateTruth(gate) {
+  if (!isRecord(gate))
+    return null;
+  const keys = Object.keys(gate);
+  if (keys.length !== 1)
+    return null;
+  const name = keys[0];
+  const arg = gate[name];
+  switch (name) {
+    case "always":
+      return true;
+    case "tool_is":
+      return Array.isArray(arg) && arg.length === 0 ? false : null;
+    case "command_matches":
+    case "prompt_matches":
+      return arg === "" ? true : null;
+    case "all": {
+      if (!Array.isArray(arg))
+        return null;
+      const truths = arg.map(gateTruth);
+      if (truths.some((t) => t === false))
+        return false;
+      return truths.every((t) => t === true) ? true : null;
+    }
+    case "any": {
+      if (!Array.isArray(arg))
+        return null;
+      const truths = arg.map(gateTruth);
+      if (truths.some((t) => t === true))
+        return true;
+      return truths.every((t) => t === false) ? false : null;
+    }
+    case "not": {
+      const inner = gateTruth(arg);
+      return inner === null ? null : !inner;
+    }
+    default:
+      return null;
+  }
+}
+var MAX_MATCH_LEN = 4000, MAX_PATTERN_LEN = 200, MAX_QUANTIFIED_GROUPS = 3, EVENTS, LOW_FREQUENCY_EVENTS, PREDICATES, RISKY_GROUP_BODY, BRACE_QUANTIFIER;
 var init_gates = __esm(() => {
   EVENTS = {
     SessionStart: null,
@@ -289,16 +535,106 @@ var init_gates = __esm(() => {
     "any",
     "not"
   ]);
+  RISKY_GROUP_BODY = /[|+*?{]/;
+  BRACE_QUANTIFIER = /^\{\d+(?:,\d*)?\}/;
+});
+
+// packages/core/src/consts.ts
+var RULE_START = "<!--loop-rules:start-->", RULE_END = "<!--loop-rules:end-->", SLUG_RE, isSlug = (s) => SLUG_RE.test(s) && s.length <= 64;
+var init_consts = __esm(() => {
+  SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+});
+
+// packages/nudges/src/lint.ts
+function unboundedBroadcastRule() {
+  const low = [...LOW_FREQUENCY_EVENTS].sort().join(", ");
+  return "a gate that is true for every payload is accepted only when " + "something else bounds it: set 'once_per' to 'session', or use " + `one of the low-frequency events (${low}). An unconditional gate ` + "with 'once_per' set to 'always' on any other event is rejected outright";
+}
+function lintUnboundedBroadcast(obj) {
+  if (gateTruth(obj.gate) !== true)
+    return [];
+  if (obj.once_per === "session")
+    return [];
+  if (LOW_FREQUENCY_EVENTS.has(obj.event))
+    return [];
+  return [
+    `degenerate gate: it fires unconditionally, once_per is ` + `${JSON.stringify(obj.once_per)}, and ${obj.event} fires many times per ` + `session, this injects on every ${obj.event} forever and ` + `discriminates nothing. Narrow the gate to a real predicate, or ` + unboundedBroadcastRule()
+  ];
+}
+function isRecord2(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function lintNudge(obj) {
+  if (!isRecord2(obj))
+    return ["nudge must be a JSON object"];
+  const problems = [];
+  for (const field of ["pattern", "event", "gate", "once_per", "text"]) {
+    if (!(field in obj))
+      problems.push(`missing required field ${JSON.stringify(field)}`);
+  }
+  if (problems.length > 0)
+    return problems;
+  if (typeof obj["pattern"] !== "string")
+    problems.push("field 'pattern' must be a string");
+  else if (!isSlug(obj["pattern"]))
+    problems.push(`field 'pattern' must be a slug, got ${JSON.stringify(obj["pattern"])}`);
+  if (typeof obj["event"] !== "string")
+    problems.push("field 'event' must be a string");
+  if (!isRecord2(obj["gate"]))
+    problems.push("field 'gate' must be a dict");
+  if (typeof obj["once_per"] !== "string")
+    problems.push("field 'once_per' must be a string");
+  if (typeof obj["text"] !== "string")
+    problems.push("field 'text' must be a string");
+  if (obj["matcher"] !== undefined && obj["matcher"] !== null && typeof obj["matcher"] !== "string") {
+    problems.push("field 'matcher' must be a string or absent");
+  }
+  if (problems.length > 0)
+    return problems;
+  const event = obj["event"];
+  const matcher = obj["matcher"];
+  const text = obj["text"];
+  const oncePer = obj["once_per"];
+  const trigger = event + (matcher ? `:${matcher}` : "");
+  const triggerOk = splitTrigger(trigger) !== null;
+  if (!triggerOk)
+    problems.push(`unsupported event/matcher: ${JSON.stringify(trigger)}`);
+  const oncePerOk = ONCE_PER.has(oncePer);
+  if (!oncePerOk)
+    problems.push(`once_per must be one of ${[...ONCE_PER].sort().join(", ")}`);
+  if (!text.trim())
+    problems.push("text must be a non-empty string");
+  else if (text.length > MAX_TEXT)
+    problems.push(`text is ${text.length} chars; the cap is ${MAX_TEXT}`);
+  problems.push(...validateGate(obj["gate"]));
+  if (triggerOk && oncePerOk) {
+    problems.push(...lintUnboundedBroadcast({
+      pattern: obj["pattern"],
+      event,
+      gate: obj["gate"],
+      once_per: oncePer,
+      text,
+      matcher
+    }));
+  }
+  return problems;
+}
+var MAX_TEXT = 400, ONCE_PER;
+var init_lint = __esm(() => {
+  init_consts();
+  init_gates();
+  ONCE_PER = new Set(["session", "always"]);
 });
 
 // packages/nudges/src/dispatch.ts
 import { readdirSync } from "fs";
 import { join as join3 } from "path";
-function isRecord2(v) {
+function isRecord3(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
-function loadNudges(dirs) {
-  const out = [];
+function loadNudgesDetailed(dirs) {
+  const nudges = [];
+  const rejected = [];
   for (const d of dirs) {
     let names;
     try {
@@ -307,12 +643,21 @@ function loadNudges(dirs) {
       continue;
     }
     for (const name of names) {
-      const raw = readJsonOr(join3(d, name), null);
-      if (isRecord2(raw))
-        out.push(raw);
+      const file = join3(d, name);
+      const raw = readJsonOr(file, null);
+      if (!isRecord3(raw)) {
+        rejected.push({ file, problems: ["not readable as a JSON object"] });
+        continue;
+      }
+      const problems = lintNudge(raw);
+      if (problems.length > 0) {
+        rejected.push({ file, problems });
+        continue;
+      }
+      nudges.push(raw);
     }
   }
-  return out;
+  return { nudges, rejected };
 }
 function str(v, fallback = "") {
   return typeof v === "string" ? v : fallback;
@@ -322,12 +667,13 @@ function dispatch(payload, nudges, opts) {
     const sessionId = str(payload["session_id"], "unknown");
     const event = str(payload["hook_event_name"]);
     const budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
+    const gateTimeoutMs = opts.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
     let gateSpentMs = 0;
     let scanned = 0;
     let budgetExhausted = false;
     for (const nudge of nudges) {
       scanned++;
-      if (!isRecord2(nudge) || nudge["event"] !== event)
+      if (!isRecord3(nudge) || nudge["event"] !== event)
         continue;
       const matcher = nudge["matcher"];
       if (matcher && payload["tool_name"] !== matcher)
@@ -339,10 +685,18 @@ function dispatch(payload, nudges, opts) {
       }
       const started = performance.now();
       const matched = evaluate(nudge["gate"], payload);
-      gateSpentMs += performance.now() - started;
+      const elapsedMs = performance.now() - started;
+      gateSpentMs += elapsedMs;
+      const pattern = str(nudge["pattern"], "unknown");
+      if (elapsedMs > gateTimeoutMs) {
+        writeBreadcrumb(opts.fireLog, opts.sessionDir, "gate_overrun", sessionId, event, {
+          pattern,
+          elapsed_ms: Math.round(elapsedMs),
+          budget_ms: gateTimeoutMs
+        });
+      }
       if (!matched)
         continue;
-      const pattern = str(nudge["pattern"], "unknown");
       if (nudge["once_per"] !== "always") {
         if (!claimMarker(opts.sessionDir, `nudge-${pattern}`))
           continue;
@@ -358,23 +712,12 @@ function dispatch(payload, nudges, opts) {
     return null;
   }
 }
-var DEFAULT_BUDGET_MS = 250, GATE_MIN_SLICE_MS = 5;
+var DEFAULT_BUDGET_MS = 250, DEFAULT_GATE_TIMEOUT_MS = 50, GATE_MIN_SLICE_MS = 5;
 var init_dispatch = __esm(() => {
   init_fsx();
   init_firelog();
   init_gates();
-});
-
-// packages/core/src/consts.ts
-var RULE_START = "<!--loop-rules:start-->", RULE_END = "<!--loop-rules:end-->";
-var init_consts = () => {};
-
-// packages/nudges/src/lint.ts
-var ONCE_PER;
-var init_lint = __esm(() => {
-  init_consts();
-  init_gates();
-  ONCE_PER = new Set(["session", "always"]);
+  init_lint();
 });
 
 // packages/nudges/src/gate-runner.ts
@@ -430,22 +773,66 @@ function defaultWorld() {
     rules_inject: true
   };
 }
-function isRecord3(v) {
+function isRecord4(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function num(v, fallback) {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+function str2(v, fallback) {
+  return typeof v === "string" ? v : fallback;
+}
+function defaultPluginRoot() {
+  return process.env["CLAUDE_PLUGIN_ROOT"] ?? pluginRoot();
+}
+function coerceWorld(v) {
+  if (!isRecord4(v))
+    return null;
+  const name = str2(v["name"], "");
+  if (!name)
+    return null;
+  const repos = Array.isArray(v["repos"]) ? v["repos"].filter((r) => typeof r === "string") : [];
+  return {
+    name,
+    repos,
+    nudges_dir: str2(v["nudges_dir"], ""),
+    rules_file: str2(v["rules_file"], ""),
+    rules_inject: v["rules_inject"] !== false
+  };
+}
+function coerceWorker(v) {
+  if (!isRecord4(v))
+    return { ...DEFAULT_WORKER };
+  return {
+    idle_minutes: num(v["idle_minutes"], DEFAULT_WORKER.idle_minutes),
+    curriculum_interval_minutes: num(v["curriculum_interval_minutes"], DEFAULT_WORKER.curriculum_interval_minutes),
+    min_tool_uses: num(v["min_tool_uses"], DEFAULT_WORKER.min_tool_uses),
+    auto_kick: typeof v["auto_kick"] === "boolean" ? v["auto_kick"] : DEFAULT_WORKER.auto_kick
+  };
+}
+function coerceSnapshot(obj) {
+  const rawWorlds = Array.isArray(obj["worlds"]) ? obj["worlds"] : [];
+  const worlds = rawWorlds.map(coerceWorld).filter((w) => w !== null);
+  return {
+    version: num(obj["version"], 1),
+    worlds: worlds.length > 0 ? worlds : [defaultWorld()],
+    worker: coerceWorker(obj["worker"]),
+    plugin_root: str2(obj["plugin_root"], "") || defaultPluginRoot()
+  };
 }
 function fallbackSnapshot() {
   return {
     version: 1,
     worlds: [defaultWorld()],
     worker: { ...DEFAULT_WORKER },
-    plugin_root: process.env["CLAUDE_PLUGIN_ROOT"] ?? pluginRoot()
+    plugin_root: defaultPluginRoot()
   };
 }
 function loadSnapshot() {
   try {
     const obj = JSON.parse(readFileSync3(hookSnapshotFile(), "utf8"));
-    if (isRecord3(obj))
-      return obj;
+    if (isRecord4(obj))
+      return coerceSnapshot(obj);
   } catch {}
   return fallbackSnapshot();
 }
@@ -534,9 +921,9 @@ var init_worlds = __esm(() => {
 });
 
 // apps/hook/src/lessons.ts
-import { appendFileSync as appendFileSync3, existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, statSync as statSync3 } from "fs";
+import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, statSync as statSync3 } from "fs";
 import { join as join4 } from "path";
-function isRecord4(v) {
+function isRecord5(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function formatLesson(lesson) {
@@ -556,7 +943,7 @@ function bumpLessonDeliveries(worldName, path, raw) {
   if (obj === null) {
     try {
       const parsed = JSON.parse(readFileSync4(path, "utf8"));
-      if (isRecord4(parsed))
+      if (isRecord5(parsed))
         obj = parsed;
     } catch {
       return;
@@ -584,13 +971,23 @@ function writeJsonAtomic(path, obj) {
 `);
 }
 function sessionStartMtime(sessionId) {
+  const dir = sessionDir(sessionId);
   try {
-    return statSync3(join4(sessionDir(sessionId), "start.json")).mtimeMs;
+    return statSync3(join4(dir, "start.json")).mtimeMs;
+  } catch {}
+  try {
+    return statSync3(dir).mtimeMs;
   } catch {
     return null;
   }
 }
 function pendingLessons(worldName, sessionId, cwd, limit, sinceSessionStart = false) {
+  let minMtime = null;
+  if (sinceSessionStart) {
+    minMtime = sessionStartMtime(sessionId);
+    if (minMtime === null)
+      return [];
+  }
   const inbox = inboxDir(worldName);
   let names;
   try {
@@ -600,7 +997,6 @@ function pendingLessons(worldName, sessionId, cwd, limit, sinceSessionStart = fa
   }
   const deliveredFile = join4(sessionDir(sessionId), "delivered");
   const already = readDelivered(deliveredFile);
-  const minMtime = sinceSessionStart ? sessionStartMtime(sessionId) : null;
   const candidates = [];
   for (const name of names) {
     const stem = name.slice(0, -".json".length);
@@ -621,7 +1017,7 @@ function pendingLessons(worldName, sessionId, cwd, limit, sinceSessionStart = fa
     } catch {
       continue;
     }
-    if (!isRecord4(parsed))
+    if (!isRecord5(parsed))
       continue;
     const lid = typeof parsed["id"] === "string" ? parsed["id"] : parsed["id"] != null ? String(parsed["id"]) : "";
     if (!lid || already.has(lid))
@@ -651,8 +1047,15 @@ function rulesBlock(world) {
   if (world.rules_inject === false)
     return "";
   const rulesFile = world.rules_file;
-  if (!rulesFile || !existsSync3(rulesFile))
+  if (!rulesFile)
     return "";
+  try {
+    const st = statSync3(rulesFile);
+    if (!st.isFile() || st.size > MAX_RULES_BYTES)
+      return "";
+  } catch {
+    return "";
+  }
   let text;
   try {
     text = readFileSync4(rulesFile, "utf8");
@@ -665,12 +1068,13 @@ function rulesBlock(world) {
     return "";
   return text.slice(start + RULE_START.length, end).trim();
 }
-var LESSON_ARCHIVE_AT_DELIVERIES = 5;
+var LESSON_ARCHIVE_AT_DELIVERIES = 5, MAX_RULES_BYTES;
 var init_lessons = __esm(() => {
   init_paths();
   init_consts();
   init_fsx();
   init_worlds();
+  MAX_RULES_BYTES = 256 * 1024;
 });
 
 // apps/hook/src/kick.ts
@@ -737,9 +1141,6 @@ function resolveWorkerCommand(pluginRoot) {
     return ["bun", built, "worker", "--once"];
   return ["bun", "run", join5(pluginRoot, "apps", "cli", "src", "main.ts"), "worker", "--once"];
 }
-function spawnLogPath() {
-  return spawnLogOverride ?? process.env["SIL_TEST_SPAWN_LOG"] ?? null;
-}
 function maybeKickWorker(snapshot) {
   if (!existsSync4(hookSnapshotFile()))
     return;
@@ -768,7 +1169,7 @@ function maybeKickWorker(snapshot) {
   }
   const pluginRoot2 = process.env["CLAUDE_PLUGIN_ROOT"] || snapshot.plugin_root || pluginRoot();
   const cmd = resolveWorkerCommand(pluginRoot2);
-  const testLog = spawnLogPath();
+  const testLog = spawnLogOverride;
   if (testLog) {
     try {
       writeFileSync3(testLog, `${JSON.stringify(cmd)}
@@ -807,7 +1208,7 @@ var init_kick = __esm(() => {
 
 // apps/hook/src/queue.ts
 import { mkdirSync as mkdirSync5, readFileSync as readFileSync6 } from "fs";
-function isRecord5(v) {
+function isRecord6(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function queuePath(sessionId) {
@@ -816,7 +1217,7 @@ function queuePath(sessionId) {
 function readQueueEntry(qpath) {
   try {
     const parsed = JSON.parse(readFileSync6(qpath, "utf8"));
-    if (isRecord5(parsed))
+    if (isRecord6(parsed))
       return parsed;
   } catch {}
   return {};
@@ -825,7 +1226,7 @@ function writeQueueEntry(qpath, entry) {
   atomicWrite(qpath, `${JSON.stringify(entry, null, 2)}
 `);
 }
-function str2(v) {
+function str3(v) {
   return typeof v === "string" ? v : null;
 }
 function truthyStr(v) {
@@ -834,7 +1235,7 @@ function truthyStr(v) {
 function startGitHead(sessionId) {
   try {
     const parsed = JSON.parse(readFileSync6(`${sessionDir(sessionId)}/start.json`, "utf8"));
-    return isRecord5(parsed) ? str2(parsed["git_head"]) : null;
+    return isRecord6(parsed) ? str3(parsed["git_head"]) : null;
   } catch {
     return null;
   }
@@ -856,7 +1257,7 @@ function upsertStopQueue(payload, worldName, sessionId) {
     stops: (typeof existing["stops"] === "number" ? existing["stops"] : 0) + 1,
     ended: existing["ended"] === true,
     tool_uses: typeof existing["tool_uses"] === "number" ? existing["tool_uses"] : 0,
-    result: str2(existing["result"])
+    result: str3(existing["result"])
   };
   writeQueueEntry(qpath, entry);
 }
@@ -867,7 +1268,7 @@ function bumpToolUses(sessionId, count) {
   let obj;
   try {
     const parsed = JSON.parse(readFileSync6(qpath, "utf8"));
-    if (!isRecord5(parsed))
+    if (!isRecord6(parsed))
       return;
     obj = parsed;
   } catch {
@@ -883,7 +1284,7 @@ function markQueueEnded(payload, worldName, sessionId) {
   const existing = readQueueEntry(qpath);
   const obj = Object.keys(existing).length > 0 ? existing : {
     session_id: sessionId,
-    transcript_path: str2(payload["transcript_path"]),
+    transcript_path: str3(payload["transcript_path"]),
     cwd,
     world: worldName,
     git_head: startGitHead(sessionId),
@@ -913,12 +1314,12 @@ var init_queue = __esm(async () => {
 
 // apps/hook/src/scan.ts
 import { closeSync as closeSync2, openSync as openSync2, readSync, readFileSync as readFileSync7, statSync as statSync5 } from "fs";
-function isRecord6(v) {
+function isRecord7(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function assistantContent(record) {
   const message = record["message"];
-  if (isRecord6(message) && Array.isArray(message["content"]))
+  if (isRecord7(message) && Array.isArray(message["content"]))
     return message["content"];
   const content = record["content"];
   return Array.isArray(content) ? content : [];
@@ -991,12 +1392,12 @@ function scanTranscript(payload, sessionId, emit) {
     } catch {
       continue;
     }
-    if (!isRecord6(record))
+    if (!isRecord7(record))
       continue;
     const rtype = record["type"];
     if (rtype === "attachment") {
       const attachmentRaw = record["attachment"];
-      const attachment = isRecord6(attachmentRaw) ? attachmentRaw : {};
+      const attachment = isRecord7(attachmentRaw) ? attachmentRaw : {};
       const hookName = attachment["hookName"];
       const attType = attachment["type"];
       if (attType === "hook_success" || attType === "hook_error" || attType === "hook_blocked" || hookName) {
@@ -1008,7 +1409,7 @@ function scanTranscript(payload, sessionId, emit) {
       }
     } else if (rtype === "assistant") {
       for (const block of assistantContent(record)) {
-        if (isRecord6(block) && block["type"] === "tool_use")
+        if (isRecord7(block) && block["type"] === "tool_use")
           toolUses++;
       }
     }
@@ -1029,13 +1430,13 @@ var init_scan = __esm(async () => {
 
 // apps/hook/src/handlers.ts
 import { appendFileSync as appendFileSync4, mkdirSync as mkdirSync6, readFileSync as readFileSync8, statSync as statSync6 } from "fs";
-import { dirname as dirname3 } from "path";
+import { dirname as dirname4 } from "path";
 function artifactRef(kind, name) {
   return `${kind}:${name}`;
 }
 function appendUsageEvent(path, event) {
   try {
-    mkdirSync6(dirname3(path), { recursive: true });
+    mkdirSync6(dirname4(path), { recursive: true });
     appendFileSync4(path, `${JSON.stringify(event)}
 `, { encoding: "utf8", flag: "a" });
   } catch (e) {
@@ -1045,7 +1446,7 @@ function appendUsageEvent(path, event) {
     log(`usage.append_event failed for ${path}: ${e.message}`);
   }
 }
-function isRecord7(v) {
+function isRecord8(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function isDir(path) {
@@ -1064,7 +1465,10 @@ function dispatchNudge(payload, world, sessionId) {
   if (!dirs.some(isDir)) {
     writeBreadcrumb(nudgeFiresFile(), sdir, "nudge_dir_missing", sessionId, event);
   }
-  const nudges = loadNudges(dirs);
+  const { nudges, rejected } = loadNudgesDetailed(dirs);
+  for (const r of rejected) {
+    writeBreadcrumb(nudgeFiresFile(), sdir, "nudge_invalid", sessionId, event, { file: r.file, problems: r.problems.slice(0, 3) }, `nudge_invalid-${r.file}`);
+  }
   return dispatch(payload, nudges, { sessionDir: sdir, fireLog: nudgeFiresFile() }) ?? "";
 }
 function sessionIdOf(payload) {
@@ -1094,8 +1498,16 @@ ${rulesText}`);
   const nudgeText = dispatchNudge(payload, world, sessionId);
   if (nudgeText)
     parts.push(nudgeText);
-  writeStartJson(sessionId, { ts: nowIso(), cwd: String(cwd), world: worldName, git_head: gitHead(cwd) });
-  maybeKickWorker(snapshot);
+  try {
+    writeStartJson(sessionId, { ts: nowIso(), cwd: String(cwd), world: worldName, git_head: gitHead(cwd) });
+  } catch (e) {
+    log(`SessionStart could not write start.json: ${e.message}`);
+  }
+  try {
+    maybeKickWorker(snapshot);
+  } catch (e) {
+    log(`SessionStart could not kick the worker: ${e.message}`);
+  }
   return parts.filter((p) => p).join(`
 
 `);
@@ -1124,7 +1536,7 @@ function handlePostToolUse(payload, world) {
   const worldName = world.name || "default";
   const toolName = payload["tool_name"];
   const toolInputRaw = payload["tool_input"];
-  const toolInput = isRecord7(toolInputRaw) ? toolInputRaw : {};
+  const toolInput = isRecord8(toolInputRaw) ? toolInputRaw : {};
   if (toolName === "Skill") {
     appendUsageEvent(usageEventsFile(), {
       ts: nowIso(),
@@ -1141,7 +1553,7 @@ function handlePostToolUse(payload, world) {
       world: worldName,
       kind: "agent",
       ref: artifactRef("agent", String(toolInput["subagent_type"] ?? "")),
-      detail: { model: toolInput["model"] ?? null, description: toolInput["description"] ?? null }
+      detail: { model: toolInput["model"] ?? null }
     });
   }
   return dispatchNudge(payload, world, sessionId);
@@ -1183,6 +1595,8 @@ function handleSessionEnd(payload, world) {
   return "";
 }
 function getHandler(event) {
+  if (!Object.hasOwn(HANDLERS, event))
+    return;
   return HANDLERS[event];
 }
 var usageFailureLogged = false, HANDLERS;

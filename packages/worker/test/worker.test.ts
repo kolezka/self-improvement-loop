@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import { fsx, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
+import { fsx, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
 import { listQueue, loadEntry, writeEntry } from "@sil/store";
 import {
   eligible,
@@ -237,6 +237,93 @@ describe("Lock", () => {
     expect(() => lock.acquire()).not.toThrow();
     lock.release();
   });
+
+  test("a second acquire without a release is refused", () => {
+    prepareEnv();
+    const first = new Lock();
+    first.acquire();
+    try {
+      expect(() => new Lock().acquire()).toThrow(LockHeld);
+    } finally {
+      first.release();
+    }
+    expect(() => new Lock().acquire()).not.toThrow();
+    new Lock().release();
+  });
+
+  test("release leaves nothing that reads as held", () => {
+    prepareEnv();
+    const lock = new Lock();
+    lock.acquire();
+    lock.release();
+    expect(Lock.held()).toBe(false);
+    expect(existsSync(paths.workerLockFile())).toBe(false);
+  });
+
+  const RACERS = 8;
+
+  /** `RACERS` processes calling acquire() at once. Each holds past the others'
+   * attempts, so a second "ok" means two of them owned the lock at the same
+   * time. */
+  async function race(): Promise<string[]> {
+    const src = join(import.meta.dir, "..", "src", "index.ts");
+    // They all spin to the same wall-clock instant before calling acquire().
+    // Left to their own start times, bun's startup spread is wider than the
+    // window being tested and the processes never actually overlap: measured,
+    // the unlink-then-create reclaim failed 2 runs in 6 unsynchronised and 6 in
+    // 6 once they start together.
+    const startAt = Date.now() + 2000;
+    const program =
+      `import { Lock } from ${JSON.stringify(src)};\nimport { paths } from "@sil/core";\n` +
+      `if (!paths.workerLockFile().startsWith(${JSON.stringify(tmpDir)})) throw new Error("child escaped the test dir");\n` +
+      `while (Date.now() < ${startAt}) {}\n` +
+      'try { new Lock().acquire(); console.log("ok"); } catch { console.log("held"); }\n' +
+      "await Bun.sleep(900);\n";
+
+    // The env is passed explicitly. Measured: a child does NOT inherit
+    // `process.env` mutations made after start, so without this the children
+    // race on the operator's real worker lock instead of the test's.
+    const env = { ...process.env, SIL_STATE_DIR: process.env["SIL_STATE_DIR"]! };
+    const kids = Array.from({ length: RACERS }, () =>
+      Bun.spawn(["bun", "-e", program], { env, stdout: "pipe", stderr: "pipe" }),
+    );
+    const outputs = await Promise.all(kids.map(async (kid) => (await new Response(kid.stdout).text()).trim()));
+    await Promise.all(kids.map((kid) => kid.exited));
+    return outputs;
+  }
+
+  test(
+    "processes racing for a free lock produce exactly one holder",
+    async () => {
+      prepareEnv();
+
+      const outputs = await race();
+
+      expect(outputs.filter((o) => o === "ok")).toHaveLength(1);
+      expect(outputs.filter((o) => o === "held")).toHaveLength(RACERS - 1);
+    },
+    20_000,
+  );
+
+  test(
+    "processes racing to reclaim a crashed lock produce exactly one holder",
+    async () => {
+      // The sharp case, and the one measured failing: every process sees a dead
+      // pid, so every one of them takes the reclaim path at once. Reclaiming by
+      // unlink-then-create, each removed the file another had just written and
+      // two came away believing they held the lock.
+      prepareEnv();
+      const lockPath = paths.workerLockFile();
+      fsx.ensureDir(join(lockPath, ".."));
+      writeFileSync(lockPath, "999999999", "utf8"); // a crashed worker's pid
+
+      const outputs = await race();
+
+      expect(outputs.filter((o) => o === "ok")).toHaveLength(1);
+      expect(outputs.filter((o) => o === "held")).toHaveLength(RACERS - 1);
+    },
+    20_000,
+  );
 });
 
 // --- session dir reaping -----------------------------------------------------
@@ -277,13 +364,13 @@ describe("reapStaleSessionDirs", () => {
 // --- lock file left empty and free --------------------------------------------
 
 describe("runOnce lock file", () => {
-  test("leaves the lock file empty and free", async () => {
+  test("leaves the lock free", async () => {
     prepareEnv();
     writePending("sess-good", { ended: true });
 
     await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
 
-    expect(readFileSync(paths.workerLockFile(), "utf8")).toBe("");
+    expect(existsSync(paths.workerLockFile())).toBe(false);
     expect(Lock.held()).toBe(false);
   });
 });

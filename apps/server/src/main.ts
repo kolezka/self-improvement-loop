@@ -14,6 +14,8 @@ export interface CreateServerOptions {
 
 const REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 
+export const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+
 export function createServer(opts: CreateServerOptions): Bun.Server<undefined> {
   const host = opts.host ?? "127.0.0.1";
   if (REFUSED_HOSTS.has(host)) {
@@ -25,6 +27,10 @@ export function createServer(opts: CreateServerOptions): Bun.Server<undefined> {
   const server = Bun.serve({
     hostname: host,
     port: opts.port,
+    // Every op body here is a small JSON object. Left at Bun's default, one
+    // oversized POST buffers in the worker's own process before any handler
+    // sees it. Over the cap Bun answers 413 and never calls fetch.
+    maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
     fetch(request) {
       const url = new URL(request.url);
       const pathname = url.pathname;

@@ -10,6 +10,13 @@ import { atomicWrite } from "@sil/core/fsx";
 export const ROTATE_AT_BYTES = 10 * 1024 * 1024;
 export const ROTATE_KEEP_LINES = 5000;
 
+// Long enough that a live holder is never mistaken for a dead one, short
+// enough that an orphan does not outlive many hook calls. The pid probe
+// below is what normally reclaims an orphan; this is only the backstop for a
+// lock dir with no readable pid file.
+const DEFAULT_STALE_MS = 2000;
+const MIN_WAIT_MS = 200;
+
 export interface FireRecord {
   ts: string;
   pattern?: string;
@@ -18,34 +25,86 @@ export interface FireRecord {
   kind?: string;
 }
 
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM means the process exists but belongs to someone else.
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Whether an existing lock dir can be taken from its holder. The pid file
+ * decides when it is readable: a dead or unparsable pid means the holder is
+ * gone and the lock is reclaimed at once. With no pid file (a holder that
+ * has not written one yet, or could not) fall back to the age of the dir.
+ *
+ * A lock dir that cannot be stat'ed at all, such as a dangling symlink
+ * sitting on the path, is never reclaimable: withDirLock times out rather
+ * than delete something it cannot identify. */
+function reclaimable(lockDir: string, staleMs: number): boolean {
+  let raw: string | null = null;
+  try {
+    raw = readFileSync(`${lockDir}/pid`, "utf8");
+  } catch {
+    raw = null;
+  }
+  if (raw !== null) {
+    const pid = Number.parseInt(raw.trim(), 10);
+    if (!Number.isInteger(pid) || pid <= 0) return true;
+    return !pidAlive(pid);
+  }
+  try {
+    return Date.now() - statSync(lockDir).mtimeMs > staleMs;
+  } catch {
+    return false;
+  }
+}
+
 /** Run `fn` while holding an exclusive lock on `lockDir`. `mkdirSync` is the
  * atomic primitive: it fails with EEXIST when another holder already has
- * the directory, which Bun has no flock() to arbitrate directly. A lock
- * older than `staleMs` is taken over on the assumption its holder crashed;
- * a live holder refreshes nothing, so a very slow critical section under a
- * short staleMs can theoretically be taken over twice. staleMs should stay
- * comfortably above the slowest expected critical section. */
-export function withDirLock<T>(lockDir: string, fn: () => T, staleMs = 5000): T {
-  const giveUpAt = Date.now() + Math.max(staleMs * 4, 2000);
+ * the directory, which Bun has no flock() to arbitrate directly. The holder
+ * writes its pid inside, so a waiter can tell a crashed holder from a busy
+ * one instead of waiting out `staleMs` on a coin flip.
+ *
+ * Waits at most `staleMs` (floor MIN_WAIT_MS). The critical section is one
+ * append and the hook's own timeout is 5 s, so a longer wait is dead time
+ * either way. */
+export function withDirLock<T>(lockDir: string, fn: () => T, staleMs = DEFAULT_STALE_MS): T {
+  const giveUpAt = Date.now() + Math.max(staleMs, MIN_WAIT_MS);
   for (;;) {
+    let held = false;
     try {
       mkdirSync(lockDir);
-      break;
+      held = true;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      try {
-        const age = Date.now() - statSync(lockDir).mtimeMs;
-        if (age > staleMs) {
-          rmSync(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        continue; // lock dir vanished between the failed mkdir and stat: retry
-      }
-      if (Date.now() > giveUpAt) throw new Error(`withDirLock: timed out waiting for ${lockDir}`);
-      Bun.sleepSync(5);
     }
+    if (held) {
+      try {
+        writeFileSync(`${lockDir}/pid`, `${process.pid}\n`, "utf8");
+      } catch {
+        // an unwritable pid file only costs the next waiter its fast path
+      }
+      break;
+    }
+
+    if (reclaimable(lockDir, staleMs)) {
+      try {
+        rmSync(lockDir, { recursive: true, force: true });
+      } catch {
+        // another waiter reclaimed it first, or it is not ours to remove
+      }
+    }
+
+    // Every retry lands here. No path above may skip the deadline check or
+    // the sleep: a lock that can be neither taken nor reclaimed (a dangling
+    // symlink on the path) would otherwise spin at 100% CPU forever.
+    if (Date.now() > giveUpAt) throw new Error(`withDirLock: timed out waiting for ${lockDir}`);
+    Bun.sleepSync(5);
   }
+
   try {
     return fn();
   } finally {
@@ -112,9 +171,12 @@ function ts(): string {
 }
 
 /** Diagnostic record distinguishing 'nothing matched' from 'dispatch could
- * not run properly' (missing nudge dir, exhausted gate budget). Capped at
- * one record per (session, event, kind): otherwise an anomaly that never
- * clears would write on every matching call for the rest of the session. */
+ * not run properly' (missing nudge dir, rejected nudge file, exhausted gate
+ * budget). Capped at one record per (session, kind, event): otherwise an
+ * anomaly that never clears would write on every matching call for the rest
+ * of the session. `dedupeKey` overrides that grouping for a caller that
+ * needs a finer one, such as one record per rejected file rather than one
+ * for all of them. */
 export function writeBreadcrumb(
   fireLog: string,
   sessionDir: string,
@@ -122,8 +184,9 @@ export function writeBreadcrumb(
   sessionId: string,
   event: string,
   extra: Record<string, unknown> = {},
+  dedupeKey?: string,
 ): void {
-  if (!claimMarker(sessionDir, `breadcrumb-${kind}-${event}`)) return;
+  if (!claimMarker(sessionDir, `breadcrumb-${dedupeKey ?? `${kind}-${event}`}`)) return;
   const record = { ts: ts(), kind, session_id: sessionId, event, ...extra };
   appendLine(fireLog, JSON.stringify(record));
 }

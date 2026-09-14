@@ -7,7 +7,7 @@ import { dirname } from "node:path";
 import * as paths from "@sil/core/paths";
 import { atomicWrite } from "@sil/core/fsx";
 import type { HookEvent } from "@sil/core/consts";
-import { dispatch, loadNudges, writeBreadcrumb } from "@sil/nudges";
+import { dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
 import { log, nowIso } from "./log.ts";
 import type { HookSnapshot, HookWorld } from "./snapshot.ts";
 import { gitHead } from "./worlds.ts";
@@ -90,7 +90,21 @@ function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessi
   if (!dirs.some(isDir)) {
     writeBreadcrumb(paths.nudgeFiresFile(), sdir, "nudge_dir_missing", sessionId, event);
   }
-  const nudges = loadNudges(dirs);
+  const { nudges, rejected } = loadNudgesDetailed(dirs);
+  // One breadcrumb per rejected file per session, not per (kind, event):
+  // a hand-placed nudge that lint refuses is never evaluated, and silence
+  // about it is how a nudge appears to be installed but never fires.
+  for (const r of rejected) {
+    writeBreadcrumb(
+      paths.nudgeFiresFile(),
+      sdir,
+      "nudge_invalid",
+      sessionId,
+      event,
+      { file: r.file, problems: r.problems.slice(0, 3) },
+      `nudge_invalid-${r.file}`,
+    );
+  }
   return dispatch(payload, nudges, { sessionDir: sdir, fireLog: paths.nudgeFiresFile() }) ?? "";
 }
 
@@ -129,8 +143,20 @@ function handleSessionStart(payload: Record<string, unknown>, world: HookWorld, 
   const nudgeText = dispatchNudge(payload, world, sessionId);
   if (nudgeText) parts.push(nudgeText);
 
-  writeStartJson(sessionId, { ts: nowIso(), cwd: String(cwd), world: worldName, git_head: gitHead(cwd) });
-  maybeKickWorker(snapshot);
+  // Both are bookkeeping, and both can fail on their own (an unwritable
+  // session dir, a spawn that will not start). The injection text is already
+  // built at this point: neither failure may take it down, and the first
+  // must not skip the second.
+  try {
+    writeStartJson(sessionId, { ts: nowIso(), cwd: String(cwd), world: worldName, git_head: gitHead(cwd) });
+  } catch (e) {
+    log(`SessionStart could not write start.json: ${(e as Error).message}`);
+  }
+  try {
+    maybeKickWorker(snapshot);
+  } catch (e) {
+    log(`SessionStart could not kick the worker: ${(e as Error).message}`);
+  }
 
   return parts.filter((p) => p).join("\n\n");
 }
@@ -173,13 +199,17 @@ function handlePostToolUse(payload: Record<string, unknown>, world: HookWorld): 
       detail: {},
     });
   } else if (toolName === "Agent") {
+    // No "description" for the same reason Skill drops "args": it is free
+    // text the model wrote and can carry anything it was reasoning about.
+    // The ref names the agent and detail names the model; that is what
+    // usage counting needs.
     appendUsageEvent(paths.usageEventsFile(), {
       ts: nowIso(),
       session_id: sessionId,
       world: worldName,
       kind: "agent",
       ref: artifactRef("agent", String(toolInput["subagent_type"] ?? "")),
-      detail: { model: toolInput["model"] ?? null, description: toolInput["description"] ?? null },
+      detail: { model: toolInput["model"] ?? null },
     });
   }
 
@@ -246,7 +276,10 @@ export const HANDLERS: Partial<Record<HookEvent, Handler>> = {
 };
 
 /** HANDLERS keyed by an arbitrary event string, for main.ts's lookup: the
- * event name comes from the payload, not from HookEvent's closed set. */
+ * event name comes from the payload, not from HookEvent's closed set, so a
+ * payload naming "toString" or "constructor" would otherwise pull a function
+ * off Object.prototype and call it as a handler. */
 export function getHandler(event: string): Handler | undefined {
+  if (!Object.hasOwn(HANDLERS, event)) return undefined;
   return (HANDLERS as Record<string, Handler | undefined>)[event];
 }

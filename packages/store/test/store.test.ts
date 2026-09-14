@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "@sil/core";
@@ -90,12 +90,66 @@ describe("reflections", () => {
   });
 });
 
+describe("the reflection walk and symlinks", () => {
+  test("a directory symlink is never followed, and nothing is counted twice", () => {
+    writeReflection("w", { id: "2026-09-10-a-0001" }, body("a"));
+    const dir = paths.reflectionsDir("w");
+
+    // `reflections/sub/loop -> ..` re-enters the tree. Followed, the walk
+    // recurses until the OS refuses and yields one reflection ~41 times, which
+    // clears any promotion threshold on its own.
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    symlinkSync("..", join(dir, "sub", "loop"), "dir");
+
+    // A symlink to any directory ingests whatever markdown lives there.
+    const foreign = join(tmp, "foreign");
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(join(foreign, "outside.md"), `---\nid: outside\nworld: w\ncreated: 2026-09-01\n---\n${body("a")}`);
+    symlinkSync(foreign, join(dir, "elsewhere"), "dir");
+
+    const items = listReflections("w");
+
+    expect(items.map((r) => r.id)).toEqual(["2026-09-10-a-0001"]);
+    expect(patternCounts("w")["a"]).toBe(1);
+  });
+});
+
 describe("ledger", () => {
   test("V1 list shape and flat map shape both load", () => {
     const v1 = parseLedger(JSON.stringify([{ pattern: "a", status: "promoted", last_updated: "2026-01-01T00:00:00Z" }]));
     expect(v1.entries["a"]!.status).toBe("promoted");
     const flat = parseLedger(JSON.stringify({ b: { pattern: "b", last_updated: "2026-01-01T00:00:00Z" } }));
     expect(flat.entries["b"]!.status).toBe("staged");
+  });
+
+  test("the real V1 shape loads: entries is a list under version", () => {
+    // Copied from the shape V1 actually wrote: `entries` is a LIST, not a map,
+    // and an old row may predate `last_updated` entirely.
+    const p = join(tmp, "promotions.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            pattern: "verify-callsites",
+            promoted_at_count: 3,
+            status: "promoted",
+            artifact_type: "skill",
+            last_updated: "2026-09-01T00:00:00Z",
+          },
+          { pattern: "enumerate-full-set", promoted_at_count: 5, status: "promoted", artifact_type: "rule" },
+        ],
+      }),
+    );
+
+    const ledger = loadLedger(p);
+
+    expect(Object.keys(ledger.entries).sort()).toEqual(["enumerate-full-set", "verify-callsites"]);
+    expect(ledger.entries["verify-callsites"]!.promoted_at_count).toBe(3);
+    expect(ledger.entries["enumerate-full-set"]!.artifact_type).toBe("rule");
+    // A row with no `last_updated` is dated now rather than rejected.
+    expect(ledger.entries["enumerate-full-set"]!.last_updated).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   test("a corrupt ledger names the file", () => {

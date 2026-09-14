@@ -14,7 +14,10 @@ import {
   uninstall,
 } from "../src/schedule.ts";
 
-const LONG_DASH_RE = /[–—]/;
+// Built from code points so this file passes the dash lint itself.
+const EM = String.fromCodePoint(0x2014);
+const EN = String.fromCodePoint(0x2013);
+const LONG_DASH_RE = new RegExp(`[${EN}${EM}]`);
 
 let tmp: string;
 let savedHome: string | undefined;

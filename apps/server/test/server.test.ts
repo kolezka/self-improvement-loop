@@ -84,6 +84,30 @@ describe("every op route", () => {
   });
 });
 
+describe("request body cap", () => {
+  test("an oversized POST to an authenticated op is refused with 413", async () => {
+    // Uncapped, a body this size is buffered in the process that also runs the
+    // worker. The cap is enforced before any handler sees the request.
+    const res = await fetch(`${base()}/api/feedback/add`, {
+      method: "POST",
+      headers: goodHeaders({ "content-type": "application/json" }),
+      body: "x".repeat(5 * 1024 * 1024),
+    });
+
+    expect(res.status).toBe(413);
+  });
+
+  test("a normal op body is still accepted", async () => {
+    const res = await fetch(`${base()}/api/feedback/add`, {
+      method: "POST",
+      headers: goodHeaders({ "content-type": "application/json" }),
+      body: "{}",
+    });
+
+    expect(res.status).not.toBe(413);
+  });
+});
+
 describe("guard", () => {
   test("missing X-SIL-Local is rejected with 401", async () => {
     const res = await fetch(`${base()}/api/health/report`, { headers: { [TOKEN_HEADER]: TOKEN } });

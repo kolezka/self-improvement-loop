@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendLine, claimMarker, readFires, withDirLock, writeBreadcrumb } from "../src/firelog.ts";
@@ -100,5 +100,57 @@ describe("appendLine + readFires", () => {
     const parsed = lines.map((l) => JSON.parse(l).i as number);
     expect(parsed).not.toContain(0);
     expect(parsed[parsed.length - 1]).toBe(19);
+  });
+});
+
+describe("withDirLock reclaim", () => {
+  test("an orphaned lock dir naming a dead pid is taken over at once", () => {
+    // 5000 ms of stale-wait used to equal the hook's own 5 s timeout, so an
+    // orphan cost a coin flip on every Stop for the rest of the session.
+    const lockDir = join(dir, "orphan.lockdir");
+    mkdirSync(lockDir);
+    // A pid far above any realistic pid_max: reliably not a live process.
+    writeFileSync(join(lockDir, "pid"), "4194303\n");
+
+    const started = Date.now();
+    expect(withDirLock(lockDir, () => "acquired")).toBe("acquired");
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  test("an unparsable pid is treated as a dead holder", () => {
+    const lockDir = join(dir, "garbage.lockdir");
+    mkdirSync(lockDir);
+    writeFileSync(join(lockDir, "pid"), "not-a-pid\n");
+
+    const started = Date.now();
+    expect(withDirLock(lockDir, () => "acquired")).toBe("acquired");
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  test("a live holder is not evicted before the deadline", () => {
+    const lockDir = join(dir, "live.lockdir");
+    mkdirSync(lockDir);
+    writeFileSync(join(lockDir, "pid"), `${process.pid}\n`);
+    expect(() => withDirLock(lockDir, () => "acquired", 50)).toThrow(/timed out/);
+  });
+
+  test("the holder writes its pid so the next waiter can probe it", () => {
+    const lockDir = join(dir, "pidfile.lockdir");
+    const seen = withDirLock(lockDir, () => readFileSync(join(lockDir, "pid"), "utf8").trim());
+    expect(seen).toBe(String(process.pid));
+  });
+
+  test("a dangling symlink on the lock path throws instead of spinning", () => {
+    // mkdir returns EEXIST and every stat fails, so the retry used to
+    // `continue` past both the deadline check and the sleep: a hot loop that
+    // never ended.
+    const lockDir = join(dir, "dangling.lockdir");
+    symlinkSync(join(dir, "no-such-target"), lockDir);
+
+    const started = Date.now();
+    expect(() => withDirLock(lockDir, () => "acquired", 50)).toThrow(/timed out/);
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+    expect(elapsed).toBeLessThan(3000);
   });
 });

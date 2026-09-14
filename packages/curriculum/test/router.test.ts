@@ -263,6 +263,51 @@ describe("and substantive: a quote has to be long enough to be one", () => {
   });
 });
 
+describe("and scaffolding is not evidence", () => {
+  // Every reflection ever written carries these lines, so a quote made of them
+  // is verbatim in all of them and says nothing about this one.
+  const TEMPLATE_SOURCES =
+    "Last updated: 2026-09-01\n\nPattern: verify-callsites\n\n## What worked\n\n" +
+    "## What failed & why\n\n## Reusable lesson\n\n## Verification\n";
+  const SCAFFOLDING = [
+    "Last updated: 2026-09-01 Pattern: verify-callsites",
+    "Pattern: verify-callsites ## What worked ## What failed & why",
+    "## What worked ## What failed & why ## Reusable lesson ## Verification",
+  ];
+
+  test("the reflection template's own lines buy no artifact type", () => {
+    for (const quote of SCAFFOLDING) {
+      // Long enough and wordy enough: the refusal is about what the words are.
+      expect(quote.length).toBeGreaterThanOrEqual(MIN_QUOTE_CHARS);
+      expect(quote.split(" ").length).toBeGreaterThanOrEqual(MIN_QUOTE_WORDS);
+      expect(TEMPLATE_SOURCES.split(/\s+/).join(" ")).toContain(quote);
+
+      for (const field of ["capability_evidence", "context_evidence"] as const) {
+        const result = route(
+          answer({ needs_own_context: field === "context_evidence", [field]: quote }),
+          TEMPLATE_SOURCES,
+          PAYLOADS,
+          opts,
+        );
+        expect(result.artifact_type).toBe("rule");
+      }
+    }
+  });
+
+  test("a real lesson quote out of a real reflection still earns its type", () => {
+    const sources =
+      "Last updated: 2026-09-01\n\nPattern: verify-callsites\n\n## Reusable lesson\n\n" +
+      "Run `rg` over every call site of the changed symbol and read the graphify " +
+      "inventory before calling the change safe.\n";
+    const quote = "over every call site of the changed symbol and read the graphify inventory";
+
+    expect(route(answer({ capability_evidence: quote }), sources, PAYLOADS, opts).artifact_type).toBe("skill");
+    expect(
+      route(answer({ needs_own_context: true, context_evidence: quote }), sources, PAYLOADS, opts).artifact_type,
+    ).toBe("agent");
+  });
+});
+
 describe("precedence: the order the checks run in is the contract", () => {
   test("a parse error outranks an explicit decline", () => {
     const result = route(answer({ parse_error: "reply is not a JSON object", no_artifact: true }), SOURCES, PAYLOADS, opts);
@@ -316,6 +361,16 @@ describe("precedence: the order the checks run in is the contract", () => {
 });
 
 describe("totality", () => {
+  test("a malformed answer costs a routing decision, never a crash", () => {
+    // A caller handing null from a failed file read, or a drafter reply parsed
+    // into a bare object, must not take the whole curriculum run down.
+    const answers: unknown[] = [null, undefined, {}, 42, "a string", [], { gate: {} }, { trigger_event: null }];
+    for (const a of answers) {
+      const result = route(a, SOURCES, PAYLOADS, opts);
+      expect(["skill", "hook", "rule", "agent", "none"]).toContain(result.artifact_type);
+    }
+  });
+
   test("route never throws", () => {
     const cases: [RouteAnswer, unknown, unknown][] = [
       [answer({ trigger_event: "PreToolUse:Bash", gate: { all: "not a list" } }), "", []],
@@ -344,4 +399,12 @@ describe("the payload corpus", () => {
     expect(PAYLOADS.length).toBe(readdirSync(fixtures).filter((n) => n.endsWith(".json")).length);
     expect(PAYLOADS.every((p) => typeof p === "object" && p !== null)).toBe(true);
   });
+});
+
+test("a prototype key is not a hook event", async () => {
+  const { splitTrigger } = await import("../src/router.ts");
+  for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+    expect(splitTrigger(name)).toBeNull();
+    expect(splitTrigger(`${name}:Bash`)).toBeNull();
+  }
 });

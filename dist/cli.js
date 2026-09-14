@@ -15141,7 +15141,7 @@ var PromotionEntry = object({
   status: PromotionStatus.default("staged"),
   artifact_type: ArtifactType.default("none"),
   served_by: ArtifactRef.nullable().default(null),
-  last_updated: isoTs,
+  last_updated: isoTs.default(() => new Date().toISOString()),
   commit: string2().nullable().default(null),
   feedback: Scorecard.nullable().default(null)
 });
@@ -15214,8 +15214,9 @@ var HookSnapshot = object({
   plugin_root: string2()
 });
 // packages/core/src/paths.ts
+import { existsSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 function envPath(name, fallback) {
   const raw = process.env[name];
   return raw && raw.length > 0 ? expandHome(raw) : fallback;
@@ -15232,11 +15233,25 @@ function stateDir() {
 function dataDir() {
   return envPath("SIL_DATA_DIR", join(envPath("XDG_DATA_HOME", join(homedir(), ".local", "share")), "self-improvement-loop"));
 }
+var manifestRoot;
+function findManifestRoot(start) {
+  let dir = resolve(start);
+  for (;; ) {
+    if (existsSync(join(dir, ".claude-plugin", "plugin.json")))
+      return dir;
+    const parent = dirname(dir);
+    if (parent === dir)
+      return null;
+    dir = parent;
+  }
+}
 function pluginRoot() {
   const raw = process.env["CLAUDE_PLUGIN_ROOT"];
   if (raw)
     return raw;
-  return resolve(import.meta.dir, "..", "..", "..");
+  if (manifestRoot === undefined)
+    manifestRoot = findManifestRoot(import.meta.dir);
+  return manifestRoot ?? resolve(import.meta.dir, "..", "..", "..");
 }
 function claudeConfigDir() {
   return envPath("CLAUDE_CONFIG_DIR", join(homedir(), ".claude"));
@@ -15263,13 +15278,13 @@ function safeComponent(name) {
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
 // packages/core/src/fsx.ts
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
-import { dirname, join as join2 } from "path";
+import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
+import { dirname as dirname2, join as join2 } from "path";
 function ensureDir(dir) {
   mkdirSync(dir, { recursive: true });
 }
 function exists(path) {
-  return existsSync(path);
+  return existsSync2(path);
 }
 function readText(path) {
   return readFileSync(path, "utf8");
@@ -15282,8 +15297,8 @@ function readTextOr(path, fallback) {
   }
 }
 function atomicWrite(path, text) {
-  ensureDir(dirname(path));
-  const tmp = join2(dirname(path), `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  ensureDir(dirname2(path));
+  const tmp = join2(dirname2(path), `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   writeFileSync(tmp, text, "utf8");
   renameSync(tmp, path);
 }
@@ -15320,14 +15335,14 @@ function readJsonl(path) {
   return out;
 }
 function appendJsonl(path, record) {
-  ensureDir(dirname(path));
+  ensureDir(dirname2(path));
   appendFileSync(path, JSON.stringify(record) + `
 `, "utf8");
 }
 var ROTATE_AT_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP_LINES = 5000;
 function appendLine(path, line, rotateAt = ROTATE_AT_BYTES, keep = ROTATE_KEEP_LINES) {
-  ensureDir(dirname(path));
+  ensureDir(dirname2(path));
   try {
     if (statSync(path).size >= rotateAt) {
       const lines = readFileSync(path, "utf8").split(`
@@ -15593,7 +15608,7 @@ function writeHookSnapshot(cfg = loadConfig()) {
 }
 // apps/cli/src/common.ts
 import { execFileSync } from "child_process";
-import { existsSync as existsSync2 } from "fs";
+import { existsSync as existsSync3 } from "fs";
 import { join as join4 } from "path";
 function resolveWorld(cfg, name) {
   if (name)
@@ -15617,7 +15632,7 @@ function mapKnownError(err) {
 }
 function ensureLearnedRepo(path) {
   ensureDir(path);
-  if (!existsSync2(join4(path, ".git"))) {
+  if (!existsSync3(join4(path, ".git"))) {
     execFileSync("git", ["init", "-b", "main", path], { stdio: "ignore" });
   }
   const hasHead = trySpawn(() => execFileSync("git", ["-C", path, "rev-parse", "--verify", "HEAD"], { stdio: "ignore" }));
@@ -15643,6 +15658,7 @@ __export(exports_src4, {
   MAX_RULE_CHARS: () => MAX_RULE_CHARS,
   MIN_BODY_CHARS: () => MIN_BODY_CHARS,
   MIN_QUOTE_CHARS: () => MIN_QUOTE_CHARS,
+  MIN_QUOTE_TERMS: () => MIN_QUOTE_TERMS,
   MIN_QUOTE_WORDS: () => MIN_QUOTE_WORDS,
   MIN_SHARED_TERMS: () => MIN_SHARED_TERMS,
   RouteAnswer: () => RouteAnswer,
@@ -15653,9 +15669,11 @@ __export(exports_src4, {
   artifacts: () => exports_artifacts,
   branchName: () => branchName,
   cluster: () => cluster,
+  distinctiveTerms: () => distinctiveTerms,
   draftMessages: () => draftMessages,
   emptyAnswer: () => emptyAnswer,
   ensureRulesFile: () => ensureRulesFile,
+  foreignRuleTags: () => foreignRuleTags,
   git: () => exports_git,
   isPlaceholderBody: () => isPlaceholderBody,
   judgeMessages: () => judgeMessages,
@@ -15678,6 +15696,7 @@ __export(exports_src4, {
   removeArtifact: () => removeArtifact,
   route: () => route,
   ruleBulletInText: () => ruleBulletInText,
+  rulesDiffOwnedBy: () => rulesDiffOwnedBy,
   rulesProblem: () => rulesProblem,
   run: () => run,
   scorecardByPattern: () => scorecardByPattern,
@@ -15705,37 +15724,52 @@ __export(exports_git, {
   head: () => head,
   isAncestor: () => isAncestor,
   isRepo: () => isRepo,
+  isTimeoutSignal: () => isTimeoutSignal,
   refExists: () => refExists,
   show: () => show,
+  signalMessage: () => signalMessage,
   withScratchWorktree: () => withScratchWorktree
 });
 import { mkdirSync as mkdirSync2, mkdtempSync, rmSync, statSync as statSync2 } from "fs";
 import { tmpdir } from "os";
 import { join as join5 } from "path";
 var DEFAULT_TIMEOUT_MS = 60000;
+function isTimeoutSignal(signal, elapsedMs, timeoutMs) {
+  return signal === "SIGTERM" && elapsedMs >= timeoutMs;
+}
+function signalMessage(args, signal, elapsedMs, timeoutMs) {
+  const what = `git ${args.join(" ")}`;
+  if (isTimeoutSignal(signal, elapsedMs, timeoutMs))
+    return `${what} timed out after ${timeoutMs}ms`;
+  return `${what} was killed by ${signal ?? "an unknown signal"} after ${elapsedMs}ms`;
+}
 function gitRaw(repo, args, timeout = DEFAULT_TIMEOUT_MS) {
   let proc;
+  const started = Date.now();
   try {
     proc = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe", timeout });
   } catch (e) {
-    return { code: 127, stdout: "", stderr: e.message, timedOut: false };
+    return { code: 127, stdout: "", stderr: e.message, signal: null, elapsedMs: 0, timedOut: false };
   }
-  const timedOut = proc.exitCode === null && proc.signalCode !== null;
+  const elapsedMs = Date.now() - started;
+  const signal = proc.exitCode === null ? proc.signalCode ?? null : null;
   return {
     code: proc.exitCode,
     stdout: proc.stdout.toString(),
     stderr: proc.stderr.toString(),
-    timedOut
+    signal,
+    elapsedMs,
+    timedOut: isTimeoutSignal(signal, elapsedMs, timeout)
   };
 }
 function git(repo, args, opts = {}) {
   const check = opts.check ?? true;
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS;
   const res = gitRaw(repo, args, timeout);
-  if (res.timedOut) {
+  if (res.signal !== null) {
     if (!check)
       return "";
-    throw new GitError(`git ${args.join(" ")} timed out after ${timeout}ms`, res.stderr);
+    throw new GitError(signalMessage(args, res.signal, res.elapsedMs, timeout), res.stderr);
   }
   if (res.code !== 0) {
     if (!check)
@@ -15789,18 +15823,24 @@ function hooksOff(parent) {
 function withScratchWorktree(repo, branch, base, fn) {
   const tmp = mkdtempSync(join5(tmpdir(), "sil-wt-"));
   const workDir = join5(tmp, "wt");
+  const created = !refExists(repo, `refs/heads/${branch}`);
+  let threw = true;
   try {
     const hooks = hooksOff(tmp);
-    if (refExists(repo, `refs/heads/${branch}`)) {
-      git(repo, [...hooks, "worktree", "add", "-q", workDir, branch]);
-    } else {
+    if (created) {
       git(repo, [...hooks, "worktree", "add", "-q", "-b", branch, workDir, base]);
+    } else {
+      git(repo, [...hooks, "worktree", "add", "-q", workDir, branch]);
     }
-    return fn(workDir);
+    const out = fn(workDir);
+    threw = false;
+    return out;
   } finally {
     git(repo, ["worktree", "remove", "--force", workDir], { check: false });
     rmSync(tmp, { recursive: true, force: true });
     git(repo, ["worktree", "prune"], { check: false });
+    if (created && threw)
+      git(repo, ["branch", "-q", "-D", branch], { check: false });
   }
 }
 function dirtyPaths(repo, prefix, opts = {}) {
@@ -15840,6 +15880,7 @@ __export(exports_artifacts, {
   artifactPrefixes: () => artifactPrefixes,
   artifactRel: () => artifactRel,
   ensureRulesFile: () => ensureRulesFile,
+  foreignRuleTags: () => foreignRuleTags,
   isPlaceholderBody: () => isPlaceholderBody,
   ownsRulesFile: () => ownsRulesFile,
   placeholderBody: () => placeholderBody,
@@ -15847,11 +15888,12 @@ __export(exports_artifacts, {
   removeArtifact: () => removeArtifact,
   ruleBulletInText: () => ruleBulletInText,
   ruleTag: () => ruleTag,
+  rulesDiffOwnedBy: () => rulesDiffOwnedBy,
   rulesProblem: () => rulesProblem,
   writeArtifact: () => writeArtifact
 });
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync, rmdirSync, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
-import { dirname as dirname2, join as join6, resolve as resolve3 } from "path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readdirSync, rmdirSync, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname3, join as join6, resolve as resolve3 } from "path";
 var TYPES = ["skill", "hook", "rule", "agent"];
 var HOOK_KEYS = ["pattern", "event", "matcher", "gate", "once_per", "text"];
 var RULE_TAG_OPEN = ruleTag("").replace("-->", "");
@@ -15902,7 +15944,7 @@ function readArtifact(world, artifactType, pattern, root) {
   if (!rel)
     return "";
   const path = join6(rootFor(world, root), rel);
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return "";
   const text = readText(path);
   return artifactType === "rule" ? ruleBulletInText(text, pattern) : text;
@@ -15916,7 +15958,7 @@ function writeArtifact(world, artifactType, pattern, payload, root) {
     writeRule(path, pattern, String(payload).trim());
     return path;
   }
-  mkdirSync3(dirname2(path), { recursive: true });
+  mkdirSync3(dirname3(path), { recursive: true });
   if (artifactType === "hook") {
     writeFileSync2(path, JSON.stringify(hookPayload(payload), null, 2) + `
 `, "utf8");
@@ -15943,10 +15985,10 @@ function removeArtifact(world, artifactType, pattern, root) {
   const path = join6(rootFor(world, root), rel);
   if (artifactType === "rule")
     return removeRuleBullet(path, pattern) ? rel : "";
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return "";
   unlinkSync(path);
-  const parent = dirname2(path);
+  const parent = dirname3(path);
   if (artifactType === "skill") {
     try {
       if (statSync3(parent).isDirectory() && readdirSync(parent).length === 0)
@@ -15954,6 +15996,31 @@ function removeArtifact(world, artifactType, pattern, root) {
     } catch {}
   }
   return rel;
+}
+var RULE_TAG_RE = /<!--rule:([A-Za-z0-9][A-Za-z0-9-]*)-->/g;
+function foreignRuleTags(diffText, pattern) {
+  const tags = new Set;
+  for (const line of diffText.split(`
+`)) {
+    if ((line.startsWith("+") || line.startsWith("-")) && !line.startsWith("+++") && !line.startsWith("---")) {
+      for (const m of line.matchAll(RULE_TAG_RE))
+        tags.add(m[1]);
+    }
+  }
+  tags.delete(pattern);
+  return [...tags].sort();
+}
+function rulesDiffOwnedBy(diffText, pattern) {
+  const tag = ruleTag(pattern);
+  for (const line of diffText.split(`
+`)) {
+    if (!(line.startsWith("+") || line.startsWith("-")) || line.startsWith("+++") || line.startsWith("---"))
+      continue;
+    const body = line.slice(1).trim();
+    if (body !== "" && !body.endsWith(tag))
+      return false;
+  }
+  return true;
 }
 function ruleBulletInText(text, pattern) {
   const tag = ruleTag(pattern);
@@ -15968,7 +16035,7 @@ function rulesProblem(world, root) {
   const path = join6(rootFor(world, root), strip(world.layout.rules_file));
   let text;
   try {
-    text = existsSync3(path) ? readText(path) : "";
+    text = existsSync4(path) ? readText(path) : "";
   } catch (e) {
     return `${path} is unreadable: ${e.message}`;
   }
@@ -15998,9 +16065,9 @@ function ensureRulesFile(world, root) {
   if (!ownsRulesFile(world))
     return null;
   const path = join6(rootFor(world, root), strip(world.layout.rules_file));
-  if (existsSync3(path))
+  if (existsSync4(path))
     return path;
-  mkdirSync3(dirname2(path), { recursive: true });
+  mkdirSync3(dirname3(path), { recursive: true });
   writeFileSync2(path, `# Learned rules
 
 Promoted by the loop. Edit outside the markers only.
@@ -16016,7 +16083,7 @@ function writeRule(path, pattern, bullet) {
       throw new ValidationError(`refusing to write a rule bullet containing ${JSON.stringify(marker)}: it would wedge ${path} for every later write and for retire`);
     }
   }
-  const text = existsSync3(path) ? readText(path) : "";
+  const text = existsSync4(path) ? readText(path) : "";
   const problem = markerProblem(path, text);
   if (problem)
     throw new ValidationError(problem);
@@ -16031,7 +16098,7 @@ ${kept.join(`
 ${RULE_END}${tail}`, "utf8");
 }
 function removeRuleBullet(path, pattern) {
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return false;
   const text = readText(path);
   const tag = ruleTag(pattern);
@@ -16139,6 +16206,8 @@ __export(exports_src, {
   EVENTS: () => EVENTS,
   LOW_FREQUENCY_EVENTS: () => LOW_FREQUENCY_EVENTS,
   MAX_MATCH_LEN: () => MAX_MATCH_LEN,
+  MAX_PATTERN_LEN: () => MAX_PATTERN_LEN,
+  MAX_QUANTIFIED_GROUPS: () => MAX_QUANTIFIED_GROUPS,
   MAX_TEXT: () => MAX_TEXT,
   PREDICATES: () => PREDICATES,
   ROTATE_AT_BYTES: () => ROTATE_AT_BYTES2,
@@ -16149,12 +16218,15 @@ __export(exports_src, {
   evaluate: () => evaluate,
   gateTruth: () => gateTruth,
   hasNestedQuantifier: () => hasNestedQuantifier,
+  isUnsafeRegex: () => isUnsafeRegex,
   lintNudge: () => lintNudge,
   loadNudges: () => loadNudges,
+  loadNudgesDetailed: () => loadNudgesDetailed,
   readFires: () => readFires,
   runGateCorpus: () => runGateCorpus,
   splitTrigger: () => splitTrigger,
   unboundedBroadcastRule: () => unboundedBroadcastRule,
+  unsafeRegexReason: () => unsafeRegexReason,
   validateGate: () => validateGate,
   withDirLock: () => withDirLock,
   writeBreadcrumb: () => writeBreadcrumb
@@ -16166,32 +16238,65 @@ import { join as join7 } from "path";
 
 // packages/nudges/src/firelog.ts
 import { createHash } from "crypto";
-import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync2, rmSync as rmSync2, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname3 } from "path";
+import { appendFileSync as appendFileSync2, existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync2, rmSync as rmSync2, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname4 } from "path";
 var ROTATE_AT_BYTES2 = 10 * 1024 * 1024;
 var ROTATE_KEEP_LINES2 = 5000;
-function withDirLock(lockDir, fn, staleMs = 5000) {
-  const giveUpAt = Date.now() + Math.max(staleMs * 4, 2000);
+var DEFAULT_STALE_MS = 2000;
+var MIN_WAIT_MS = 200;
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function reclaimable(lockDir, staleMs) {
+  let raw = null;
+  try {
+    raw = readFileSync2(`${lockDir}/pid`, "utf8");
+  } catch {
+    raw = null;
+  }
+  if (raw !== null) {
+    const pid = Number.parseInt(raw.trim(), 10);
+    if (!Number.isInteger(pid) || pid <= 0)
+      return true;
+    return !pidAlive(pid);
+  }
+  try {
+    return Date.now() - statSync4(lockDir).mtimeMs > staleMs;
+  } catch {
+    return false;
+  }
+}
+function withDirLock(lockDir, fn, staleMs = DEFAULT_STALE_MS) {
+  const giveUpAt = Date.now() + Math.max(staleMs, MIN_WAIT_MS);
   for (;; ) {
+    let held = false;
     try {
       mkdirSync4(lockDir);
-      break;
+      held = true;
     } catch (e) {
       if (e.code !== "EEXIST")
         throw e;
-      try {
-        const age = Date.now() - statSync4(lockDir).mtimeMs;
-        if (age > staleMs) {
-          rmSync2(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() > giveUpAt)
-        throw new Error(`withDirLock: timed out waiting for ${lockDir}`);
-      Bun.sleepSync(5);
     }
+    if (held) {
+      try {
+        writeFileSync3(`${lockDir}/pid`, `${process.pid}
+`, "utf8");
+      } catch {}
+      break;
+    }
+    if (reclaimable(lockDir, staleMs)) {
+      try {
+        rmSync2(lockDir, { recursive: true, force: true });
+      } catch {}
+    }
+    if (Date.now() > giveUpAt)
+      throw new Error(`withDirLock: timed out waiting for ${lockDir}`);
+    Bun.sleepSync(5);
   }
   try {
     return fn();
@@ -16216,7 +16321,7 @@ function rotateIfNeeded(path, rotateAt, keep) {
 }
 function appendLine2(path, line, rotateAt = ROTATE_AT_BYTES2, keep = ROTATE_KEEP_LINES2) {
   try {
-    mkdirSync4(dirname3(path), { recursive: true });
+    mkdirSync4(dirname4(path), { recursive: true });
     withDirLock(`${path}.lockdir`, () => {
       rotateIfNeeded(path, rotateAt, keep);
       appendFileSync2(path, line.endsWith(`
@@ -16235,7 +16340,7 @@ function claimMarker(sessionDir, name) {
     const markers = `${sessionDir}/nudge-markers`;
     mkdirSync4(markers, { recursive: true });
     const mark = `${markers}/${markerSlug(name)}`;
-    if (existsSync4(mark))
+    if (existsSync5(mark))
       return false;
     writeFileSync3(mark, "", { flag: "wx" });
     return true;
@@ -16246,8 +16351,8 @@ function claimMarker(sessionDir, name) {
 function ts() {
   return new Date().toISOString();
 }
-function writeBreadcrumb(fireLog, sessionDir, kind, sessionId, event, extra = {}) {
-  if (!claimMarker(sessionDir, `breadcrumb-${kind}-${event}`))
+function writeBreadcrumb(fireLog, sessionDir, kind, sessionId, event, extra = {}, dedupeKey) {
+  if (!claimMarker(sessionDir, `breadcrumb-${dedupeKey ?? `${kind}-${event}`}`))
     return;
   const record = { ts: ts(), kind, session_id: sessionId, event, ...extra };
   appendLine2(fireLog, JSON.stringify(record));
@@ -16276,6 +16381,8 @@ function readFires(path) {
 
 // packages/nudges/src/gates.ts
 var MAX_MATCH_LEN = 4000;
+var MAX_PATTERN_LEN = 200;
+var MAX_QUANTIFIED_GROUPS = 3;
 var EVENTS = {
   SessionStart: null,
   UserPromptSubmit: null,
@@ -16297,7 +16404,7 @@ function splitTrigger(trigger) {
   const idx = trigger.indexOf(":");
   const event = idx === -1 ? trigger : trigger.slice(0, idx);
   const matcher = idx === -1 ? null : trigger.slice(idx + 1);
-  if (!(event in EVENTS))
+  if (!Object.hasOwn(EVENTS, event))
     return null;
   const allowed = EVENTS[event];
   if (!matcher)
@@ -16306,10 +16413,61 @@ function splitTrigger(trigger) {
     return null;
   return [event, matcher];
 }
-var NESTED_QUANTIFIER_RE = /\([^()]*[+*][^()]*\)[+*]/;
-function hasNestedQuantifier(pattern) {
-  return NESTED_QUANTIFIER_RE.test(pattern);
+var RISKY_GROUP_BODY = /[|+*?{]/;
+var BRACE_QUANTIFIER = /^\{\d+(?:,\d*)?\}/;
+function quantifiedGroupBodies(pattern) {
+  const bodies = [];
+  const open = [];
+  let inClass = false;
+  for (let i = 0;i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]")
+        inClass = false;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      continue;
+    }
+    if (c === "(") {
+      open.push(i);
+      continue;
+    }
+    if (c !== ")")
+      continue;
+    const start = open.pop();
+    if (start === undefined)
+      continue;
+    const next = pattern[i + 1];
+    const quantified = next === "+" || next === "*" || next === "{" && BRACE_QUANTIFIER.test(pattern.slice(i + 1));
+    if (quantified)
+      bodies.push(pattern.slice(start + 1, i));
+  }
+  return bodies;
 }
+function unsafeRegexReason(pattern) {
+  if (pattern.length > MAX_PATTERN_LEN) {
+    return `is ${pattern.length} chars; the cap is ${MAX_PATTERN_LEN}`;
+  }
+  const bodies = quantifiedGroupBodies(pattern);
+  if (bodies.length > MAX_QUANTIFIED_GROUPS) {
+    return `has ${bodies.length} quantified groups; the cap is ${MAX_QUANTIFIED_GROUPS}`;
+  }
+  const risky = bodies.find((b) => RISKY_GROUP_BODY.test(b));
+  if (risky !== undefined) {
+    return `has a quantified group ${JSON.stringify(`(${risky})`)} that can backtrack ` + `catastrophically (e.g. (a+)+, (a|aa)+); rewrite it without a quantifier, ` + `alternation or optional inside a quantified group`;
+  }
+  return null;
+}
+function isUnsafeRegex(pattern) {
+  return unsafeRegexReason(pattern) !== null;
+}
+var hasNestedQuantifier = isUnsafeRegex;
 function isRecord(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -16321,43 +16479,75 @@ function filePath(payload) {
   const ti = payload["tool_input"];
   return isRecord(ti) && typeof ti["file_path"] === "string" ? ti["file_path"] : "";
 }
-function globToRegExp(glob) {
-  let out = "";
-  for (let i = 0;i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      out += ".*";
-    } else if (c === "?") {
-      out += ".";
-    } else if (c === "[") {
-      let j = i + 1;
-      let cls = "";
-      if (glob[j] === "!") {
-        cls += "^";
-        j++;
-      }
-      const start = j;
-      while (j < glob.length && (j === start || glob[j] !== "]"))
-        j++;
-      if (j >= glob.length) {
-        out += "\\[";
-      } else {
-        cls += glob.slice(start, j).replace(/\\/g, "\\\\");
-        out += `[${cls}]`;
-        i = j;
-      }
-    } else {
-      out += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
+function matchClass(pattern, start, ch) {
+  let i = start + 1;
+  let negate = false;
+  if (pattern[i] === "!" || pattern[i] === "^") {
+    negate = true;
+    i++;
   }
-  return new RegExp(`^${out}$`);
+  const first = i;
+  let matched = false;
+  while (i < pattern.length) {
+    if (pattern[i] === "]" && i > first)
+      break;
+    if (pattern[i + 1] === "-" && i + 2 < pattern.length && pattern[i + 2] !== "]") {
+      if (ch >= pattern[i] && ch <= pattern[i + 2])
+        matched = true;
+      i += 3;
+      continue;
+    }
+    if (pattern[i] === ch)
+      matched = true;
+    i++;
+  }
+  if (i >= pattern.length)
+    return null;
+  return { end: i + 1, matched: negate ? !matched : matched };
 }
 function fnmatch(path, pattern) {
-  try {
-    return globToRegExp(pattern).test(path);
-  } catch {
-    return false;
+  let si = 0;
+  let pi = 0;
+  let starSi = -1;
+  let starPi = -1;
+  while (si < path.length) {
+    const pc = pattern[pi];
+    if (pc === "*") {
+      starPi = pi;
+      starSi = si;
+      pi++;
+      continue;
+    }
+    let ok = false;
+    if (pc === "?") {
+      ok = true;
+      pi++;
+    } else if (pc === "[") {
+      const cls = matchClass(pattern, pi, path[si]);
+      if (cls === null) {
+        ok = path[si] === "[";
+        pi++;
+      } else {
+        ok = cls.matched;
+        pi = cls.end;
+      }
+    } else if (pc !== undefined && pc === path[si]) {
+      ok = true;
+      pi++;
+    }
+    if (ok) {
+      si++;
+      continue;
+    }
+    if (starPi === -1)
+      return false;
+    starSi++;
+    si = starSi;
+    pi = starPi + 1;
   }
+  while (pattern[pi] === "*")
+    pi++;
+  return pi === pattern.length;
 }
 function search(pattern, text) {
   if (typeof pattern !== "string")
@@ -16386,7 +16576,7 @@ function evaluateInner(gate, payload) {
     case "file_path_matches": {
       if (typeof arg !== "string")
         return false;
-      const path = filePath(payload);
+      const path = filePath(payload).slice(0, MAX_MATCH_LEN);
       return path !== "" && fnmatch(path, arg);
     }
     case "prompt_matches":
@@ -16436,8 +16626,9 @@ function validateGate(gate) {
       problems.push(`${label} has bad regex ${JSON.stringify(arg)}: ${e.message}`);
       return;
     }
-    if (hasNestedQuantifier(arg)) {
-      problems.push(`${label} regex ${JSON.stringify(arg)} has a nested quantifier that can backtrack catastrophically (e.g. (a+)+); rewrite it without a quantified group inside a quantified group`);
+    const reason = unsafeRegexReason(arg);
+    if (reason !== null) {
+      problems.push(`${label} regex ${JSON.stringify(arg.slice(0, MAX_PATTERN_LEN))} ${reason}`);
     }
   };
   switch (name) {
@@ -16453,6 +16644,8 @@ function validateGate(gate) {
     case "file_path_matches":
       if (typeof arg !== "string")
         problems.push("file_path_matches takes a glob string");
+      else if (arg.length > MAX_PATTERN_LEN)
+        problems.push(`file_path_matches glob is ${arg.length} chars; the cap is ${MAX_PATTERN_LEN}`);
       break;
     case "prompt_matches":
       checkRegex("prompt_matches");
@@ -16513,73 +16706,6 @@ function gateTruth(gate) {
   }
 }
 
-// packages/nudges/src/dispatch.ts
-var DEFAULT_BUDGET_MS = 250;
-var GATE_MIN_SLICE_MS = 5;
-function isRecord2(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-function loadNudges(dirs) {
-  const out = [];
-  for (const d of dirs) {
-    let names;
-    try {
-      names = readdirSync2(d).filter((n) => n.endsWith(".json")).sort();
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      const raw = readJsonOr(join7(d, name), null);
-      if (isRecord2(raw))
-        out.push(raw);
-    }
-  }
-  return out;
-}
-function str(v, fallback = "") {
-  return typeof v === "string" ? v : fallback;
-}
-function dispatch(payload, nudges, opts) {
-  try {
-    const sessionId = str(payload["session_id"], "unknown");
-    const event = str(payload["hook_event_name"]);
-    const budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
-    let gateSpentMs = 0;
-    let scanned = 0;
-    let budgetExhausted = false;
-    for (const nudge of nudges) {
-      scanned++;
-      if (!isRecord2(nudge) || nudge["event"] !== event)
-        continue;
-      const matcher = nudge["matcher"];
-      if (matcher && payload["tool_name"] !== matcher)
-        continue;
-      const remaining = budgetMs - gateSpentMs;
-      if (remaining < GATE_MIN_SLICE_MS) {
-        budgetExhausted = true;
-        break;
-      }
-      const started = performance.now();
-      const matched = evaluate(nudge["gate"], payload);
-      gateSpentMs += performance.now() - started;
-      if (!matched)
-        continue;
-      const pattern = str(nudge["pattern"], "unknown");
-      if (nudge["once_per"] !== "always") {
-        if (!claimMarker(opts.sessionDir, `nudge-${pattern}`))
-          continue;
-      }
-      appendLine2(opts.fireLog, JSON.stringify({ ts: new Date().toISOString(), pattern, session_id: sessionId, event }));
-      return str(nudge["text"]);
-    }
-    if (budgetExhausted) {
-      writeBreadcrumb(opts.fireLog, opts.sessionDir, "gate_budget_exhausted", sessionId, event, { scanned });
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 // packages/nudges/src/lint.ts
 var MAX_TEXT = 400;
 var ONCE_PER = new Set(["session", "always"]);
@@ -16598,11 +16724,11 @@ function lintUnboundedBroadcast(obj) {
     `degenerate gate: it fires unconditionally, once_per is ` + `${JSON.stringify(obj.once_per)}, and ${obj.event} fires many times per ` + `session, this injects on every ${obj.event} forever and ` + `discriminates nothing. Narrow the gate to a real predicate, or ` + unboundedBroadcastRule()
   ];
 }
-function isRecord3(v) {
+function isRecord2(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function lintNudge(obj) {
-  if (!isRecord3(obj))
+  if (!isRecord2(obj))
     return ["nudge must be a JSON object"];
   const problems = [];
   for (const field of ["pattern", "event", "gate", "once_per", "text"]) {
@@ -16617,7 +16743,7 @@ function lintNudge(obj) {
     problems.push(`field 'pattern' must be a slug, got ${JSON.stringify(obj["pattern"])}`);
   if (typeof obj["event"] !== "string")
     problems.push("field 'event' must be a string");
-  if (!isRecord3(obj["gate"]))
+  if (!isRecord2(obj["gate"]))
     problems.push("field 'gate' must be a dict");
   if (typeof obj["once_per"] !== "string")
     problems.push("field 'once_per' must be a string");
@@ -16656,15 +16782,106 @@ function lintNudge(obj) {
   }
   return problems;
 }
+
+// packages/nudges/src/dispatch.ts
+var DEFAULT_BUDGET_MS = 250;
+var DEFAULT_GATE_TIMEOUT_MS = 50;
+var GATE_MIN_SLICE_MS = 5;
+function isRecord3(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function loadNudgesDetailed(dirs) {
+  const nudges = [];
+  const rejected = [];
+  for (const d of dirs) {
+    let names;
+    try {
+      names = readdirSync2(d).filter((n) => n.endsWith(".json")).sort();
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const file = join7(d, name);
+      const raw = readJsonOr(file, null);
+      if (!isRecord3(raw)) {
+        rejected.push({ file, problems: ["not readable as a JSON object"] });
+        continue;
+      }
+      const problems = lintNudge(raw);
+      if (problems.length > 0) {
+        rejected.push({ file, problems });
+        continue;
+      }
+      nudges.push(raw);
+    }
+  }
+  return { nudges, rejected };
+}
+function loadNudges(dirs) {
+  return loadNudgesDetailed(dirs).nudges;
+}
+function str(v, fallback = "") {
+  return typeof v === "string" ? v : fallback;
+}
+function dispatch(payload, nudges, opts) {
+  try {
+    const sessionId = str(payload["session_id"], "unknown");
+    const event = str(payload["hook_event_name"]);
+    const budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
+    const gateTimeoutMs = opts.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
+    let gateSpentMs = 0;
+    let scanned = 0;
+    let budgetExhausted = false;
+    for (const nudge of nudges) {
+      scanned++;
+      if (!isRecord3(nudge) || nudge["event"] !== event)
+        continue;
+      const matcher = nudge["matcher"];
+      if (matcher && payload["tool_name"] !== matcher)
+        continue;
+      const remaining = budgetMs - gateSpentMs;
+      if (remaining < GATE_MIN_SLICE_MS) {
+        budgetExhausted = true;
+        break;
+      }
+      const started = performance.now();
+      const matched = evaluate(nudge["gate"], payload);
+      const elapsedMs = performance.now() - started;
+      gateSpentMs += elapsedMs;
+      const pattern = str(nudge["pattern"], "unknown");
+      if (elapsedMs > gateTimeoutMs) {
+        writeBreadcrumb(opts.fireLog, opts.sessionDir, "gate_overrun", sessionId, event, {
+          pattern,
+          elapsed_ms: Math.round(elapsedMs),
+          budget_ms: gateTimeoutMs
+        });
+      }
+      if (!matched)
+        continue;
+      if (nudge["once_per"] !== "always") {
+        if (!claimMarker(opts.sessionDir, `nudge-${pattern}`))
+          continue;
+      }
+      appendLine2(opts.fireLog, JSON.stringify({ ts: new Date().toISOString(), pattern, session_id: sessionId, event }));
+      return str(nudge["text"]);
+    }
+    if (budgetExhausted) {
+      writeBreadcrumb(opts.fireLog, opts.sessionDir, "gate_budget_exhausted", sessionId, event, { scanned });
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 // packages/nudges/src/gate-runner.ts
-import { existsSync as existsSync5 } from "fs";
+import { existsSync as existsSync6 } from "fs";
 import { join as join8 } from "path";
 function isRecord4(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function resolveRunner() {
   const built = join8(pluginRoot(), "dist", "gate-runner.js");
-  if (existsSync5(built))
+  if (existsSync6(built))
     return built;
   return join8(pluginRoot(), "packages", "nudges", "src", "gate-runner.ts");
 }
@@ -16718,10 +16935,216 @@ function nudgeEvents() {
   return nudges().EVENTS ?? null;
 }
 
+// packages/curriculum/src/lint.ts
+var MAX_DESCRIPTION = 500;
+var MAX_SENTENCES = 2;
+var MAX_RULE_CHARS = 300;
+var MIN_BODY_CHARS = 80;
+var MIN_SHARED_TERMS = 4;
+var FRONTMATTER = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
+var TRIGGER_RE = /(use when|trigger)/i;
+var SECRET_RE = /(AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(api[_-]?key|secret|token|password)\s*[:=]\s*['"]?[A-Za-z0-9/+_-]{16,})/i;
+var PLACEHOLDER_RE = /<[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*)+>/g;
+var SCAFFOLD_MARKERS = [
+  "source reflections:",
+  "now write the real one",
+  "both '---' delimiter lines",
+  "must begin with 'use when'",
+  "existing skill to refine:",
+  "existing artifact to refine:",
+  "lessons to generalise:",
+  "decide what kind of claude code artifact",
+  "copy the structure, never the wording",
+  "write the first one that applies"
+];
+var SENTENCE_END = /[.!?](?:\s|$)/g;
+var ABBREVIATION = /\b(?:e\.g|i\.e|etc|vs|cf|al)\./gi;
+var WORD_RE = /[a-z][a-z0-9_-]{4,}/g;
+var GENERIC = new Set(`about above after again against always because before being below between both
+check checks claim could doing during evidence every first further given having
+however itself might other properly should since their there these things think
+those through under until using verify whether which while would your result
+results ensure ensures never making makes made`.split(/\s+/).filter(Boolean));
+var RULE_TAG_OPEN2 = ruleTag("").replace("-->", "");
+var headingWords = null;
+function templateWords() {
+  if (headingWords === null) {
+    headingWords = new Set;
+    for (const heading of SECTIONS) {
+      for (const word of heading.toLowerCase().match(WORD_RE) ?? [])
+        headingWords.add(word);
+    }
+  }
+  return headingWords;
+}
+function payloadText(payload) {
+  if (typeof payload === "string")
+    return payload;
+  try {
+    return JSON.stringify(payload, sortedReplacer(payload)) ?? String(payload);
+  } catch {
+    return String(payload);
+  }
+}
+function sortedReplacer(_root) {
+  return (_key, value) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const out = {};
+      for (const k of Object.keys(value).sort())
+        out[k] = value[k];
+      return out;
+    }
+    return value;
+  };
+}
+function field(name, frontMatter) {
+  for (const line of frontMatter.split(`
+`)) {
+    if (line.toLowerCase().startsWith(name + ":"))
+      return line.slice(line.indexOf(":") + 1).trim();
+  }
+  return null;
+}
+function countSentences(desc) {
+  return (desc.trim().replace(ABBREVIATION, "").match(SENTENCE_END) ?? []).length;
+}
+function lintDescriptionCap(desc) {
+  const problems = [];
+  if (desc.length > MAX_DESCRIPTION) {
+    problems.push(`\`description\` is ${desc.length} chars; the cap is ${MAX_DESCRIPTION}. A trigger is one situation, not a disjunction of twenty.`);
+  }
+  const n = countSentences(desc);
+  if (n > MAX_SENTENCES)
+    problems.push(`\`description\` has ${n} sentences; the cap is ${MAX_SENTENCES}`);
+  return problems;
+}
+function distinctiveTerms(text) {
+  const excluded = new Set([...GENERIC, ...templateWords()]);
+  const out = new Set;
+  for (const w of (text ?? "").toLowerCase().match(WORD_RE) ?? [])
+    if (!excluded.has(w))
+      out.add(w);
+  return out;
+}
+function lintGrounding(body, sourcesText, minShared = MIN_SHARED_TERMS) {
+  const bodyTerms = distinctiveTerms(body);
+  const shared = [...distinctiveTerms(sourcesText)].filter((w) => bodyTerms.has(w)).sort();
+  if (shared.length < minShared) {
+    return [
+      `body not grounded in its sources: only ${shared.length} distinctive term(s) shared (${JSON.stringify(shared)}); reads as generic filler`
+    ];
+  }
+  return [];
+}
+function lintSkill(text, pattern, minBodyChars = MIN_BODY_CHARS) {
+  const problems = [];
+  const match = FRONTMATTER.exec(text ?? "");
+  if (!match)
+    return ["missing or malformed frontmatter (--- ... --- at top of file)"];
+  const frontMatter = match[1];
+  const body = match[2];
+  const name = field("name", frontMatter);
+  if (!name)
+    problems.push("frontmatter missing non-empty `name`");
+  else if (name !== pattern) {
+    problems.push(`frontmatter \`name\` (${JSON.stringify(name)}) must equal the pattern (${JSON.stringify(pattern)})`);
+  }
+  const desc = field("description", frontMatter);
+  if (!desc)
+    problems.push("frontmatter missing non-empty `description`");
+  else if (!TRIGGER_RE.test(desc)) {
+    problems.push("`description` must read as a trigger (contain 'Use when' or 'Trigger')");
+  } else {
+    problems.push(...lintDescriptionCap(desc));
+  }
+  if (body.trim().length < minBodyChars)
+    problems.push(`body too short (< ${minBodyChars} non-whitespace chars)`);
+  for (const placeholder of [...new Set(text.match(PLACEHOLDER_RE) ?? [])]) {
+    problems.push(`unreplaced template placeholder: ${placeholder}`);
+  }
+  const low = text.toLowerCase();
+  for (const marker of SCAFFOLD_MARKERS) {
+    if (low.includes(marker))
+      problems.push(`drafting-prompt scaffolding echoed into the artifact: ${JSON.stringify(marker)}`);
+  }
+  return problems;
+}
+function lintRule(text, pattern = null) {
+  const lines = (text ?? "").trim().split(`
+`).filter((line) => line.trim());
+  if (lines.length !== 1)
+    return [`a rule is exactly one bullet; got ${lines.length} line(s)`];
+  const line = lines[0].trim();
+  const problems = [];
+  if (!line.startsWith("- "))
+    problems.push("a rule must start with '- '");
+  for (const marker of [RULE_START, RULE_END, RULE_TAG_OPEN2]) {
+    if (line.includes(marker)) {
+      problems.push(`rule contains the managed-block marker ${JSON.stringify(marker)}; writing it would make the rules file unreadable and unretireable`);
+    }
+  }
+  const tag = pattern ? ruleTag(pattern) : "";
+  const total = line.length + (tag ? 1 + tag.length : 0);
+  if (total > MAX_RULE_CHARS) {
+    const detail = tag ? ` once its ${tag} tag is appended` : "";
+    problems.push(`rule is ${total} chars${detail}; the cap is ${MAX_RULE_CHARS}`);
+  }
+  return problems;
+}
+function lintHook(payload) {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return ["hook artifact must be a JSON object"];
+  }
+  const fn = nudges().lintNudge;
+  if (!fn)
+    return ["nudge dispatcher unavailable, cannot lint a hook"];
+  try {
+    return [...fn(payload)];
+  } catch (e) {
+    return [`nudge dispatcher unavailable, cannot lint a hook: ${e.message}`];
+  }
+}
+var typeName = (v) => Array.isArray(v) ? "array" : v === null ? "null" : typeof v === "object" ? "dict" : typeof v;
+function lint(artifactType, payload, pattern, sourcesText) {
+  if (artifactType === "none")
+    return [];
+  let problems;
+  let body;
+  if (artifactType === "hook") {
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return ["hook artifact must be a JSON object"];
+    }
+    const obj = payload;
+    problems = lintHook(obj);
+    if (obj["pattern"] !== pattern) {
+      problems.push(`hook \`pattern\` (${JSON.stringify(obj["pattern"] ?? null)}) must equal the artifact's pattern (${JSON.stringify(pattern)})`);
+    }
+    body = String(obj["text"] ?? "");
+  } else if (artifactType === "rule") {
+    if (typeof payload !== "string")
+      return [`rule artifact must be text, not ${typeName(payload)}`];
+    problems = lintRule(payload, pattern);
+    body = payload;
+  } else if (artifactType === "skill" || artifactType === "agent") {
+    if (typeof payload !== "string")
+      return [`${artifactType} artifact must be text, not ${typeName(payload)}`];
+    problems = lintSkill(payload, pattern);
+    body = payload;
+  } else {
+    return [`unknown artifact type ${JSON.stringify(artifactType)}`];
+  }
+  if (SECRET_RE.test(payloadText(payload))) {
+    problems.push("possible secret or token detected; refusing to promote");
+  }
+  problems.push(...lintGrounding(body, sourcesText));
+  return problems;
+}
+
 // packages/curriculum/src/router.ts
 var GATE_TIMEOUT_MS = 250;
 var MIN_QUOTE_WORDS = 5;
 var MIN_QUOTE_CHARS = 30;
+var MIN_QUOTE_TERMS = 3;
 var RouteAnswer = object({
   trigger_event: string2().default("none"),
   gate: record(string2(), unknown()).nullable().default(null),
@@ -16740,7 +17163,7 @@ function splitTrigger2(trigger) {
   const at = raw.indexOf(":");
   const event = at === -1 ? raw : raw.slice(0, at);
   const matcher = at === -1 ? "" : raw.slice(at + 1);
-  if (!(event in events))
+  if (!Object.hasOwn(events, event))
     return null;
   const allowed = events[event];
   if (!matcher)
@@ -16753,28 +17176,41 @@ function normalise(text) {
   return text.split(/\s+/).filter(Boolean).join(" ");
 }
 var escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+var SECTION_HEADINGS = new Set(SECTIONS.map((heading) => heading.trim()));
+var TEMPLATE_LINE = /^(Pattern|Last updated):/;
+function withoutScaffolding(text) {
+  return text.split(`
+`).filter((line) => {
+    const trimmed = line.trim();
+    return !TEMPLATE_LINE.test(trimmed) && !SECTION_HEADINGS.has(trimmed);
+  }).join(`
+`);
+}
 function substantiveQuote(note, sourcesText) {
   const quote = normalise(note ?? "");
   if (quote.length < MIN_QUOTE_CHARS || quote.split(" ").filter(Boolean).length < MIN_QUOTE_WORDS)
     return false;
-  const haystack = normalise(sourcesText ?? "");
+  if (distinctiveTerms(quote).size < MIN_QUOTE_TERMS)
+    return false;
+  const haystack = normalise(withoutScaffolding(sourcesText ?? ""));
   return new RegExp(`(?<!\\w)${escapeRe(quote)}(?!\\w)`).test(haystack);
 }
 function route(answer, sourcesText, payloads, opts = {}) {
+  const reply = RouteAnswer.safeParse(answer).data ?? emptyAnswer();
   const sources = typeof sourcesText === "string" ? sourcesText : "";
   const corpus = Array.isArray(payloads) ? payloads : [];
-  if (answer.parse_error) {
-    return { artifact_type: "none", reason: `unreadable drafter reply: ${answer.parse_error}` };
+  if (reply.parse_error) {
+    return { artifact_type: "none", reason: `unreadable drafter reply: ${reply.parse_error}` };
   }
-  if (answer.no_artifact) {
+  if (reply.no_artifact) {
     return { artifact_type: "none", reason: "drafter declined: no artifact warranted" };
   }
-  const hookReason = whyNotHook(answer, corpus, opts);
+  const hookReason = whyNotHook(reply, corpus, opts);
   if (hookReason === null) {
-    return { artifact_type: "hook", reason: `gate fires on the payload corpus at ${answer.trigger_event}` };
+    return { artifact_type: "hook", reason: `gate fires on the payload corpus at ${reply.trigger_event}` };
   }
-  if (answer.needs_own_context) {
-    const note = (answer.context_evidence ?? "").trim();
+  if (reply.needs_own_context) {
+    const note = (reply.context_evidence ?? "").trim();
     if (!note) {
       return {
         artifact_type: "rule",
@@ -16784,19 +17220,19 @@ function route(answer, sourcesText, payloads, opts = {}) {
     if (!substantiveQuote(note, sources)) {
       return {
         artifact_type: "rule",
-        reason: `context_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words and ` + `${MIN_QUOTE_CHARS} characters, matched on word boundaries); treated as a discipline`
+        reason: `context_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words, ` + `${MIN_QUOTE_CHARS} characters and ${MIN_QUOTE_TERMS} distinctive terms, matched on word boundaries ` + "against the sources with the reflection template's own lines removed); treated as a discipline"
       };
     }
     return { artifact_type: "agent", reason: "own-context need quoted verbatim from a source" };
   }
-  const quote = (answer.capability_evidence ?? "").trim();
+  const quote = (reply.capability_evidence ?? "").trim();
   if (quote) {
     if (substantiveQuote(quote, sources)) {
       return { artifact_type: "skill", reason: "capability evidence quoted verbatim from a source" };
     }
     return {
       artifact_type: "rule",
-      reason: `capability_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words and ` + `${MIN_QUOTE_CHARS} characters, matched on word boundaries); treated as a discipline`
+      reason: `capability_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words, ` + `${MIN_QUOTE_CHARS} characters and ${MIN_QUOTE_TERMS} distinctive terms, matched on word boundaries ` + "against the sources with the reflection template's own lines removed); treated as a discipline"
     };
   }
   return {
@@ -16806,7 +17242,7 @@ function route(answer, sourcesText, payloads, opts = {}) {
 }
 function whyNotHook(answer, payloads, opts) {
   const gate = answer.gate;
-  if (answer.trigger_event === "none" || gate === null || Object.keys(gate).length === 0) {
+  if (answer.trigger_event === "none" || gate == null || Object.keys(gate).length === 0) {
     return "no trigger event proposed";
   }
   if (splitTrigger2(answer.trigger_event) === null) {
@@ -16916,7 +17352,7 @@ var FORCED_SUBJECT = {
   rule: "one-line rule bullet",
   hook: "Claude Code hook nudge (a JSON object)"
 };
-var ROUTING_FIELDS = 'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' + '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' + "be checked against mechanically on every matching tool call. gate is a " + "single-predicate object usable by the nudge dispatcher, or null if no gate " + "applies. needs_own_context is true only if acting on this lesson needs its " + "own agent and budget rather than a reminder, and when it is true " + "context_evidence MUST be an exact substring copied verbatim from the lessons " + `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` + `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` + "Without that quote the lesson is treated as a " + "discipline rather than an agent. capability_evidence, if set, MUST be an " + "exact substring copied verbatim from the lessons below, never paraphrased, " + "under the same length rule, naming a concrete thing the agent can actually " + "do that neither a hook nor a rule can express. no_artifact is true only if no " + "artifact at all is warranted.";
+var ROUTING_FIELDS = 'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' + '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' + "be checked against mechanically on every matching tool call. gate is a " + "single-predicate object usable by the nudge dispatcher, or null if no gate " + "applies. needs_own_context is true only if acting on this lesson needs its " + "own agent and budget rather than a reminder, and when it is true " + "context_evidence MUST be an exact substring copied verbatim from the lessons " + `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` + `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` + `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` + "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " + "discipline rather than an agent. capability_evidence, if set, MUST be an " + "exact substring copied verbatim from the lessons below, never paraphrased, " + "under the same length rule, naming a concrete thing the agent can actually " + "do that neither a hook nor a rule can express. no_artifact is true only if no " + "artifact at all is warranted.";
 var DRAFTER_SYSTEM = "You write Claude Code artifacts from recurring lessons. You reply with one " + "JSON object and nothing else: no prose, no code fence, no <think> block.";
 var JUDGE_SYSTEM = "You are the last gate before an artifact is committed and starts changing an " + "agent's behaviour. You reply with one JSON object and nothing else.";
 function draftMessages(pattern, lessons, existing = null, artifactType = null) {
@@ -17067,210 +17503,6 @@ function parseVerdict(raw) {
     return [false, reason || "rejected"];
   return [false, `no verdict: judge replied ${JSON.stringify(verdict)}`];
 }
-// packages/curriculum/src/lint.ts
-var MAX_DESCRIPTION = 500;
-var MAX_SENTENCES = 2;
-var MAX_RULE_CHARS = 300;
-var MIN_BODY_CHARS = 80;
-var MIN_SHARED_TERMS = 4;
-var FRONTMATTER = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
-var TRIGGER_RE = /(use when|trigger)/i;
-var SECRET_RE = /(AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(api[_-]?key|secret|token|password)\s*[:=]\s*['"]?[A-Za-z0-9/+_-]{16,})/i;
-var PLACEHOLDER_RE = /<[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*)+>/g;
-var SCAFFOLD_MARKERS = [
-  "source reflections:",
-  "now write the real one",
-  "both '---' delimiter lines",
-  "must begin with 'use when'",
-  "existing skill to refine:",
-  "existing artifact to refine:",
-  "lessons to generalise:",
-  "decide what kind of claude code artifact",
-  "copy the structure, never the wording",
-  "write the first one that applies"
-];
-var SENTENCE_END = /[.!?](?:\s|$)/g;
-var ABBREVIATION = /\b(?:e\.g|i\.e|etc|vs|cf|al)\./gi;
-var WORD_RE = /[a-z][a-z0-9_-]{4,}/g;
-var GENERIC = new Set(`about above after again against always because before being below between both
-check checks claim could doing during evidence every first further given having
-however itself might other properly should since their there these things think
-those through under until using verify whether which while would your result
-results ensure ensures never making makes made`.split(/\s+/).filter(Boolean));
-var RULE_TAG_OPEN2 = ruleTag("").replace("-->", "");
-var headingWords = null;
-function templateWords() {
-  if (headingWords === null) {
-    headingWords = new Set;
-    for (const heading of SECTIONS) {
-      for (const word of heading.toLowerCase().match(WORD_RE) ?? [])
-        headingWords.add(word);
-    }
-  }
-  return headingWords;
-}
-function payloadText(payload) {
-  if (typeof payload === "string")
-    return payload;
-  try {
-    return JSON.stringify(payload, sortedReplacer(payload)) ?? String(payload);
-  } catch {
-    return String(payload);
-  }
-}
-function sortedReplacer(_root) {
-  return (_key, value) => {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const out = {};
-      for (const k of Object.keys(value).sort())
-        out[k] = value[k];
-      return out;
-    }
-    return value;
-  };
-}
-function field(name, frontMatter) {
-  for (const line of frontMatter.split(`
-`)) {
-    if (line.toLowerCase().startsWith(name + ":"))
-      return line.slice(line.indexOf(":") + 1).trim();
-  }
-  return null;
-}
-function countSentences(desc) {
-  return (desc.trim().replace(ABBREVIATION, "").match(SENTENCE_END) ?? []).length;
-}
-function lintDescriptionCap(desc) {
-  const problems = [];
-  if (desc.length > MAX_DESCRIPTION) {
-    problems.push(`\`description\` is ${desc.length} chars; the cap is ${MAX_DESCRIPTION}. A trigger is one situation, not a disjunction of twenty.`);
-  }
-  const n = countSentences(desc);
-  if (n > MAX_SENTENCES)
-    problems.push(`\`description\` has ${n} sentences; the cap is ${MAX_SENTENCES}`);
-  return problems;
-}
-function lintGrounding(body, sourcesText, minShared = MIN_SHARED_TERMS) {
-  const excluded = new Set([...GENERIC, ...templateWords()]);
-  const terms = (text) => {
-    const out = new Set;
-    for (const w of text.toLowerCase().match(WORD_RE) ?? [])
-      if (!excluded.has(w))
-        out.add(w);
-    return out;
-  };
-  const bodyTerms = terms(body);
-  const shared = [...terms(sourcesText)].filter((w) => bodyTerms.has(w)).sort();
-  if (shared.length < minShared) {
-    return [
-      `body not grounded in its sources: only ${shared.length} distinctive term(s) shared (${JSON.stringify(shared)}); reads as generic filler`
-    ];
-  }
-  return [];
-}
-function lintSkill(text, pattern, minBodyChars = MIN_BODY_CHARS) {
-  const problems = [];
-  const match = FRONTMATTER.exec(text ?? "");
-  if (!match)
-    return ["missing or malformed frontmatter (--- ... --- at top of file)"];
-  const frontMatter = match[1];
-  const body = match[2];
-  const name = field("name", frontMatter);
-  if (!name)
-    problems.push("frontmatter missing non-empty `name`");
-  else if (name !== pattern) {
-    problems.push(`frontmatter \`name\` (${JSON.stringify(name)}) must equal the pattern (${JSON.stringify(pattern)})`);
-  }
-  const desc = field("description", frontMatter);
-  if (!desc)
-    problems.push("frontmatter missing non-empty `description`");
-  else if (!TRIGGER_RE.test(desc)) {
-    problems.push("`description` must read as a trigger (contain 'Use when' or 'Trigger')");
-  } else {
-    problems.push(...lintDescriptionCap(desc));
-  }
-  if (body.trim().length < minBodyChars)
-    problems.push(`body too short (< ${minBodyChars} non-whitespace chars)`);
-  for (const placeholder of [...new Set(text.match(PLACEHOLDER_RE) ?? [])]) {
-    problems.push(`unreplaced template placeholder: ${placeholder}`);
-  }
-  const low = text.toLowerCase();
-  for (const marker of SCAFFOLD_MARKERS) {
-    if (low.includes(marker))
-      problems.push(`drafting-prompt scaffolding echoed into the artifact: ${JSON.stringify(marker)}`);
-  }
-  return problems;
-}
-function lintRule(text, pattern = null) {
-  const lines = (text ?? "").trim().split(`
-`).filter((line) => line.trim());
-  if (lines.length !== 1)
-    return [`a rule is exactly one bullet; got ${lines.length} line(s)`];
-  const line = lines[0].trim();
-  const problems = [];
-  if (!line.startsWith("- "))
-    problems.push("a rule must start with '- '");
-  for (const marker of [RULE_START, RULE_END, RULE_TAG_OPEN2]) {
-    if (line.includes(marker)) {
-      problems.push(`rule contains the managed-block marker ${JSON.stringify(marker)}; writing it would make the rules file unreadable and unretireable`);
-    }
-  }
-  const tag = pattern ? ruleTag(pattern) : "";
-  const total = line.length + (tag ? 1 + tag.length : 0);
-  if (total > MAX_RULE_CHARS) {
-    const detail = tag ? ` once its ${tag} tag is appended` : "";
-    problems.push(`rule is ${total} chars${detail}; the cap is ${MAX_RULE_CHARS}`);
-  }
-  return problems;
-}
-function lintHook(payload) {
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-    return ["hook artifact must be a JSON object"];
-  }
-  const fn = nudges().lintNudge;
-  if (!fn)
-    return ["nudge dispatcher unavailable, cannot lint a hook"];
-  try {
-    return [...fn(payload)];
-  } catch (e) {
-    return [`nudge dispatcher unavailable, cannot lint a hook: ${e.message}`];
-  }
-}
-var typeName = (v) => Array.isArray(v) ? "array" : v === null ? "null" : typeof v === "object" ? "dict" : typeof v;
-function lint(artifactType, payload, pattern, sourcesText) {
-  if (artifactType === "none")
-    return [];
-  let problems;
-  let body;
-  if (artifactType === "hook") {
-    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-      return ["hook artifact must be a JSON object"];
-    }
-    const obj = payload;
-    problems = lintHook(obj);
-    if (obj["pattern"] !== pattern) {
-      problems.push(`hook \`pattern\` (${JSON.stringify(obj["pattern"] ?? null)}) must equal the artifact's pattern (${JSON.stringify(pattern)})`);
-    }
-    body = String(obj["text"] ?? "");
-  } else if (artifactType === "rule") {
-    if (typeof payload !== "string")
-      return [`rule artifact must be text, not ${typeName(payload)}`];
-    problems = lintRule(payload, pattern);
-    body = payload;
-  } else if (artifactType === "skill" || artifactType === "agent") {
-    if (typeof payload !== "string")
-      return [`${artifactType} artifact must be text, not ${typeName(payload)}`];
-    problems = lintSkill(payload, pattern);
-    body = payload;
-  } else {
-    return [`unknown artifact type ${JSON.stringify(artifactType)}`];
-  }
-  if (SECRET_RE.test(payloadText(payload))) {
-    problems.push("possible secret or token detected; refusing to promote");
-  }
-  problems.push(...lintGrounding(body, sourcesText));
-  return problems;
-}
 // packages/curriculum/src/plan.ts
 import { readdirSync as readdirSync7, statSync as statSync7 } from "fs";
 import { join as join13 } from "path";
@@ -17287,7 +17519,7 @@ __export(exports_src3, {
 });
 
 // packages/store/src/reflections.ts
-import { readdirSync as readdirSync3, statSync as statSync5 } from "fs";
+import { lstatSync, readdirSync as readdirSync3, realpathSync as realpathSync2, statSync as statSync5 } from "fs";
 import { basename, join as join9, relative as relative2 } from "path";
 
 // packages/store/src/aliases.ts
@@ -17375,7 +17607,7 @@ function parseReflection(path, world) {
   });
   return parsed.success ? parsed.data : null;
 }
-function* walkMarkdown(dir) {
+function* walkMarkdown(dir, seen) {
   let entries;
   try {
     entries = readdirSync3(dir).sort();
@@ -17388,20 +17620,33 @@ function* walkMarkdown(dir) {
     const p = join9(dir, name);
     let st;
     try {
-      st = statSync5(p);
+      st = lstatSync(p);
     } catch {
       continue;
     }
-    if (st.isDirectory())
-      yield* walkMarkdown(p);
-    else if (name.endsWith(".md"))
-      yield p;
+    if (st.isDirectory()) {
+      yield* walkMarkdown(p, seen);
+      continue;
+    }
+    if (!name.endsWith(".md"))
+      continue;
+    let real;
+    try {
+      real = realpathSync2(p);
+    } catch {
+      continue;
+    }
+    if (seen.has(real))
+      continue;
+    seen.add(real);
+    yield p;
   }
 }
 function listReflections(world, extraDirs = []) {
   const out = [];
+  const seen = new Set;
   for (const d of [reflectionsDir(world), ...extraDirs]) {
-    for (const p of walkMarkdown(d)) {
+    for (const p of walkMarkdown(d, seen)) {
       if (relative2(d, p).startsWith(".."))
         continue;
       const r = parseReflection(p, world);
@@ -17459,7 +17704,9 @@ function parseLedger(text, label = "<text>") {
   try {
     let raw = JSON.parse(text.trim() === "" ? "{}" : text);
     if (Array.isArray(raw)) {
-      raw = { version: 1, entries: Object.fromEntries(raw.map((e) => [e.pattern, e])) };
+      raw = { version: 1, entries: byPattern(raw) };
+    } else if (raw && typeof raw === "object" && Array.isArray(raw.entries)) {
+      raw = { ...raw, entries: byPattern(raw.entries) };
     } else if (raw && typeof raw === "object" && !("entries" in raw)) {
       const values = Object.values(raw);
       if (values.every((v) => v && typeof v === "object"))
@@ -17472,6 +17719,14 @@ function parseLedger(text, label = "<text>") {
   } catch (e) {
     throw new Error(`unreadable ledger ${label}: ${e.message}`);
   }
+}
+function byPattern(rows) {
+  const out = {};
+  for (const row of rows) {
+    const pattern = row && typeof row === "object" ? row.pattern : undefined;
+    out[typeof pattern === "string" ? pattern : ""] = row;
+  }
+  return out;
 }
 function saveLedger(path, ledger) {
   const entries = {};
@@ -17737,7 +17992,7 @@ async function chatClaudeCli(endpoint, model, messages, _opts) {
 }
 
 // packages/transcript/src/index.ts
-import { existsSync as existsSync6, readFileSync as readFileSync3 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync3 } from "fs";
 var NOISE_TYPES = new Set(["ai-title", "last-prompt", "queue-operation", "atis-latch"]);
 var TEST_LIKE_RE = /pytest|jest|vitest|go test|cargo test|npm test|pnpm test|make test|ruff|eslint|tsc|mypy/;
 var SUMMARY_KEYS = ["command", "file_path", "skill", "subagent_type", "pattern", "path"];
@@ -17748,7 +18003,7 @@ function asArray(v) {
   return Array.isArray(v) ? v : [];
 }
 function* iterRecords(path, maxBytes = 50000000) {
-  if (!existsSync6(path))
+  if (!existsSync7(path))
     return;
   let text;
   try {
@@ -18646,9 +18901,8 @@ function plan(world, cfg, opts = {}) {
   return { world: world.name, threshold, actions };
 }
 // packages/curriculum/src/run.ts
-import { existsSync as existsSync7 } from "fs";
+import { existsSync as existsSync8 } from "fs";
 import { join as join14, resolve as resolve4 } from "path";
-var RULE_TAG_RE = /<!--rule:([A-Za-z0-9][A-Za-z0-9-]*)-->/g;
 function branchName(world, pattern) {
   return `curriculum/${world.toLowerCase()}/${pattern}`;
 }
@@ -18691,18 +18945,6 @@ function migrating(staged, prior) {
   const branchType = rowType(staged);
   const baseType = rowType(prior);
   return branchType !== null && baseType !== null && branchType !== baseType;
-}
-function foreignRuleTags(repo, base, rel, pattern) {
-  const tags = new Set;
-  for (const line of git(repo, ["diff", base, "--", rel], { check: false }).split(`
-`)) {
-    if ((line.startsWith("+") || line.startsWith("-")) && !line.startsWith("+++") && !line.startsWith("---")) {
-      for (const m of line.matchAll(RULE_TAG_RE))
-        tags.add(m[1]);
-    }
-  }
-  tags.delete(pattern);
-  return [...tags].sort();
 }
 async function run(world, cfg, opts) {
   const report = {
@@ -18887,7 +19129,8 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
       ensureRulesFile(world, tree);
     writeArtifact(world, routedType, pattern, body, tree);
     if (routedType === "rule") {
-      const foreign = foreignRuleTags(tree, ctx.defaultRef, rel, pattern);
+      const diff = git(tree, ["diff", ctx.defaultRef, "--", rel], { check: false });
+      const foreign = foreignRuleTags(diff, pattern);
       if (foreign.length > 0)
         throw new Error(`${rel} also changes rule(s) for ${foreign.join(", ")}`);
     }
@@ -18923,7 +19166,7 @@ function autoMergeBranch(report, target, defaultRef, branch, pattern) {
 function ruleProblem(world) {
   try {
     const rules = join14(targetRoot(world), world.layout.rules_file.replace(/^\/+|\/+$/g, ""));
-    if (!existsSync7(rules)) {
+    if (!existsSync8(rules)) {
       if (ownsRulesFile(world))
         return null;
       return `${rules} does not exist; add it with a ${RULE_START} / ${RULE_END} marker pair to opt this repo into rule writes`;
@@ -18956,9 +19199,9 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync2 } from "fs";
-import { existsSync as existsSync8 } from "fs";
-import { dirname as dirname5, join as join17, resolve as resolve6 } from "path";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
+import { existsSync as existsSync9 } from "fs";
+import { dirname as dirname6, join as join17, resolve as resolve6 } from "path";
 
 // packages/worker/src/index.ts
 var exports_src5 = {};
@@ -18976,8 +19219,8 @@ __export(exports_src5, {
   status: () => status2,
   withLock: () => withLock
 });
-import { readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync8, writeFileSync as writeFileSync4 } from "fs";
-import { dirname as dirname4, join as join16 } from "path";
+import { closeSync, openSync, readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync8, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4, writeSync } from "fs";
+import { dirname as dirname5, join as join16 } from "path";
 
 // packages/worker/src/outline.ts
 import { readdirSync as readdirSync8 } from "fs";
@@ -19055,7 +19298,7 @@ function readPid(path) {
   const pid = Number.parseInt(text, 10);
   return Number.isFinite(pid) ? pid : null;
 }
-function pidAlive(pid) {
+function pidAlive2(pid) {
   try {
     process.kill(pid, 0);
     return true;
@@ -19064,6 +19307,20 @@ function pidAlive(pid) {
     return err.code === "EPERM";
   }
 }
+var PID_SETTLE_TRIES = 5;
+var PID_SETTLE_MS = 10;
+var RECLAIM_SETTLE_MS = 60;
+function settledPid(path) {
+  for (let i = 0;i < PID_SETTLE_TRIES; i++) {
+    const pid = readPid(path);
+    if (pid !== null)
+      return pid;
+    if (!exists(path))
+      return null;
+    Bun.sleepSync(PID_SETTLE_MS);
+  }
+  return readPid(path);
+}
 
 class Lock {
   path;
@@ -19071,20 +19328,44 @@ class Lock {
     this.path = workerLockFile();
   }
   acquire() {
-    ensureDir(dirname4(this.path));
-    const pid = readPid(this.path);
-    if (pid !== null && pidAlive(pid))
+    ensureDir(dirname5(this.path));
+    if (this.create())
+      return;
+    const pid = settledPid(this.path);
+    if (pid !== null && pidAlive2(pid))
       throw new LockHeld(`worker lock held: ${this.path}`);
     atomicWrite(this.path, String(process.pid));
+    Bun.sleepSync(RECLAIM_SETTLE_MS);
+    if (readPid(this.path) !== process.pid)
+      throw new LockHeld(`worker lock held: ${this.path}`);
   }
   release() {
     try {
       writeFileSync4(this.path, "", "utf8");
     } catch {}
+    try {
+      unlinkSync2(this.path);
+    } catch {}
   }
   static held() {
     const pid = readPid(workerLockFile());
-    return pid !== null && pidAlive(pid);
+    return pid !== null && pidAlive2(pid);
+  }
+  create() {
+    let fd;
+    try {
+      fd = openSync(this.path, "wx");
+    } catch (e) {
+      if (e.code === "EEXIST")
+        return false;
+      throw e;
+    }
+    try {
+      writeSync(fd, String(process.pid));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
   }
 }
 async function withLock(fn) {
@@ -19275,7 +19556,7 @@ async function runCurriculumIfDue(world, cfg, curriculumEnabled, now, summary) {
   } catch (e) {
     summary.curriculum[world.name] = { error: e.message };
   }
-  ensureDir(dirname4(marker));
+  ensureDir(dirname5(marker));
   writeFileSync4(marker, now.toISOString(), "utf8");
 }
 function curriculumDue(markerPath, intervalMinutes, now) {
@@ -19495,10 +19776,19 @@ function artifactBody(world, repo, ref, artifactType, pattern) {
   }
   return { found, body: text };
 }
-function foreignPaths(world, repo, snap, pattern) {
-  const allowed = allowedPaths(world, pattern);
+function foreignChanges(world, repo, snap, pattern, artifactType) {
+  const allowed = new Set(allowedPaths(world, pattern));
+  const rulesRel = artifactRel(world, "rule", pattern);
   const touched = commitPaths(repo, snap.base_sha, snap.branch_sha);
-  return touched.filter((p) => !allowed.has(p)).sort();
+  let ruleTags = [];
+  if (touched.includes(rulesRel)) {
+    const diff = git(repo, ["diff", `${snap.base_sha}...${snap.branch_sha}`, "--", rulesRel], { check: false });
+    ruleTags = foreignRuleTags(diff, pattern);
+    const ownsIt = artifactType === "rule" ? ruleTags.length === 0 : rulesDiffOwnedBy(diff, pattern);
+    if (!ownsIt)
+      allowed.delete(rulesRel);
+  }
+  return { paths: touched.filter((p) => !allowed.has(p)).sort(), ruleTags };
 }
 
 // packages/review/src/index.ts
@@ -19554,7 +19844,17 @@ function queue2(world, _cfg) {
   rows.sort((a, b) => a.pattern < b.pattern ? -1 : a.pattern > b.pattern ? 1 : 0);
   return rows;
 }
-function detail(world, _cfg, pattern) {
+function foreignProblem(world, repo, snap, pattern, artifactType) {
+  const { paths: foreign, ruleTags } = foreignChanges(world, repo, snap, pattern, artifactType);
+  if (ruleTags.length > 0) {
+    return `${snap.branch} rewrites the rule bullet of ${ruleTags.join(", ")} in ` + `${artifactRel(world, "rule", pattern)}. Every pattern's rule lives in that file and each one is ` + "reviewed on its own branch. Commit the other bullet(s) separately, then accept.";
+  }
+  if (foreign.length > 0) {
+    return `${snap.branch} changes ${foreign.length} file(s) that do not belong to ${JSON.stringify(pattern)}: ` + `${foreign.join(", ")}. Accepting would publish them inside this artifact's review. ` + "Commit them separately, then accept.";
+  }
+  return null;
+}
+function detail(world, _cfg, pattern, opts = {}) {
   const repo = targetRoot(world);
   const defaultRef = defaultBranch(repo);
   const snap = snapshot(world, repo, defaultRef, pattern);
@@ -19567,12 +19867,9 @@ function detail(world, _cfg, pattern) {
   if (isPlaceholderBody(atype, body)) {
     blocked = `${snap.branch} still carries the re-home placeholder for ${JSON.stringify(pattern)} (${atype}); ` + "no real draft has been written yet. Wait for the next run to redraft it, or reject and re-route.";
   } else {
-    const foreign = foreignPaths(world, repo, snap, pattern);
-    if (foreign.length > 0) {
-      blocked = `${snap.branch} changes ${foreign.length} file(s) that do not belong to ${JSON.stringify(pattern)}: ` + `${foreign.join(", ")}. Commit them separately, then accept.`;
-    }
+    blocked = foreignProblem(world, repo, snap, pattern, atype);
   }
-  const sources = reflections2(world).filter((r) => r.pattern === pattern).map((r) => r.id);
+  const sources = reflections2(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).map((r) => r.id);
   return {
     world: world.name,
     pattern,
@@ -19597,10 +19894,10 @@ function diff(world, _cfg, pattern) {
   const text = git(repo, ["diff", `${snap.base_sha}...${snap.branch_sha}`], { check: false });
   return { world: world.name, pattern, diff: text, reviewed_state: snap.reviewed_state };
 }
-function inventory(world, _cfg) {
+function inventory(world, _cfg, opts = {}) {
   const ledger = loadLedger2(world);
   const counts = new Map;
-  for (const reflection of reflections2(world)) {
+  for (const reflection of reflections2(world, opts.extraDirs ?? [])) {
     counts.set(reflection.pattern, (counts.get(reflection.pattern) ?? 0) + 1);
   }
   const cards = scorecardByPattern(scorecards2(world));
@@ -19648,10 +19945,9 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
   if (isPlaceholderBody(atype, body)) {
     throw new ReviewError(`${snap.branch} still carries the re-home placeholder for ${JSON.stringify(pattern)} (${atype}); no real draft has been written yet`);
   }
-  const foreign = foreignPaths(world, repo, snap, pattern);
-  if (foreign.length > 0) {
-    throw new ReviewError(`${snap.branch} changes ${foreign.length} file(s) that do not belong to ${JSON.stringify(pattern)}: ` + `${foreign.join(", ")}. Accepting would publish them inside this artifact's review. Commit them separately, then accept.`);
-  }
+  const problem = foreignProblem(world, repo, snap, pattern, atype);
+  if (problem)
+    throw new ReviewError(problem);
   requireLiveReady(world, repo, defaultRef);
   const rel = ledgerRel(world);
   const prepared = withTree(repo, snap.branch, defaultRef, (tree) => {
@@ -19723,19 +20019,20 @@ function mergeBaseIntoBranch(tree, snap, rel) {
   }
 }
 function ledgerAt(world, repo, ref) {
-  const { found, text } = show(repo, ref, ledgerRel(world));
+  const rel = ledgerRel(world);
+  const { found, text } = show(repo, ref, rel);
   if (!found)
     return parseLedger("{}");
   try {
     return parseLedger(text, ref);
-  } catch {
-    return parseLedger("{}");
+  } catch (e) {
+    throw new ReviewError(`the ledger at ${ref}:${rel} is unreadable; accepting would discard every recorded watermark: ` + `${e.message}. Repair it on the default branch, then accept.`);
   }
 }
-function reject(world, cfg, pattern) {
-  return withWorkerLock(() => rejectInner(world, cfg, pattern));
+function reject(world, cfg, pattern, opts = {}) {
+  return withWorkerLock(() => rejectInner(world, cfg, pattern, opts));
 }
-function rejectInner(world, _cfg, pattern) {
+function rejectInner(world, _cfg, pattern, opts) {
   const repo = targetRoot(world);
   const defaultRef = defaultBranch(repo);
   const snap = snapshot(world, repo, defaultRef, pattern);
@@ -19743,7 +20040,7 @@ function rejectInner(world, _cfg, pattern) {
     throw new ReviewError(`${snap.branch} has no resolvable commit; nothing to reject`);
   requireLiveReady(world, repo, defaultRef);
   const branchRow = branchEntry2(world, repo, snap.branch_sha, pattern);
-  const at = reflections2(world).filter((r) => r.pattern === pattern).length;
+  const at = reflections2(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   const rel = ledgerRel(world);
   const sha = commitOnDefault(world, repo, defaultRef, `chore(curriculum): reject ${pattern}`, (tree) => {
     const ledger = loadLedger(join17(tree, rel));
@@ -19872,28 +20169,28 @@ function relink(world, pattern, artifactType) {
     return null;
   const target = targetRoot(world);
   const rel = artifactRel(world, artifactType, pattern);
-  const source = artifactType === "skill" ? dirname5(join17(target, rel)) : join17(target, rel);
+  const source = artifactType === "skill" ? dirname6(join17(target, rel)) : join17(target, rel);
   const link = artifactType === "skill" ? join17(claudeConfigDir(), "skills", pattern) : join17(claudeConfigDir(), "agents", `${pattern}.md`);
-  mkdirSync5(dirname5(link), { recursive: true });
+  mkdirSync5(dirname6(link), { recursive: true });
   let isLink = false;
   try {
-    isLink = lstatSync(link).isSymbolicLink();
+    isLink = lstatSync2(link).isSymbolicLink();
   } catch {
     isLink = false;
   }
   if (isLink) {
     const current = readlinkSync(link);
-    if (!existsSync8(source)) {
-      unlinkSync2(link);
+    if (!existsSync9(source)) {
+      unlinkSync3(link);
       return null;
     }
-    if (resolve6(dirname5(link), current) === resolve6(source))
+    if (resolve6(dirname6(link), current) === resolve6(source))
       return link;
-    unlinkSync2(link);
-  } else if (existsSync8(link)) {
+    unlinkSync3(link);
+  } else if (existsSync9(link)) {
     throw new ReviewError(`${link} already exists and is not a symlink; refusing to replace it. Move it aside and relink.`);
   }
-  if (!existsSync8(source))
+  if (!existsSync9(source))
     return null;
   symlinkSync(source, link, artifactType === "skill" ? "dir" : "file");
   return link;
@@ -20006,7 +20303,7 @@ function cmdHookSnapshot() {
 }
 
 // apps/cli/src/importer.ts
-import { copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync6, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
+import { copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync6, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
 import { join as join18, relative as relative3 } from "path";
 function walkMarkdownFiles(dir) {
   const out = [];
@@ -20048,7 +20345,7 @@ function importReflections(dir, world) {
       continue;
     }
     const target = join18(dest, relative3(src, p));
-    if (existsSync9(target)) {
+    if (existsSync10(target)) {
       skippedDuplicate++;
       continue;
     }
@@ -20184,14 +20481,14 @@ function cmdLessons(opts) {
 }
 
 // apps/cli/src/commands/logs.ts
-import { existsSync as existsSync10 } from "fs";
+import { existsSync as existsSync11 } from "fs";
 function cmdLogs(name, opts) {
   if (!LOG_NAMES.includes(name)) {
     console.error(`error: unknown log ${JSON.stringify(name)}, choose from ${LOG_NAMES.join(", ")}`);
     return 2;
   }
   const p = logFile(name);
-  if (!existsSync10(p)) {
+  if (!existsSync11(p)) {
     console.log(`no log file at ${p}`);
     return 0;
   }
@@ -20205,12 +20502,12 @@ function cmdLogs(name, opts) {
 }
 
 // apps/cli/src/commands/reflect.ts
-import { realpathSync as realpathSync2 } from "fs";
+import { realpathSync as realpathSync3 } from "fs";
 import { resolve as resolve7 } from "path";
 function realOrResolve2(p) {
   const abs = resolve7(p);
   try {
-    return realpathSync2(abs);
+    return realpathSync3(abs);
   } catch {
     return abs;
   }
@@ -20352,9 +20649,9 @@ function cmdReviewRetire(pattern, opts, deps = defaultDeps) {
 }
 
 // apps/cli/src/schedule.ts
-import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
+import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync12, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
 import { homedir as homedir2 } from "os";
-import { dirname as dirname6, join as join20 } from "path";
+import { dirname as dirname7, join as join20 } from "path";
 var SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"];
 var SYSTEMD_WEB_UNIT = "sil-web.service";
 var LAUNCHD_WORKER_PLIST = "com.kolezka.sil-worker.plist";
@@ -20458,7 +20755,7 @@ function renderLaunchd(intervalMin, web) {
 }
 function installShim() {
   const dest = shimPath();
-  mkdirSync7(dirname6(dest), { recursive: true });
+  mkdirSync7(dirname7(dest), { recursive: true });
   const src = join20(pluginRoot(), "scripts", "sil");
   copyFileSync2(src, dest);
   chmodSync(dest, 493);
@@ -20503,7 +20800,7 @@ function uninstall(kind, run = realRunner) {
     const removed = [];
     for (const name of [...SYSTEMD_WORKER_UNITS, SYSTEMD_WEB_UNIT]) {
       const p = join20(d, name);
-      if (existsSync11(p)) {
+      if (existsSync12(p)) {
         rmSync5(p);
         removed.push(p);
       }
@@ -20516,7 +20813,7 @@ function uninstall(kind, run = realRunner) {
     const removed = [];
     for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST]) {
       const p = join20(d, name);
-      if (existsSync11(p)) {
+      if (existsSync12(p)) {
         run(["launchctl", "unload", p]);
         rmSync5(p);
         removed.push(p);
@@ -20528,9 +20825,9 @@ function uninstall(kind, run = realRunner) {
 }
 function show2() {
   const d = systemdDir();
-  const systemd = existsSync11(d) ? readdirSync11(d).filter((n) => n.startsWith("sil-")).sort() : [];
+  const systemd = existsSync12(d) ? readdirSync11(d).filter((n) => n.startsWith("sil-")).sort() : [];
   const ld = launchdDir();
-  const launchd = existsSync11(ld) ? readdirSync11(ld).filter((n) => n.startsWith("com.kolezka.sil-") && n.endsWith(".plist")).sort() : [];
+  const launchd = existsSync12(ld) ? readdirSync11(ld).filter((n) => n.startsWith("com.kolezka.sil-") && n.endsWith(".plist")).sort() : [];
   return { systemd, launchd };
 }
 
@@ -20758,19 +21055,19 @@ function lessonsList(args) {
 }
 
 // packages/ops/src/spawn.ts
-import { closeSync, existsSync as existsSync12, openSync } from "fs";
-import { dirname as dirname7, join as join21 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync13, openSync as openSync2 } from "fs";
+import { dirname as dirname8, join as join21 } from "path";
 function cliCommand(args) {
   const root = pluginRoot();
   const distCli = join21(root, "dist", "cli.js");
-  if (existsSync12(distCli))
+  if (existsSync13(distCli))
     return ["bun", distCli, ...args];
   return ["bun", "run", join21(root, "apps", "cli", "src", "main.ts"), ...args];
 }
 function spawnCli(args, logName) {
   const logPath = logFile(logName);
-  ensureDir(dirname7(logPath));
-  const fd = openSync(logPath, "a");
+  ensureDir(dirname8(logPath));
+  const fd = openSync2(logPath, "a");
   const [bin, ...rest] = cliCommand(args);
   try {
     const child = deps.spawn(bin, rest, { detached: true, stdio: ["ignore", fd, fd] });
@@ -20779,7 +21076,7 @@ function spawnCli(args, logName) {
       throw new Error(`failed to spawn: ${bin}`);
     return { pid: child.pid, log: logPath };
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 
@@ -20841,9 +21138,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync2, existsSync as existsSync13, openSync as openSync2, readSync, statSync as statSync10 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync10 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync13, openSync: openSync2, readSync, closeSync: closeSync2, statSync: statSync10 };
+var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync10 };
 function tailLines(path, n, io = REAL_TAIL_IO) {
   if (!io.existsSync(path))
     return [];
@@ -21096,7 +21393,7 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync14, statSync as statSync11 } from "fs";
+import { existsSync as existsSync15, statSync as statSync11 } from "fs";
 import { join as join23, normalize, sep } from "path";
 function staticRoot() {
   return join23(pluginRoot(), "dist", "web");
@@ -21124,7 +21421,7 @@ function fileResponse(path) {
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
-  if (!existsSync14(root))
+  if (!existsSync15(root))
     return new Response("not found", { status: 404 });
   const wanted = pathname === "/" ? "/index.html" : pathname;
   const target = resolveStaticPath(root, wanted);
@@ -21143,6 +21440,7 @@ async function serveStatic(pathname) {
 
 // apps/server/src/main.ts
 var REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
 function createServer(opts) {
   const host = opts.host ?? "127.0.0.1";
   if (REFUSED_HOSTS.has(host)) {
@@ -21152,6 +21450,7 @@ function createServer(opts) {
   const server = Bun.serve({
     hostname: host,
     port: opts.port,
+    maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
     fetch(request) {
       const url = new URL(request.url);
       const pathname = url.pathname;

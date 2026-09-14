@@ -88,14 +88,14 @@ function resolveWorkerCommand(pluginRoot: string): string[] {
 }
 
 /** Test hook: when set, a kick appends its argv (JSON array, one line) to
- * this file instead of actually spawning a process. */
+ * this file instead of actually spawning a process. In-process only, and
+ * deliberately not readable from the environment: an env-var version ships
+ * in the bundle and lets anything that can set a variable on the hook make
+ * it write to a path of their choosing. Out-of-process tests assert on the
+ * worker log or on a fake `bun` placed first on PATH. */
 let spawnLogOverride: string | null = null;
 export function setSpawnLogForTests(path: string | null): void {
   spawnLogOverride = path;
-}
-
-function spawnLogPath(): string | null {
-  return spawnLogOverride ?? process.env["SIL_TEST_SPAWN_LOG"] ?? null;
 }
 
 export function maybeKickWorker(snapshot: HookSnapshot): void {
@@ -126,7 +126,7 @@ export function maybeKickWorker(snapshot: HookSnapshot): void {
   const pluginRoot = process.env["CLAUDE_PLUGIN_ROOT"] || snapshot.plugin_root || paths.pluginRoot();
   const cmd = resolveWorkerCommand(pluginRoot);
 
-  const testLog = spawnLogPath();
+  const testLog = spawnLogOverride;
   if (testLog) {
     try {
       writeFileSync(testLog, `${JSON.stringify(cmd)}\n`, { flag: "a" });

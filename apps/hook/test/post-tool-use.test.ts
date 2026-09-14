@@ -58,13 +58,13 @@ describe("PostToolUse", () => {
     expect(JSON.stringify(events[0])).not.toContain("secret free text");
   });
 
-  test("Agent usage produces one usage event with model and description in detail", () => {
+  test("Agent usage produces one usage event with the model but no description", () => {
     writeSnapshot();
     const payload = {
       session_id: "sess-ptu-2",
       hook_event_name: "PostToolUse",
       tool_name: "Agent",
-      tool_input: { subagent_type: "critic", model: "sonnet", description: "review this change" },
+      tool_input: { subagent_type: "critic", model: "sonnet", description: "review the leaked credential in config" },
     };
     runHook(MAIN_TS, hookEnv, payload);
 
@@ -72,7 +72,11 @@ describe("PostToolUse", () => {
     expect(events.length).toBe(1);
     expect(events[0]?.["kind"]).toBe("agent");
     expect(events[0]?.["ref"]).toBe("agent:critic");
-    expect(events[0]?.["detail"]).toEqual({ model: "sonnet", description: "review this change" });
+    // description is model-written free text, the same privacy call Skill's
+    // "args" already got: it can carry anything the model was reasoning about.
+    expect(events[0]?.["detail"]).toEqual({ model: "sonnet" });
+    expect(JSON.stringify(events[0])).not.toContain("description");
+    expect(JSON.stringify(events[0])).not.toContain("leaked credential");
   });
 
   test("a non-Skill non-Agent tool produces no usage event", () => {

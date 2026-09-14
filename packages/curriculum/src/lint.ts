@@ -140,6 +140,19 @@ export function lintDescriptionCap(desc: string): string[] {
   return problems;
 }
 
+/** Topic-carrying words in `text`, deduplicated.
+ *
+ * Words shorter than five characters, the GENERIC list and the reflection
+ * template's own heading words are dropped: every reflection contains them, so
+ * they measure nothing. The router reuses this to tell a real quote from one
+ * assembled out of template scaffolding. */
+export function distinctiveTerms(text: string): Set<string> {
+  const excluded = new Set([...GENERIC, ...templateWords()]);
+  const out = new Set<string>();
+  for (const w of (text ?? "").toLowerCase().match(WORD_RE) ?? []) if (!excluded.has(w)) out.add(w);
+  return out;
+}
+
 /** Flag a body that does not reuse its sources' distinctive vocabulary.
  *
  * Vacuous filler ("be careful, verify things properly") is the one failure the
@@ -147,14 +160,8 @@ export function lintDescriptionCap(desc: string): string[] {
  * the artifact. A real artifact names the metrics, commands and fields its
  * sources name, so shared distinctive terms separate the two mechanically. */
 export function lintGrounding(body: string, sourcesText: string, minShared = MIN_SHARED_TERMS): string[] {
-  const excluded = new Set([...GENERIC, ...templateWords()]);
-  const terms = (text: string): Set<string> => {
-    const out = new Set<string>();
-    for (const w of text.toLowerCase().match(WORD_RE) ?? []) if (!excluded.has(w)) out.add(w);
-    return out;
-  };
-  const bodyTerms = terms(body);
-  const shared = [...terms(sourcesText)].filter((w) => bodyTerms.has(w)).sort();
+  const bodyTerms = distinctiveTerms(body);
+  const shared = [...distinctiveTerms(sourcesText)].filter((w) => bodyTerms.has(w)).sort();
   if (shared.length < minShared) {
     return [
       `body not grounded in its sources: only ${shared.length} distinctive term(s) shared (${JSON.stringify(shared)}); reads as generic filler`,

@@ -14,7 +14,12 @@ export function parseLedger(text: string, label = "<text>"): LedgerT {
     let raw: unknown = JSON.parse(text.trim() === "" ? "{}" : text);
     if (Array.isArray(raw)) {
       // V1 shape: a bare list of entries
-      raw = { version: 1, entries: Object.fromEntries(raw.map((e: { pattern: string }) => [e.pattern, e])) };
+      raw = { version: 1, entries: byPattern(raw) };
+    } else if (raw && typeof raw === "object" && Array.isArray((raw as { entries?: unknown }).entries)) {
+      // The shape V1 actually wrote: a list of rows under `version`. Read as a
+      // record this threw, and every caller that swallowed the throw then saw an
+      // empty ledger with every watermark gone.
+      raw = { ...(raw as object), entries: byPattern((raw as { entries: unknown[] }).entries) };
     } else if (raw && typeof raw === "object" && !("entries" in (raw as object))) {
       const values = Object.values(raw as Record<string, unknown>);
       if (values.every((v) => v && typeof v === "object")) raw = { version: 1, entries: raw };
@@ -25,6 +30,17 @@ export function parseLedger(text: string, label = "<text>"): LedgerT {
   } catch (e) {
     throw new Error(`unreadable ledger ${label}: ${(e as Error).message}`);
   }
+}
+
+/** A list of rows keyed by their own `pattern`. A row without one keeps an empty
+ * key, so the schema reports it instead of the list silently losing it. */
+function byPattern(rows: unknown[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const row of rows) {
+    const pattern = row && typeof row === "object" ? (row as { pattern?: unknown }).pattern : undefined;
+    out[typeof pattern === "string" ? pattern : ""] = row;
+  }
+  return out;
 }
 
 export function saveLedger(path: string, ledger: LedgerT): string {

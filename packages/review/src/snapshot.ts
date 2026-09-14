@@ -106,15 +106,45 @@ export function artifactBody(
   return { found, body: text };
 }
 
-/** Files this branch changes that do not belong to `pattern`.
+export interface ForeignChanges {
+  /** Paths the branch changes that do not belong to `pattern`. */
+  paths: string[];
+  /** Other patterns whose rule bullets the branch's rules diff rewrites. */
+  ruleTags: string[];
+}
+
+/** What this branch changes that is not its own.
  *
  * Judged by path, never by commit count. A re-homed pattern legitimately carries
  * several commits (each landing on top so the operator's override is not
  * orphaned), and a count-based guard refused every migration while still letting
  * two unrelated commits ride into a pull request because the shape it saw most
- * often was one commit. */
-export function foreignPaths(world: World, repo: string, snap: Snapshot, pattern: string): string[] {
-  const allowed = artifacts.allowedPaths(world, pattern);
+ * often was one commit.
+ *
+ * The rules file is the one path every pattern's allowed set contains, because
+ * every pattern's rule could live there. Allowed on that basis alone, a skill
+ * branch could rewrite a sibling's bullet and accept would merge it with nothing
+ * reported. So the shared file is earned rather than granted: a branch routed to
+ * `rule` keeps it while its diff leaves every other pattern's tag alone, and a
+ * branch routed elsewhere only while the diff is its own bullet being dropped,
+ * which is what migrating off `rule` does. */
+export function foreignChanges(
+  world: World,
+  repo: string,
+  snap: Snapshot,
+  pattern: string,
+  artifactType: ArtifactType,
+): ForeignChanges {
+  const allowed = new Set(artifacts.allowedPaths(world, pattern));
+  const rulesRel = artifacts.artifactRel(world, "rule", pattern);
   const touched = git.commitPaths(repo, snap.base_sha, snap.branch_sha);
-  return touched.filter((p) => !allowed.has(p)).sort();
+  let ruleTags: string[] = [];
+  if (touched.includes(rulesRel)) {
+    const diff = git.git(repo, ["diff", `${snap.base_sha}...${snap.branch_sha}`, "--", rulesRel], { check: false });
+    ruleTags = artifacts.foreignRuleTags(diff, pattern);
+    const ownsIt =
+      artifactType === "rule" ? ruleTags.length === 0 : artifacts.rulesDiffOwnedBy(diff, pattern);
+    if (!ownsIt) allowed.delete(rulesRel);
+  }
+  return { paths: touched.filter((p) => !allowed.has(p)).sort(), ruleTags };
 }

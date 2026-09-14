@@ -39,7 +39,7 @@ import {
   branchEntry,
   DIGEST_PREFIX,
   entryType,
-  foreignPaths,
+  foreignChanges,
   ledgerRel,
   type Snapshot,
   snapshot,
@@ -105,6 +105,15 @@ export type AcceptResult = {
   remote_error?: string;
 };
 
+export interface ReviewOptions {
+  /** Extra read-only reflection roots, the same ones `plan()` and `run()` read.
+   *
+   * Without them the counts on this side are taken from a smaller corpus than
+   * the promotion was made from, so a rejection's watermark lands below the
+   * count that staged the pattern and the next run re-stages it at once. */
+  extraDirs?: string[];
+}
+
 export type RejectResult = {
   pattern: string;
   deleted: string;
@@ -161,8 +170,38 @@ export function queue(world: World, _cfg: Config): ReviewItem[] {
   return rows;
 }
 
+/** Why accepting this branch would publish something nobody reviewed, or null.
+ *
+ * One function so the preview and the accept agree: a branch that reads as
+ * blocked must also be refused, and the operator is told the same thing twice
+ * rather than two different things. */
+function foreignProblem(
+  world: World,
+  repo: string,
+  snap: Snapshot,
+  pattern: string,
+  artifactType: ArtifactType,
+): string | null {
+  const { paths: foreign, ruleTags } = foreignChanges(world, repo, snap, pattern, artifactType);
+  if (ruleTags.length > 0) {
+    return (
+      `${snap.branch} rewrites the rule bullet of ${ruleTags.join(", ")} in ` +
+      `${artifacts.artifactRel(world, "rule", pattern)}. Every pattern's rule lives in that file and each one is ` +
+      "reviewed on its own branch. Commit the other bullet(s) separately, then accept."
+    );
+  }
+  if (foreign.length > 0) {
+    return (
+      `${snap.branch} changes ${foreign.length} file(s) that do not belong to ${JSON.stringify(pattern)}: ` +
+      `${foreign.join(", ")}. Accepting would publish them inside this artifact's review. ` +
+      "Commit them separately, then accept."
+    );
+  }
+  return null;
+}
+
 /** The body on the branch, its evidence, and whether accept is blocked. */
-export function detail(world: World, _cfg: Config, pattern: string): ReviewDetail {
+export function detail(world: World, _cfg: Config, pattern: string, opts: ReviewOptions = {}): ReviewDetail {
   const repo = targetRoot(world);
   const defaultRef = git.defaultBranch(repo);
   const snap = snapshot(world, repo, defaultRef, pattern);
@@ -178,15 +217,10 @@ export function detail(world: World, _cfg: Config, pattern: string): ReviewDetai
       `${snap.branch} still carries the re-home placeholder for ${JSON.stringify(pattern)} (${atype}); ` +
       "no real draft has been written yet. Wait for the next run to redraft it, or reject and re-route.";
   } else {
-    const foreign = foreignPaths(world, repo, snap, pattern);
-    if (foreign.length > 0) {
-      blocked =
-        `${snap.branch} changes ${foreign.length} file(s) that do not belong to ${JSON.stringify(pattern)}: ` +
-        `${foreign.join(", ")}. Commit them separately, then accept.`;
-    }
+    blocked = foreignProblem(world, repo, snap, pattern, atype);
   }
 
-  const sources = reflections(world).filter((r) => r.pattern === pattern).map((r) => r.id);
+  const sources = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).map((r) => r.id);
   return {
     world: world.name,
     pattern,
@@ -214,10 +248,10 @@ export function diff(world: World, _cfg: Config, pattern: string): ReviewDiff {
 }
 
 /** Every pattern the ledger knows, joined with live counts and scorecards. */
-export function inventory(world: World, _cfg: Config): RouterRow[] {
+export function inventory(world: World, _cfg: Config, opts: ReviewOptions = {}): RouterRow[] {
   const ledger = loadLedger(world);
   const counts = new Map<string, number>();
-  for (const reflection of reflections(world)) {
+  for (const reflection of reflections(world, opts.extraDirs ?? [])) {
     counts.set(reflection.pattern, (counts.get(reflection.pattern) ?? 0) + 1);
   }
   const cards = scorecardByPattern(scorecards(world));
@@ -290,13 +324,8 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
       `${snap.branch} still carries the re-home placeholder for ${JSON.stringify(pattern)} (${atype}); no real draft has been written yet`,
     );
   }
-  const foreign = foreignPaths(world, repo, snap, pattern);
-  if (foreign.length > 0) {
-    throw new ReviewError(
-      `${snap.branch} changes ${foreign.length} file(s) that do not belong to ${JSON.stringify(pattern)}: ` +
-        `${foreign.join(", ")}. Accepting would publish them inside this artifact's review. Commit them separately, then accept.`,
-    );
-  }
+  const problem = foreignProblem(world, repo, snap, pattern, atype);
+  if (problem) throw new ReviewError(problem);
   requireLiveReady(world, repo, defaultRef);
 
   const rel = ledgerRel(world);
@@ -407,14 +436,23 @@ function mergeBaseIntoBranch(tree: string, snap: Snapshot, rel: string): void {
   }
 }
 
+/** The ledger committed at `ref`. No file is an empty ledger; an unreadable one
+ * is a refusal.
+ *
+ * Only `!found` may start empty. Treating a parse failure the same way made
+ * accept write back a ledger holding one row, silently erasing every sibling
+ * watermark on the default branch and freeing those patterns to be re-staged. */
 function ledgerAt(world: World, repo: string, ref: string): Ledger {
-  const { found, text } = git.show(repo, ref, ledgerRel(world));
+  const rel = ledgerRel(world);
+  const { found, text } = git.show(repo, ref, rel);
   if (!found) return parseLedger("{}");
   try {
     return parseLedger(text, ref);
-  } catch {
-    // An unreadable base ledger starts empty.
-    return parseLedger("{}");
+  } catch (e) {
+    throw new ReviewError(
+      `the ledger at ${ref}:${rel} is unreadable; accepting would discard every recorded watermark: ` +
+        `${(e as Error).message}. Repair it on the default branch, then accept.`,
+    );
   }
 }
 
@@ -429,11 +467,11 @@ function ledgerAt(world: World, repo: string, ref: string): Ledger {
  * The watermark costs the same as a promotion: `threshold` new reflections
  * before the pattern can be proposed again, never a permanent veto. A lesson can
  * genuinely improve on a second attempt. */
-export function reject(world: World, cfg: Config, pattern: string): RejectResult {
-  return withWorkerLock(() => rejectInner(world, cfg, pattern));
+export function reject(world: World, cfg: Config, pattern: string, opts: ReviewOptions = {}): RejectResult {
+  return withWorkerLock(() => rejectInner(world, cfg, pattern, opts));
 }
 
-function rejectInner(world: World, _cfg: Config, pattern: string): RejectResult {
+function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOptions): RejectResult {
   const repo = targetRoot(world);
   const defaultRef = git.defaultBranch(repo);
   const snap = snapshot(world, repo, defaultRef, pattern);
@@ -441,7 +479,7 @@ function rejectInner(world: World, _cfg: Config, pattern: string): RejectResult 
   requireLiveReady(world, repo, defaultRef);
 
   const branchRow = branchEntry(world, repo, snap.branch_sha, pattern);
-  const at = reflections(world).filter((r) => r.pattern === pattern).length;
+  const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   const rel = ledgerRel(world);
 
   const sha = commitOnDefault(world, repo, defaultRef, `chore(curriculum): reject ${pattern}`, (tree) => {

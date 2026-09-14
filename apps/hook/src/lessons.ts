@@ -2,7 +2,7 @@
 // _format_lesson, _read_delivered, _bump_lesson_deliveries,
 // _session_start_mtime, _pending_lessons, _rules_block.
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as paths from "@sil/core/paths";
 import { RULE_START, RULE_END } from "@sil/core/consts";
@@ -10,6 +10,9 @@ import { atomicWrite } from "@sil/core/fsx";
 import { cwdUnder } from "./worlds.ts";
 
 const LESSON_ARCHIVE_AT_DELIVERIES = 5;
+// The rules block is a handful of lines. Anything above this is not a rules
+// file, and reading it on the hook's hot path is time we cannot afford.
+const MAX_RULES_BYTES = 256 * 1024;
 
 export interface Lesson {
   id: string;
@@ -79,10 +82,20 @@ function writeJsonAtomic(path: string, obj: unknown): void {
 }
 
 /** Cutoff for 'arrived since session start': start.json's own mtime. It is
- * written once, at SessionStart, and never touched again. */
+ * written once, at SessionStart, and never touched again.
+ *
+ * When start.json is missing (a SessionStart that never ran, or one whose
+ * write failed) the session dir's own mtime stands in. null means there is
+ * no session dir either, so there is no cutoff to be had. */
 function sessionStartMtime(sessionId: string): number | null {
+  const dir = paths.sessionDir(sessionId);
   try {
-    return statSync(join(paths.sessionDir(sessionId), "start.json")).mtimeMs;
+    return statSync(join(dir, "start.json")).mtimeMs;
+  } catch {
+    // fall through to the session dir itself
+  }
+  try {
+    return statSync(dir).mtimeMs;
   } catch {
     return null;
   }
@@ -105,6 +118,16 @@ export function pendingLessons(
   limit: number,
   sinceSessionStart = false,
 ): Lesson[] {
+  let minMtime: number | null = null;
+  if (sinceSessionStart) {
+    minMtime = sessionStartMtime(sessionId);
+    // No cutoff means we cannot tell a lesson that arrived this session from
+    // the whole backlog, and UserPromptSubmit is the caller: deliver nothing
+    // rather than flood the prompt. SessionStart does not pass this flag, so
+    // it still delivers the newest few.
+    if (minMtime === null) return [];
+  }
+
   const inbox = paths.inboxDir(worldName);
   let names: string[];
   try {
@@ -115,7 +138,6 @@ export function pendingLessons(
 
   const deliveredFile = join(paths.sessionDir(sessionId), "delivered");
   const already = readDelivered(deliveredFile);
-  const minMtime = sinceSessionStart ? sessionStartMtime(sessionId) : null;
 
   const candidates: { obj: Lesson; path: string }[] = [];
   for (const name of names) {
@@ -164,11 +186,21 @@ export function pendingLessons(
 }
 
 /** The text between RULE_START/RULE_END in the world's rules file, or "" if
- * injection is off, the file is missing, or the markers are absent. */
+ * injection is off, the file is missing, or the markers are absent.
+ *
+ * The path comes from the config snapshot, so it can name anything. It is
+ * read only when stat says a regular file under MAX_RULES_BYTES: pointed at
+ * /dev/zero, an unbounded read hangs the hook until Claude Code kills it. */
 export function rulesBlock(world: { rules_inject?: boolean; rules_file?: string }): string {
   if (world.rules_inject === false) return "";
   const rulesFile = world.rules_file;
-  if (!rulesFile || !existsSync(rulesFile)) return "";
+  if (!rulesFile) return "";
+  try {
+    const st = statSync(rulesFile);
+    if (!st.isFile() || st.size > MAX_RULES_BYTES) return "";
+  } catch {
+    return "";
+  }
   let text: string;
   try {
     text = readFileSync(rulesFile, "utf8");

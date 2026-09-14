@@ -17,8 +17,10 @@
 // corpus walk runs out of process behind a wall-clock deadline (`runGateCorpus`)
 // and a run that does not answer in time refuses the hook.
 
+import { SECTIONS } from "@sil/core";
 import { z } from "zod";
 import { type GateRunner, nudgeEvents, nudges } from "./deps.ts";
+import { distinctiveTerms } from "./lint.ts";
 
 // A gate that cannot be evaluated inside the deadline does not route to hook.
 export const GATE_TIMEOUT_MS = 250;
@@ -29,6 +31,11 @@ export const GATE_TIMEOUT_MS = 250;
 // one character.
 export const MIN_QUOTE_WORDS = 5;
 export const MIN_QUOTE_CHARS = 30;
+// Length and word count are both payable with the reflection template's own
+// scaffolding: "Last updated: 2026-09-01 Pattern: verify-callsites" is five
+// words and fifty characters, and is verbatim in every reflection ever written.
+// So a quote must also carry words that say something about this lesson.
+export const MIN_QUOTE_TERMS = 3;
 
 /** What the drafter returns instead of choosing a type in prose. */
 export const RouteAnswer = z.object({
@@ -78,7 +85,7 @@ export function splitTrigger(trigger: string): [string, string | null] | null {
   const at = raw.indexOf(":");
   const event = at === -1 ? raw : raw.slice(0, at);
   const matcher = at === -1 ? "" : raw.slice(at + 1);
-  if (!(event in events)) return null;
+  if (!Object.hasOwn(events, event)) return null;
   const allowed = events[event];
   // Every supported event is valid bare: "PreToolUse" means all matchers.
   if (!matcher) return [event, null];
@@ -95,16 +102,36 @@ function normalise(text: string): string {
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const SECTION_HEADINGS = new Set<string>(SECTIONS.map((heading) => heading.trim()));
+const TEMPLATE_LINE = /^(Pattern|Last updated):/;
+
+/** The sources with the reflection template's own lines removed.
+ *
+ * Those lines are in every reflection, so a quote made of them is verbatim in
+ * all of them. Dropping them from the haystack is what stops the skill branch
+ * being bought with a date and a heading. */
+function withoutScaffolding(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      return !TEMPLATE_LINE.test(trimmed) && !SECTION_HEADINGS.has(trimmed);
+    })
+    .join("\n");
+}
+
 /** Whether `note` is a real passage lifted out of `sourcesText`.
  *
- * Three things at once, and all three are needed. Length, so a token that
+ * Four things at once, and all four are needed. Length, so a token that
  * appears in every English sentence cannot stand in for evidence. Word count,
- * for the same reason. And word-boundary alignment, so "safe" does not count as
- * quoted because the source says "unsafe". */
+ * for the same reason. Distinctive terms, so the template's own scaffolding does
+ * not qualify. And word-boundary alignment, so "safe" does not count as quoted
+ * because the source says "unsafe". */
 export function substantiveQuote(note: string | null | undefined, sourcesText: string): boolean {
   const quote = normalise(note ?? "");
   if (quote.length < MIN_QUOTE_CHARS || quote.split(" ").filter(Boolean).length < MIN_QUOTE_WORDS) return false;
-  const haystack = normalise(sourcesText ?? "");
+  if (distinctiveTerms(quote).size < MIN_QUOTE_TERMS) return false;
+  const haystack = normalise(withoutScaffolding(sourcesText ?? ""));
   return new RegExp(`(?<!\\w)${escapeRe(quote)}(?!\\w)`).test(haystack);
 }
 
@@ -115,36 +142,39 @@ export function substantiveQuote(note: string | null | undefined, sourcesText: s
  * answer. Inputs are coerced rather than asserted, because a caller handing null
  * from a failed file read must cost a routing decision, not a crash. */
 export function route(
-  answer: RouteAnswer,
+  answer: unknown,
   sourcesText: unknown,
   payloads: unknown,
   opts: RouteOptions = {},
 ): RouteResult {
+  // Coerced, never asserted. `null`, `{}` and a stray number all become the
+  // empty answer, which routes to `rule` like any other unevidenced discipline.
+  const reply = RouteAnswer.safeParse(answer).data ?? emptyAnswer();
   const sources = typeof sourcesText === "string" ? sourcesText : "";
   const corpus = Array.isArray(payloads) ? (payloads as Record<string, unknown>[]) : [];
 
   // Before `no_artifact`, and reported differently: an unreadable reply is a
   // provider problem someone has to fix, while a decline is the drafter working
   // correctly and saying no.
-  if (answer.parse_error) {
-    return { artifact_type: "none", reason: `unreadable drafter reply: ${answer.parse_error}` };
+  if (reply.parse_error) {
+    return { artifact_type: "none", reason: `unreadable drafter reply: ${reply.parse_error}` };
   }
 
   // First among the model's own signals, so an explicit decline is not
   // overridden by a gate that happens to fire. Otherwise the churn relocates
   // from skills to hooks.
-  if (answer.no_artifact) {
+  if (reply.no_artifact) {
     return { artifact_type: "none", reason: "drafter declined: no artifact warranted" };
   }
 
-  const hookReason = whyNotHook(answer, corpus, opts);
+  const hookReason = whyNotHook(reply, corpus, opts);
   if (hookReason === null) {
-    return { artifact_type: "hook", reason: `gate fires on the payload corpus at ${answer.trigger_event}` };
+    return { artifact_type: "hook", reason: `gate fires on the payload corpus at ${reply.trigger_event}` };
   }
 
   // `agent` is earned, not asserted, at the same bar `skill` clears below.
-  if (answer.needs_own_context) {
-    const note = (answer.context_evidence ?? "").trim();
+  if (reply.needs_own_context) {
+    const note = (reply.context_evidence ?? "").trim();
     if (!note) {
       return {
         artifact_type: "rule",
@@ -155,14 +185,15 @@ export function route(
       return {
         artifact_type: "rule",
         reason:
-          `context_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words and ` +
-          `${MIN_QUOTE_CHARS} characters, matched on word boundaries); treated as a discipline`,
+          `context_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words, ` +
+          `${MIN_QUOTE_CHARS} characters and ${MIN_QUOTE_TERMS} distinctive terms, matched on word boundaries ` +
+          "against the sources with the reflection template's own lines removed); treated as a discipline",
       };
     }
     return { artifact_type: "agent", reason: "own-context need quoted verbatim from a source" };
   }
 
-  const quote = (answer.capability_evidence ?? "").trim();
+  const quote = (reply.capability_evidence ?? "").trim();
   if (quote) {
     if (substantiveQuote(quote, sources)) {
       return { artifact_type: "skill", reason: "capability evidence quoted verbatim from a source" };
@@ -170,8 +201,9 @@ export function route(
     return {
       artifact_type: "rule",
       reason:
-        `capability_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words and ` +
-        `${MIN_QUOTE_CHARS} characters, matched on word boundaries); treated as a discipline`,
+        `capability_evidence is not verbatim in any source reflection (needs at least ${MIN_QUOTE_WORDS} words, ` +
+        `${MIN_QUOTE_CHARS} characters and ${MIN_QUOTE_TERMS} distinctive terms, matched on word boundaries ` +
+        "against the sources with the reflection template's own lines removed); treated as a discipline",
     };
   }
 
@@ -188,7 +220,7 @@ export function route(
  * of this module is that such claims get tested. */
 function whyNotHook(answer: RouteAnswer, payloads: Record<string, unknown>[], opts: RouteOptions): string | null {
   const gate = answer.gate;
-  if (answer.trigger_event === "none" || gate === null || Object.keys(gate).length === 0) {
+  if (answer.trigger_event === "none" || gate == null || Object.keys(gate).length === 0) {
     return "no trigger event proposed";
   }
   if (splitTrigger(answer.trigger_event) === null) {

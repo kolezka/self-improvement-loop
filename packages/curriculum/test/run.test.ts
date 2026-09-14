@@ -46,7 +46,7 @@ import {
 } from "./fixtures.ts";
 
 const PATTERN = "verify-callsites";
-const QUOTE = "run `rg` over every call site of the changed symbol";
+const QUOTE = "run `rg` over every call site of the changed symbol and read the graphify inventory";
 
 let env: TestEnv;
 

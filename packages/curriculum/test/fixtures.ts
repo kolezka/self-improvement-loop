@@ -237,7 +237,7 @@ export function fakeLintNudge(payload: unknown): string[] {
   for (const key of ["pattern", "event", "gate", "once_per", "text"]) {
     if (!(key in obj)) problems.push(`missing key ${JSON.stringify(key)}`);
   }
-  if ("event" in obj && !(String(obj["event"]) in EVENTS)) {
+  if ("event" in obj && !Object.hasOwn(EVENTS, String(obj["event"]))) {
     problems.push(`unknown event ${JSON.stringify(obj["event"])}`);
   }
   if ("once_per" in obj && obj["once_per"] !== "session" && obj["once_per"] !== "always") {

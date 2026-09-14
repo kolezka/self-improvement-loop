@@ -21,25 +21,49 @@ export interface GitResult {
   code: number | null;
   stdout: string;
   stderr: string;
+  /** The signal that ended the run, or null when it exited normally. */
+  signal: string | null;
+  elapsedMs: number;
   timedOut: boolean;
+}
+
+/** Whether a signal death was this run's own deadline expiring.
+ *
+ * `Bun.spawnSync`'s timeout kills with SIGTERM, so SIGTERM at or past the
+ * deadline is a timeout. Nothing else is. Reported as one, an operator's Ctrl-C
+ * and an OOM kill both read as "git is slow", which sends the next person
+ * looking at the wrong thing. */
+export function isTimeoutSignal(signal: string | null, elapsedMs: number, timeoutMs: number): boolean {
+  return signal === "SIGTERM" && elapsedMs >= timeoutMs;
+}
+
+/** How a run that ended on a signal is reported. */
+export function signalMessage(args: string[], signal: string | null, elapsedMs: number, timeoutMs: number): string {
+  const what = `git ${args.join(" ")}`;
+  if (isTimeoutSignal(signal, elapsedMs, timeoutMs)) return `${what} timed out after ${timeoutMs}ms`;
+  return `${what} was killed by ${signal ?? "an unknown signal"} after ${elapsedMs}ms`;
 }
 
 /** Run git and hand back the raw result. Never throws for a non-zero exit. */
 export function gitRaw(repo: string, args: string[], timeout = DEFAULT_TIMEOUT_MS): GitResult {
   let proc;
+  const started = Date.now();
   try {
     proc = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe", timeout });
   } catch (e) {
     // A missing cwd or a missing git binary. Shaped like a failed run so every
     // caller keeps one error path.
-    return { code: 127, stdout: "", stderr: (e as Error).message, timedOut: false };
+    return { code: 127, stdout: "", stderr: (e as Error).message, signal: null, elapsedMs: 0, timedOut: false };
   }
-  const timedOut = proc.exitCode === null && proc.signalCode !== null;
+  const elapsedMs = Date.now() - started;
+  const signal = proc.exitCode === null ? (proc.signalCode ?? null) : null;
   return {
     code: proc.exitCode,
     stdout: proc.stdout.toString(),
     stderr: proc.stderr.toString(),
-    timedOut,
+    signal,
+    elapsedMs,
+    timedOut: isTimeoutSignal(signal, elapsedMs, timeout),
   };
 }
 
@@ -52,9 +76,9 @@ export function git(repo: string, args: string[], opts: GitOptions = {}): string
   const check = opts.check ?? true;
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS;
   const res = gitRaw(repo, args, timeout);
-  if (res.timedOut) {
+  if (res.signal !== null) {
     if (!check) return "";
-    throw new GitError(`git ${args.join(" ")} timed out after ${timeout}ms`, res.stderr);
+    throw new GitError(signalMessage(args, res.signal, res.elapsedMs, timeout), res.stderr);
   }
   if (res.code !== 0) {
     if (!check) return "";
@@ -130,23 +154,34 @@ function hooksOff(parent: string): string[] {
  * The removal runs in `finally` on every path, including a throw from `fn`: a
  * leaked registration makes every later `worktree add` fail on the same branch.
  * `prune` runs after the temp dir is gone, which is the only state in which it
- * can clean up a `remove --force` that itself failed. */
+ * can clean up a `remove --force` that itself failed.
+ *
+ * A branch this call created is deleted when `fn` throws. Kept, it is a branch
+ * nobody wrote and nobody reviewed, and the next run checks it out and lands its
+ * commit on top of the failure. A branch that was already there is left alone:
+ * it may hold a part-reviewed draft. */
 export function withScratchWorktree<T>(repo: string, branch: string, base: string, fn: (tree: string) => T): T {
   const tmp = mkdtempSync(join(tmpdir(), "sil-wt-"));
   const workDir = join(tmp, "wt");
+  const created = !refExists(repo, `refs/heads/${branch}`);
+  let threw = true;
   try {
     const hooks = hooksOff(tmp);
-    if (refExists(repo, `refs/heads/${branch}`)) {
-      git(repo, [...hooks, "worktree", "add", "-q", workDir, branch]);
-    } else {
+    if (created) {
       git(repo, [...hooks, "worktree", "add", "-q", "-b", branch, workDir, base]);
+    } else {
+      git(repo, [...hooks, "worktree", "add", "-q", workDir, branch]);
     }
-    return fn(workDir);
+    const out = fn(workDir);
+    threw = false;
+    return out;
   } finally {
     // --force: the body may have left a dirty or conflicted tree.
     git(repo, ["worktree", "remove", "--force", workDir], { check: false });
     rmSync(tmp, { recursive: true, force: true });
     git(repo, ["worktree", "prune"], { check: false });
+    // After the prune: git refuses to delete a branch still checked out.
+    if (created && threw) git(repo, ["branch", "-q", "-D", branch], { check: false });
   }
 }
 

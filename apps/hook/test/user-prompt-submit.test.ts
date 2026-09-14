@@ -70,3 +70,23 @@ describe("UserPromptSubmit", () => {
     expect(text).not.toContain("lesson body old-lesson");
   });
 });
+
+describe("UserPromptSubmit with no session start on record", () => {
+  test("delivers nothing rather than the whole inbox backlog", () => {
+    writeSnapshot();
+    // No SessionStart ran, so there is no start.json and no session dir: the
+    // sinceSessionStart filter used to be skipped entirely here, and every
+    // pending lesson landed in the prompt.
+    writeLesson("backlog-a", "2020-01-01T00:00:00.000Z");
+    writeLesson("backlog-b", "2021-01-01T00:00:00.000Z");
+
+    const result = runHook(MAIN_TS, hookEnv, {
+      session_id: "sess-ups-no-start",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "what should I do next?",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("lesson body backlog-a");
+    expect(result.stdout).not.toContain("lesson body backlog-b");
+  });
+});

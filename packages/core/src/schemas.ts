@@ -208,7 +208,9 @@ export const PromotionEntry = z.object({
   status: PromotionStatus.default("staged"),
   artifact_type: ArtifactType.default("none"),
   served_by: ArtifactRef.nullable().default(null),
-  last_updated: isoTs,
+  // V1 rows predate this field. Dated now rather than rejected: one old row
+  // without it used to make the whole ledger unreadable.
+  last_updated: isoTs.default(() => new Date().toISOString()),
   commit: z.string().nullable().default(null),
   feedback: Scorecard.nullable().default(null),
 });

@@ -1,7 +1,7 @@
 // Background worker: reflect, curriculum, feedback, outline export. Runs
 // under a single-instance lock; a queue entry's failure never stops the run.
 
-import { readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   ConfigError,
@@ -48,6 +48,31 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+// The file is created empty and its pid written a moment later, so an empty lock
+// file can be a live acquire microseconds old. Re-read before calling it a
+// leftover; a crash between the two writes costs this long, once.
+const PID_SETTLE_TRIES = 5;
+const PID_SETTLE_MS = 10;
+// How long a reclaim waits before believing it won. Two processes can decide the
+// same crashed lock is theirs; the last write is the one that counts, and the
+// others find a pid that is not theirs.
+const RECLAIM_SETTLE_MS = 60;
+
+/** The pid in the lock file once it has stopped being empty, or null.
+ *
+ * Reclaiming on the first empty read is how two processes both end up holding
+ * the lock: one is between its create and its write, the other calls the file
+ * abandoned and takes it. */
+function settledPid(path: string): number | null {
+  for (let i = 0; i < PID_SETTLE_TRIES; i++) {
+    const pid = readPid(path);
+    if (pid !== null) return pid;
+    if (!fsx.exists(path)) return null;
+    Bun.sleepSync(PID_SETTLE_MS);
+  }
+  return readPid(path);
+}
+
 /** Single-instance guard on `paths.workerLockFile()`. A lock file whose
  * recorded pid is no longer alive, missing, or empty is reclaimed. */
 export class Lock {
@@ -57,24 +82,64 @@ export class Lock {
     this.path = paths.workerLockFile();
   }
 
+  /** Take the lock, or throw LockHeld.
+   *
+   * The exclusive create is the whole guard: it is one atomic operation, so two
+   * processes racing for a free lock cannot both win. Reading the pid and then
+   * writing left a window in which both read "free" and both wrote, and the
+   * second write silently replaced the first holder. */
   acquire(): void {
     fsx.ensureDir(dirname(this.path));
-    const pid = readPid(this.path);
+    if (this.create()) return;
+    const pid = settledPid(this.path);
     if (pid !== null && pidAlive(pid)) throw new LockHeld(`worker lock held: ${this.path}`);
+
+    // A crashed worker's file: no pid, an unparsable one, or a dead one. It is
+    // overwritten in place, never unlinked and recreated: measured with five
+    // processes racing, unlink-then-create gave two holders, because each
+    // reclaimer removed the file another had just made. A rename leaves no
+    // moment in which the lock is absent, so nothing on the fast path above can
+    // slip through, and only genuine reclaimers compete. The last write wins and
+    // the rest read a pid that is not theirs.
     fsx.atomicWrite(this.path, String(process.pid));
+    Bun.sleepSync(RECLAIM_SETTLE_MS);
+    if (readPid(this.path) !== process.pid) throw new LockHeld(`worker lock held: ${this.path}`);
   }
 
   release(): void {
+    // Truncate first. If the unlink then fails, what is left reads as free.
     try {
       writeFileSync(this.path, "", "utf8");
     } catch {
       // no lock file to truncate
+    }
+    try {
+      unlinkSync(this.path);
+    } catch {
+      // already gone
     }
   }
 
   static held(): boolean {
     const pid = readPid(paths.workerLockFile());
     return pid !== null && pidAlive(pid);
+  }
+
+  /** True when this call created the file, false when it already existed. */
+  private create(): boolean {
+    let fd: number;
+    try {
+      fd = openSync(this.path, "wx");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw e;
+    }
+    try {
+      writeSync(fd, String(process.pid));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
   }
 }
 

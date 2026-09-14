@@ -6,6 +6,10 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { HOOK_EVENTS } from "../packages/core/src/consts.ts";
 
+// Built from code points so this file passes the dash lint itself.
+const EM = String.fromCodePoint(0x2014);
+const EN = String.fromCodePoint(0x2013);
+
 const ROOT = join(import.meta.dir, "..");
 
 /** Frontmatter blocks in this repo are flat `key: value` scalars, no nesting
@@ -147,7 +151,7 @@ function textFiles(): string[] {
 describe("no em dash or en dash in plugin-facing text", () => {
   test.each(textFiles().map((p) => [p.slice(ROOT.length + 1), p] as const))("%s", (_rel, p) => {
     const text = readFileSync(p, "utf8");
-    expect(text.includes("—")).toBe(false);
-    expect(text.includes("–")).toBe(false);
+    expect(text.includes(EM)).toBe(false);
+    expect(text.includes(EN)).toBe(false);
   });
 });

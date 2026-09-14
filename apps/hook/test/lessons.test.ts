@@ -120,3 +120,58 @@ describe("rulesBlock", () => {
     expect(rulesBlock({ rules_inject: true, rules_file: `${hookEnv.root}/does-not-exist.md` })).toBe("");
   });
 });
+
+describe("pendingLessons since session start", () => {
+  test("falls back to the session dir mtime when start.json is missing", () => {
+    const oldPath = writeLesson("default", "predates-session");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(oldPath, old, old);
+
+    // A session dir but no start.json: the SessionStart write failed.
+    mkdirSync(paths.sessionDir("sess-no-start-json"), { recursive: true });
+    writeLesson("default", "arrived-after");
+
+    const chosen = pendingLessons("default", "sess-no-start-json", "/tmp", 3, true);
+    expect(chosen.map((l) => l.id)).toEqual(["arrived-after"]);
+  });
+
+  test("delivers nothing when there is no session dir to date from", () => {
+    // No cutoff at all used to mean no filter, so UserPromptSubmit flooded
+    // the prompt with the whole inbox backlog.
+    writeLesson("default", "backlog-1");
+    writeLesson("default", "backlog-2");
+    expect(pendingLessons("default", "sess-never-started", "/tmp", 3, true)).toEqual([]);
+  });
+
+  test("SessionStart still delivers the backlog without the flag", () => {
+    writeLesson("default", "backlog-3");
+    expect(pendingLessons("default", "sess-session-start", "/tmp", 3).length).toBe(1);
+  });
+});
+
+describe("rulesBlock bounds what it reads", () => {
+  test("a rules file over the size cap yields nothing", () => {
+    const rulesFile = `${hookEnv.root}/BIG-RULES.md`;
+    const filler = "x".repeat(1024 * 1024);
+    writeFileSync(rulesFile, `<!--loop-rules:start-->\nthe rule text\n<!--loop-rules:end-->\n${filler}`);
+    expect(rulesBlock({ rules_inject: true, rules_file: rulesFile })).toBe("");
+  });
+
+  test("a file just under the cap still works", () => {
+    const rulesFile = `${hookEnv.root}/OK-RULES.md`;
+    writeFileSync(rulesFile, `<!--loop-rules:start-->\nthe rule text\n<!--loop-rules:end-->\n${"x".repeat(1000)}`);
+    expect(rulesBlock({ rules_inject: true, rules_file: rulesFile })).toBe("the rule text");
+  });
+
+  test("a path that is not a regular file is skipped, not read", () => {
+    // A fifo blocks in open() forever, the same way /dev/zero reads forever:
+    // the snapshot supplies this path, so it can name either.
+    const fifo = `${hookEnv.root}/rules.fifo`;
+    const made = Bun.spawnSync(["mkfifo", fifo]);
+    expect(made.exitCode).toBe(0);
+
+    const started = Date.now();
+    expect(rulesBlock({ rules_inject: true, rules_file: fifo })).toBe("");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});

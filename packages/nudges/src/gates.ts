@@ -6,6 +6,8 @@
 import type { HookEvent } from "@sil/core/consts";
 
 export const MAX_MATCH_LEN = 4000;
+export const MAX_PATTERN_LEN = 200;
+export const MAX_QUANTIFIED_GROUPS = 3;
 
 // Event -> accepted matchers, or null for events that take none. Restricted
 // to the events the hook actually delivers additionalContext on: Stop,
@@ -41,7 +43,10 @@ export function splitTrigger(trigger: string): [HookEvent, string | null] | null
   const idx = trigger.indexOf(":");
   const event = idx === -1 ? trigger : trigger.slice(0, idx);
   const matcher = idx === -1 ? null : trigger.slice(idx + 1);
-  if (!(event in EVENTS)) return null;
+  // hasOwn, not `in`: `in` walks the prototype chain, so a trigger named
+  // "toString" or "constructor" would pass here and then hand a function to
+  // the matcher check below.
+  if (!Object.hasOwn(EVENTS, event)) return null;
   const allowed = EVENTS[event]!;
   if (!matcher) return [event as HookEvent, null];
   if (allowed === null || !allowed.has(matcher)) return null;
@@ -50,24 +55,99 @@ export function splitTrigger(trigger: string): [HookEvent, string | null] | null
 
 // Bun/JS has no SIGALRM-style preemption: a catastrophic regex that starts
 // running cannot be interrupted mid-evaluation the way sil/nudge.py bounds
-// it with an itimer. The defenses here are all static or budget-based
-// instead: cap the subject a regex runs against (below), reject the classic
-// exponential-backtracking shapes before a gate is ever accepted by lint
-// (hasNestedQuantifier, used by validateGate), and cap total wall time
-// spent across a nudge list between gates (dispatch.ts). None of these stop
-// an already-running catastrophic match on a gate that bypassed lint (a
-// hand-placed nudges/*.json file). Out-of-process evaluation under a real
-// OS timeout (gate-runner.ts, used by the curriculum drafter) is the only
+// it with an itimer. Three defences stand in for it, and this is exactly
+// what each one covers:
+//
+//  1. Subject cap. Every regex and every glob sees at most MAX_MATCH_LEN
+//     characters of the command, prompt or file path it is matched against.
+//     Bounds the input, not the pattern.
+//  2. Pattern rejection before evaluation. isUnsafeRegex (through
+//     validateGate, through lintNudge) refuses the exponential-backtracking
+//     shapes, over-long patterns and too many quantified groups, and
+//     dispatch.ts lints every nudge file at load so a rejected one is never
+//     evaluated. file_path_matches runs no regex at all: fnmatch below is a
+//     linear two-pointer matcher.
+//  3. List budget. dispatch.ts stops scanning once the whole nudge list has
+//     spent its wall-clock budget, and logs a gate_overrun breadcrumb when a
+//     single gate runs past gateTimeoutMs. It measures overruns, it cannot
+//     cut one short.
+//
+// What none of them cover: a single pathological gate inside a lint-clean
+// pattern. Once it starts it is bounded only by JavaScriptCore's own
+// backtracking cap. Out-of-process evaluation under a real OS timeout
+// (gate-runner.ts, used by the curriculum drafter) is still the only
 // mechanism that can actually kill a hung match.
-const NESTED_QUANTIFIER_RE = /\([^()]*[+*][^()]*\)[+*]/;
 
-/** True for the classic exponential-backtracking shapes: `(a+)+`, `(.*)*`,
- * `(\w+\s?)+`. A heuristic, not a proof: it looks for a group whose own
- * body already contains a `+`/`*` immediately followed by a `+`/`*` on the
- * group itself. */
-export function hasNestedQuantifier(pattern: string): boolean {
-  return NESTED_QUANTIFIER_RE.test(pattern);
+// A quantifier on a group is dangerous when the group body can itself match
+// the same text more than one way: another quantifier, an alternation, or an
+// optional inside it.
+const RISKY_GROUP_BODY = /[|+*?{]/;
+const BRACE_QUANTIFIER = /^\{\d+(?:,\d*)?\}/;
+
+/** Bodies of every group carrying a `+`, `*` or `{n,}` quantifier. Skips
+ * escapes and character classes so `\(` and `[(]` are not read as groups. */
+function quantifiedGroupBodies(pattern: string): string[] {
+  const bodies: string[] = [];
+  const open: number[] = [];
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]!;
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      continue;
+    }
+    if (c === "(") {
+      open.push(i);
+      continue;
+    }
+    if (c !== ")") continue;
+    const start = open.pop();
+    if (start === undefined) continue;
+    const next = pattern[i + 1];
+    const quantified = next === "+" || next === "*" || (next === "{" && BRACE_QUANTIFIER.test(pattern.slice(i + 1)));
+    if (quantified) bodies.push(pattern.slice(start + 1, i));
+  }
+  return bodies;
 }
+
+/** Why `pattern` is refused, or null when it is acceptable. A heuristic, not
+ * a proof: it rejects shapes that are known to backtrack exponentially, plus
+ * two size limits that keep the search space small even for a shape it does
+ * not recognise. */
+export function unsafeRegexReason(pattern: string): string | null {
+  if (pattern.length > MAX_PATTERN_LEN) {
+    return `is ${pattern.length} chars; the cap is ${MAX_PATTERN_LEN}`;
+  }
+  const bodies = quantifiedGroupBodies(pattern);
+  if (bodies.length > MAX_QUANTIFIED_GROUPS) {
+    return `has ${bodies.length} quantified groups; the cap is ${MAX_QUANTIFIED_GROUPS}`;
+  }
+  const risky = bodies.find((b) => RISKY_GROUP_BODY.test(b));
+  if (risky !== undefined) {
+    return (
+      `has a quantified group ${JSON.stringify(`(${risky})`)} that can backtrack ` +
+      `catastrophically (e.g. (a+)+, (a|aa)+); rewrite it without a quantifier, ` +
+      `alternation or optional inside a quantified group`
+    );
+  }
+  return null;
+}
+
+/** True for a pattern validateGate must refuse. */
+export function isUnsafeRegex(pattern: string): boolean {
+  return unsafeRegexReason(pattern) !== null;
+}
+
+/** Former name of isUnsafeRegex, kept so existing callers keep compiling. */
+export const hasNestedQuantifier = isUnsafeRegex;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -83,45 +163,93 @@ function filePath(payload: Record<string, unknown>): string {
   return isRecord(ti) && typeof ti["file_path"] === "string" ? ti["file_path"] : "";
 }
 
-/** Translate a shell-style glob (`*`, `?`, `[seq]`, `[!seq]`) to a RegExp,
- * the subset of Python's fnmatch.fnmatch that file_path_matches needs. */
-function globToRegExp(glob: string): RegExp {
-  let out = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i]!;
-    if (c === "*") {
-      out += ".*";
-    } else if (c === "?") {
-      out += ".";
-    } else if (c === "[") {
-      let j = i + 1;
-      let cls = "";
-      if (glob[j] === "!") {
-        cls += "^";
-        j++;
-      }
-      const start = j;
-      while (j < glob.length && (j === start || glob[j] !== "]")) j++;
-      if (j >= glob.length) {
-        out += "\\[";
-      } else {
-        cls += glob.slice(start, j).replace(/\\/g, "\\\\");
-        out += `[${cls}]`;
-        i = j;
-      }
-    } else {
-      out += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-  }
-  return new RegExp(`^${out}$`);
+interface ClassMatch {
+  end: number;
+  matched: boolean;
 }
 
-function fnmatch(path: string, pattern: string): boolean {
-  try {
-    return globToRegExp(pattern).test(path);
-  } catch {
-    return false;
+/** Parse the `[...]` class starting at `start` and say whether `ch` is in
+ * it. null when the class is unterminated, which fnmatch treats as a literal
+ * `[`. A `]` in first position is a literal `]`, and `!`/`^` in first
+ * position negate. */
+function matchClass(pattern: string, start: number, ch: string): ClassMatch | null {
+  let i = start + 1;
+  let negate = false;
+  if (pattern[i] === "!" || pattern[i] === "^") {
+    negate = true;
+    i++;
   }
+  const first = i;
+  let matched = false;
+  while (i < pattern.length) {
+    if (pattern[i] === "]" && i > first) break;
+    if (pattern[i + 1] === "-" && i + 2 < pattern.length && pattern[i + 2] !== "]") {
+      if (ch >= pattern[i]! && ch <= pattern[i + 2]!) matched = true;
+      i += 3;
+      continue;
+    }
+    if (pattern[i] === ch) matched = true;
+    i++;
+  }
+  if (i >= pattern.length) return null;
+  return { end: i + 1, matched: negate ? !matched : matched };
+}
+
+/** Shell-style glob match (`*`, `?`, `[seq]`, `[!seq]`), the subset of
+ * Python's fnmatch that file_path_matches needs.
+ *
+ * Two pointers with a single remembered `*` position, so the work is bounded
+ * by path length times pattern length. The regex translation this replaced
+ * turned every `*` into `.*`, which made `*a*a*a*a*b` against a long path
+ * take minutes: JS has no atomic groups to stop the engine re-splitting the
+ * same text across the stars. */
+function fnmatch(path: string, pattern: string): boolean {
+  let si = 0;
+  let pi = 0;
+  let starSi = -1;
+  let starPi = -1;
+
+  while (si < path.length) {
+    const pc: string | undefined = pattern[pi];
+    if (pc === "*") {
+      starPi = pi;
+      starSi = si;
+      pi++;
+      continue;
+    }
+
+    let ok = false;
+    if (pc === "?") {
+      ok = true;
+      pi++;
+    } else if (pc === "[") {
+      const cls = matchClass(pattern, pi, path[si]!);
+      if (cls === null) {
+        ok = path[si] === "[";
+        pi++;
+      } else {
+        ok = cls.matched;
+        pi = cls.end;
+      }
+    } else if (pc !== undefined && pc === path[si]) {
+      ok = true;
+      pi++;
+    }
+
+    if (ok) {
+      si++;
+      continue;
+    }
+    // Backtrack: let the last `*` swallow one more character. Each retry
+    // starts one character further along, so the loop is linear in the path.
+    if (starPi === -1) return false;
+    starSi++;
+    si = starSi;
+    pi = starPi + 1;
+  }
+
+  while (pattern[pi] === "*") pi++;
+  return pi === pattern.length;
 }
 
 /** re.search equivalent, bounded: the matched text is capped so a
@@ -151,7 +279,9 @@ function evaluateInner(gate: unknown, payload: Record<string, unknown>): boolean
       return search(arg, command(payload));
     case "file_path_matches": {
       if (typeof arg !== "string") return false;
-      const path = filePath(payload);
+      // Same cap as search(): a glob is linear now, but linear in a 10 MB
+      // file_path is still work the hook does not need to do.
+      const path = filePath(payload).slice(0, MAX_MATCH_LEN);
       return path !== "" && fnmatch(path, arg);
     }
     case "prompt_matches":
@@ -208,8 +338,9 @@ export function validateGate(gate: unknown): string[] {
       problems.push(`${label} has bad regex ${JSON.stringify(arg)}: ${(e as Error).message}`);
       return;
     }
-    if (hasNestedQuantifier(arg)) {
-      problems.push(`${label} regex ${JSON.stringify(arg)} has a nested quantifier that can backtrack catastrophically (e.g. (a+)+); rewrite it without a quantified group inside a quantified group`);
+    const reason = unsafeRegexReason(arg);
+    if (reason !== null) {
+      problems.push(`${label} regex ${JSON.stringify(arg.slice(0, MAX_PATTERN_LEN))} ${reason}`);
     }
   };
 
@@ -224,6 +355,7 @@ export function validateGate(gate: unknown): string[] {
       break;
     case "file_path_matches":
       if (typeof arg !== "string") problems.push("file_path_matches takes a glob string");
+      else if (arg.length > MAX_PATTERN_LEN) problems.push(`file_path_matches glob is ${arg.length} chars; the cap is ${MAX_PATTERN_LEN}`);
       break;
     case "prompt_matches":
       checkRegex("prompt_matches");

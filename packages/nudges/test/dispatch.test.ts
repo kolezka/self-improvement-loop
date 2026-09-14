@@ -108,3 +108,72 @@ describe("dispatch", () => {
     expect(() => dispatch(payload, broken, { sessionDir, fireLog })).not.toThrow();
   });
 });
+
+describe("loadNudges lints before it loads", () => {
+  function writeNudge(nudgesDir: string, name: string, body: unknown): void {
+    mkdirSync(nudgesDir, { recursive: true });
+    writeFileSync(join(nudgesDir, name), JSON.stringify(body));
+  }
+
+  test("a hand-placed nudge with a catastrophic gate never reaches dispatch", () => {
+    // Nothing can interrupt this regex once evaluate() starts it, so the
+    // only place to stop it is here, at load.
+    const nudgesDir = join(dir, "nudges");
+    writeNudge(nudgesDir, "a-ok.json", nudge({ pattern: "a-ok" }));
+    writeNudge(nudgesDir, "b-evil.json", nudge({ pattern: "b-evil", gate: { command_matches: "(i|ii)+" } }));
+
+    const loaded = loadNudges([nudgesDir]);
+    expect(loaded.map((n) => n.pattern)).toEqual(["a-ok"]);
+  });
+
+  test("other lint failures are dropped too: bad slug, unknown event, oversized text", () => {
+    const nudgesDir = join(dir, "nudges");
+    writeNudge(nudgesDir, "a-slug.json", nudge({ pattern: "Not A Slug" }));
+    writeNudge(nudgesDir, "b-event.json", nudge({ event: "NotAnEvent" }));
+    writeNudge(nudgesDir, "c-text.json", nudge({ text: "x".repeat(401) }));
+    writeNudge(nudgesDir, "d-gate.json", nudge({ gate: { unknown_predicate: true } }));
+    writeNudge(nudgesDir, "e-fine.json", nudge({ pattern: "e-fine" }));
+
+    expect(loadNudges([nudgesDir]).map((n) => n.pattern)).toEqual(["e-fine"]);
+  });
+
+  test("loadNudgesDetailed names every rejected file and why", async () => {
+    const { loadNudgesDetailed } = await import("../src/dispatch.ts");
+    const nudgesDir = join(dir, "nudges");
+    writeNudge(nudgesDir, "a-ok.json", nudge({ pattern: "a-ok" }));
+    writeNudge(nudgesDir, "b-evil.json", nudge({ pattern: "b-evil", gate: { command_matches: "(i|ii)+" } }));
+    writeFileSync(join(nudgesDir, "c-torn.json"), "{not json");
+
+    const { nudges, rejected } = loadNudgesDetailed([nudgesDir]);
+    expect(nudges.map((n) => n.pattern)).toEqual(["a-ok"]);
+    expect(rejected.map((r) => r.file)).toEqual([join(nudgesDir, "b-evil.json"), join(nudgesDir, "c-torn.json")]);
+    expect(rejected[0]?.problems.some((p) => p.includes("backtrack catastrophically"))).toBe(true);
+  });
+
+  test("the nudges this repo ships are all lint clean", async () => {
+    // Guards the fix from the other side: a lint that rejected a builtin
+    // would silently disable it in every session.
+    const { loadNudgesDetailed } = await import("../src/dispatch.ts");
+    const builtin = new URL("../../../nudges", import.meta.url).pathname;
+    const { nudges, rejected } = loadNudgesDetailed([builtin]);
+    expect(rejected).toEqual([]);
+    expect(nudges.length).toBeGreaterThan(0);
+  });
+});
+
+describe("gate_overrun", () => {
+  test("a gate that runs past gateTimeoutMs logs one breadcrumb", () => {
+    const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "x".repeat(4000) } };
+    dispatch(payload, [nudge({ gate: { command_matches: "will-not-match" } })], { sessionDir, fireLog, gateTimeoutMs: 0 });
+    const fires = readFires(fireLog);
+    const overrun = fires.filter((f) => f.kind === "gate_overrun");
+    expect(overrun.length).toBe(1);
+    expect(overrun[0]?.pattern).toBe("commit-nudge");
+  });
+
+  test("a normal gate under the default timeout logs nothing", () => {
+    const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git status" } };
+    dispatch(payload, [nudge()], { sessionDir, fireLog });
+    expect(readFires(fireLog).some((f) => f.kind === "gate_overrun")).toBe(false);
+  });
+});

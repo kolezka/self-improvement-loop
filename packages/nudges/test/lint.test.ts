@@ -59,9 +59,9 @@ describe("lintNudge", () => {
     expect(problems).toEqual([]);
   });
 
-  test("a nested-quantifier regex is rejected", () => {
+  test("an unsafe regex is rejected", () => {
     const problems = lintNudge(validNudge({ gate: { command_matches: "(a+)+$" } }));
-    expect(problems.some((p) => p.includes("nested quantifier"))).toBe(true);
+    expect(problems.some((p) => p.includes("backtrack catastrophically"))).toBe(true);
   });
 
   test("pattern must be a slug", () => {

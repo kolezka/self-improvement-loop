@@ -186,6 +186,44 @@ export function removeArtifact(
 
 // --- rules: one managed block, one tagged bullet per pattern -----------------
 
+// A per-pattern rule tag as it appears inside a line of diff output.
+const RULE_TAG_RE = /<!--rule:([A-Za-z0-9][A-Za-z0-9-]*)-->/g;
+
+/** Other patterns' rule tags a rules-file diff adds or removes.
+ *
+ * `rule` is the only type where every pattern shares one file, so somebody
+ * else's bullet rides along invisibly: the branch's ledger names only this
+ * pattern, and the change is merged with nobody having read it.
+ *
+ * Takes the diff text rather than running git, so the staging path (working tree
+ * against the default branch) and the review path (base commit against branch
+ * commit) judge it with one function instead of two near-copies. */
+export function foreignRuleTags(diffText: string, pattern: string): string[] {
+  const tags = new Set<string>();
+  for (const line of diffText.split("\n")) {
+    if ((line.startsWith("+") || line.startsWith("-")) && !line.startsWith("+++") && !line.startsWith("---")) {
+      for (const m of line.matchAll(RULE_TAG_RE)) tags.add(m[1]!);
+    }
+  }
+  tags.delete(pattern);
+  return [...tags].sort();
+}
+
+/** Whether a rules-file diff changes nothing but `pattern`'s own tagged bullet.
+ *
+ * Migrating a pattern off `rule` legitimately touches the shared file from a
+ * branch routed to another type: it drops the old bullet. That is the only edit
+ * such a branch may make there, and an untagged line is not it. */
+export function rulesDiffOwnedBy(diffText: string, pattern: string): boolean {
+  const tag = ruleTag(pattern);
+  for (const line of diffText.split("\n")) {
+    if (!(line.startsWith("+") || line.startsWith("-")) || line.startsWith("+++") || line.startsWith("---")) continue;
+    const body = line.slice(1).trim();
+    if (body !== "" && !body.endsWith(tag)) return false;
+  }
+  return true;
+}
+
 /** This pattern's tagged bullet inside `text`, or "" when it has none. */
 export function ruleBulletInText(text: string, pattern: string): string {
   const tag = ruleTag(pattern);

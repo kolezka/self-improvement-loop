@@ -40,8 +40,6 @@ import { cluster, lessonTexts, loadLedger, loadPayloadCorpus, plan, reflections,
 import * as prompts from "./prompts.ts";
 import { type RouteAnswer, route } from "./router.ts";
 
-const RULE_TAG_RE = /<!--rule:([A-Za-z0-9][A-Za-z0-9-]*)-->/g;
-
 export interface RunOptions {
   apply: boolean;
   chat?: ChatFn;
@@ -117,24 +115,6 @@ function migrating(staged: PromotionEntry | null, prior: PromotionEntry | null):
   const branchType = rowType(staged);
   const baseType = rowType(prior);
   return branchType !== null && baseType !== null && branchType !== baseType;
-}
-
-/** Other patterns' rule tags this branch's `rel` diff touches.
- *
- * `rule` is the only type where every pattern shares one file, so a stray bullet
- * left on disk by an earlier iteration would be committed alongside this one,
- * invisibly: the branch's ledger names only this pattern, and accepting it would
- * merge a rule nobody reviewed. Writing in a fresh worktree is what prevents
- * that; this is the lock that refuses to stage if it ever happens again. */
-function foreignRuleTags(repo: string, base: string, rel: string, pattern: string): string[] {
-  const tags = new Set<string>();
-  for (const line of git.git(repo, ["diff", base, "--", rel], { check: false }).split("\n")) {
-    if ((line.startsWith("+") || line.startsWith("-")) && !line.startsWith("+++") && !line.startsWith("---")) {
-      for (const m of line.matchAll(RULE_TAG_RE)) tags.add(m[1]!);
-    }
-  }
-  tags.delete(pattern);
-  return [...tags].sort();
 }
 
 /** One curriculum tick for one world.
@@ -389,7 +369,11 @@ async function stageOne(
     if (routedType === "rule") artifacts.ensureRulesFile(world, tree);
     artifacts.writeArtifact(world, routedType, pattern, body, tree);
     if (routedType === "rule") {
-      const foreign = foreignRuleTags(tree, ctx.defaultRef, rel, pattern);
+      // A stray bullet left on disk by an earlier iteration would be committed
+      // alongside this one. Writing in a fresh worktree is what prevents it;
+      // this is the lock that refuses to stage if it ever happens again.
+      const diff = git.git(tree, ["diff", ctx.defaultRef, "--", rel], { check: false });
+      const foreign = artifacts.foreignRuleTags(diff, pattern);
       if (foreign.length > 0) throw new Error(`${rel} also changes rule(s) for ${foreign.join(", ")}`);
     }
     const treeLedger = loadLedgerFile(join(tree, ctx.ledgerRel));

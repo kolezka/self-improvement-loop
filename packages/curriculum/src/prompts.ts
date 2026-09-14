@@ -17,7 +17,7 @@ import { nudgeEvents } from "./deps.ts";
 // The router's own bar for a quote, imported rather than restated. A prompt
 // asking for "an exact substring" while the router demands five words is a
 // drafter answering honestly and being downgraded for it on every run.
-import { emptyAnswer, MIN_QUOTE_CHARS, MIN_QUOTE_WORDS, RouteAnswer } from "./router.ts";
+import { emptyAnswer, MIN_QUOTE_CHARS, MIN_QUOTE_TERMS, MIN_QUOTE_WORDS, RouteAnswer } from "./router.ts";
 
 // Bound the evidence handed to a model, and never truncate it silently. The
 // omission note stays in the prompt and says which end was dropped: a model that
@@ -164,7 +164,8 @@ const ROUTING_FIELDS =
   "context_evidence MUST be an exact substring copied verbatim from the lessons " +
   `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` +
   `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` +
-  "Without that quote the lesson is treated as a " +
+  `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` +
+  "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " +
   "discipline rather than an agent. capability_evidence, if set, MUST be an " +
   "exact substring copied verbatim from the lessons below, never paraphrased, " +
   "under the same length rule, naming a concrete thing the agent can actually " +

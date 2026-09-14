@@ -1,15 +1,30 @@
 // @bun
 // packages/nudges/src/gate-runner.ts
-import { existsSync } from "fs";
+import { existsSync as existsSync2 } from "fs";
 import { join as join2 } from "path";
 
 // packages/core/src/paths.ts
-import { join, resolve } from "path";
+import { existsSync } from "fs";
+import { dirname, join, resolve } from "path";
+var manifestRoot;
+function findManifestRoot(start) {
+  let dir = resolve(start);
+  for (;; ) {
+    if (existsSync(join(dir, ".claude-plugin", "plugin.json")))
+      return dir;
+    const parent = dirname(dir);
+    if (parent === dir)
+      return null;
+    dir = parent;
+  }
+}
 function pluginRoot() {
   const raw = process.env["CLAUDE_PLUGIN_ROOT"];
   if (raw)
     return raw;
-  return resolve(import.meta.dir, "..", "..", "..");
+  if (manifestRoot === undefined)
+    manifestRoot = findManifestRoot(import.meta.dir);
+  return manifestRoot ?? resolve(import.meta.dir, "..", "..", "..");
 }
 
 // packages/nudges/src/gates.ts
@@ -42,43 +57,75 @@ function filePath(payload) {
   const ti = payload["tool_input"];
   return isRecord(ti) && typeof ti["file_path"] === "string" ? ti["file_path"] : "";
 }
-function globToRegExp(glob) {
-  let out = "";
-  for (let i = 0;i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      out += ".*";
-    } else if (c === "?") {
-      out += ".";
-    } else if (c === "[") {
-      let j = i + 1;
-      let cls = "";
-      if (glob[j] === "!") {
-        cls += "^";
-        j++;
-      }
-      const start = j;
-      while (j < glob.length && (j === start || glob[j] !== "]"))
-        j++;
-      if (j >= glob.length) {
-        out += "\\[";
-      } else {
-        cls += glob.slice(start, j).replace(/\\/g, "\\\\");
-        out += `[${cls}]`;
-        i = j;
-      }
-    } else {
-      out += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
+function matchClass(pattern, start, ch) {
+  let i = start + 1;
+  let negate = false;
+  if (pattern[i] === "!" || pattern[i] === "^") {
+    negate = true;
+    i++;
   }
-  return new RegExp(`^${out}$`);
+  const first = i;
+  let matched = false;
+  while (i < pattern.length) {
+    if (pattern[i] === "]" && i > first)
+      break;
+    if (pattern[i + 1] === "-" && i + 2 < pattern.length && pattern[i + 2] !== "]") {
+      if (ch >= pattern[i] && ch <= pattern[i + 2])
+        matched = true;
+      i += 3;
+      continue;
+    }
+    if (pattern[i] === ch)
+      matched = true;
+    i++;
+  }
+  if (i >= pattern.length)
+    return null;
+  return { end: i + 1, matched: negate ? !matched : matched };
 }
 function fnmatch(path, pattern) {
-  try {
-    return globToRegExp(pattern).test(path);
-  } catch {
-    return false;
+  let si = 0;
+  let pi = 0;
+  let starSi = -1;
+  let starPi = -1;
+  while (si < path.length) {
+    const pc = pattern[pi];
+    if (pc === "*") {
+      starPi = pi;
+      starSi = si;
+      pi++;
+      continue;
+    }
+    let ok = false;
+    if (pc === "?") {
+      ok = true;
+      pi++;
+    } else if (pc === "[") {
+      const cls = matchClass(pattern, pi, path[si]);
+      if (cls === null) {
+        ok = path[si] === "[";
+        pi++;
+      } else {
+        ok = cls.matched;
+        pi = cls.end;
+      }
+    } else if (pc !== undefined && pc === path[si]) {
+      ok = true;
+      pi++;
+    }
+    if (ok) {
+      si++;
+      continue;
+    }
+    if (starPi === -1)
+      return false;
+    starSi++;
+    si = starSi;
+    pi = starPi + 1;
   }
+  while (pattern[pi] === "*")
+    pi++;
+  return pi === pattern.length;
 }
 function search(pattern, text) {
   if (typeof pattern !== "string")
@@ -107,7 +154,7 @@ function evaluateInner(gate, payload) {
     case "file_path_matches": {
       if (typeof arg !== "string")
         return false;
-      const path = filePath(payload);
+      const path = filePath(payload).slice(0, MAX_MATCH_LEN);
       return path !== "" && fnmatch(path, arg);
     }
     case "prompt_matches":
@@ -150,7 +197,7 @@ async function runFromStdin() {
 }
 function resolveRunner() {
   const built = join2(pluginRoot(), "dist", "gate-runner.js");
-  if (existsSync(built))
+  if (existsSync2(built))
     return built;
   return join2(pluginRoot(), "packages", "nudges", "src", "gate-runner.ts");
 }

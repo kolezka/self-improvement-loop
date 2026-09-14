@@ -1,8 +1,9 @@
 // Filesystem layout. Every path the engine touches is derived here from three
 // roots so tests can point all of them at a temp dir via environment variables.
 
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 function envPath(name: string, fallback: string): string {
   const raw = process.env[name];
@@ -25,12 +26,34 @@ export function dataDir(): string {
   return envPath("SIL_DATA_DIR", join(envPath("XDG_DATA_HOME", join(homedir(), ".local", "share")), "self-improvement-loop"));
 }
 
+// Cached because it only depends on import.meta.dir, which is fixed for the
+// life of the process. undefined means "not looked up yet".
+let manifestRoot: string | null | undefined;
+
+/** Nearest ancestor of `start` holding `.claude-plugin/plugin.json`. */
+function findManifestRoot(start: string): string | null {
+  let dir = resolve(start);
+  for (;;) {
+    if (existsSync(join(dir, ".claude-plugin", "plugin.json"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 /** The installed plugin directory. Claude Code sets CLAUDE_PLUGIN_ROOT for hooks
- * and commands; outside a hook fall back to the repo root above this package. */
+ * and commands; outside a hook, walk up from this module to the directory that
+ * owns the plugin manifest.
+ *
+ * Counting fixed levels up from import.meta.dir does not work: this file lives
+ * at packages/core/src in the source tree but at dist/ in a bundle, so the same
+ * three levels land two directories above the plugin. The manifest is the only
+ * marker that is in the same place for both. */
 export function pluginRoot(): string {
   const raw = process.env["CLAUDE_PLUGIN_ROOT"];
   if (raw) return raw;
-  return resolve(import.meta.dir, "..", "..", "..");
+  if (manifestRoot === undefined) manifestRoot = findManifestRoot(import.meta.dir);
+  return manifestRoot ?? resolve(import.meta.dir, "..", "..", "..");
 }
 
 export function claudeConfigDir(): string {

@@ -48,6 +48,12 @@ JSEOF
 
 ROOT="$(resolve_root)"
 
+# Claude Code sets this for hooks and commands, but nothing sets it for a
+# systemd/launchd unit or a plain shell. Without it paths.pluginRoot() and
+# resolveRunner() have to guess, and a scheduled worker guesses wrong.
+CLAUDE_PLUGIN_ROOT="$ROOT"
+export CLAUDE_PLUGIN_ROOT
+
 if [ -f "$ROOT/dist/cli.js" ]; then
   exec bun "$ROOT/dist/cli.js" "$@"
 fi

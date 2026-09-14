@@ -1,7 +1,7 @@
 // Reflection store: append-only markdown files, one per occurrence, world scoped.
 // `reflectionPattern()` is the one definition of "this file is a reflection".
 
-import { readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import YAML from "yaml";
 import { fsx, paths, Reflection, type Reflection as ReflectionT } from "@sil/core";
@@ -73,7 +73,16 @@ export function parseReflection(path: string, world: string): ReflectionT | null
   return parsed.success ? parsed.data : null;
 }
 
-function* walkMarkdown(dir: string): Generator<string> {
+/** Markdown under `dir`, each real file once, never through a directory symlink.
+ *
+ * `lstatSync`, so a symlinked directory is not a directory here. Followed, they
+ * were both a multiplier and a door: `reflections/sub/loop -> ..` yielded one
+ * reflection 41 times and cleared the promotion threshold on its own, and a link
+ * to any other directory pulled that directory's markdown into the world.
+ *
+ * `seen` carries across the whole walk, including the extra dirs, so a file
+ * reachable by two paths still counts once. */
+function* walkMarkdown(dir: string, seen: Set<string>): Generator<string> {
   let entries: string[];
   try {
     entries = readdirSync(dir).sort();
@@ -85,12 +94,24 @@ function* walkMarkdown(dir: string): Generator<string> {
     const p = join(dir, name);
     let st;
     try {
-      st = statSync(p);
+      st = lstatSync(p);
     } catch {
       continue;
     }
-    if (st.isDirectory()) yield* walkMarkdown(p);
-    else if (name.endsWith(".md")) yield p;
+    if (st.isDirectory()) {
+      yield* walkMarkdown(p, seen);
+      continue;
+    }
+    if (!name.endsWith(".md")) continue;
+    let real: string;
+    try {
+      real = realpathSync(p);
+    } catch {
+      continue;
+    }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    yield p;
   }
 }
 
@@ -98,8 +119,9 @@ function* walkMarkdown(dir: string): Generator<string> {
  * V1 mirror tree read-only (import without copying). */
 export function listReflections(world: string, extraDirs: string[] = []): ReflectionT[] {
   const out: ReflectionT[] = [];
+  const seen = new Set<string>();
   for (const d of [paths.reflectionsDir(world), ...extraDirs]) {
-    for (const p of walkMarkdown(d)) {
+    for (const p of walkMarkdown(d, seen)) {
       if (relative(d, p).startsWith("..")) continue;
       const r = parseReflection(p, world);
       if (r && r.world === world) out.push(r);

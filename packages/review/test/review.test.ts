@@ -7,29 +7,44 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { type Ledger, ledgerPath, paths, type PromotionEntry, targetRoot, type World } from "@sil/core";
+import {
+  type Ledger,
+  ledgerPath,
+  paths,
+  type PromotionEntry,
+  RULE_END,
+  RULE_START,
+  ruleTag,
+  targetRoot,
+  type World,
+} from "@sil/core";
 import { branchName, git, plan, run, type RunOptions } from "@sil/curriculum";
 import { loadLedger, parseLedger, saveLedger } from "@sil/store";
 import { Lock } from "@sil/worker";
 import * as review from "../src/index.ts";
+import { foreignChanges } from "../src/snapshot.ts";
 import {
   addReflections,
   cleanupEnv,
+  commitFile,
   fakeGateRunner,
   initTarget,
   installFakeNudge,
   makeCfg,
   makeWorld,
+  reflectionBody,
+  ruleDraft,
   silEnv,
   skillDraft,
   type TestEnv,
   uninstallFakeNudge,
+  V1_LAYOUT,
   FakeChat,
 } from "../../curriculum/test/fixtures.ts";
 
 const PATTERN = "verify-callsites";
 const SIBLING = "aaa-rejected-sibling";
-const QUOTE = "run `rg` over every call site of the changed symbol";
+const QUOTE = "run `rg` over every call site of the changed symbol and read the graphify inventory";
 
 let env: TestEnv;
 
@@ -47,11 +62,12 @@ afterEach(() => {
 const cfg = () => makeCfg();
 
 /** Put one staged branch in the target repo through the real run path. */
-function stage(world: World, pattern = PATTERN): Promise<unknown> {
+function stage(world: World, pattern = PATTERN, extraDirs: string[] = []): Promise<unknown> {
   const opts: RunOptions = {
     apply: true,
     chat: new FakeChat({ draft: skillDraft(pattern, QUOTE) }).fn,
     gateRunner: fakeGateRunner,
+    extraDirs,
   };
   return run(world, makeCfg(), opts);
 }
@@ -78,6 +94,18 @@ function seed(world: World, opts: { sibling?: boolean } = {}): string {
     git.git(repo, ["commit", "-q", "-m", "chore: record a refusal"]);
   }
   return repo;
+}
+
+const RULES = "RULES.md";
+
+/** A rules file on the default branch already carrying a sibling's bullet. */
+function seedRules(repo: string): void {
+  commitFile(
+    repo,
+    RULES,
+    `# Learned rules\n\n${RULE_START}\n- Old sibling discipline. ${ruleTag(SIBLING)}\n${RULE_END}\n`,
+    "chore: a sibling's rule",
+  );
 }
 
 async function accepted(world: World): Promise<string> {
@@ -129,6 +157,39 @@ describe("read side", () => {
     expect(detail.sources.length).toBe(3);
     expect(detail.accept_blocked).toBeNull();
     expect(diff.diff).toContain(`skills/${PATTERN}/SKILL.md`);
+  });
+
+  test("a V1 world whose ledger is a list under version reads end to end", async () => {
+    // The shape V1 actually wrote. Unreadable, the whole read side degraded
+    // silently: plan saw no watermarks, inventory reported no rows at all.
+    const world = makeWorld({ layout: V1_LAYOUT });
+    addReflections(world, PATTERN, 3);
+    const repo = initTarget(world);
+    commitFile(
+      repo,
+      V1_LAYOUT.ledger,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            pattern: PATTERN,
+            promoted_at_count: 3,
+            status: "promoted",
+            artifact_type: "skill",
+            last_updated: "2026-09-01T00:00:00Z",
+          },
+          { pattern: SIBLING, promoted_at_count: 7, status: "rejected", artifact_type: "rule" },
+        ],
+      }) + "\n",
+      "chore: a V1 ledger",
+    );
+
+    expect(() => plan(world, cfg(), {})).not.toThrow();
+    await run(world, cfg(), { apply: false, gateRunner: fakeGateRunner });
+    const rows = review.inventory(world, cfg());
+
+    expect(rows.map((r) => r.pattern)).toEqual([SIBLING, PATTERN]);
+    expect(rows.find((r) => r.pattern === PATTERN)!.status).toBe("promoted");
   });
 
   test("the inventory joins the ledger with live counts", async () => {
@@ -241,6 +302,127 @@ describe("accept", () => {
     const detail = review.detail(world, cfg(), PATTERN);
     expect(detail.accept_blocked).toContain("install.sh");
     expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).toThrow(/install\.sh/);
+  });
+
+  test("a skill branch may not carry a sibling's rule bullet", async () => {
+    // Every pattern's rule lives in one file, and each is reviewed on its own
+    // branch. Allowed wholesale, a skill branch could rewrite a sibling's
+    // discipline and accept would merge it with accept_blocked still null.
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    await stage(world);
+    git.withScratchWorktree(repo, branchName(world.name, PATTERN), "main", (tree) => {
+      writeFileSync(
+        join(tree, RULES),
+        `# Learned rules\n\n${RULE_START}\n- Quietly rewritten by another branch. ${ruleTag(SIBLING)}\n${RULE_END}\n`,
+        "utf8",
+      );
+      git.git(tree, ["add", "--", RULES]);
+      git.git(tree, ["commit", "-q", "-m", "chore: edit a sibling's rule"]);
+    });
+
+    const detail = review.detail(world, cfg(), PATTERN);
+
+    expect(detail.artifact_type).toBe("skill");
+    expect(detail.accept_blocked).toContain(RULES);
+    expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).toThrow(new RegExp(RULES));
+  });
+
+  test("a rule branch touching only its own tag is accepted", async () => {
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: ruleDraft() }).fn,
+      gateRunner: fakeGateRunner,
+    });
+
+    const detail = review.detail(world, cfg(), PATTERN);
+    expect(detail.artifact_type).toBe("rule");
+    expect(detail.accept_blocked).toBeNull();
+
+    expect(review.accept(world, cfg(), PATTERN, detail.reviewed_state).merged).toBe(true);
+    const text = readFileSync(join(repo, RULES), "utf8");
+    expect(text).toContain(ruleTag(SIBLING));
+    expect(text).toContain(ruleTag(PATTERN));
+  });
+
+  test("a branch re-homed off rule may still drop its own bullet", async () => {
+    // The migration touches the shared file from a branch routed to `hook`. A
+    // flat "only a rule branch may touch it" would make every migration off
+    // `rule` permanently unacceptable.
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: ruleDraft() }).fn,
+      gateRunner: fakeGateRunner,
+    });
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    review.rehome(world, cfg(), PATTERN, "hook");
+
+    const snap = review.snapshot(world, repo, "main", PATTERN);
+    const changes = foreignChanges(world, repo, snap, PATTERN, "hook");
+
+    expect(changes.paths).toEqual([]);
+    expect(changes.ruleTags).toEqual([]);
+    expect(readFileSync(join(repo, RULES), "utf8")).toContain(ruleTag(SIBLING));
+  });
+
+  test("a rule branch may not rewrite a sibling's bullet either", async () => {
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: ruleDraft() }).fn,
+      gateRunner: fakeGateRunner,
+    });
+    git.withScratchWorktree(repo, branchName(world.name, PATTERN), "main", (tree) => {
+      const text = readFileSync(join(tree, RULES), "utf8");
+      writeFileSync(tree + "/" + RULES, text.replace("Old sibling discipline.", "Someone else's rule, rewritten."), "utf8");
+      git.git(tree, ["add", "--", RULES]);
+      git.git(tree, ["commit", "-q", "-m", "chore: edit a sibling's rule"]);
+    });
+
+    const detail = review.detail(world, cfg(), PATTERN);
+
+    expect(detail.accept_blocked).toContain(SIBLING);
+    expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).toThrow(new RegExp(SIBLING));
+  });
+
+  test("it refuses when the default branch's ledger is unreadable", async () => {
+    // Swallowed, the unreadable ledger was replaced by an empty one and the
+    // acceptance wrote back a file holding only the accepted row: every sibling
+    // watermark on the default branch gone, and the patterns behind them free to
+    // be re-staged byte for byte.
+    const world = makeWorld();
+    const repo = seed(world, { sibling: true });
+    await stage(world);
+    commitFile(
+      repo,
+      "promotions.json",
+      JSON.stringify({
+        version: 1,
+        entries: { [SIBLING]: { pattern: SIBLING, rejected_at_count: 7, status: "refused" } },
+      }) + "\n",
+      "chore: a ledger this code cannot read",
+    );
+    const detail = review.detail(world, cfg(), PATTERN);
+    const before = git.head(repo);
+    const ledgerText = readFileSync(join(repo, "promotions.json"), "utf8");
+    const baseSha = review.snapshot(world, repo, "main", PATTERN).base_sha;
+
+    expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).toThrow(
+      new RegExp(`ledger at ${baseSha}:promotions\\.json is unreadable`),
+    );
+
+    expect(git.head(repo)).toBe(before);
+    expect(readFileSync(join(repo, "promotions.json"), "utf8")).toBe(ledgerText);
+    expect(ledgerText).toContain(SIBLING);
   });
 
   test("it refuses when the live repo is on another branch", async () => {
@@ -425,6 +607,31 @@ describe("reject", () => {
     expect(existsSync(join(repo, "skills", PATTERN))).toBe(false);
     // And no forced route survives to re-impose the shape a human refused.
     expect(entry.served_by).toBeNull();
+  });
+
+  test("it counts the extra reflection roots plan() reads", async () => {
+    // plan() honours `extraDirs` (a V1 mirror read without copying), so a
+    // rejection that ignores them writes a watermark below the count the
+    // promotion was made at, and the next run re-stages the refused pattern.
+    const world = makeWorld();
+    seed(world);
+    const extra = join(env.tmp, "mirror");
+    mkdirSync(extra, { recursive: true });
+    for (const day of ["2026-08-10", "2026-08-11"]) {
+      const id = `${day}-${PATTERN}-mirror`;
+      writeFileSync(
+        join(extra, `${id}.md`),
+        `---\nid: ${id}\nworld: ${world.name}\npattern: ${PATTERN}\ncreated: ${day}\n---\n${reflectionBody(PATTERN, day)}`,
+      );
+    }
+    const extraDirs = [extra];
+    await stage(world, PATTERN, extraDirs);
+
+    expect(review.detail(world, cfg(), PATTERN, { extraDirs }).sources.length).toBe(5);
+    const out = review.reject(world, cfg(), PATTERN, { extraDirs });
+
+    expect(out.rejected_at_count).toBe(5);
+    expect(loadLedger(ledgerPath(world)).entries[PATTERN]!.rejected_at_count).toBe(5);
   });
 
   test("a rejected pattern is not promotable until the threshold is paid", async () => {

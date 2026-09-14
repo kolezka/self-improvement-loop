@@ -1,0 +1,12 @@
+{
+  "pattern": "silent-write-corruption",
+  "event": "PostToolUse",
+  "matcher": "Write",
+  "gate": {
+    "tool_is": [
+      "Write"
+    ]
+  },
+  "once_per": "session",
+  "text": "Re-fetch the document (Read) and inspect the exact patched fence before trusting this write. A write success only proves a write happened; Outline's round-trip can strip `$` sigils and collapse backslash line continuations inside the patched block, so verify the literal target text and the anchor occurrence."
+}

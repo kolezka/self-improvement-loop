@@ -22,7 +22,10 @@ build-backend = "hatchling.build"
 packages = ["sil"]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = [
+    "httpx>=0.28.1",
+    "pytest",
+]
 
 [tool.uv]
 # Must stay true: `package = false` makes uv skip installing the project, so

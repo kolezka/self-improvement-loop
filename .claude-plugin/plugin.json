@@ -1,0 +1,18 @@
+{
+  "name": "self-improvement-loop",
+  "version": "0.1.0",
+  "description": "Background reflection on Claude Code sessions that promotes recurring lessons into skills, hooks, rules and agents, tracks usage feedback on those artifacts, and ships a local web UI to review and rate them.",
+  "author": {
+    "name": "Mariusz Rakus"
+  },
+  "repository": "https://github.com/kolezka/self-improvement-loop",
+  "license": "MIT",
+  "keywords": [
+    "self-improvement",
+    "reflection",
+    "curriculum",
+    "skills",
+    "automation",
+    "productivity"
+  ]
+}

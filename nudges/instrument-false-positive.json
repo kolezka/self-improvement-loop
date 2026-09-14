@@ -1,0 +1,10 @@
+{
+  "pattern": "instrument-false-positive",
+  "event": "PostToolUse",
+  "matcher": "Bash",
+  "gate": {
+    "command_matches": "(git|grep)"
+  },
+  "once_per": "session",
+  "text": "After a grep/regex pass or git history check, do not trust a single pass. For counts, parse structured files with ElementTree or scope to exact field/tag and cross-check one independent number. For transcripts, grep the printed form/label. For shared git state, scope by actor/session identity (commit trailer, reflog ref-before/ref-after), not time window."
+}

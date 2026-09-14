@@ -81,6 +81,10 @@ def human_feedback_file() -> Path:
     return state_dir() / "feedback" / "human.jsonl"
 
 
+def critic_feedback_file() -> Path:
+    return state_dir() / "feedback" / "critic.jsonl"
+
+
 def inbox_dir(world: str) -> Path:
     return state_dir() / "inbox" / world
 

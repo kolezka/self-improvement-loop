@@ -1,0 +1,45 @@
+#!/bin/sh
+# Shim for self-improvement-loop: resolves the plugin root, then execs `sil`
+# inside it via uv. Installed to ~/.local/bin/sil by `sil schedule install`,
+# so a plugin version bump never breaks an installed systemd/launchd unit
+# (those call this fixed path, not one under a versioned plugin cache dir).
+set -eu
+
+resolve_root() {
+  if [ -n "${SIL_PLUGIN_ROOT:-}" ]; then
+    printf '%s\n' "$SIL_PLUGIN_ROOT"
+    return 0
+  fi
+
+  installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+  if [ -f "$installed" ] && command -v python3 >/dev/null 2>&1; then
+    found="$(python3 - "$installed" <<'PYEOF'
+import json
+import sys
+
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+
+entries = data.get("plugins", {}).get("self-improvement-loop@kolezka") or []
+if entries:
+    newest = max(entries, key=lambda e: e.get("lastUpdated") or "")
+    path = newest.get("installPath") or ""
+    if path:
+        print(path)
+PYEOF
+)"
+    if [ -n "$found" ]; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  fi
+
+  # Fall back to two levels up from this script (scripts/sil -> plugin root).
+  script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  CDPATH= cd -- "$script_dir/.." && pwd
+}
+
+ROOT="$(resolve_root)"
+exec uv run --project "$ROOT" sil "$@"

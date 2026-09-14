@@ -2,6 +2,43 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
+  import WorkerStatus from "../components/WorkerStatus.svelte";
+
+  interface RunReport {
+    world: string;
+    dry_run: boolean;
+    staged: string[];
+    merged: string[];
+    gated_out: Record<string, string>;
+    dropped: Record<string, number>;
+    started: string;
+    finished: string | null;
+    error: string | null;
+  }
+
+  interface RunSummary {
+    reflected: string[];
+    failed: string[];
+    skipped: string[];
+    curriculum: Record<string, RunReport>;
+    duration_s: number;
+    locked?: boolean;
+  }
+
+  interface WorkerStatusData {
+    lock_held: boolean;
+    lock_pid: number | null;
+    pending: number;
+    done: number;
+    failed: number;
+    last_run: string | null;
+    last_summary: RunSummary | null;
+    last_curriculum: Record<string, string>;
+  }
+
+  // health.report() catches a throw from deps.worker.status() and reports it
+  // as {error} instead, so the field is one or the other, never unknown.
+  type WorkerHealth = WorkerStatusData | { error: string };
 
   interface Health {
     config_file: string;
@@ -9,7 +46,7 @@
     plugin_root: string;
     worlds: string[];
     providers: Record<string, unknown>;
-    worker: unknown;
+    worker: WorkerHealth;
   }
 
   let health = $state<Health | null>(null);
@@ -94,7 +131,11 @@
 
   <div class="card">
     <h3>Worker</h3>
-    <pre>{JSON.stringify(health.worker, null, 2)}</pre>
+    {#if "error" in health.worker}
+      <p class="error-text">{health.worker.error}</p>
+    {:else}
+      <WorkerStatus status={health.worker} compact={true} />
+    {/if}
   </div>
 
   <div class="actions">

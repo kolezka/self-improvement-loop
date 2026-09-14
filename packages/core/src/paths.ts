@@ -88,8 +88,15 @@ export const scorecardsFile = (world: string): string => join(worldDir(world), "
 export const defaultTarget = (world: string): string => join(worldDir(world), "learned");
 export const builtinNudgesDir = (): string => join(pluginRoot(), "nudges");
 
-/** Path component from an identifier: no separators, no traversal. */
+const SAFE_CHAR = /[\p{L}\p{N}._-]/u;
+
+/** Path component from an identifier: no separators, no traversal.
+ *
+ * Unicode letters and digits are kept. Folding them to "_" made every
+ * non-ASCII name collide: Koleżka and Koleźka both became Kole_ka and shared
+ * one directory. NFC first so the same name typed two ways lands on one path,
+ * which matters on filesystems that store bytes rather than normalize. */
 export function safeComponent(name: string): string {
-  const cleaned = Array.from(name, (c) => (/[A-Za-z0-9._-]/.test(c) ? c : "_")).join("");
+  const cleaned = Array.from(name.normalize("NFC"), (c) => (SAFE_CHAR.test(c) ? c : "_")).join("");
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }

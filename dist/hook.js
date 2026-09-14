@@ -63,11 +63,13 @@ function pluginRoot() {
   return manifestRoot ?? resolve(import.meta.dir, "..", "..", "..");
 }
 function safeComponent(name) {
-  const cleaned = Array.from(name, (c) => /[A-Za-z0-9._-]/.test(c) ? c : "_").join("");
+  const cleaned = Array.from(name.normalize("NFC"), (c) => SAFE_CHAR.test(c) ? c : "_").join("");
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
-var manifestRoot, queueDir = (bucket) => join(stateDir(), "queue", bucket), usageEventsFile = () => join(stateDir(), "usage", "events.jsonl"), nudgeFiresFile = () => join(stateDir(), "usage", "nudge-fires.jsonl"), inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world)), sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId)), workerLockFile = () => join(stateDir(), "worker.lock"), hookSnapshotFile = () => join(stateDir(), "hook-config.json"), logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`), worldDir = (world) => join(dataDir(), "worlds", safeComponent(world)), defaultTarget = (world) => join(worldDir(world), "learned"), builtinNudgesDir = () => join(pluginRoot(), "nudges");
-var init_paths = () => {};
+var manifestRoot, queueDir = (bucket) => join(stateDir(), "queue", bucket), usageEventsFile = () => join(stateDir(), "usage", "events.jsonl"), nudgeFiresFile = () => join(stateDir(), "usage", "nudge-fires.jsonl"), inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world)), sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId)), workerLockFile = () => join(stateDir(), "worker.lock"), hookSnapshotFile = () => join(stateDir(), "hook-config.json"), logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`), worldDir = (world) => join(dataDir(), "worlds", safeComponent(world)), defaultTarget = (world) => join(worldDir(world), "learned"), builtinNudgesDir = () => join(pluginRoot(), "nudges"), SAFE_CHAR;
+var init_paths = __esm(() => {
+  SAFE_CHAR = /[\p{L}\p{N}._-]/u;
+});
 
 // packages/core/src/fsx.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";

@@ -2,6 +2,39 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
+  import WorkerStatus from "../components/WorkerStatus.svelte";
+
+  interface RunReport {
+    world: string;
+    dry_run: boolean;
+    staged: string[];
+    merged: string[];
+    gated_out: Record<string, string>;
+    dropped: Record<string, number>;
+    started: string;
+    finished: string | null;
+    error: string | null;
+  }
+
+  interface RunSummary {
+    reflected: string[];
+    failed: string[];
+    skipped: string[];
+    curriculum: Record<string, RunReport>;
+    duration_s: number;
+    locked?: boolean;
+  }
+
+  interface WorkerStatusData {
+    lock_held: boolean;
+    lock_pid: number | null;
+    pending: number;
+    done: number;
+    failed: number;
+    last_run: string | null;
+    last_summary: RunSummary | null;
+    last_curriculum: Record<string, string>;
+  }
 
   interface PlanAction {
     pattern: string;
@@ -25,7 +58,7 @@
 
   const ACTION_ORDER = ["promote", "refine", "retire-candidate", "over-cap", "below-threshold", "done"];
 
-  let status = $state("loading...");
+  let status = $state<WorkerStatusData | null>(null);
   let plan = $state<PlanReport | null>(null);
 
   const grouped = $derived.by((): PlanGroup[] => {
@@ -41,9 +74,9 @@
 
   async function refresh() {
     try {
-      status = JSON.stringify(await call("worker.status", {}), null, 2);
+      status = (await call("worker.status", {})) as WorkerStatusData;
     } catch (e) {
-      status = "unknown";
+      status = null;
       toast(`could not load worker status: ${(e as Error).message}`);
     }
   }
@@ -80,7 +113,7 @@
 <h2>Loop</h2>
 <div class="card">
   <h3>Worker status</h3>
-  <pre>{status}</pre>
+  <WorkerStatus {status} />
 </div>
 
 <div class="card">

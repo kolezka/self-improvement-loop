@@ -7020,6 +7020,7 @@ var ruleTag = (pattern) => `<!--rule:${pattern}-->`;
 var ROLES = ["critic", "drafter", "judge"];
 var SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var isSlug = (s) => SLUG_RE.test(s) && s.length <= 64;
+var WORLD_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u;
 var SECTIONS = [
   "## What worked",
   "## What failed & why",
@@ -13011,7 +13012,7 @@ var OutlineExport = object({
   parent_document_id: string2().nullable().default(null)
 });
 var World = object({
-  name: string2().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+  name: string2().regex(WORLD_NAME_RE),
   llm: _enum(["local", "cloud"]).default("cloud"),
   repos: array(string2()).default([]),
   target: string2().nullable().default(null),
@@ -13271,8 +13272,9 @@ var reflectionsDir = (world) => join(worldDir(world), "reflections");
 var aliasesFile = (world) => join(worldDir(world), "aliases.json");
 var scorecardsFile = (world) => join(worldDir(world), "scorecards.json");
 var defaultTarget = (world) => join(worldDir(world), "learned");
+var SAFE_CHAR = /[\p{L}\p{N}._-]/u;
 function safeComponent(name) {
-  const cleaned = Array.from(name, (c) => /[A-Za-z0-9._-]/.test(c) ? c : "_").join("");
+  const cleaned = Array.from(name.normalize("NFC"), (c) => SAFE_CHAR.test(c) ? c : "_").join("");
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
 // packages/core/src/fsx.ts
@@ -13619,7 +13621,7 @@ function writeHookSnapshot(cfg = loadConfig()) {
 }
 // packages/ops/src/args.ts
 var REVIEWED_STATE_RE = /^[0-9a-f]{64}$/;
-var WORLD_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var WORLD_RE = WORLD_NAME_RE;
 var SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 var NoArgs = object({});
 var WorldArgs = object({ world: string2().regex(WORLD_RE).max(64) });
@@ -18430,7 +18432,8 @@ function tailLines(path, n, io = REAL_TAIL_IO) {
 }
 function logsTail(args) {
   const path = logFile(args.name);
-  return { name: args.name, path, lines: tailLines(path, args.lines) };
+  const exists = existsSync10(path);
+  return { name: args.name, path, exists, size: exists ? statSync9(path).size : 0, lines: tailLines(path, args.lines) };
 }
 
 // packages/ops/src/handlers/queue.ts

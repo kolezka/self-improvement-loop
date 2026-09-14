@@ -4,12 +4,12 @@
 // from callers.
 
 import { z } from "zod";
-import { ARTIFACT_REF_RE, LOG_NAMES, ROLES, SLUG_RE, slug } from "@sil/core";
+import { ARTIFACT_REF_RE, LOG_NAMES, ROLES, SLUG_RE, slug, WORLD_NAME_RE } from "@sil/core";
 
 export const REVIEWED_STATE_RE = /^[0-9a-f]{64}$/;
-// Must start with alnum so a value like "--no-curriculum" (argv-flag shaped)
-// fails validation instead of reaching a spawned subprocess's argv.
-export const WORLD_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// The same regex the config schema uses. A second copy here once let a world
+// pass `sil worlds add` and then 400 on every op the web UI called for it.
+export const WORLD_RE = WORLD_NAME_RE;
 export const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
 export const NoArgs = z.object({});

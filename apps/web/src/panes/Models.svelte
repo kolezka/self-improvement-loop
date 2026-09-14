@@ -43,7 +43,8 @@
 
   interface WorldStatus {
     world: string;
-    text: string;
+    status: ProviderStatus | null;
+    error: string | null;
   }
 
   let llm = $state<LlmCfg | null>(null);
@@ -179,13 +180,22 @@
     const results: WorldStatus[] = [];
     for (const world of appState.worldNames) {
       try {
-        const s = await call("llm.status", { world });
-        results.push({ world, text: JSON.stringify(s, null, 2) });
+        const s = (await call("llm.status", { world })) as ProviderStatus;
+        results.push({ world, status: s, error: null });
       } catch (e) {
-        results.push({ world, text: JSON.stringify({ error: (e as Error).message }, null, 2) });
+        results.push({ world, status: null, error: (e as Error).message });
       }
     }
     statuses = results;
+  }
+
+  /** The active endpoint carries the summary fields (kind, base_url, reachable) for the card head. */
+  function activeEndpointOf(status: ProviderStatus): EndpointStatus | null {
+    return status.endpoints.find((e) => e.active) ?? status.endpoints.find((e) => e.name === status.endpoint) ?? null;
+  }
+
+  function addressOf(ep: EndpointStatus): string {
+    return ep.kind === "claude-cli" ? "claude -p" : (ep.base_url ?? "(no base_url)");
   }
 
   onMount(load);
@@ -268,8 +278,58 @@
 <div>
   {#each statuses as s (s.world)}
     <div class="card">
-      <strong>{s.world}</strong>
-      <pre>{s.text}</pre>
+      {#if s.error}
+        <div class="ep-head">
+          <strong>{s.world}</strong>
+          <span class="error-text">{s.error}</span>
+        </div>
+      {:else if s.status}
+        {@const active = activeEndpointOf(s.status)}
+        <div class="ep-head">
+          <strong>{s.world}</strong>
+          {#if active}
+            <span class="chip">{active.name}</span>
+            <span class="chip">{active.kind}</span>
+            <span class="muted">{addressOf(active)}</span>
+            <span class={active.reachable ? "ok-text" : active.reachable === false ? "error-text" : "muted"}>
+              {active.reachable === null ? "unknown" : active.reachable ? "reachable" : "unreachable"}
+            </span>
+          {:else}
+            <span class="muted">no active endpoint</span>
+          {/if}
+        </div>
+        {#if active?.error}<p class="error-text">{active.error}</p>{/if}
+        <table>
+          <thead>
+            <tr>
+              <th>endpoint</th>
+              <th>kind</th>
+              <th>address</th>
+              <th>roles</th>
+              <th>critic</th>
+              <th>drafter</th>
+              <th>judge</th>
+              <th>reachable</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each s.status.endpoints as ep (ep.name)}
+              <tr>
+                <td>{ep.name}{#if ep.active}<span class="badge">active</span>{/if}</td>
+                <td>{ep.kind}</td>
+                <td>{addressOf(ep)}</td>
+                <td>{#each ep.roles as role (role)}<span class="chip">{role}</span>{/each}</td>
+                <td>{ep.models.critic ?? "-"}</td>
+                <td>{ep.models.drafter ?? "-"}</td>
+                <td>{ep.models.judge ?? "-"}</td>
+                <td class={ep.reachable ? "ok-text" : ep.reachable === false ? "error-text" : "muted"}>
+                  {ep.reachable === null ? "unknown" : ep.reachable ? "yes" : "no"}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
     </div>
   {/each}
 </div>

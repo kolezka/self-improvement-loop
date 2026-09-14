@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import YAML from "yaml";
 import { Config, ledgerPath, paths, World } from "@sil/core";
 import { loadLedger } from "@sil/store";
@@ -103,5 +103,36 @@ describe("importKbWorlds and mergeWorlds", () => {
     const added = mergeWorlds(cfg, imported);
     expect(added).toBe(1);
     expect(new Set(cfg.worlds.map((w) => w.name))).toEqual(new Set(["default", "raqz"]));
+  });
+});
+
+describe("unicode world names", () => {
+  test("a world named Koleżka parses, imports, and keeps its own directory", () => {
+    expect(World.parse({ name: "Koleżka" }).name).toBe("Koleżka");
+
+    const manifest = join(tmp, "worlds.yaml");
+    writeFileSync(manifest, YAML.stringify({ worlds: [{ name: "Koleżka", llm: "cloud", projects: [{ repo: join(tmp, "kolezka") }] }] }));
+
+    const worlds = importKbWorlds(manifest);
+    expect(worlds.map((w) => w.name)).toEqual(["Koleżka"]);
+    expect(worlds[0]!.repos).toEqual([join(tmp, "kolezka")]);
+
+    // The old safeComponent folded every non-ASCII letter to "_", so Koleżka
+    // and Koleźka shared one data directory.
+    expect(paths.safeComponent("Koleżka")).toBe("Koleżka");
+    expect(paths.worldDir("Koleżka")).not.toBe(paths.worldDir("Koleźka"));
+
+    const dir = paths.worldDir("Koleżka");
+    expect(basename(dir)).toBe("Koleżka");
+    mkdirSync(dir, { recursive: true });
+    // macOS hands back NFD from readdir, Linux hands back what was written.
+    expect(readdirSync(join(dir, "..")).map((n) => n.normalize("NFC"))).toEqual(["Koleżka"]);
+  });
+
+  test("separators, traversal and a leading dot are still rejected", () => {
+    expect(() => World.parse({ name: "a/b" })).toThrow();
+    expect(() => World.parse({ name: "../x" })).toThrow();
+    expect(() => World.parse({ name: ".hidden" })).toThrow();
+    expect(() => World.parse({ name: "" })).toThrow();
   });
 });

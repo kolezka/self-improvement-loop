@@ -32,6 +32,15 @@ export type Role = (typeof ROLES)[number];
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const isSlug = (s: string): boolean => SLUG_RE.test(s) && s.length <= 64;
 
+/** World names: Unicode letters and digits, so Koleżka is a legal world. Kept
+ * here rather than in each schema because the config boundary and the op
+ * boundary both validate it, and only one of the two used to be updated.
+ *
+ * The leading character stays a letter or digit so an argv-flag shaped value
+ * like "--no-curriculum" is still rejected before it can reach a spawned
+ * subprocess, and neither "." nor ".." nor a path separator can pass. */
+export const WORLD_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u;
+
 export const SECTIONS = [
   "## What worked",
   "## What failed & why",

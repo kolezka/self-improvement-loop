@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { ZodError } from "zod";
 import {
   ConfigError,
   fsx,
@@ -24,10 +25,30 @@ export function resolveWorld(cfg: Config, name: string | undefined): World {
   return worldForCwd(cfg, process.cwd());
 }
 
+/** `["worlds", 0, "name"]` as `worlds[0].name`. */
+function zodField(path: readonly PropertyKey[]): string {
+  let out = "";
+  for (const seg of path) {
+    if (typeof seg === "number") out += `[${seg}]`;
+    else out += out === "" ? String(seg) : `.${String(seg)}`;
+  }
+  return out || "(root)";
+}
+
+function zodDetail(err: ZodError): string {
+  return err.issues.map((i) => `${zodField(i.path)}: ${i.message}`).join("; ");
+}
+
 /** Maps a thrown error to (stderr line, exit code). Returns null when the
  * error is not one of the mapped domain errors: the caller should rethrow so
  * an unexpected bug still shows a stack trace instead of being swallowed. */
 export function mapKnownError(err: unknown): number | null {
+  // A ZodError's stack is just the class name, so the default branch in run()
+  // used to print the bare word "ZodError".
+  if (err instanceof ZodError) {
+    console.error(`config error: ${zodDetail(err)}`);
+    return 1;
+  }
   if (err instanceof LockHeld) {
     console.error(`error: ${err.message}`);
     return 2;

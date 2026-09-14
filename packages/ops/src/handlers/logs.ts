@@ -47,5 +47,6 @@ export function tailLines(path: string, n: number, io: TailIo = REAL_TAIL_IO): s
 
 export function logsTail(args: LogArgs) {
   const path = paths.logFile(args.name);
-  return { name: args.name, path, lines: tailLines(path, args.lines) };
+  const exists = existsSync(path);
+  return { name: args.name, path, exists, size: exists ? statSync(path).size : 0, lines: tailLines(path, args.lines) };
 }

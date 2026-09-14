@@ -79,16 +79,27 @@ describe("logs.tail op", () => {
   });
 
   test("returns lines for a known log name with no file yet", async () => {
-    const result = (await invoke("logs.tail", { name: "worker" })) as { name: string; path: string; lines: string[] };
+    const result = (await invoke("logs.tail", { name: "worker" })) as {
+      name: string;
+      path: string;
+      exists: boolean;
+      size: number;
+      lines: string[];
+    };
     expect(result.name).toBe("worker");
+    expect(result.exists).toBe(false);
+    expect(result.size).toBe(0);
     expect(result.lines).toEqual([]);
   });
 
   test("tails an existing log file written under SIL_STATE_DIR", async () => {
     const dir = join(tmp, "sil_state_dir", "logs");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "worker.log"), ["l1", "l2", "l3"].join("\n") + "\n");
-    const result = (await invoke("logs.tail", { name: "worker", lines: 2 })) as { lines: string[] };
+    const content = ["l1", "l2", "l3"].join("\n") + "\n";
+    writeFileSync(join(dir, "worker.log"), content);
+    const result = (await invoke("logs.tail", { name: "worker", lines: 2 })) as { exists: boolean; size: number; lines: string[] };
+    expect(result.exists).toBe(true);
+    expect(result.size).toBe(Buffer.byteLength(content));
     expect(result.lines).toEqual(["l2", "l3"]);
   });
 });

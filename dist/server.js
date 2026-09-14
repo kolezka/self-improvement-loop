@@ -18432,7 +18432,8 @@ function tailLines(path, n, io = REAL_TAIL_IO) {
 }
 function logsTail(args) {
   const path = logFile(args.name);
-  return { name: args.name, path, lines: tailLines(path, args.lines) };
+  const exists = existsSync10(path);
+  return { name: args.name, path, exists, size: exists ? statSync9(path).size : 0, lines: tailLines(path, args.lines) };
 }
 
 // packages/ops/src/handlers/queue.ts

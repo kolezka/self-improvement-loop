@@ -6,6 +6,7 @@ import {
   install,
   launchdDir,
   LEGACY_LAUNCHD_PLISTS,
+  realRunner,
   renderLaunchd,
   renderSystemd,
   shimPath,
@@ -33,6 +34,13 @@ afterEach(() => {
   if (savedHome === undefined) delete process.env["HOME"];
   else process.env["HOME"] = savedHome;
   rmSync(tmp, { recursive: true, force: true });
+});
+
+describe("realRunner", () => {
+  test("does not throw when the executable is missing", () => {
+    // sil schedule uninstall runs both kinds; on macOS there is no systemctl.
+    expect(() => realRunner(["sil-test-no-such-binary-4f2a", "--version"])).not.toThrow();
+  });
 });
 
 describe("renderSystemd", () => {

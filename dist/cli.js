@@ -20862,7 +20862,9 @@ var LAUNCHD_WEB_PLIST = "com.raqz.sil-web.plist";
 var LEGACY_LAUNCHD_PLISTS = ["com.kolezka.sil-worker.plist", "com.kolezka.sil-web.plist"];
 var LAUNCHD_PREFIXES = ["com.raqz.sil-", "com.kolezka.sil-"];
 var realRunner = (cmd) => {
-  Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  try {
+    Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+  } catch {}
 };
 function home() {
   return process.env["HOME"] || homedir2();

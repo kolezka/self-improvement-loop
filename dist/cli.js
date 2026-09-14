@@ -20505,6 +20505,7 @@ function cmdImportLedger(file, opts) {
 
 // apps/cli/src/commands/init.ts
 import { join as join19 } from "path";
+var DEFAULT_LITELLM_MODEL = "deepseek/deepseek-flash";
 function cmdInit(opts) {
   const cfgPath = configFile();
   let cfg;
@@ -20524,7 +20525,8 @@ function cmdInit(opts) {
   if (exists(llmPath)) {
     console.log(`llm.yaml already exists at ${llmPath}, leaving it as is`);
   } else {
-    const litellmModels = opts.model ? { critic: opts.model, drafter: opts.model, judge: opts.model } : {};
+    const litellmModel = opts.model || DEFAULT_LITELLM_MODEL;
+    const litellmModels = { critic: litellmModel, drafter: litellmModel, judge: litellmModel };
     const claudeModel = opts.claudeModel || "sonnet";
     const endpoints = [
       Endpoint.parse({
@@ -20543,9 +20545,6 @@ function cmdInit(opts) {
     const llm = LlmConfig.parse({ endpoints, active: "litellm" });
     saveLlm(llm);
     console.log(`wrote ${llmPath}`);
-    if (Object.keys(litellmModels).length === 0) {
-      console.log("The litellm endpoint has no models set. Run " + "`sil llm set-model critic <model> --endpoint litellm` for each role, " + "or switch to the claude endpoint with `sil llm use claude`.");
-    }
   }
   for (const world of cfg.worlds) {
     if (world.target === null)

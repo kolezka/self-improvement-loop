@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { Config, Endpoint, fsx, LlmConfig, loadConfig, paths, saveConfig, saveLlm, targetRoot, World, writeHookSnapshot } from "@sil/core";
 import { ensureLearnedRepo } from "../common.ts";
 
+// The operator's LiteLLM route for every role unless --model says otherwise.
+export const DEFAULT_LITELLM_MODEL = "deepseek/deepseek-flash";
+
 export interface InitOptions {
   world?: string;
   target?: string;
@@ -36,7 +39,8 @@ export function cmdInit(opts: InitOptions): number {
   } else {
     // Each endpoint carries its own model names: a switch changes the
     // endpoint, never the model strings.
-    const litellmModels = opts.model ? { critic: opts.model, drafter: opts.model, judge: opts.model } : {};
+    const litellmModel = opts.model || DEFAULT_LITELLM_MODEL;
+    const litellmModels = { critic: litellmModel, drafter: litellmModel, judge: litellmModel };
     const claudeModel = opts.claudeModel || "sonnet";
     const endpoints = [
       Endpoint.parse({
@@ -55,13 +59,6 @@ export function cmdInit(opts: InitOptions): number {
     const llm = LlmConfig.parse({ endpoints, active: "litellm" });
     saveLlm(llm);
     console.log(`wrote ${llmPath}`);
-    if (Object.keys(litellmModels).length === 0) {
-      console.log(
-        "The litellm endpoint has no models set. Run " +
-          "`sil llm set-model critic <model> --endpoint litellm` for each role, " +
-          "or switch to the claude endpoint with `sil llm use claude`.",
-      );
-    }
   }
 
   for (const world of cfg.worlds) {

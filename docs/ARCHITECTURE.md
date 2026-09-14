@@ -144,9 +144,9 @@ endpoints:
     base_url: http://100.64.0.3:4000
     api_key_env: LITELLM_API_KEY
     models:                        # model names are per endpoint
-      critic: zai/glm-5.3-flash
-      drafter: zai/glm-5.3-flash
-      judge: zai/glm-5.3-flash
+      critic: deepseek/deepseek-flash
+      drafter: deepseek/deepseek-flash
+      judge: deepseek/deepseek-flash
     extra_body: {}                 # merged into each request, e.g. reasoning_effort: low
   - name: claude
     kind: claude-cli               # `claude -p --model <m>`; no proxy needed
@@ -165,7 +165,7 @@ A role resolves in two steps: the endpoint is `role_endpoints[role]`, else `acti
 else the first endpoint; the model is that endpoint's `models[role]`, else the top
 level `models[role]`. Nothing defaults past that, so a missing model is an error
 naming the role and the endpoint, not a silent fallback. Model names live on the
-endpoint because LiteLLM wants `zai/glm-5.3-flash` where claude-cli wants `sonnet`,
+endpoint because LiteLLM wants `deepseek/deepseek-flash` where claude-cli wants `sonnet`,
 so switching provider never rewrites them.
 
 `chat(role, messages, { world })` in `@sil/providers` is the single transport. It

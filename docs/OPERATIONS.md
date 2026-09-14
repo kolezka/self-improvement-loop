@@ -42,7 +42,7 @@ sil llm set-model critic sonnet --endpoint claude
 `sil llm use <endpoint>` sets `active` and clears the per role overrides, so it is a
 full switch. Adding `--role` touches that one role and leaves `active` alone. Model
 names live on the endpoint, so a switch never rewrites them: LiteLLM keeps
-`zai/glm-5.3-flash` while the claude endpoint keeps `sonnet`.
+`deepseek/deepseek-flash` (the `sil init` default) while the claude endpoint keeps `sonnet`.
 
 The split that worked in the live run: critic on claude-cli, drafter and judge on
 LiteLLM. The critic reads a whole transcript and has to return strict JSON, which

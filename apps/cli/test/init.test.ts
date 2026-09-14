@@ -88,4 +88,14 @@ describe("sil init provider defaults", () => {
     expect(llm.endpoints.find((e) => e.name === "litellm")!.base_url).toBe("http://127.0.0.1:4000");
     expect(llm.models).toEqual({});
   });
+
+  test("without --model the litellm endpoint gets the DeepSeek default for every role", async () => {
+    expect(await run(["init"])).toBe(0);
+    const llm = loadLlm();
+    expect(llm.endpoints.find((e) => e.name === "litellm")!.models).toEqual({
+      critic: "deepseek/deepseek-flash",
+      drafter: "deepseek/deepseek-flash",
+      judge: "deepseek/deepseek-flash",
+    });
+  });
 });

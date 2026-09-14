@@ -16,3 +16,12 @@
 - 2026-09-14: `Path("") == Path(".")`. Any "path or empty string" default in a hook
   turns the session cwd into a data source. V1 had documented this exact trap and
   V2 reintroduced it; read the predecessor's landmine comments before porting.
+- 2026-09-14 (TS port): a "regex made safe by a heuristic" is only as safe as the
+  heuristic's coverage. Glob to regex translation without atomic groups and an
+  alternation form `(a|aa)+` both slipped past a nested quantifier check. Bound
+  the input at load time and prefer linear matchers over clever regexes.
+- 2026-09-14 (TS port): a subprocess test that does not pass `env` explicitly
+  runs against the operator's real home dirs; Bun.spawn snapshots env at start.
+  Every test that spawns must build its env from the tmp dirs.
+- 2026-09-14 (TS port): `x in obj` accepts Object.prototype keys; use
+  Object.hasOwn for any lookup keyed by untrusted strings (events, matchers).

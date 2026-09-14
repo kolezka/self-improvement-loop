@@ -5,6 +5,18 @@
 # (those call this fixed path, not one under a versioned plugin cache dir).
 set -eu
 
+# launchd and systemd start with a minimal PATH that has no bun on it. This
+# runs before resolve_root, which needs bun to read installed_plugins.json.
+if ! command -v bun >/dev/null 2>&1; then
+  for d in "$HOME/.bun/bin" /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$d/bun" ]; then
+      PATH="$d:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
+
 resolve_root() {
   if [ -n "${SIL_PLUGIN_ROOT:-}" ]; then
     printf '%s\n' "$SIL_PLUGIN_ROOT"
@@ -52,17 +64,6 @@ JSEOF
 }
 
 ROOT="$(resolve_root)"
-
-# launchd and systemd start with a minimal PATH that has no bun on it.
-if ! command -v bun >/dev/null 2>&1; then
-  for d in "$HOME/.bun/bin" /opt/homebrew/bin /usr/local/bin; do
-    if [ -x "$d/bun" ]; then
-      PATH="$d:$PATH"
-      export PATH
-      break
-    fi
-  done
-fi
 
 # Claude Code sets this for hooks and commands, but nothing sets it for a
 # systemd/launchd unit or a plain shell. Without it paths.pluginRoot() and

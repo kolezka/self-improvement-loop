@@ -129,7 +129,20 @@ def _evaluate(gate: dict, payload: dict) -> bool:
     Real enough that the router's "execute the gate against the corpus" rule is
     actually exercised: a stub returning True would make every hook test pass for
     the wrong reason.
+
+    The blanket `except Exception` mirrors the real dispatcher, and it is the
+    load-bearing part. `sil.nudge.evaluate` is a total function on purpose (a
+    gate that threw would take the dispatcher down for that tool call), so the
+    router's own deadline has to survive being swallowed by it. A fake that
+    re-raised would hide exactly that.
     """
+    try:
+        return _evaluate_inner(gate, payload)
+    except Exception:  # noqa: BLE001 - deliberate: this is what the real one does
+        return False
+
+
+def _evaluate_inner(gate: dict, payload: dict) -> bool:
     import fnmatch
     import re
 
@@ -150,11 +163,11 @@ def _evaluate(gate: dict, payload: dict) -> bool:
     if name == "prompt_matches":
         return bool(re.search(str(arg), str(payload.get("prompt", ""))))
     if name == "all":
-        return all(_evaluate(child, payload) for child in arg)
+        return all(_evaluate_inner(child, payload) for child in arg)
     if name == "any":
-        return any(_evaluate(child, payload) for child in arg)
+        return any(_evaluate_inner(child, payload) for child in arg)
     if name == "not":
-        return not _evaluate(arg, payload)
+        return not _evaluate_inner(arg, payload)
     raise _NudgeError(f"unknown predicate {name!r}")
 
 

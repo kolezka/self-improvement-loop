@@ -100,7 +100,7 @@ async function renderStatusLine() {
   line.appendChild(workerBadge);
   try {
     const status = await call("worker.status", {});
-    workerBadge.textContent = `worker: ${status.running ? "running" : "idle"}`;
+    workerBadge.textContent = `worker: ${status.lock_held ? "running" : "idle"}, pending ${status.pending}`;
   } catch (e) {
     workerBadge.textContent = "worker: unknown";
   }

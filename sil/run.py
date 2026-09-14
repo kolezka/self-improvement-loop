@@ -92,6 +92,25 @@ def _served_by(staged: PromotionEntry | None,
     return prior.served_by if prior is not None else None
 
 
+def _row_type(entry: PromotionEntry | None) -> str | None:
+    if entry is None:
+        return None
+    if entry.served_by is not None:
+        return entry.served_by.type.value
+    return entry.artifact_type.value
+
+
+def _migrating(staged: PromotionEntry | None, prior: PromotionEntry | None) -> bool:
+    """Whether the branch carries a type change the default branch does not know.
+
+    True only when both rows exist and disagree. That is the re-home case, and
+    the one where the branch's commit deleted a file a reset would restore.
+    """
+    branch_type, base_type = _row_type(staged), _row_type(prior)
+    return (branch_type is not None and base_type is not None
+            and branch_type != base_type)
+
+
 def _foreign_rule_tags(repo: Path, base: str, rel: str, pattern: str) -> list[str]:
     """Other patterns' rule tags this branch's `rel` diff touches.
 
@@ -284,11 +303,17 @@ def _stage_one(world, cfg, report, action, items, chat, *, target, default,
         last_updated=now_iso(),
     )
 
-    # An ordinary redraft starts from the default branch, exactly as a reset
-    # would. A branch carrying an operator's re-home is preserved and landed on
-    # top of, because resetting it would orphan the commit they reviewed.
-    preserve = staged_entry is not None and staged_entry.served_by is not None
-    if gitutil.ref_exists(target, f"refs/heads/{branch}") and not preserve:
+    # An ordinary redraft resets its branch onto the default branch, so a staged
+    # pattern is always exactly one commit. That is safe because the new commit
+    # reproduces everything the old one carried: the artifact and this pattern's
+    # ledger row, in the type the branch itself declared.
+    #
+    # A migration in flight is the exception and lands on top instead. There the
+    # branch's commit also DELETED the old type's file, which a reset would
+    # silently restore, and the re-home commit a human already looked at would be
+    # reachable from nothing but the reflog.
+    if gitutil.ref_exists(target, f"refs/heads/{branch}") and not _migrating(
+            staged_entry, prior):
         gitutil.git(target, "branch", "-q", "-f", branch, default)
 
     verb = "refine" if action.action == "refine" else "promote"

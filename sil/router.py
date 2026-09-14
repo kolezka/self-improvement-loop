@@ -32,8 +32,18 @@ from pydantic import BaseModel
 GATE_TIMEOUT_S = 0.25
 
 
-class GateTimeout(Exception):
-    """Gate evaluation exceeded the wall-clock deadline."""
+class GateTimeout(BaseException):
+    """Gate evaluation exceeded the wall-clock deadline.
+
+    A BaseException, and that is load-bearing. `sil.nudge.evaluate` is a total
+    function by design (a gate that threw would take the dispatcher down for
+    that tool call), so it wraps everything in `except Exception: return False`.
+    An ordinary exception raised by the alarm handler lands inside that guard and
+    is swallowed: the router then reports "gate matched nothing" for what was
+    really a timeout, and, because `setitimer` is one-shot, every payload after
+    the first runs with no deadline at all. Measured against the real dispatcher
+    on `(a+)+$`: the first payload returned False and the second hung.
+    """
 
 
 class RouteAnswer(BaseModel):

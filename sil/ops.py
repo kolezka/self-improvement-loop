@@ -204,6 +204,14 @@ class ReflectionListArgs(WorldArgs):
     limit: int | None = Field(default=None, ge=1, le=2000)
 
 
+def _cfg_world(name: str):
+    """Resolve a world name from the request into (Config, World)."""
+    from sil import config as config_mod
+
+    cfg = config_mod.load_config()
+    return cfg, config_mod.world_named(cfg, name)
+
+
 # --- health / worlds / config -------------------------------------------------
 
 def _health_report(args: NoArgs) -> dict:
@@ -280,7 +288,8 @@ def _llm_set(args: LlmArgs) -> Any:
 def _llm_status(args: WorldArgs) -> dict:
     from sil import providers as providers_mod
 
-    return providers_mod.status(args.world)
+    _cfg, world = _cfg_world(args.world)
+    return providers_mod.status(world)
 
 
 # --- queue / worker -------------------------------------------------------
@@ -319,11 +328,10 @@ def _loop_run(args: WorldArgs) -> dict:
 # --- curriculum -----------------------------------------------------------
 
 def _curriculum_plan(args: WorldArgs) -> Any:
-    from sil import config as config_mod
-    from sil import run as run_mod
+    from sil import curriculum as curriculum_mod
 
-    cfg = config_mod.load_config()
-    return run_mod.plan(args.world, cfg)
+    cfg, world = _cfg_world(args.world)
+    return curriculum_mod.plan(world, cfg)
 
 
 def _curriculum_run(args: WorldArgs) -> dict:
@@ -382,67 +390,59 @@ def _aliases_set(args: AliasArgs) -> dict:
 # --- review -------------------------------------------------------------------
 
 def _review_queue(args: WorldArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.queue(args.world, cfg)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.queue(world, cfg)
 
 
 def _review_detail(args: PatternArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.detail(args.world, cfg, args.pattern)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.detail(world, cfg, args.pattern)
 
 
 def _review_diff(args: PatternArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.diff(args.world, cfg, args.pattern)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.diff(world, cfg, args.pattern)
 
 
 def _skill_accept(args: AcceptArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.accept(args.world, cfg, args.pattern, args.reviewed_state)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.accept(world, cfg, args.pattern, args.reviewed_state)
 
 
 def _skill_reject(args: PatternArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.reject(args.world, cfg, args.pattern)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.reject(world, cfg, args.pattern)
 
 
 def _router_rehome(args: RehomeArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.rehome(args.world, cfg, args.pattern, args.artifact_type)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.rehome(world, cfg, args.pattern, args.artifact_type)
 
 
 def _router_retire(args: RetireArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.retire(args.world, cfg, args.pattern)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.retire(world, cfg, args.pattern)
 
 
 def _router_inventory(args: WorldArgs) -> Any:
-    from sil import config as config_mod
     from sil import review as review_mod
 
-    cfg = config_mod.load_config()
-    return review_mod.inventory(args.world, cfg)
+    cfg, world = _cfg_world(args.world)
+    return review_mod.inventory(world, cfg)
 
 
 # --- artifacts / feedback -------------------------------------------------
@@ -450,15 +450,15 @@ def _router_inventory(args: WorldArgs) -> Any:
 def _artifacts_scorecards(args: WorldArgs) -> Any:
     from sil import feedback as feedback_mod
 
-    return feedback_mod.load(args.world)
+    _cfg, world = _cfg_world(args.world)
+    return feedback_mod.load(world)
 
 
 def _artifacts_rebuild(args: WorldArgs) -> dict:
-    from sil import config as config_mod
     from sil import feedback as feedback_mod
 
-    cfg = config_mod.load_config()
-    path = feedback_mod.rebuild(args.world, cfg)
+    cfg, world = _cfg_world(args.world)
+    path = feedback_mod.rebuild(world, cfg)
     return {"world": args.world, "path": str(path)}
 
 

@@ -136,7 +136,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             "reflections": 0,
             "staged": 0,
             "artifacts": 0,
-            "provider": "unknown",
+            "provider": {"endpoint": None, "reachable": None, "error": "unknown"},
         }
         try:
             from sil import store
@@ -147,14 +147,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         try:
             from sil import review
 
-            info["staged"] = len(review.queue(w.name, cfg))
-            info["artifacts"] = len(review.inventory(w.name, cfg))
+            info["staged"] = len(review.queue(w, cfg))
+            info["artifacts"] = len(review.inventory(w, cfg))
         except ModuleNotFoundError:
             pass
         try:
             from sil import providers
 
-            info["provider"] = providers.status(w.name)
+            info["provider"] = providers.status(w)
         except ModuleNotFoundError:
             pass
         worlds_info.append(info)
@@ -172,9 +172,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     print()
     print(f"{'world':<16} {'llm':<6} {'reflections':>11} {'staged':>7} {'artifacts':>9}  provider")
     for info in worlds_info:
+        prov = info["provider"]
+        if prov.get("error"):
+            prov_str = f"{prov.get('endpoint') or '?'} error: {prov['error']}"
+        else:
+            prov_str = f"{prov.get('endpoint')} reachable={prov.get('reachable')}"
         print(
             f"{info['world']:<16} {info['llm']:<6} {info['reflections']:>11} "
-            f"{info['staged']:>7} {info['artifacts']:>9}  {info['provider']}"
+            f"{info['staged']:>7} {info['artifacts']:>9}  {prov_str}"
         )
     return 0
 
@@ -194,7 +199,10 @@ def cmd_reflect(args: argparse.Namespace) -> int:
     entry_path = None
 
     if args.session:
-        candidate = pending_dir / f"{args.session}.json"
+        # Same sanitization as sil.hook._safe_component: alnum, -, _, . only.
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in args.session)
+        safe = safe if safe not in ("", ".", "..") else "_"
+        candidate = pending_dir / f"{safe}.json"
         if candidate.exists():
             entry_path = candidate
 
@@ -253,11 +261,11 @@ def cmd_worker(args: argparse.Namespace) -> int:
 
 def cmd_curriculum_plan(args: argparse.Namespace) -> int:
     from sil.config import load_config
-    from sil import run as runmod
+    from sil import curriculum
 
     cfg = load_config()
     world = _resolve_world(cfg, args.world)
-    report = runmod.plan(world.name, cfg)
+    report = curriculum.plan(world, cfg)
     if args.json:
         print(report.model_dump_json(indent=2))
         return 0
@@ -275,7 +283,7 @@ def cmd_curriculum_run(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     world = _resolve_world(cfg, args.world)
-    report = runmod.run(world.name, cfg, apply=args.apply)
+    report = runmod.run(world, cfg, apply=args.apply)
     if args.json:
         print(report.model_dump_json(indent=2))
         return 0
@@ -299,7 +307,7 @@ def cmd_review_list(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     world = _resolve_world(cfg, args.world)
-    items = reviewmod.queue(world.name, cfg)
+    items = reviewmod.queue(world, cfg)
     if not items:
         print(f"no staged reviews for world {world.name}")
         return 0
@@ -315,11 +323,11 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     cfg = load_config()
     world = _resolve_world(cfg, args.world)
     if args.diff:
-        d = reviewmod.diff(world.name, cfg, args.pattern)
+        d = reviewmod.diff(world, cfg, args.pattern)
         print(d.diff)
         print(f"\nreviewed_state: {d.reviewed_state}")
         return 0
-    detail = reviewmod.detail(world.name, cfg, args.pattern)
+    detail = reviewmod.detail(world, cfg, args.pattern)
     print(f"pattern: {detail.pattern}")
     print(f"type: {detail.artifact_type.value}  path: {detail.artifact_path}")
     print(f"branch: {detail.branch}  count: {detail.count}")
@@ -337,7 +345,7 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     world = world_named(cfg, args.world)
-    reviewmod.accept(world.name, cfg, args.pattern, args.reviewed_state)
+    reviewmod.accept(world, cfg, args.pattern, args.reviewed_state)
     print(f"accepted {args.pattern} in world {world.name}")
     return 0
 
@@ -348,7 +356,7 @@ def cmd_review_reject(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     world = world_named(cfg, args.world)
-    reviewmod.reject(world.name, cfg, args.pattern)
+    reviewmod.reject(world, cfg, args.pattern)
     print(f"rejected {args.pattern} in world {world.name}")
     return 0
 
@@ -359,7 +367,7 @@ def cmd_review_rehome(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     world = world_named(cfg, args.world)
-    reviewmod.rehome(world.name, cfg, args.pattern, args.type)
+    reviewmod.rehome(world, cfg, args.pattern, args.type)
     print(f"rehomed {args.pattern} to {args.type} in world {world.name}")
     return 0
 
@@ -373,7 +381,7 @@ def cmd_review_retire(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     world = world_named(cfg, args.world)
-    reviewmod.retire(world.name, cfg, args.pattern)
+    reviewmod.retire(world, cfg, args.pattern)
     print(f"retired {args.pattern} in world {world.name}")
     return 0
 
@@ -427,14 +435,14 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
             return 2
         from sil import feedback
 
-        feedback.rebuild(world.name, cfg)
+        feedback.rebuild(world, cfg)
         print(f"rebuilt scorecards for world {world.name}")
         return 0
 
     from sil import feedback, review
 
-    inventory = review.inventory(world.name, cfg)
-    cards = feedback.scorecards(world.name, cfg)
+    inventory = review.inventory(world, cfg)
+    cards = feedback.scorecards(world, cfg)
     if args.json:
         payload = {
             "inventory": [row.model_dump(mode="json") for row in inventory],
@@ -471,7 +479,7 @@ def cmd_feedback_list(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     for w in cfg.worlds:
-        for e in feedbackmod.load(w.name):
+        for e in feedbackmod.load(w):
             print(f"{e.ts}  {w.name:<16} {e.ref:<30} {e.vote:<4} {e.note}")
     return 0
 

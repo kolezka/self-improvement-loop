@@ -10,7 +10,8 @@ from sil import artifacts, config, curriculum, gitutil, paths, run, store
 from sil.models import ArtifactRef, ArtifactType, Ledger, PromotionEntry
 from tests.curriculum_fixtures import (
     FakeChat, add_reflections, commit_file, hook_draft, init_target,
-    install_fake_nudge, make_cfg, make_world, rule_body, sil_env, skill_draft,
+    install_fake_nudge, make_cfg, make_world, rule_body, sil_env, skill_body,
+    skill_draft,
 )
 
 PATTERN = "verify-callsites"
@@ -86,6 +87,32 @@ def test_apply_stages_one_commit_carrying_the_artifact_and_only_its_own_ledger_r
     assert entry.promoted_at_count == 3
     assert entry.artifact_type == ArtifactType.skill
     assert entry.served_by.path == f"skills/{PATTERN}/SKILL.md"
+
+
+def test_each_staged_branch_carries_only_its_own_ledger_row(env):
+    # Branches are reviewed independently, so one may never claim another's
+    # promotion. Accepting the second would otherwise record the first as
+    # promoted without anyone approving it, and the loop then reads that
+    # watermark and never proposes it again.
+    world = make_world()
+    add_reflections(world, "aaa-pattern", 3)
+    add_reflections(world, "bbb-pattern", 3, start_day=20)
+    repo = init_target(world)
+
+    def chat(role, messages, **kwargs):
+        if role == "judge":
+            return json.dumps({"verdict": "yes", "reason": "quoted"})
+        prompt = messages[-1]["content"]
+        pattern = "aaa-pattern" if "aaa-pattern" in prompt else "bbb-pattern"
+        return json.dumps(skill_draft(pattern, QUOTE))
+
+    report = run.run(world, make_cfg(), apply=True, chat=chat)
+    assert sorted(report.staged) == ["aaa-pattern", "bbb-pattern"], report.gated_out
+
+    for pattern in ("aaa-pattern", "bbb-pattern"):
+        found, raw = gitutil.show(repo, _branch(world, pattern), "promotions.json")
+        assert found
+        assert list(curriculum.parse_ledger(raw).entries) == [pattern]
 
 
 def test_staging_never_moves_the_live_head_or_dirties_the_tree(env):
@@ -342,8 +369,7 @@ def test_a_placeholder_is_never_offered_to_the_drafter_as_an_existing_draft(env)
     commit_file(repo, "promotions.json", config.ledger_path(world).read_text(),
                 "chore: ledger")
 
-    chat = FakeChat(draft={"artifact": __import__(
-        "tests.curriculum_fixtures", fromlist=["skill_body"]).skill_body(PATTERN, QUOTE)})
+    chat = FakeChat(draft={"artifact": skill_body(PATTERN, QUOTE)})
     report = run.run(world, make_cfg(), apply=True, chat=chat)
 
     assert report.staged == [PATTERN], report.gated_out

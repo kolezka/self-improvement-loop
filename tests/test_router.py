@@ -96,6 +96,24 @@ def test_a_catastrophically_backtracking_gate_does_not_hang():
         RouteAnswer(trigger_event="PreToolUse:Bash", gate={"command_matches": "(a+)+$"}),
         SOURCES, [payload])
     assert result.artifact_type != "hook"
+    assert "timed out" in result.reason, (
+        "the dispatcher is a total function, so an ordinary exception raised by "
+        "the alarm is swallowed and reported as a clean non-match")
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"),
+                    reason="signal.setitimer is not available here")
+def test_the_deadline_is_not_spent_on_the_first_payload_alone():
+    # setitimer is one-shot. If the dispatcher swallows the first timeout, no
+    # alarm is pending for payload two and the corpus walk runs unbounded.
+    evil = "a" * 28 + "!"
+    payloads = [{"session_id": str(i), "hook_event_name": "PreToolUse",
+                 "tool_name": "Bash", "tool_input": {"command": evil}}
+                for i in range(5)]
+    result = router.route(
+        RouteAnswer(trigger_event="PreToolUse:Bash", gate={"command_matches": "(a+)+$"}),
+        SOURCES, payloads)
+    assert result.artifact_type != "hook"
     assert "timed out" in result.reason
 
 

@@ -253,7 +253,7 @@ def test_skill_accept_passes_reviewed_state_through(monkeypatch):
     captured = {}
 
     def fake_accept(world, cfg, pattern, reviewed_state):
-        captured["args"] = (world, pattern, reviewed_state)
+        captured["args"] = (world.name, pattern, reviewed_state)
         return {"merged": True, "pr": None}
 
     install_fake_module(monkeypatch, "sil.review", accept=fake_accept)
@@ -272,7 +272,7 @@ def test_router_retire_calls_review_retire_with_confirm(monkeypatch):
     captured = {}
 
     def fake_retire(world, cfg, pattern):
-        captured["args"] = (world, pattern)
+        captured["args"] = (world.name, pattern)
         return {"retired": True}
 
     install_fake_module(monkeypatch, "sil.review", retire=fake_retire)

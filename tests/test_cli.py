@@ -80,7 +80,11 @@ def test_status_json_with_fakes(monkeypatch, capsys):
         queue=lambda world, cfg: [],
         inventory=lambda world, cfg: [],
     )
-    install_fake_module(monkeypatch, "sil.providers", status=lambda world: "ok")
+    install_fake_module(
+        monkeypatch,
+        "sil.providers",
+        status=lambda world, llm=None: {"endpoint": "litellm", "reachable": True, "error": None},
+    )
 
     rc = cli.main(["status", "--json"])
     assert rc == 0
@@ -92,7 +96,7 @@ def test_status_json_with_fakes(monkeypatch, capsys):
     assert len(payload["worlds"]) == 1
     world_info = payload["worlds"][0]
     assert world_info["world"] == "default"
-    assert world_info["provider"] == "ok"
+    assert world_info["provider"]["endpoint"] == "litellm"
     assert fake_worker.status() == {"running": True, "pid": 123}
 
 
@@ -170,7 +174,11 @@ def test_review_accept_calls_backend(monkeypatch, capsys):
     )
     rc = cli.main(["review", "accept", "foo-bar", "--world", "default", "--reviewed-state", "a" * 64])
     assert rc == 0
-    assert calls == [("default", "foo-bar", "a" * 64)]
+    assert len(calls) == 1
+    called_world, called_pattern, called_state = calls[0]
+    assert called_world.name == "default"
+    assert called_pattern == "foo-bar"
+    assert called_state == "a" * 64
 
 
 # --- reflect ------------------------------------------------------------------

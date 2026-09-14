@@ -14,11 +14,13 @@ Everything here works on the world's target repo. Two rules shape the module:
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import shutil
 import subprocess
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +41,34 @@ NET_TIMEOUT = 120
 
 class ReviewError(ValueError):
     """A refusal the operator has to read and act on."""
+
+
+@contextmanager
+def _worker_lock():
+    """Hold the worker's single-instance lock for one write operation.
+
+    A curriculum tick force-updates a staged branch (`run.py`'s `branch -f`), so
+    the two halves cannot run at once: a tick landing between accept's digest
+    check and its merge replaces the reviewed commit with one nobody read. The
+    lock is what the worker already takes, so taking it here makes the review
+    path and the run mutually exclusive rather than merely unlikely to overlap.
+
+    Imported lazily. `sil.worker` pulls in the critic, feedback and transcript
+    halves, none of which the review path needs.
+    """
+    try:
+        worker = importlib.import_module("sil.worker")
+    except ImportError as e:  # a broken install, not a busy worker: say which
+        raise ReviewError(f"cannot take the worker lock: {e}") from None
+    lock = worker.Lock()
+    try:
+        lock.__enter__()
+    except worker.LockHeld:
+        raise ReviewError("worker is running, retry in a moment") from None
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
 
 
 @dataclass(frozen=True)
@@ -257,17 +287,25 @@ def _require_live_ready(world: World, repo: Path, default: str) -> None:
 
     Refusing rather than working around it: moving someone else's HEAD, or
     merging under their uncommitted edits, is not this operation's call.
+
+    Untracked files count. Git refuses a merge that would overwrite one, and an
+    untracked `skills/<pattern>/SKILL.md` is exactly what accepting that pattern
+    writes. Ignored here, the refusal arrived from `merge --ff-only` after the
+    branch had already been rewritten, leaving a reviewed digest describing a
+    commit that was no longer the branch head.
     """
     branch = gitutil.current_branch(repo)
     if branch != default:
         raise ReviewError(
             f"{repo} is on {branch or 'a detached HEAD'}, not {default}. Check "
             f"{default} out and retry; nothing was changed.")
-    dirty = gitutil.dirty_paths(repo, artifacts.artifact_prefixes(world))
+    dirty = gitutil.dirty_paths(repo, artifacts.artifact_prefixes(world),
+                                include_untracked=True)
     if dirty:
         raise ReviewError(
-            f"{repo} has uncommitted changes under {', '.join(dirty)}. Commit or "
-            f"discard them and retry; nothing was changed.")
+            f"{repo} has uncommitted or untracked files under "
+            f"{', '.join(dirty)}. Commit or discard them and retry; nothing was "
+            f"changed.")
 
 
 def accept(world: World, cfg: Config, pattern: str, reviewed_state: str) -> dict:
@@ -277,6 +315,11 @@ def accept(world: World, cfg: Config, pattern: str, reviewed_state: str) -> dict
     between the preview and the click is refused. Every guard runs before the
     first write, so a refusal leaves nothing to unwind.
     """
+    with _worker_lock():
+        return _accept(world, cfg, pattern, reviewed_state)
+
+
+def _accept(world: World, cfg: Config, pattern: str, reviewed_state: str) -> dict:
     repo = config.target_root(world)
     if not gitutil.is_repo(repo):
         raise ReviewError(f"{repo} is not a git repository")
@@ -305,6 +348,16 @@ def accept(world: World, cfg: Config, pattern: str, reviewed_state: str) -> dict
 
     ledger_rel = _ledger_rel(world)
     with gitutil.scratch_worktree(repo, snapshot.branch, default) as tree:
+        # Every check above read the branch by name; this worktree is the first
+        # thing that holds it. A curriculum tick force-updating the branch in
+        # between would otherwise be invisible, and what merged would be whatever
+        # the tick wrote rather than the commit the digest describes.
+        checked_out = gitutil.git(tree, "rev-parse", "HEAD", check=False)
+        if checked_out != snapshot.branch_sha:
+            raise ReviewError(
+                f"{snapshot.branch} moved from {snapshot.branch_sha[:12]} to "
+                f"{checked_out[:12] or 'an unreadable commit'} while accept was "
+                f"running; reload the review and accept again. Nothing was merged.")
         if not _is_ancestor(repo, snapshot.base_sha, snapshot.branch_sha):
             _merge_base_into_branch(tree, snapshot, ledger_rel)
         # The default branch's ledger is the record of what has been accepted;
@@ -325,7 +378,16 @@ def accept(world: World, cfg: Config, pattern: str, reviewed_state: str) -> dict
                     f"feat({atype}): {pattern} (reviewed)")
         prepared = gitutil.git(tree, "rev-parse", "HEAD")
 
-    gitutil.git(repo, "merge", "-q", "--ff-only", snapshot.branch)
+    # The sha, never the ref. Merging `snapshot.branch` would resolve the name a
+    # second time and publish whatever it points at by then; `prepared` is the
+    # one commit this function built out of the reviewed one.
+    try:
+        gitutil.git(repo, "merge", "-q", "--ff-only", prepared)
+    except gitutil.GitError as e:
+        raise ReviewError(
+            f"{default} could not fast-forward to {prepared[:12]}: {e}. "
+            f"{snapshot.branch} now carries that reviewed commit and nothing was "
+            f"merged into {default}; resolve the working tree and accept again.") from None
 
     # Past this line the artifact is on the default branch. Nothing below may
     # report a hard failure: an error here would contradict a repo that already
@@ -407,6 +469,11 @@ def reject(world: World, cfg: Config, pattern: str) -> dict:
     before the pattern can be proposed again, never a permanent veto. A lesson
     can genuinely improve on a second attempt.
     """
+    with _worker_lock():
+        return _reject(world, cfg, pattern)
+
+
+def _reject(world: World, cfg: Config, pattern: str) -> dict:
     repo = config.target_root(world)
     default = gitutil.default_branch(repo)
     snapshot = _snapshot(world, repo, default, pattern)
@@ -512,6 +579,11 @@ def rehome(world: World, cfg: Config, pattern: str, artifact_type: str) -> dict:
     `served_by` flip is what makes the next run redraft into the chosen type
     through the same pipeline every other promotion uses.
     """
+    with _worker_lock():
+        return _rehome(world, cfg, pattern, artifact_type)
+
+
+def _rehome(world: World, cfg: Config, pattern: str, artifact_type: str) -> dict:
     repo = config.target_root(world)
     ledger_rel = _ledger_rel(world)
     result: dict = {}
@@ -559,6 +631,11 @@ def retire(world: World, cfg: Config, pattern: str) -> dict:
     still appears in the available-skills list and still costs attention on every
     session, which is the entire cost being removed. Git is the trail.
     """
+    with _worker_lock():
+        return _retire(world, cfg, pattern)
+
+
+def _retire(world: World, cfg: Config, pattern: str) -> dict:
     repo = config.target_root(world)
     ledger_rel = _ledger_rel(world)
     result: dict = {}
@@ -657,6 +734,8 @@ def _publish(world: World, repo: Path, default: str, branch: str, pattern: str,
         return
     try:
         gitutil.git(repo, "push", "-q", "-u", "origin", branch, timeout=NET_TIMEOUT)
+        head_at_create = gitutil.git(repo, "rev-parse", branch, check=False)
+        base_at_create = _remote_sha(repo, default)
         title = f"feat({artifact_type}): {pattern} (reviewed)"
         body = (f"Promotes `{pattern}` from the curriculum loop in world "
                 f"`{world.name}`. Reviewed in the loop UI: the artifact body, its "
@@ -671,9 +750,53 @@ def _publish(world: World, repo: Path, default: str, branch: str, pattern: str,
             return
         out["pr"] = number[0]["number"]
         out["pr_url"] = number[0]["url"]
+        moved = _pr_moved(repo, default, out["pr"], head_at_create, base_at_create)
+        if moved:
+            out["remote_error"] = moved
+            return
         _gh(repo, "pr", "merge", str(out["pr"]), "--merge")
     except Exception as e:  # noqa: BLE001 - already merged locally; this is a warning
         out["remote_error"] = f"merged locally, but the pull request step failed: {e}"
+
+
+def _remote_sha(repo: Path, ref: str) -> str:
+    """What `origin/<ref>` points at on the server right now.
+
+    `ls-remote` rather than a remote-tracking ref: the tracking ref reports the
+    last fetch, which is the staleness this check exists to catch.
+    """
+    line = gitutil.git(repo, "ls-remote", "origin", f"refs/heads/{ref}",
+                       check=False, timeout=NET_TIMEOUT)
+    return line.split("\t", 1)[0].strip() if line else ""
+
+
+def _pr_moved(repo: Path, default: str, number, head_at_create: str,
+              base_at_create: str) -> str | None:
+    """Why this pull request must not be merged now, or None when nothing moved.
+
+    Between `pr create` and `pr merge` anyone can push to either side. Merging on
+    the state read at create would publish a head nobody reviewed, or squash it
+    onto a base that changed underneath. Both are recorded and skipped rather
+    than raised: the artifact is already merged locally by this point.
+    """
+    try:
+        raw = _gh(repo, "pr", "view", str(number), "--json", "headRefOid")
+        head_now = str(json.loads(raw or "{}").get("headRefOid") or "")
+    except (ReviewError, ValueError, TypeError) as e:
+        return (f"could not re-read pull request #{number} before merging it "
+                f"({e}); merged locally, the pull request is left open")
+    if head_now != head_at_create:
+        return (f"pull request #{number} is at "
+                f"{head_now[:12] or 'an unreadable head'}, not the "
+                f"{head_at_create[:12] or 'unknown'} commit that was reviewed and "
+                f"pushed; merged locally, the pull request is left open")
+    base_now = _remote_sha(repo, default)
+    if base_now != base_at_create:
+        return (f"origin/{default} moved from "
+                f"{base_at_create[:12] or 'nothing'} to "
+                f"{base_now[:12] or 'nothing'} after the pull request was opened; "
+                f"merged locally, the pull request is left open")
+    return None
 
 
 def _gh(repo: Path, *args: str) -> str:

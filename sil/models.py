@@ -107,6 +107,7 @@ class QueueEntry(BaseModel):
     stops: int = 1
     ended: bool = False
     tool_uses: int = 0
+    attempts: int = 0
     result: str | None = None
 
 

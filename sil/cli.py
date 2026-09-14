@@ -281,9 +281,21 @@ def cmd_curriculum_run(args: argparse.Namespace) -> int:
     from sil.config import load_config
     from sil import run as runmod
 
+    from sil.worker import Lock, LockHeld
+
     cfg = load_config()
     world = _resolve_world(cfg, args.world)
-    report = runmod.run(world, cfg, apply=args.apply)
+    if not args.apply:
+        report = runmod.run(world, cfg, apply=False)
+    else:
+        # Same lock as the worker and the accept path: two writers on the
+        # target repo at once is how an unreviewed branch gets merged.
+        try:
+            with Lock():
+                report = runmod.run(world, cfg, apply=True)
+        except LockHeld:
+            print("error: the worker holds the lock; retry in a moment", file=sys.stderr)
+            return 2
     if args.json:
         print(report.model_dump_json(indent=2))
         return 0
@@ -873,6 +885,10 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    except (ValueError, RuntimeError) as e:
+        # ReviewError, GitError, ProviderError and friends: one line, no trace.
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
     return result if isinstance(result, int) else 0
 
 

@@ -86,11 +86,11 @@ def critic_feedback_file() -> Path:
 
 
 def inbox_dir(world: str) -> Path:
-    return state_dir() / "inbox" / world
+    return state_dir() / "inbox" / safe_component(world)
 
 
 def session_dir(session_id: str) -> Path:
-    return state_dir() / "sessions" / _safe(session_id)
+    return state_dir() / "sessions" / safe_component(session_id)
 
 
 def worker_lock_file() -> Path:
@@ -98,8 +98,9 @@ def worker_lock_file() -> Path:
 
 
 def log_file(name: str) -> Path:
-    """name is one of hook, worker, web, curriculum."""
-    return state_dir() / "logs" / f"{name}.log"
+    """name is one of hook, worker, web, curriculum. Callers already allowlist
+    name against LOG_NAMES; sanitised here too as a second line of defence."""
+    return state_dir() / "logs" / f"{safe_component(name)}.log"
 
 
 LOG_NAMES = ("hook", "worker", "web", "curriculum")
@@ -108,7 +109,7 @@ LOG_NAMES = ("hook", "worker", "web", "curriculum")
 # --- data -------------------------------------------------------------------
 
 def world_dir(world: str) -> Path:
-    return data_dir() / "worlds" / _safe(world)
+    return data_dir() / "worlds" / safe_component(world)
 
 
 def reflections_dir(world: str) -> Path:
@@ -127,7 +128,7 @@ def builtin_nudges_dir() -> Path:
     return plugin_root() / "nudges"
 
 
-def _safe(name: str) -> str:
+def safe_component(name: str) -> str:
     """Path component from an identifier: no separators, no traversal."""
     cleaned = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
     if cleaned in ("", ".", ".."):

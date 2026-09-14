@@ -157,6 +157,26 @@ def test_generic_exception_maps_to_500_with_class_name(monkeypatch, client):
     assert res.json()["detail"] == "RuntimeError"
 
 
+# --- S1: queue.skip rejects a path-traversal session_id at the HTTP boundary ----
+
+def test_queue_skip_rejects_path_traversal_session_id(tmp_path, client):
+    res = client.post("/api/queue/skip", headers=GOOD_HEADERS, json={"session_id": "../../x"})
+    assert res.status_code == 400
+    assert not any(tmp_path.rglob("x.json"))
+
+
+# --- S3: world args reject argv-flag-shaped values, unknown worlds 503 ----------
+
+def test_loop_run_flag_like_world_maps_to_400(client):
+    res = client.post("/api/loop/run", headers=GOOD_HEADERS, json={"world": "--no-curriculum"})
+    assert res.status_code == 400
+
+
+def test_loop_run_unknown_world_maps_to_503(client):
+    res = client.post("/api/loop/run", headers=GOOD_HEADERS, json={"world": "no-such-world"})
+    assert res.status_code == 503
+
+
 # --- static files ---------------------------------------------------------------
 
 def test_static_index_served_at_root_without_guard(client):

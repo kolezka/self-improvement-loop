@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 from sil import config, curriculum, paths, store
 from sil.models import (
-    ArtifactRef, ArtifactType, Ledger, PromotionEntry, Scorecard,
+    ArtifactRef, ArtifactType, Ledger, Lesson, PromotionEntry, Scorecard,
 )
 from tests.curriculum_fixtures import (
     add_reflections, install_fake_feedback, make_cfg, make_world, sil_env,
@@ -255,3 +256,45 @@ def test_a_ledger_read_from_a_blob_matches_one_read_from_disk(world):
     assert from_blob.entries[PATTERN].promoted_at_count == 3
     assert from_blob.entries[PATTERN].artifact_type == ArtifactType.hook
     assert curriculum.parse_ledger("{}").entries == {}
+
+
+def test_a_corrupt_ledger_names_the_file_it_could_not_read(world):
+    # Four call sites read four different ledger paths. A raw JSONDecodeError
+    # names a line and a column and no file, so the operator is told a ledger is
+    # broken without being told which one.
+    path = config.ledger_path(world)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json at all", encoding="utf-8")
+
+    for call in (lambda: store.load_ledger(path), lambda: curriculum.load_ledger(world)):
+        with pytest.raises(ValueError, match=re.escape(str(path))) as excinfo:
+            call()
+        assert "unreadable ledger" in str(excinfo.value)
+
+
+def test_a_ledger_that_parses_but_does_not_validate_also_names_the_file(world):
+    path = config.ledger_path(world)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"version": 1, "entries": {"p": {"pattern": 5}}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="unreadable ledger"):
+        store.load_ledger(path)
+
+
+# --- the lesson inbox ---------------------------------------------------------
+
+def test_list_lessons_skips_a_bad_file_but_never_a_bug(world, monkeypatch):
+    # Skipping an unreadable inbox file is the point; swallowing every exception
+    # means a bug in this loop reads as an empty inbox and nobody ever hears
+    # about it.
+    store.put_lesson(Lesson(id="good", world=world.name, pattern=PATTERN,
+                            text="run rg over every call site"))
+    (paths.inbox_dir(world.name) / "broken.json").write_text("{ not json")
+
+    assert [lesson.id for lesson in store.list_lessons(world.name)] == ["good"]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("a bug in the loop, not a bad file")
+
+    monkeypatch.setattr(store.Lesson, "model_validate_json", boom)
+    with pytest.raises(RuntimeError):
+        store.list_lessons(world.name)

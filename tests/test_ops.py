@@ -13,6 +13,7 @@ import importlib
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -288,18 +289,186 @@ def test_router_retire_calls_review_retire_with_confirm(monkeypatch):
 
 # --- queue.list combines three buckets -----------------------------------------
 
+def _fake_entry(session_id: str, last_stop: str):
+    from sil.models import QueueEntry
+
+    return QueueEntry(
+        session_id=session_id,
+        transcript_path=f"/tmp/{session_id}.jsonl",
+        cwd="/tmp",
+        world="default",
+        first_stop=last_stop,
+        last_stop=last_stop,
+    )
+
+
 def test_queue_list_combines_three_buckets(monkeypatch):
     from sil import worker
 
     def fake_queue_list(bucket):
-        return [{"bucket": bucket}]
+        return [_fake_entry(f"sess-{bucket}", "2026-09-14T10:00:00Z")]
 
     monkeypatch.setattr(worker, "queue_list", fake_queue_list)
 
     result = ops.invoke("queue.list", {})
 
-    assert result == {
-        "pending": [{"bucket": "pending"}],
-        "done": [{"bucket": "done"}],
-        "failed": [{"bucket": "failed"}],
-    }
+    assert {e["session_id"] for e in result["pending"]} == {"sess-pending"}
+    assert {e["session_id"] for e in result["done"]} == {"sess-done"}
+    assert {e["session_id"] for e in result["failed"]} == {"sess-failed"}
+
+
+# --- S4: queue.list caps each bucket at the most recent 200 entries ------------
+
+def test_queue_list_caps_each_bucket_at_200_most_recent(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from sil import worker
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    entries = [
+        _fake_entry(f"sess-{i}", (base + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        for i in range(250)
+    ]
+
+    def fake_queue_list(bucket):
+        return list(entries)  # same 250 entries in every bucket, order doesn't matter
+
+    monkeypatch.setattr(worker, "queue_list", fake_queue_list)
+
+    result = ops.invoke("queue.list", {})
+
+    assert len(result["pending"]) == 200
+    assert len(result["done"]) == 200
+    assert len(result["failed"]) == 200
+    # kept the newest by last_stop, not an arbitrary prefix
+    kept_ids = {e["session_id"] for e in result["pending"]}
+    assert kept_ids == {f"sess-{i}" for i in range(50, 250)}
+
+
+# --- S1: queue.skip rejects a traversal-shaped session_id -----------------------
+
+def test_queue_skip_rejects_traversal_session_id():
+    with pytest.raises(ValidationError):
+        ops.invoke("queue.skip", {"session_id": "../../x"})
+
+
+def test_queue_skip_accepts_a_normal_session_id():
+    # min bar: a realistic Claude Code session uuid must still validate
+    ops.SessionArgs(session_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+
+# --- S3: world args reject argv-flag-shaped values, unknown worlds 503 ----------
+
+def test_loop_run_rejects_flag_like_world():
+    with pytest.raises(ValidationError):
+        ops.invoke("loop.run", {"world": "--no-curriculum"})
+
+
+def test_curriculum_run_rejects_flag_like_world():
+    with pytest.raises(ValidationError):
+        ops.invoke("curriculum.run", {"world": "--no-curriculum"})
+
+
+def test_loop_run_rejects_unknown_world_with_config_error():
+    from sil.config import ConfigError
+
+    with pytest.raises(ConfigError):
+        ops.invoke("loop.run", {"world": "no-such-world"})
+
+
+# --- S4: reflections.list defaults to the newest 200 -----------------------------
+
+def test_reflections_list_defaults_to_200_limit(monkeypatch):
+    from sil import store as store_mod
+    from sil.models import Reflection
+
+    def fake_list_reflections(world, extra_dirs=None):
+        return [
+            Reflection(id=f"r{i}", world=world, pattern="some-pattern", path=Path(f"/tmp/r{i}.md"), created="2026-01-01")
+            for i in range(250)
+        ]
+
+    monkeypatch.setattr(store_mod, "list_reflections", fake_list_reflections)
+
+    result = ops.invoke("reflections.list", {"world": "default"})
+
+    assert len(result) == 200
+
+
+def test_reflections_list_rejects_limit_above_2000():
+    with pytest.raises(ValidationError):
+        ops.invoke("reflections.list", {"world": "default", "limit": 2001})
+
+
+# --- S5: _tail_lines reads from the end without loading the whole file ----------
+
+def test_tail_lines_large_file_reverse_chunked_read(tmp_path):
+    log = tmp_path / "big.log"
+    with log.open("w", encoding="utf-8") as fh:
+        for i in range(100_000):  # 50 bytes/line * 100_000 = 5 MB
+            fh.write(f"line{i:06d}".ljust(49) + "\n")
+
+    result = ops._tail_lines(log, 10)
+
+    assert result == [f"line{i:06d}".ljust(49) for i in range(99_990, 100_000)]
+
+
+def test_tail_lines_large_file_does_not_read_whole_file(tmp_path, monkeypatch):
+    # The bug this guards: a naive tail reads the entire file into memory.
+    # Wrap the real file so we can count bytes actually read, and assert
+    # that count stays far below the file size for a small tail request.
+    log = tmp_path / "big.log"
+    with log.open("w", encoding="utf-8") as fh:
+        for i in range(100_000):  # 50 bytes/line * 100_000 = 5 MB
+            fh.write(f"line{i:06d}".ljust(49) + "\n")
+    file_size = log.stat().st_size
+    assert file_size > 4_000_000
+
+    real_open = Path.open
+    bytes_read = {"total": 0}
+
+    def counting_open(self, mode="r", *args, **kwargs):
+        fh = real_open(self, mode, *args, **kwargs)
+        if self == log:
+            real_read = fh.read
+
+            def counted_read(size=-1):
+                data = real_read(size)
+                bytes_read["total"] += len(data)
+                return data
+
+            fh.read = counted_read
+        return fh
+
+    monkeypatch.setattr(Path, "open", counting_open)
+
+    result = ops._tail_lines(log, 10)
+
+    assert result == [f"line{i:06d}".ljust(49) for i in range(99_990, 100_000)]
+    assert bytes_read["total"] < 200_000, f"read {bytes_read['total']} bytes of a {file_size} byte file"
+
+
+def test_tail_lines_file_smaller_than_one_block(tmp_path):
+    log = tmp_path / "small.log"
+    log.write_text("a\nb\nc\n", encoding="utf-8")
+
+    assert ops._tail_lines(log, 2) == ["b", "c"]
+
+
+def test_tail_lines_missing_file_returns_empty_list(tmp_path):
+    assert ops._tail_lines(tmp_path / "nope.log", 10) == []
+
+
+def test_health_report_passes_world_objects_to_provider_status(monkeypatch):
+    """health.report used to pass the world NAME, so every provider status row
+    was an AttributeError rendered in the Overview pane."""
+    seen = []
+
+    def fake_status(world, llm=None):
+        seen.append(type(world).__name__)
+        return {"reachable": True}
+
+    install_fake_module(monkeypatch, "sil.providers", status=fake_status)
+    report = ops.invoke("health.report", {})
+    assert seen and set(seen) == {"World"}
+    assert all("error" not in v for v in report["providers"].values()), report["providers"]

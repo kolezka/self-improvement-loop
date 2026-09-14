@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from sil import paths
 from sil.models import Ledger, Lesson, PromotionEntry, Reflection
@@ -167,14 +168,24 @@ def save_aliases(world: str, aliases: dict[str, str]) -> Path:
 # --- ledger -----------------------------------------------------------------
 
 def load_ledger(path: Path) -> Ledger:
+    """The ledger at `path`, or an empty one when there is no file.
+
+    A corrupt ledger raises a ValueError naming the file. The raw
+    JSONDecodeError named only a line and column, and the four call sites read
+    four different paths, so the operator was told a ledger was broken without
+    being told which one.
+    """
     if not path.exists():
         return Ledger()
-    raw = json.loads(path.read_text(encoding="utf-8") or "{}")
-    if isinstance(raw, list):  # V1 shape: a bare list of entries
-        raw = {"version": 1, "entries": {e["pattern"]: e for e in raw}}
-    elif isinstance(raw, dict) and "entries" not in raw and all(isinstance(v, dict) for v in raw.values()):
-        raw = {"version": 1, "entries": raw}
-    return Ledger.model_validate(raw)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8") or "{}")
+        if isinstance(raw, list):  # V1 shape: a bare list of entries
+            raw = {"version": 1, "entries": {e["pattern"]: e for e in raw}}
+        elif isinstance(raw, dict) and "entries" not in raw and all(isinstance(v, dict) for v in raw.values()):
+            raw = {"version": 1, "entries": raw}
+        return Ledger.model_validate(raw)
+    except (ValueError, TypeError, KeyError) as e:
+        raise ValueError(f"unreadable ledger {path}: {e}") from None
 
 
 def save_ledger(path: Path, ledger: Ledger) -> Path:
@@ -203,7 +214,9 @@ def list_lessons(world: str) -> list[Lesson]:
     for p in sorted(d.glob("*.json")):
         try:
             out.append(Lesson.model_validate_json(p.read_text(encoding="utf-8")))
-        except Exception:
+        except (OSError, ValueError, ValidationError):
+            # One unreadable or off-schema inbox file is skipped; a bug in this
+            # loop is not, so the catch names what a bad file can throw.
             continue
     out.sort(key=lambda l: l.created, reverse=True)
     return out

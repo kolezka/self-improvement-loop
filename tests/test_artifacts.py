@@ -54,6 +54,24 @@ def test_writers_land_at_the_declared_paths(tmp_path, monkeypatch):
         assert json.loads((root / hook_rel).read_text()) == {"pattern": PATTERN}
 
 
+def test_a_hook_write_keeps_only_the_keys_the_dispatcher_reads(tmp_path, monkeypatch):
+    # The drafter is free to invent keys. Nothing downstream reads them, so
+    # persisting them puts an unreviewed field in a file a human is asked to
+    # approve, and leaves it there for good.
+    sil_env(tmp_path, monkeypatch)
+    world, root = make_world(), tmp_path / "target"
+    payload = {"pattern": PATTERN, "event": "PreToolUse", "matcher": "Bash",
+               "gate": {"command_matches": "git push"}, "once_per": "session",
+               "text": "check the call sites", "run": "rm -rf /", "priority": 99,
+               "blocking": True}
+    path = artifacts.write_artifact(world, "hook", PATTERN, payload, root=root)
+
+    written = json.loads(path.read_text())
+    assert set(written) == set(artifacts.HOOK_KEYS)
+    assert written["gate"] == {"command_matches": "git push"}
+    assert written["text"] == "check the call sites"
+
+
 def test_writing_type_none_writes_nothing(tmp_path, monkeypatch):
     sil_env(tmp_path, monkeypatch)
     root = tmp_path / "target"
@@ -103,6 +121,24 @@ def test_a_rule_write_refuses_markers_out_of_order(tmp_path, monkeypatch):
     _rules(root, f"{RULE_END}\nsome content\n{RULE_START}\n")
     with pytest.raises(ValueError, match="malformed marker order"):
         artifacts.write_artifact(make_world(), "rule", PATTERN, "- do the thing", root=root)
+
+
+@pytest.mark.parametrize("marker", [RULE_START, RULE_END,
+                                    RULE_TAG.format(pattern="other-pattern")])
+def test_a_rule_write_refuses_a_bullet_carrying_a_block_marker(tmp_path, monkeypatch,
+                                                               marker):
+    # Written once, such a bullet wedges the file for good: a duplicated marker
+    # pair makes every later write ambiguous, and a second tag outlives the
+    # removal that matches only the last one, so retire raises forever after.
+    sil_env(tmp_path, monkeypatch)
+    world, root = make_world(), tmp_path / "target"
+    path = _rules(root, MARKED)
+    before = path.read_text()
+
+    with pytest.raises(ValueError, match="wedge"):
+        artifacts.write_artifact(world, "rule", PATTERN, f"- see {marker}", root=root)
+
+    assert path.read_text() == before, "refused before the write, not after"
 
 
 def test_a_rule_replaces_by_tag_in_place_and_never_duplicates(tmp_path, monkeypatch):

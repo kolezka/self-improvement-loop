@@ -19,6 +19,12 @@ import importlib
 import json
 import re
 
+# The router's own bar for a quote, imported rather than restated. A prompt
+# asking for "an exact substring" while the router demands five words is a
+# drafter answering honestly and being downgraded for it on every run.
+from sil.router import MIN_QUOTE_CHARS as _MIN_QUOTE_CHARS
+from sil.router import MIN_QUOTE_WORDS as _MIN_QUOTE_WORDS
+
 # Bound the evidence handed to a model, and never truncate it silently. The
 # omission note stays in the prompt and says which end was dropped: a model that
 # can see it was handed a window can hedge, one silently fed a fifth of the
@@ -149,11 +155,14 @@ _ROUTING_FIELDS = (
     "applies. needs_own_context is true only if acting on this lesson needs its "
     "own agent and budget rather than a reminder, and when it is true "
     "context_evidence MUST be an exact substring copied verbatim from the lessons "
-    "below that shows that need. Without that quote the lesson is treated as a "
+    f"below that shows that need, at least {_MIN_QUOTE_WORDS} words and "
+    f"{_MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. "
+    "Without that quote the lesson is treated as a "
     "discipline rather than an agent. capability_evidence, if set, MUST be an "
     "exact substring copied verbatim from the lessons below, never paraphrased, "
-    "naming a concrete thing the agent can actually do that neither a hook nor a "
-    "rule can express. declined is true only if no artifact at all is warranted."
+    "under the same length rule, naming a concrete thing the agent can actually "
+    "do that neither a hook nor a rule can express. declined is true only if no "
+    "artifact at all is warranted."
 )
 
 DRAFTER_SYSTEM = (

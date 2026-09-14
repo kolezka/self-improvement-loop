@@ -6,12 +6,18 @@ import json
 import os
 from pathlib import Path
 
-from sil import paths
+from sil import nudge, paths
+
+# Set True the first time append_event logs a failure in this process, so a
+# consistently broken path (bad permissions, full disk) writes one line to
+# hook.log instead of one per hook invocation for the rest of the process.
+_FAILURE_LOGGED = False
 
 
 def append_event(path: Path, event: dict) -> None:
     """Append one JSON line to `path`. Never raises: a failure here must not
     break a hook invocation, so it goes to the hook log instead."""
+    global _FAILURE_LOGGED
     path = Path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -22,13 +28,10 @@ def append_event(path: Path, event: dict) -> None:
         finally:
             os.close(fd)
     except Exception as e:
-        try:
-            log = paths.log_file("hook")
-            log.parent.mkdir(parents=True, exist_ok=True)
-            with log.open("a", encoding="utf-8") as f:
-                f.write(f"usage.append_event failed for {path}: {e}\n")
-        except Exception:
-            pass
+        if _FAILURE_LOGGED:
+            return
+        _FAILURE_LOGGED = True
+        nudge.append_line(paths.log_file("hook"), f"usage.append_event failed for {path}: {e}\n")
 
 
 def read_events(path: Path, since_ts: str | None = None) -> list[dict]:

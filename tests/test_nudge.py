@@ -95,6 +95,20 @@ def test_split_trigger_variants():
     assert nudge.split_trigger("SessionStart") == ("SessionStart", None)
 
 
+def test_events_restricted_to_events_the_hook_actually_delivers_on():
+    """Stop, SubagentStop and SessionEnd never reach OUTPUT_EVENTS in
+    hook.py, so a nudge targeting them would match, claim its once-per-
+    session marker and log a fire for a delivery that never happens."""
+    assert set(nudge.EVENTS) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+    assert nudge.LOW_FREQUENCY_EVENTS == frozenset({"SessionStart"})
+
+
+def test_split_trigger_rejects_events_the_hook_never_delivers_on():
+    assert nudge.split_trigger("Stop") is None
+    assert nudge.split_trigger("SubagentStop") is None
+    assert nudge.split_trigger("SessionEnd") is None
+
+
 # --- validate_gate / gate_truth -----------------------------------------
 
 def test_validate_gate_reports_unknown_predicate():
@@ -167,13 +181,23 @@ def test_lint_rejects_bad_once_per():
 
 
 def test_lint_rejects_unbounded_broadcast_on_high_frequency_event():
-    obj = make_nudge(event="Stop", matcher=None, gate={"always": True}, once_per="always")
+    obj = make_nudge(event="UserPromptSubmit", matcher=None, gate={"always": True}, once_per="always")
     problems = nudge.lint_nudge(obj)
     assert any("degenerate gate" in p for p in problems)
 
 
+def test_lint_rejects_stop_event_with_a_clear_message():
+    """Stop is no longer a supported nudge target: the hook never delivers
+    additionalContext on it, so a Stop-gated nudge would fire and claim its
+    marker for nothing. Lint must reject it, not silently accept and drop it
+    at dispatch time."""
+    obj = make_nudge(event="Stop", matcher=None, gate={"command_matches": "x"})
+    problems = nudge.lint_nudge(obj)
+    assert any("unsupported event/matcher" in p and "Stop" in p for p in problems)
+
+
 def test_lint_allows_always_gate_bounded_by_once_per_session():
-    obj = make_nudge(event="Stop", matcher=None, gate={"always": True}, once_per="session")
+    obj = make_nudge(event="UserPromptSubmit", matcher=None, gate={"always": True}, once_per="session")
     assert nudge.lint_nudge(obj) == []
 
 
@@ -335,6 +359,29 @@ def test_write_breadcrumb_capped_once_per_session_event(tmp_path):
     record = json.loads(lines[0])
     assert record["kind"] == "gate_budget_exhausted"
     assert record["scanned"] == 3
+
+
+def test_append_line_is_the_public_name_for_the_rotate_under_flock_helper(tmp_path):
+    """hook.py's `_log` and usage.py's failure line reuse this instead of
+    each hand-rolling their own unrotated append."""
+    log = tmp_path / "shared.log"
+    nudge.append_line(log, "one\n")
+    nudge.append_line(log, "two\n")
+    assert log.read_text(encoding="utf-8").splitlines() == ["one", "two"]
+
+
+def test_append_line_rotates_with_custom_rotate_at_and_keep(tmp_path):
+    log = tmp_path / "custom.log"
+    line = "x" * 48 + "\n"
+    lines_needed = (1000 // len(line)) + 10
+    log.write_text(line * lines_needed, encoding="utf-8")
+    assert log.stat().st_size > 1000
+
+    nudge.append_line(log, "tail\n", rotate_at=1000, keep=5)
+
+    content_lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(content_lines) == 6
+    assert content_lines[-1] == "tail"
 
 
 def test_fire_log_rotates_at_10mb_keeping_last_5000_lines(tmp_path):

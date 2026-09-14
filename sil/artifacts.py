@@ -21,6 +21,13 @@ from sil.models import ArtifactType, World
 
 TYPES = ("skill", "hook", "rule", "agent")
 
+# The only keys a nudge document may carry. Anything else the drafter invented
+# would be persisted forever and read by nobody.
+HOOK_KEYS = ("pattern", "event", "matcher", "gate", "once_per", "text")
+
+# The opening of a per-pattern rule tag, used to spot one inside a bullet.
+_RULE_TAG_OPEN = RULE_TAG.split("{", 1)[0]
+
 
 def _type_name(artifact_type: ArtifactType | str) -> str:
     return artifact_type.value if isinstance(artifact_type, ArtifactType) else str(artifact_type)
@@ -121,11 +128,24 @@ def write_artifact(world: World, artifact_type: ArtifactType | str, pattern: str
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     if t == "hook":
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8")
+        path.write_text(json.dumps(_hook_payload(payload), indent=2,
+                                   ensure_ascii=False) + "\n", encoding="utf-8")
     else:
         path.write_text(str(payload), encoding="utf-8")
     return path
+
+
+def _hook_payload(payload):
+    """A nudge document cut down to the keys the dispatcher reads.
+
+    The drafter is free to invent keys, and nothing downstream would ever look at
+    them. Dropping them at the write is what keeps an unreviewed field out of a
+    file a human is asked to approve. A non-dict payload is passed through so the
+    lint's own "must be a JSON object" stays the message the operator sees.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    return {key: payload[key] for key in HOOK_KEYS if key in payload}
 
 
 def remove_artifact(world: World, artifact_type: ArtifactType | str, pattern: str,
@@ -231,6 +251,14 @@ def _write_rule(path: Path, pattern: str, bullet: str) -> None:
     By tag, never by position: without the tag, refining a rule appends a second
     near-identical bullet on every run. Text outside the markers is never touched.
     """
+    # Before anything is read or written. A bullet carrying the block's own
+    # syntax adds a second marker pair or a second tag, and from then on every
+    # write is ambiguous and retire raises on a file it can no longer parse.
+    for marker in (RULE_START, RULE_END, _RULE_TAG_OPEN):
+        if marker in bullet:
+            raise ValueError(
+                f"refusing to write a rule bullet containing {marker!r}: it would "
+                f"wedge {path} for every later write and for retire")
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     problem = _marker_problem(path, text)
     if problem:

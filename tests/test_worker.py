@@ -4,7 +4,10 @@ is always a fake injected through run_once."""
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from sil import config as config_mod
 from sil import paths, store, worker
@@ -182,3 +185,134 @@ def test_lock_reclaims_when_recorded_pid_is_dead(tmp_path, monkeypatch):
 
     with worker.Lock() as lock:
         assert lock is not None
+
+
+# --- S1: load_entry rejects a traversal-shaped session_id -----------------------
+
+def test_load_entry_rejects_traversal_session_id(tmp_path, monkeypatch):
+    _prepare_env(monkeypatch, tmp_path)
+    paths.queue_dir("pending").mkdir(parents=True, exist_ok=True)
+
+    # An unsanitised "../../x" from queue_dir("pending") lands two levels up,
+    # at state_dir()/x.json. Put a valid entry there so a bug would find it.
+    entry = _write_pending(tmp_path, "x", ended=True)
+    (paths.queue_dir("pending") / "x.json").unlink()
+    store.atomic_write(paths.state_dir() / "x.json", entry.model_dump_json(indent=2) + "\n")
+
+    assert worker.load_entry("pending", "../../x") is None
+
+
+# --- W1: terminal buckets reap the session dir ------------------------------------
+
+@pytest.mark.parametrize("to_bucket", ["done", "failed"])
+def test_move_entry_to_terminal_bucket_deletes_session_dir(tmp_path, monkeypatch, to_bucket):
+    _prepare_env(monkeypatch, tmp_path)
+    entry = _write_pending(tmp_path, "sess-close", ended=True)
+    session_dir = paths.session_dir(entry.session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "start.json").write_text("{}", encoding="utf-8")
+
+    worker.move_entry(entry, "pending", to_bucket)
+
+    assert not session_dir.exists()
+
+
+def test_move_entry_to_pending_keeps_session_dir(tmp_path, monkeypatch):
+    _prepare_env(monkeypatch, tmp_path)
+    entry = _write_pending(tmp_path, "sess-still-open", ended=False)
+    session_dir = paths.session_dir(entry.session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "start.json").write_text("{}", encoding="utf-8")
+
+    worker.move_entry(entry, "pending", "pending")
+
+    assert session_dir.exists()
+
+
+def test_reap_stale_session_dirs_removes_old_not_recent(tmp_path, monkeypatch):
+    _prepare_env(monkeypatch, tmp_path)
+    old_dir = paths.session_dir("sess-old")
+    fresh_dir = paths.session_dir("sess-fresh")
+    old_dir.mkdir(parents=True, exist_ok=True)
+    fresh_dir.mkdir(parents=True, exist_ok=True)
+
+    old_time = (datetime.now(timezone.utc) - timedelta(days=8)).timestamp()
+    os.utime(old_dir, (old_time, old_time))
+
+    removed = worker._reap_stale_session_dirs(datetime.now(timezone.utc))
+
+    assert removed == 1
+    assert not old_dir.exists()
+    assert fresh_dir.exists()
+
+
+# --- W2: run_once leaves the lock file empty and free ----------------------------
+
+def test_run_once_leaves_lock_file_empty_and_free(tmp_path, monkeypatch):
+    _prepare_env(monkeypatch, tmp_path)
+    _write_pending(tmp_path, "sess-good", ended=True)
+
+    worker.run_once(_cfg(), reflect=True, curriculum=False, chat=_good_chat)
+
+    assert paths.worker_lock_file().read_text(encoding="utf-8") == ""
+    assert worker.Lock.held() is False
+
+
+# --- W3: run_once prunes done/failed to the newest 500 ---------------------------
+
+def test_prune_queue_bucket_keeps_newest_entries(tmp_path, monkeypatch):
+    _prepare_env(monkeypatch, tmp_path)
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for i in range(5):
+        entry = QueueEntry(
+            session_id=f"sess-{i}",
+            transcript_path=tmp_path / f"sess-{i}" / "transcript.jsonl",
+            cwd=tmp_path / f"sess-{i}",
+            world="default",
+            first_stop=(base + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            last_stop=(base + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        dest = paths.queue_dir("done") / f"sess-{i}.json"
+        store.atomic_write(dest, entry.model_dump_json(indent=2) + "\n")
+
+    removed = worker._prune_queue_bucket("done", keep=3)
+
+    assert removed == 2
+    remaining = {e.session_id for e in worker.queue_list("done")}
+    assert remaining == {"sess-2", "sess-3", "sess-4"}
+
+
+def test_transient_provider_failure_keeps_the_session_queued(tmp_path, monkeypatch):
+    """A provider outage must not burn the session: it stays pending with an
+    attempt count and only moves to failed after MAX_ATTEMPTS."""
+    from test_transcript import set_sil_dirs, write_sample_transcript
+
+    from sil import worker
+    from sil.models import Config, QueueEntry
+    from sil.providers import ProviderError
+    from sil.store import atomic_write
+
+    set_sil_dirs(monkeypatch, tmp_path)
+    cfg = Config()
+    cfg.worker.min_tool_uses = 0
+    transcript = write_sample_transcript(tmp_path)
+    entry = QueueEntry(session_id="s-retry", transcript_path=transcript, cwd=tmp_path, world="default",
+                       first_stop="2026-09-14T00:00:00Z", last_stop="2026-09-14T00:00:00Z", ended=True, tool_uses=9)
+    path = worker.paths.queue_dir("pending") / "s-retry.json"
+    atomic_write(path, entry.model_dump_json() + "\n")
+
+    def down(*a, **k):
+        raise ProviderError("provider unreachable")
+
+    for attempt in range(1, worker.MAX_ATTEMPTS):
+        summary = worker.run_once(cfg, curriculum=False, chat=down)
+        assert summary["skipped"] == ["s-retry"] and summary["failed"] == []
+        again = QueueEntry.model_validate_json(path.read_text())
+        # The critic resolves the model role before calling chat, so the first
+        # transient error is ModelNotConfigured here; both kinds must retry.
+        assert again.attempts == attempt and (again.result or "").startswith("failed:")
+
+    summary = worker.run_once(cfg, curriculum=False, chat=down)
+    assert summary["failed"] == ["s-retry"]
+    assert not path.exists()
+    assert (worker.paths.queue_dir("failed") / "s-retry.json").exists()

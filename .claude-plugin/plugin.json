@@ -1,7 +1,7 @@
 {
   "name": "self-improvement-loop",
   "version": "0.1.0",
-  "description": "Background reflection on Claude Code sessions that promotes recurring lessons into skills, hooks, rules and agents, tracks usage feedback on those artifacts, and ships a local web UI to review and rate them.",
+  "description": "Background reflection on Claude Code sessions that promotes recurring lessons into skills, hooks, rules and agents, tracks artifact usage feedback, and ships a local web UI to review and rate them.",
   "author": {
     "name": "Mariusz Rakus"
   },

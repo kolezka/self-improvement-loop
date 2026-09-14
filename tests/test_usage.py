@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from sil import paths, usage
+import pytest
+
+from sil import nudge, paths, usage
 
 
 def test_append_event_writes_json_line(tmp_path):
@@ -23,6 +26,15 @@ def test_append_event_creates_parent_dirs(tmp_path):
     assert p.is_file()
 
 
+@pytest.fixture(autouse=True)
+def _reset_usage_failure_flag():
+    """The once-per-process cap on the failure line is a module-level flag:
+    reset it around every test so tests don't leak state into each other."""
+    usage._FAILURE_LOGGED = False
+    yield
+    usage._FAILURE_LOGGED = False
+
+
 def test_append_event_never_raises_and_logs_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("SIL_STATE_DIR", str(tmp_path / "state"))
     # A path whose parent is a FILE cannot be mkdir'd into: forces a failure.
@@ -35,6 +47,45 @@ def test_append_event_never_raises_and_logs_failure(tmp_path, monkeypatch):
     log = paths.log_file("hook")
     assert log.is_file()
     assert "append_event failed" in log.read_text(encoding="utf-8")
+
+
+def test_append_event_failure_logged_once_per_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIL_STATE_DIR", str(tmp_path / "state"))
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    bad_path = blocker / "events.jsonl"
+
+    usage.append_event(bad_path, {"ts": "t1"})
+    usage.append_event(bad_path, {"ts": "t2"})
+    usage.append_event(bad_path, {"ts": "t3"})
+
+    log = paths.log_file("hook")
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+
+
+def test_append_event_failure_line_goes_through_nudge_append_line(tmp_path, monkeypatch):
+    """Routed through the shared rotate-under-flock helper, not a hand-rolled
+    unrotated append: the failure line must still show up via that path."""
+    monkeypatch.setenv("SIL_STATE_DIR", str(tmp_path / "state"))
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    bad_path = blocker / "events.jsonl"
+
+    calls = []
+    real_append_line = nudge.append_line
+
+    def spy_append_line(path, line, **kw):
+        calls.append((Path(path), line))
+        return real_append_line(path, line, **kw)
+
+    monkeypatch.setattr(usage.nudge, "append_line", spy_append_line)
+
+    usage.append_event(bad_path, {"ts": "t1"})
+
+    assert len(calls) == 1
+    assert calls[0][0] == paths.log_file("hook")
+    assert "append_event failed" in calls[0][1]
 
 
 def test_read_events_tolerant_of_bad_lines(tmp_path):

@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from sil import lint
-from tests.curriculum_fixtures import install_fake_nudge
+from sil.consts import RULE_END, RULE_START, RULE_TAG
+from tests.curriculum_fixtures import hook_body, install_fake_nudge, reflection_body
 
 SOURCES = (
     "Run `rg` over every call site of the changed symbol and read the graphify "
@@ -85,8 +86,38 @@ def test_echoed_drafting_scaffolding_is_refused():
 
 def test_a_secret_is_never_promoted():
     text = GOOD_SKILL.rstrip() + "\n\napi_key: AKIAIOSFODNN7EXAMPLE\n"
-    problems = lint.lint_skill(text, "verify-callsites")
+    problems = lint.lint("skill", text, "verify-callsites", SOURCES)
     assert any("secret" in p for p in problems), problems
+
+
+def test_a_secret_in_a_rule_is_never_promoted():
+    # The sniff used to run on the skill path only, so the same token rode into
+    # the shared rules file untouched.
+    bullet = ("- Run `rg` over every call site of the changed symbol against the "
+              "graphify promotions inventory with AKIAIOSFODNN7EXAMPLE")
+    problems = lint.lint("rule", bullet, "verify-callsites", SOURCES)
+    assert any("secret" in p for p in problems), problems
+
+
+def test_a_secret_in_a_hook_is_never_promoted(monkeypatch):
+    install_fake_nudge(monkeypatch)
+    payload = hook_body("verify-callsites")
+    payload["text"] = payload["text"] + " AKIAIOSFODNN7EXAMPLE"
+    problems = lint.lint("hook", payload, "verify-callsites", SOURCES)
+    assert any("secret" in p for p in problems), problems
+
+
+def test_a_hook_must_be_bound_to_its_own_pattern(monkeypatch):
+    # Unbound, a hook logs its fires under another artifact's name and spends
+    # that artifact's once-per-session marker.
+    install_fake_nudge(monkeypatch)
+    payload = hook_body("verify-callsites")
+    payload["pattern"] = "somebody-elses-pattern"
+    problems = lint.lint("hook", payload, "verify-callsites", SOURCES)
+    assert any("must equal the artifact's pattern" in p for p in problems), problems
+    # And the matching one is clean.
+    assert lint.lint("hook", hook_body("verify-callsites"), "verify-callsites",
+                     SOURCES) == []
 
 
 def test_grounding_rejects_a_vacuous_body():
@@ -106,6 +137,22 @@ def test_grounding_accepts_a_body_that_reuses_its_sources_vocabulary():
     assert lint.lint_grounding(GOOD_SKILL, SOURCES) == []
 
 
+# The shape of vacuous filler that used to pass: every distinctive-looking word
+# in it is a heading of the reflection template the sources are written to.
+TEMPLATE_FILLER = ("Think about what worked and what failed. Capture the reusable "
+                   "lesson. Do the verification.")
+
+
+def test_grounding_ignores_the_reflection_templates_own_headings():
+    # Real sources, not a hand-written paragraph: the words being credited as
+    # shared vocabulary are `store.SECTIONS`, which every reflection carries.
+    sources = reflection_body("verify-callsites", "2026-09-01")
+    problems = lint.lint_grounding(TEMPLATE_FILLER, sources)
+    assert any("not grounded in its sources" in p for p in problems), problems
+    # A body that names what the sources actually name still passes.
+    assert lint.lint_grounding(GOOD_SKILL, sources) == []
+
+
 def test_a_rule_is_exactly_one_bullet_under_the_cap():
     assert lint.lint_rule("- Run `rg` over every call site before calling it safe.") == []
     assert lint.lint_rule("Run rg.")[0].startswith("a rule must start")
@@ -113,6 +160,30 @@ def test_a_rule_is_exactly_one_bullet_under_the_cap():
     assert "2 line(s)" in lint.lint_rule(two)[0]
     over = "- " + "x" * lint.MAX_RULE_CHARS
     assert any(str(lint.MAX_RULE_CHARS) in p for p in lint.lint_rule(over))
+
+
+def test_the_rule_cap_counts_the_tag_the_writer_appends():
+    pattern = "verify-callsites"
+    tag_cost = 1 + len(RULE_TAG.format(pattern=pattern))
+    fits = "- " + "x" * (lint.MAX_RULE_CHARS - tag_cost - 2)
+    assert len(fits) + tag_cost == lint.MAX_RULE_CHARS
+    assert not any("cap is" in p for p in lint.lint("rule", fits, pattern, SOURCES))
+
+    over = fits + "x"
+    assert len(over) <= lint.MAX_RULE_CHARS, (
+        "the bullet alone is under the cap; only the appended tag pushes it over")
+    problems = lint.lint("rule", over, pattern, SOURCES)
+    assert any(str(lint.MAX_RULE_CHARS) in p for p in problems), problems
+
+
+@pytest.mark.parametrize("marker", [RULE_START, RULE_END, "<!--rule:other-pattern-->"])
+def test_a_rule_bullet_carrying_a_block_marker_is_refused(marker):
+    # A second marker pair makes every later rule write ambiguous, and a second
+    # tag survives the removal that matches only its own. Either wedges the file
+    # permanently, so the bullet never gets as far as the writer.
+    bullet = f"- Run `rg` over every call site of the changed symbol {marker}"
+    problems = lint.lint("rule", bullet, "verify-callsites", SOURCES)
+    assert any("managed-block marker" in p for p in problems), problems
 
 
 def test_hook_lint_is_delegated_to_the_nudge_dispatcher(monkeypatch):

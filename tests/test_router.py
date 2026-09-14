@@ -167,6 +167,57 @@ def test_a_discipline_with_no_evidence_falls_through_to_rule():
     assert router.route(RouteAnswer(), SOURCES, PAYLOADS).artifact_type == "rule"
 
 
+# --- and substantive: a quote has to be long enough to be one -----------------
+
+@pytest.mark.parametrize("tiny", ["a", ".", "the", "for a way"])
+def test_a_tiny_quote_does_not_buy_a_skill(tiny):
+    # Every one of these is a substring of almost any English text, so the bare
+    # containment test made the evidence requirement satisfiable by typing one
+    # character. `skill` is the type that is supposed to be paid for.
+    assert tiny in SOURCES, "the check this replaces would have accepted it"
+    result = router.route(RouteAnswer(capability_evidence=tiny), SOURCES, PAYLOADS)
+    assert result.artifact_type == "rule", result.reason
+    assert str(router.MIN_QUOTE_WORDS) in result.reason
+    assert str(router.MIN_QUOTE_CHARS) in result.reason
+
+
+@pytest.mark.parametrize("tiny", ["a", ".", "the", "for a way"])
+def test_a_tiny_quote_does_not_buy_an_agent(tiny):
+    result = router.route(
+        RouteAnswer(needs_own_context=True, context_evidence=tiny), SOURCES, PAYLOADS)
+    assert result.artifact_type == "rule", result.reason
+    assert str(router.MIN_QUOTE_WORDS) in result.reason
+    assert str(router.MIN_QUOTE_CHARS) in result.reason
+
+
+UNSAFE_SOURCES = (
+    "I called the change unsafe without running anything at all, then shipped it.\n")
+INSIDE_A_WORD = "safe without running anything at all"
+
+
+@pytest.mark.parametrize("field", ["capability_evidence", "context_evidence"])
+def test_a_quote_that_only_matches_inside_a_longer_word_is_not_verbatim(field):
+    # "safe" sits inside "unsafe", so a raw substring test reports a quote the
+    # source never contains, with the meaning inverted.
+    assert INSIDE_A_WORD in UNSAFE_SOURCES
+    assert len(INSIDE_A_WORD) >= router.MIN_QUOTE_CHARS
+    assert len(INSIDE_A_WORD.split()) >= router.MIN_QUOTE_WORDS
+    answer = RouteAnswer(needs_own_context=(field == "context_evidence"),
+                         **{field: INSIDE_A_WORD})
+    result = router.route(answer, UNSAFE_SOURCES, PAYLOADS)
+    assert result.artifact_type == "rule", result.reason
+    assert "word boundaries" in result.reason
+
+
+@pytest.mark.parametrize("field,expected", [("capability_evidence", "skill"),
+                                            ("context_evidence", "agent")])
+def test_a_word_aligned_quote_still_earns_its_type(field, expected):
+    quote = "unsafe without running anything at all"
+    answer = RouteAnswer(needs_own_context=(field == "context_evidence"),
+                         **{field: quote})
+    assert router.route(answer, UNSAFE_SOURCES, PAYLOADS).artifact_type == expected
+
+
 # --- precedence: the order the checks run in is the contract ------------------
 
 def test_a_parse_error_outranks_an_explicit_decline():

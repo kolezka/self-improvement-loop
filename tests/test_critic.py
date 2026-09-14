@@ -184,6 +184,30 @@ def test_reflect_session_low_confidence_records_reflection_but_not_lesson(tmp_pa
     assert store.list_lessons("default") == []  # confidence below 0.5: no inbox lesson
 
 
+# --- C1: no raw env vars or transcript_path reach the model ----------------------
+
+def test_reflect_session_never_leaks_env_vars_or_transcript_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITELLM_API_KEY", "sk-sentinel-value-should-not-leak")
+    set_sil_dirs(monkeypatch, tmp_path)
+    entry = _entry(tmp_path / "session")
+    cfg = Config(worlds=[World(name="default")])
+    world = cfg.worlds[0]
+    llm = LlmConfig(models={"critic": "test-model"})
+
+    captured = {}
+
+    def fake_chat(role, messages, *, world, cfg_llm, json_mode=False, max_tokens=4000):
+        captured["messages"] = messages
+        return _good_answer()
+
+    critic.reflect_session(entry, cfg=cfg, world=world, llm=llm, chat=fake_chat)
+
+    serialized = json.dumps(captured["messages"])
+    assert "sk-sentinel-value-should-not-leak" not in serialized
+    assert "LITELLM_API_KEY" not in serialized
+    assert str(entry.transcript_path) not in serialized
+
+
 # --- installed_artifacts -----------------------------------------------------------
 
 def test_installed_artifacts_reads_promoted_ledger_entries(tmp_path, monkeypatch):

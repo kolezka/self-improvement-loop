@@ -6,8 +6,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sil import config, critic, feedback, outline, paths, store, transcript
@@ -45,6 +46,12 @@ class Lock:
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         if self._fh:
+            try:
+                self._fh.seek(0)
+                self._fh.truncate()
+                self._fh.flush()
+            except OSError:
+                pass
             try:
                 fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
             except OSError:
@@ -108,7 +115,7 @@ def queue_list(bucket: str) -> list[QueueEntry]:
 
 
 def load_entry(bucket: str, session_id: str) -> QueueEntry | None:
-    p = paths.queue_dir(bucket) / f"{session_id}.json"
+    p = paths.queue_dir(bucket) / f"{paths.safe_component(session_id)}.json"
     if not p.exists():
         return None
     try:
@@ -120,15 +127,70 @@ def load_entry(bucket: str, session_id: str) -> QueueEntry | None:
 def move_entry(entry: QueueEntry, from_bucket: str, to_bucket: str, result: str | None = None) -> Path:
     if result is not None:
         entry = entry.model_copy(update={"result": result})
-    dest = paths.queue_dir(to_bucket) / f"{entry.session_id}.json"
+    safe_id = paths.safe_component(entry.session_id)
+    dest = paths.queue_dir(to_bucket) / f"{safe_id}.json"
     store.atomic_write(dest, entry.model_dump_json(indent=2) + "\n")
-    src = paths.queue_dir(from_bucket) / f"{entry.session_id}.json"
+    src = paths.queue_dir(from_bucket) / f"{safe_id}.json"
     if src.exists() and src != dest:
         try:
             src.unlink()
         except OSError:
             pass
+    if to_bucket in ("done", "failed"):
+        _reap_session_dir(entry.session_id)
     return dest
+
+
+def _reap_session_dir(session_id: str) -> None:
+    """A session's dir (start.json, delivered, offset, nudge markers) is only
+    needed while its queue entry is pending; drop it once the entry closes."""
+    d = paths.session_dir(session_id)
+    if not d.exists():
+        return
+    shutil.rmtree(d, ignore_errors=True)
+    _log({"action": "reap_session_dir", "session_id": session_id, "result": "removed"})
+
+
+def _reap_stale_session_dirs(now: datetime, max_age_days: int = 7, limit: int = 500) -> int:
+    """Catch session dirs whose queue entry never closed (crash, manual
+    deletion). Bounded per run so a huge backlog cannot stall a worker pass."""
+    root = paths.state_dir() / "sessions"
+    if not root.exists():
+        return 0
+    cutoff = now - timedelta(days=max_age_days)
+    removed = 0
+    for d in sorted(root.iterdir()):
+        if removed >= limit:
+            break
+        if not d.is_dir():
+            continue
+        try:
+            mtime = datetime.fromtimestamp(d.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            continue
+        if mtime < cutoff:
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+    if removed:
+        _log({"action": "reap_stale_sessions", "result": f"removed {removed}"})
+    return removed
+
+
+def _prune_queue_bucket(bucket: str, keep: int = 500) -> int:
+    """Keep only the newest `keep` entries (by last_stop) in a queue bucket
+    so done/failed cannot grow without bound."""
+    entries = queue_list(bucket)
+    if len(entries) <= keep:
+        return 0
+    stale = sorted(entries, key=lambda e: e.last_stop, reverse=True)[keep:]
+    for e in stale:
+        p = paths.queue_dir(bucket) / f"{paths.safe_component(e.session_id)}.json"
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    _log({"action": "prune_queue", "bucket": bucket, "result": f"removed {len(stale)}"})
+    return len(stale)
 
 
 def skip_session(session_id: str) -> bool:
@@ -183,6 +245,10 @@ def run_once(
             if reflect:
                 _reflect_pending(cfg, world_by_name, world_name, now, chat, summary)
 
+            _reap_stale_session_dirs(now)
+            _prune_queue_bucket("done")
+            _prune_queue_bucket("failed")
+
             for world in worlds:
                 _run_curriculum_if_due(world, cfg, curriculum, now, summary)
                 try:
@@ -235,9 +301,38 @@ def _reflect_pending(cfg: Config, world_by_name: dict, world_name: str | None, n
             _log({"action": "reflect", "session_id": entry.session_id, "result": "done"})
         except Exception as e:
             reason = f"failed: {type(e).__name__}: {e}"[:300]
+            if _transient(e) and entry.attempts + 1 < MAX_ATTEMPTS:
+                # Provider down or model not configured yet: keep the session
+                # queued so the next run retries once the operator fixes it.
+                entry.attempts += 1
+                entry.result = reason
+                _write_entry("pending", entry)
+                summary["skipped"].append(entry.session_id)
+                _log({"action": "reflect", "session_id": entry.session_id,
+                      "result": f"retry later ({entry.attempts}/{MAX_ATTEMPTS}): {reason}"})
+                continue
             move_entry(entry, "pending", "failed", result=reason)
             summary["failed"].append(entry.session_id)
             _log({"action": "reflect", "session_id": entry.session_id, "result": reason})
+
+
+MAX_ATTEMPTS = 3
+
+
+def _transient(exc: Exception) -> bool:
+    """Errors the next run may not see again: transport and configuration."""
+    from sil.config import ConfigError
+    from sil.providers import ProviderError
+
+    return isinstance(exc, (ProviderError, ConfigError))
+
+
+def _write_entry(bucket: str, entry: QueueEntry) -> Path:
+    from sil.store import atomic_write
+
+    path = paths.queue_dir(bucket) / f"{paths.safe_component(entry.session_id)}.json"
+    atomic_write(path, entry.model_dump_json(indent=2) + "\n")
+    return path
 
 
 def _run_curriculum_if_due(world, cfg: Config, curriculum: bool, now: datetime, summary: dict) -> None:

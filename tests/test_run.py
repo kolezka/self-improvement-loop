@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from sil import artifacts, config, curriculum, gitutil, paths, run, store
+from sil import artifacts, config, curriculum, gitutil, paths, prompts, router, run, store
+from sil.consts import RULE_END
 from sil.models import ArtifactRef, ArtifactType, Ledger, PromotionEntry
 from tests.curriculum_fixtures import (
     FakeChat, add_reflections, commit_file, hook_draft, init_target,
@@ -162,6 +163,26 @@ def test_a_rule_is_written_into_the_managed_block_of_a_created_rules_file(env):
     assert found
     assert f"<!--rule:{PATTERN}-->" in raw
     # The live tree is untouched: the rules file was created inside the worktree.
+    assert not (repo / "RULES.md").exists()
+
+
+def test_a_rule_bullet_carrying_a_block_marker_never_reaches_a_branch(env):
+    # The bullet is written into the shared managed block verbatim. One carrying
+    # the block's own markers duplicates the pair, and from then on every rule
+    # write is refused as ambiguous and retire raises: the file is wedged with no
+    # way back through the loop. Gated at the lint, before any worktree exists.
+    world = _world_with()
+    repo = init_target(world)
+    draft = {"trigger_event": "none", "gate": None, "needs_own_context": False,
+             "context_evidence": None, "capability_evidence": None,
+             "declined": False,
+             "artifact": f"{rule_body().rstrip()} {RULE_END}"}
+
+    report = run.run(world, make_cfg(), apply=True, chat=FakeChat(draft=draft))
+
+    assert report.staged == []
+    assert "managed-block marker" in report.gated_out[PATTERN], report.gated_out
+    assert not gitutil.ref_exists(repo, f"refs/heads/{_branch(world)}")
     assert not (repo / "RULES.md").exists()
 
 
@@ -397,6 +418,15 @@ def test_a_route_change_redrafts_once_in_the_selected_shape(env):
     assert chat.roles == ["drafter", "drafter", "judge"]
     found, raw = gitutil.show(repo, _branch(world), "RULES.md")
     assert found and f"<!--rule:{PATTERN}-->" in raw
+
+
+def test_the_drafter_prompt_states_the_routers_quote_bar():
+    # The prompt and the router are two halves of one contract. A prompt asking
+    # for "an exact substring" while the router requires five words downgrades an
+    # honest drafter to `rule` on every run, and nothing in the report says why.
+    prompt = prompts.draft_messages(PATTERN, ["a lesson"], None, None)[-1]["content"]
+    assert f"{router.MIN_QUOTE_WORDS} words" in prompt
+    assert f"{router.MIN_QUOTE_CHARS} characters" in prompt
 
 
 def test_a_declined_pattern_stages_nothing(env):

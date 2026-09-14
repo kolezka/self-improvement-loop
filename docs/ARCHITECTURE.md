@@ -164,17 +164,20 @@ gates. Everything is wrapped so a failure is a silent exit 0.
 
 | Event | Action |
 |---|---|
-| SessionStart | Inject: managed rules block of the world (if `rules_inject`), up to 3 undelivered inbox lessons for the world, one-line loop status. Kick the worker (detached) if a lock is free and there is queued work or the curriculum interval elapsed. Record session offset 0. |
+| SessionStart | Inject: managed rules block of the world (if `rules_inject`), up to 3 undelivered inbox lessons for the world, one-line loop status. Kick the worker (detached) only when `sil init` has written the hook snapshot, no live worker holds the lock, the last kick is older than 15 minutes, and there is queued work or the curriculum interval elapsed. Record session start. |
 | UserPromptSubmit | Deliver inbox lessons that arrived since session start (once each). Nudge dispatch. |
 | PreToolUse | Nudge dispatch. |
 | PostToolUse | Record usage for `Skill` (skill name) and `Agent` (subagent_type, model). Nudge dispatch. |
-| Stop | Upsert queue entry for the session (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count). Scan the transcript from the stored byte offset for `attachment` hook records and append hook usage events. Nudge dispatch. |
+| Stop | Under a per-session lock: upsert the queue entry (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count) and scan the transcript from the stored byte offset for `attachment` hook records, appending hook usage events. No nudge dispatch: Claude Code does not deliver `additionalContext` on Stop. |
 | SubagentStop | Record `agent_stop` usage event. |
 | SessionEnd | Mark queue entry `ended: true`. |
 
 Nudge dispatch is the V1 `nudge_dispatch.py` contract: sorted `*.json` from the
 world's `nudges_dir` plus the plugin's built-in nudges, one winner per event,
-once-per-session markers, fire log, three breadcrumb kinds, never blocks.
+once-per-session markers, fire log, breadcrumbs, never blocks. A nudge may only
+target SessionStart, UserPromptSubmit, PreToolUse or PostToolUse, the four events
+where the hook can deliver text; lint rejects the rest so a fire is always a
+delivery.
 
 ## Worker (`sil worker --once | --loop`)
 
@@ -185,8 +188,9 @@ Under `worker.lock`:
    (`sil.transcript.evidence_pack`), list existing pattern slugs for the world,
    list installed artifacts, call the `critic` role, parse the JSON answer, write a
    reflection if `record` is true, append artifact feedback events, drop a lesson
-   in the world inbox when `lesson_short` is present. Move the entry to `done` or
-   `failed` with a reason.
+   in the world inbox when `lesson_short` is present. Move the entry to `done`, or
+   to `failed` with a reason. A provider or configuration error keeps the entry
+   queued for up to three attempts, so a proxy outage does not lose the session.
 2. **Scorecards.** `sil.feedback.scorecards(world)` folds usage events, nudge
    fires, critic votes and human feedback into one record per artifact.
 3. **Curriculum.** If the interval elapsed: `sil.run.run(world, apply=True)`, the V1
@@ -232,9 +236,11 @@ lint, judge, one commit carrying artifact and ledger, scratch worktree, branch
 `refine` (misfires outnumber helpful votes) and `retire-candidate` (no use in
 `retire_after_days`) proposals. Both are surfaced, never executed automatically.
 
-Accept: verify `reviewed_state`, verify the branch carries only the artifact and
-ledger, fast-forward merge into the target's main branch, relink skills into the
-world's Claude config dir, optionally `push` or open a PR (`remote`). Reject:
+Accept: verify `reviewed_state`, re-check the branch head inside the scratch
+worktree against the reviewed sha, verify the branch carries only the artifact and
+ledger, fast-forward merge the exact commit accept prepared into the target's main
+branch, relink skills into the world's Claude config dir, optionally `push` or
+open a PR (`remote`, with the PR head re-checked before merge). Reject:
 delete the branch and record the rejected watermark. Rehome and retire as in V1.
 
 ## Web UI (`sil web`)

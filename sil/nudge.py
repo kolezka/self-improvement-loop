@@ -32,21 +32,23 @@ MAX_TEXT = 400
 MAX_MATCH_LEN = 4000
 
 # Event -> accepted matchers, or None for events that take none.
+#
+# Restricted to the events hook.py's OUTPUT_EVENTS actually delivers
+# additionalContext on. Stop, SubagentStop and SessionEnd used to be
+# accepted here too, so a nudge targeting them would match, claim its
+# once-per marker and log a fire for a delivery that never happened.
 EVENTS: dict[str, frozenset | None] = {
     "PreToolUse": frozenset({"Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"}),
     "PostToolUse": frozenset({"Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"}),
-    "Stop": None,
     "SessionStart": None,
     "UserPromptSubmit": None,
-    "SubagentStop": None,
-    "SessionEnd": None,
 }
 
 # Events that fire only a handful of times per session. Everything else fires
 # per tool call or per turn, which is what turns an unconditional gate on it
 # into a broadcast rather than a nudge. Defined by exclusion: a new event
 # added to EVENTS counts as high-frequency until listed here.
-LOW_FREQUENCY_EVENTS = frozenset({"SessionStart", "SessionEnd"})
+LOW_FREQUENCY_EVENTS = frozenset({"SessionStart"})
 
 ONCE_PER = frozenset({"session", "always"})
 PREDICATES = frozenset({
@@ -361,41 +363,52 @@ def _ts() -> str:
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
-def _rotate_if_needed(log: Path) -> None:
-    """Trim an oversized fire log to its tail. Must be called only while the
-    caller holds the lock in _append_log_line."""
-    if not log.is_file() or log.stat().st_size <= ROTATE_AT_BYTES:
+def _rotate_if_needed(log: Path, rotate_at: int, keep: int) -> None:
+    """Trim an oversized log to its tail. Must be called only while the
+    caller holds the lock in append_line."""
+    if not log.is_file() or log.stat().st_size <= rotate_at:
         return
     with log.open(encoding="utf-8", errors="ignore") as f:
-        tail = f.readlines()[-ROTATE_KEEP_LINES:]
+        tail = f.readlines()[-keep:]
     tmp = log.with_name(f"{log.name}.{os.getpid()}.tmp")
     tmp.write_text("".join(tail), encoding="utf-8")
     os.replace(tmp, log)
 
 
-def _append_log_line(log: Path, line: str) -> None:
+def append_line(path: Path, line: str, *, rotate_at: int = ROTATE_AT_BYTES,
+                 keep: int = ROTATE_KEEP_LINES) -> None:
     """Lock, rotate, append. Any failure is swallowed: losing a measurement
     must never cost a tool call. Locked on a separate lock file, never the
     data file itself, so a rotation's temp-file swap cannot race a concurrent
-    appender's open() on the old inode."""
+    appender's open() on the old inode.
+
+    Shared by the fire log here, hook.py's own log, and usage.py's failure
+    line: one rotate-under-flock implementation instead of three ad hoc
+    appends, one of which (hook.log) never rotated at all.
+    """
     try:
-        log.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = log.with_name(log.name + ".lock")
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(path.name + ".lock")
         with lock_path.open("a", encoding="utf-8") as lockf:
             if fcntl is not None:
                 fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
             try:
                 try:
-                    _rotate_if_needed(log)
+                    _rotate_if_needed(path, rotate_at, keep)
                 except Exception:
                     pass
-                with log.open("a", encoding="utf-8") as f:
+                with path.open("a", encoding="utf-8") as f:
                     f.write(line)
             finally:
                 if fcntl is not None:
                     fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
     except Exception:
         pass
+
+
+def _append_log_line(log: Path, line: str) -> None:
+    append_line(log, line)
 
 
 def _slug(raw) -> str:

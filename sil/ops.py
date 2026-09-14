@@ -32,6 +32,9 @@ from pydantic import BaseModel, Field, field_validator
 SLUG_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 REVIEWED_STATE_RE = r"^[0-9a-f]{64}$"
 FEEDBACK_REF_RE = r"^(skill|hook|rule|agent):[a-z0-9-]+$"
+# Must start with alnum so a value like "--no-curriculum" (argv-flag shaped)
+# fails validation instead of reaching a spawned subprocess's argv.
+WORLD_RE = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 
 
 # --- tiers and gates ---------------------------------------------------------
@@ -127,7 +130,7 @@ class NoArgs(BaseModel):
 
 
 class WorldArgs(BaseModel):
-    world: str = Field(min_length=1)
+    world: str = Field(pattern=WORLD_RE, max_length=64)
 
 
 class PatternArgs(WorldArgs):
@@ -146,8 +149,11 @@ class RetireArgs(PatternArgs):
     confirm: Literal[True]
 
 
+SESSION_ID_RE = r"^[A-Za-z0-9._-]{1,128}$"
+
+
 class SessionArgs(BaseModel):
-    session_id: str = Field(min_length=1)
+    session_id: str = Field(pattern=SESSION_ID_RE)
 
 
 class FeedbackArgs(BaseModel):
@@ -201,7 +207,7 @@ class ReflectionArgs(WorldArgs):
 
 class ReflectionListArgs(WorldArgs):
     pattern: str | None = Field(default=None, pattern=SLUG_RE, max_length=64)
-    limit: int | None = Field(default=None, ge=1, le=2000)
+    limit: int | None = Field(default=200, ge=1, le=2000)
 
 
 def _cfg_world(name: str):
@@ -224,7 +230,7 @@ def _health_report(args: NoArgs) -> dict:
         try:
             from sil import providers as providers_mod
 
-            providers_status[w.name] = providers_mod.status(w.name)
+            providers_status[w.name] = providers_mod.status(w)
         except Exception as e:
             providers_status[w.name] = {"error": f"{type(e).__name__}: {e}"}
     try:
@@ -294,13 +300,20 @@ def _llm_status(args: WorldArgs) -> dict:
 
 # --- queue / worker -------------------------------------------------------
 
+QUEUE_LIST_CAP = 200
+
+
 def _queue_list(args: NoArgs) -> dict:
     from sil import worker as worker_mod
 
+    def capped(bucket: str) -> list:
+        entries = sorted(worker_mod.queue_list(bucket), key=lambda e: e.last_stop, reverse=True)
+        return entries[:QUEUE_LIST_CAP]
+
     return {
-        "pending": worker_mod.queue_list("pending"),
-        "done": worker_mod.queue_list("done"),
-        "failed": worker_mod.queue_list("failed"),
+        "pending": capped("pending"),
+        "done": capped("done"),
+        "failed": capped("failed"),
     }
 
 
@@ -319,9 +332,8 @@ def _worker_status(args: NoArgs) -> dict:
 def _loop_run(args: WorldArgs) -> dict:
     from sil import paths
 
-    cmd = ["uv", "run", "--project", str(paths.plugin_root()), "sil", "worker", "--once"]
-    if args.world:
-        cmd += ["--world", args.world]
+    _cfg, world = _cfg_world(args.world)
+    cmd = ["uv", "run", "--project", str(paths.plugin_root()), "sil", "worker", "--once", "--world", world.name]
     return _spawn_detached(cmd, "worker")
 
 
@@ -335,7 +347,8 @@ def _curriculum_plan(args: WorldArgs) -> Any:
 
 
 def _curriculum_run(args: WorldArgs) -> dict:
-    return _spawn_detached(["sil", "curriculum", "run", "--apply", "--world", args.world], "curriculum")
+    _cfg, world = _cfg_world(args.world)
+    return _spawn_detached(["sil", "curriculum", "run", "--apply", "--world", world.name], "curriculum")
 
 
 # --- reflections ------------------------------------------------------------
@@ -479,11 +492,31 @@ def _lessons_list(args: WorldArgs) -> Any:
 
 # --- logs -----------------------------------------------------------------
 
+_TAIL_BLOCK_SIZE = 64 * 1024
+
+
 def _tail_lines(path: Path, n: int) -> list[str]:
+    """Last n lines without reading the whole file: seek from the end in
+    64 KiB blocks until n newlines are found or the file start is reached."""
     if not path.exists():
         return []
-    text = path.read_text(encoding="utf-8", errors="replace")
-    return text.splitlines()[-n:]
+    with path.open("rb") as fh:
+        fh.seek(0, 2)
+        file_size = fh.tell()
+        pos = file_size
+        chunks: list[bytes] = []
+        newline_count = 0
+        while pos > 0 and newline_count <= n:
+            read_size = min(_TAIL_BLOCK_SIZE, pos)
+            pos -= read_size
+            fh.seek(pos)
+            block = fh.read(read_size)
+            newline_count += block.count(b"\n")
+            chunks.append(block)
+        data = b"".join(reversed(chunks))
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    return lines[-n:]
 
 
 def _logs_tail(args: LogArgs) -> dict:

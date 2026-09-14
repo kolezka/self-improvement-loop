@@ -22,6 +22,7 @@ thread too.
 from __future__ import annotations
 
 import importlib
+import re
 import signal
 import threading
 from contextlib import contextmanager
@@ -30,6 +31,13 @@ from pydantic import BaseModel
 
 # A gate that cannot be evaluated inside the deadline does not route to hook.
 GATE_TIMEOUT_S = 0.25
+
+# What a quote has to be before it buys an artifact type. A bare substring test
+# let `"a"`, `"."` and `"the"` through, which is every string: the evidence
+# requirement that separates skill and agent from rule was satisfiable by typing
+# one character.
+MIN_QUOTE_WORDS = 5
+MIN_QUOTE_CHARS = 30
 
 
 class GateTimeout(BaseException):
@@ -149,6 +157,21 @@ def _normalise(text: str) -> str:
     return " ".join(text.split())
 
 
+def _substantive_quote(note: str, sources_text: str) -> bool:
+    """Whether `note` is a real passage lifted out of `sources_text`.
+
+    Three things at once, and all three are needed. Length, so a token that
+    appears in every English sentence cannot stand in for evidence. Word count,
+    for the same reason. And word-boundary alignment, so "safe" does not count as
+    quoted because the source says "unsafe".
+    """
+    quote = _normalise(note or "")
+    if len(quote) < MIN_QUOTE_CHARS or len(quote.split()) < MIN_QUOTE_WORDS:
+        return False
+    haystack = _normalise(sources_text or "")
+    return re.search(rf"(?<!\w){re.escape(quote)}(?!\w)", haystack) is not None
+
+
 def route(answer: RouteAnswer, sources_text: str, payloads: list[dict]) -> RouteResult:
     """Which artifact this pattern should become, and why.
 
@@ -188,23 +211,27 @@ def route(answer: RouteAnswer, sources_text: str, payloads: list[dict]) -> Route
                 artifact_type="rule",
                 reason="needs_own_context asserted with no context_evidence; an "
                        "unevidenced boolean does not buy an agent")
-        if _normalise(note) not in _normalise(sources_text):
+        if not _substantive_quote(note, sources_text):
             return RouteResult(
                 artifact_type="rule",
-                reason="context_evidence is not verbatim in any source reflection; "
-                       "treated as a discipline")
+                reason=f"context_evidence is not verbatim in any source reflection "
+                       f"(needs at least {MIN_QUOTE_WORDS} words and "
+                       f"{MIN_QUOTE_CHARS} characters, matched on word "
+                       f"boundaries); treated as a discipline")
         return RouteResult(artifact_type="agent",
                            reason="own-context need quoted verbatim from a source")
 
     quote = (answer.capability_evidence or "").strip()
     if quote:
-        if _normalise(quote) in _normalise(sources_text):
+        if _substantive_quote(quote, sources_text):
             return RouteResult(artifact_type="skill",
                                reason="capability evidence quoted verbatim from a source")
         return RouteResult(
             artifact_type="rule",
-            reason="capability_evidence is not verbatim in any source reflection; "
-                   "treated as a discipline")
+            reason=f"capability_evidence is not verbatim in any source reflection "
+                   f"(needs at least {MIN_QUOTE_WORDS} words and "
+                   f"{MIN_QUOTE_CHARS} characters, matched on word boundaries); "
+                   f"treated as a discipline")
 
     return RouteResult(
         artifact_type="rule",

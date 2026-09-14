@@ -11,7 +11,10 @@ existed to keep two sets of callers apart.
 from __future__ import annotations
 
 import importlib
+import json
 import re
+
+from sil.consts import RULE_END, RULE_START, RULE_TAG
 
 MAX_DESCRIPTION = 500
 MAX_SENTENCES = 2
@@ -68,6 +71,43 @@ those through under until using verify whether which while would your result
 results ensure ensures never making makes made
 """.split())
 
+# The opening of a per-pattern rule tag. A bullet carrying one would be written
+# into the managed block with two tags, and the second is what removal misses.
+_RULE_TAG_OPEN = RULE_TAG.split("{", 1)[0]
+
+_heading_words: frozenset[str] | None = None
+
+
+def _template_words() -> frozenset[str]:
+    """Words from the reflection template's own section headings.
+
+    Every reflection carries them, so a body that echoes "worked", "failed",
+    "reusable lesson", "verification" shares them with its sources while saying
+    nothing about them. Counted as grounding, five of those headings alone clear
+    the bar and vacuous filler passes.
+
+    Read from `store.SECTIONS` rather than copied, so editing the template moves
+    both. Imported at call time to keep this module's imports stdlib-only, and
+    not guarded: an unimportable store would quietly widen what counts as
+    grounding, which is the failure this function exists to close.
+    """
+    global _heading_words
+    if _heading_words is None:
+        sections = importlib.import_module("sil.store").SECTIONS
+        _heading_words = frozenset(
+            word for heading in sections for word in _WORD_RE.findall(heading.lower()))
+    return _heading_words
+
+
+def _payload_text(payload) -> str:
+    """One string to sniff for secrets, whatever shape the artifact is."""
+    if isinstance(payload, str):
+        return payload
+    try:
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return str(payload)
+
 
 def _field(name: str, front_matter: str) -> str | None:
     for line in front_matter.splitlines():
@@ -108,8 +148,10 @@ def lint_grounding(body: str, sources_text: str,
     the artifact. A real artifact names the metrics, commands and fields its
     sources name, so shared distinctive terms separate the two mechanically.
     """
+    excluded = _GENERIC | _template_words()
+
     def terms(text: str) -> set[str]:
-        return {w for w in _WORD_RE.findall(text.lower()) if w not in _GENERIC}
+        return {w for w in _WORD_RE.findall(text.lower()) if w not in excluded}
 
     shared = terms(body) & terms(sources_text)
     if len(shared) < min_shared:
@@ -145,9 +187,6 @@ def lint_skill(text: str, pattern: str, *, min_body_chars: int = MIN_BODY_CHARS)
     if len(body.strip()) < min_body_chars:
         problems.append(f"body too short (< {min_body_chars} non-whitespace chars)")
 
-    if SECRET_RE.search(text):
-        problems.append("possible secret or token detected; refusing to promote")
-
     for placeholder in dict.fromkeys(_PLACEHOLDER_RE.findall(text)):
         problems.append(f"unreplaced template placeholder: {placeholder}")
 
@@ -159,8 +198,12 @@ def lint_skill(text: str, pattern: str, *, min_body_chars: int = MIN_BODY_CHARS)
     return problems
 
 
-def lint_rule(text: str) -> list[str]:
-    """A rule is exactly one bullet with a bounded length."""
+def lint_rule(text: str, pattern: str | None = None) -> list[str]:
+    """A rule is exactly one bullet with a bounded length and no block markers.
+
+    `pattern` is what the writer will tag the bullet with. Without it the cap is
+    measured against a shorter line than the one that reaches disk.
+    """
     lines = [line for line in (text or "").strip().splitlines() if line.strip()]
     if len(lines) != 1:
         return [f"a rule is exactly one bullet; got {len(lines)} line(s)"]
@@ -168,8 +211,22 @@ def lint_rule(text: str) -> list[str]:
     problems = []
     if not line.startswith("- "):
         problems.append("a rule must start with '- '")
-    if len(line) > MAX_RULE_CHARS:
-        problems.append(f"rule is {len(line)} chars; the cap is {MAX_RULE_CHARS}")
+
+    # A bullet carrying the block's own syntax wedges the rules file for good:
+    # a second marker pair makes every later write and every retire ambiguous,
+    # and a second tag survives the removal that matches only the last one.
+    for marker in (RULE_START, RULE_END, _RULE_TAG_OPEN):
+        if marker in line:
+            problems.append(
+                f"rule contains the managed-block marker {marker!r}; writing it "
+                f"would make the rules file unreadable and unretireable")
+
+    # The writer appends " <!--rule:pattern-->", so the cap covers it.
+    tag = RULE_TAG.format(pattern=pattern) if pattern else ""
+    total = len(line) + (1 + len(tag) if tag else 0)
+    if total > MAX_RULE_CHARS:
+        detail = f" once its {tag} tag is appended" if tag else ""
+        problems.append(f"rule is {total} chars{detail}; the cap is {MAX_RULE_CHARS}")
     return problems
 
 
@@ -191,7 +248,8 @@ def lint_hook(payload) -> list[str]:
 def lint(artifact_type: str, payload, pattern: str, sources_text: str) -> list[str]:
     """Empty list means clean. `payload` is a dict for hooks, text for the rest.
 
-    Grounding applies to every type: vacuous filler is type-independent.
+    Grounding and the secret sniff apply to every type: vacuous filler and a
+    leaked token are both type-independent.
 
     A payload shaped for one type can reach another type's path for real, not
     just in a fixture: a served_by suppression forces the ledger's type onto
@@ -205,11 +263,18 @@ def lint(artifact_type: str, payload, pattern: str, sources_text: str) -> list[s
         if not isinstance(payload, dict):
             return ["hook artifact must be a JSON object"]
         problems = lint_hook(payload)
+        # The dispatcher keys its once-per-session marker and its fire log on the
+        # payload's own `pattern`. Unbound, a hook logs its fires under another
+        # artifact's name and burns that artifact's marker for the session.
+        if payload.get("pattern") != pattern:
+            problems.append(
+                f"hook `pattern` ({payload.get('pattern')!r}) must equal the "
+                f"artifact's pattern ({pattern!r})")
         body = str(payload.get("text", ""))
     elif artifact_type == "rule":
         if not isinstance(payload, str):
             return [f"rule artifact must be text, not {type(payload).__name__}"]
-        problems = lint_rule(payload)
+        problems = lint_rule(payload, pattern)
         body = payload
     elif artifact_type in ("skill", "agent"):
         if not isinstance(payload, str):
@@ -218,6 +283,11 @@ def lint(artifact_type: str, payload, pattern: str, sources_text: str) -> list[s
         body = payload
     else:
         return [f"unknown artifact type {artifact_type!r}"]
+
+    # Every type, against the whole serialised artifact. Run only on the skill
+    # path, this missed a token in a rule bullet and in any hook field.
+    if SECRET_RE.search(_payload_text(payload)):
+        problems.append("possible secret or token detected; refusing to promote")
 
     problems.extend(lint_grounding(body, sources_text))
     return problems

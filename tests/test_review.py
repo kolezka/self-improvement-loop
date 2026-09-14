@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -477,3 +478,184 @@ def test_the_digest_covers_the_repo_world_pattern_branch_and_both_commits(env):
     expected = hashlib.sha256(
         (review.DIGEST_PREFIX + canonical).encode("utf-8")).hexdigest()
     assert snapshot.reviewed_state == expected
+
+
+# --- accept is exclusive with the curriculum run ------------------------------
+
+def test_accept_refuses_a_branch_that_moved_after_the_digest_was_checked(env, monkeypatch):
+    # The window the digest check does not cover. Every guard reads the branch by
+    # NAME, and a worker tick force-updates that name (`run.py`'s `branch -f`).
+    # A tick landing between the check and the merge used to publish whatever it
+    # wrote, under a digest describing the commit a human actually read.
+    world = make_world()
+    repo = _seed(world)
+    _stage(world)
+    branch = run.branch_name(world.name, PATTERN)
+    detail = review.detail(world, make_cfg(), PATTERN)
+    before_head = gitutil.head(repo)
+
+    real_scratch = gitutil.scratch_worktree
+
+    @contextlib.contextmanager
+    def advancing(repo_arg, branch_arg, base):
+        if branch_arg == branch:
+            # Exactly what a curriculum tick does to a staged branch.
+            gitutil.git(repo_arg, "branch", "-q", "-f", branch_arg, "main")
+        with real_scratch(repo_arg, branch_arg, base) as tree:
+            yield tree
+
+    monkeypatch.setattr(gitutil, "scratch_worktree", advancing)
+
+    with pytest.raises(review.ReviewError, match="moved"):
+        review.accept(world, make_cfg(), PATTERN, detail.reviewed_state)
+
+    assert gitutil.head(repo) == before_head, "nothing reached the default branch"
+    assert not (repo / "skills" / PATTERN).exists()
+    assert not (repo / "promotions.json").exists()
+
+
+def test_accept_merges_the_commit_it_prepared_not_the_moving_ref(env, monkeypatch):
+    # The merge argument is the sha accept just built, so a branch that moves
+    # after the worktree closes cannot substitute its own content for it.
+    world = make_world()
+    repo = _seed(world)
+    _stage(world)
+    branch = run.branch_name(world.name, PATTERN)
+    detail = review.detail(world, make_cfg(), PATTERN)
+
+    merged_args: list[tuple] = []
+    real_git = gitutil.git
+
+    def recording_git(repo_arg, *args, **kwargs):
+        if args[:3] == ("merge", "-q", "--ff-only"):
+            merged_args.append(args)
+        return real_git(repo_arg, *args, **kwargs)
+
+    monkeypatch.setattr(gitutil, "git", recording_git)
+    out = review.accept(world, make_cfg(), PATTERN, detail.reviewed_state)
+
+    assert merged_args, "accept never merged"
+    target = merged_args[-1][3]
+    assert target != branch, "merging the ref re-resolves a name that can move"
+    assert target.startswith(out["commit"])
+    assert (repo / "skills" / PATTERN / "SKILL.md").exists()
+
+
+@pytest.mark.parametrize("action", ["accept", "reject", "rehome", "retire"])
+def test_a_write_refuses_while_the_worker_holds_the_lock(env, action):
+    from sil.worker import Lock
+
+    world = make_world()
+    repo = _seed(world)
+    _stage(world)
+    detail = review.detail(world, make_cfg(), PATTERN)
+    calls = {
+        "accept": lambda: review.accept(world, make_cfg(), PATTERN, detail.reviewed_state),
+        "reject": lambda: review.reject(world, make_cfg(), PATTERN),
+        "rehome": lambda: review.rehome(world, make_cfg(), PATTERN, "hook"),
+        "retire": lambda: review.retire(world, make_cfg(), PATTERN),
+    }
+    before_head = gitutil.head(repo)
+
+    with Lock():
+        with pytest.raises(review.ReviewError, match="worker is running"):
+            calls[action]()
+
+    assert gitutil.head(repo) == before_head
+    # And the refusal is only for the duration: the lock is released, so the same
+    # call works immediately afterwards.
+    calls[action]()
+
+
+def test_an_untracked_artifact_file_is_refused_before_the_branch_is_touched(env):
+    # `merge --ff-only` refuses to overwrite an untracked file. Checked only for
+    # tracked changes, that refusal arrived after the branch had been rewritten,
+    # leaving a reviewed digest describing a commit that was no longer its head.
+    world = make_world()
+    repo = _seed(world)
+    _stage(world)
+    branch = run.branch_name(world.name, PATTERN)
+    detail = review.detail(world, make_cfg(), PATTERN)
+
+    live = repo / "skills" / PATTERN / "SKILL.md"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_text("hand written, never committed\n", encoding="utf-8")
+    before_head = gitutil.head(repo)
+    before_commits = gitutil.git(repo, "log", "--format=%H", f"main..{branch}").splitlines()
+
+    with pytest.raises(review.ReviewError, match="untracked"):
+        review.accept(world, make_cfg(), PATTERN, detail.reviewed_state)
+
+    assert gitutil.head(repo) == before_head
+    assert gitutil.git(repo, "log", "--format=%H",
+                       f"main..{branch}").splitlines() == before_commits
+    assert live.read_text() == "hand written, never committed\n"
+
+
+# --- the remote half ----------------------------------------------------------
+
+def _fake_remote(monkeypatch, gh):
+    """No network: swallow push/ls-remote, route every `gh` call to `gh`."""
+    real_git = gitutil.git
+
+    def fake_git(repo_arg, *args, **kwargs):
+        if args and args[0] in ("push", "ls-remote"):
+            return ""
+        return real_git(repo_arg, *args, **kwargs)
+
+    monkeypatch.setattr(gitutil, "git", fake_git)
+    monkeypatch.setattr(gitutil, "has_gh", lambda: True)
+    monkeypatch.setattr(review, "_gh", gh)
+
+
+def test_a_pull_request_whose_head_moved_is_recorded_and_not_merged(env, monkeypatch):
+    # `gh pr merge` merges whatever the pull request points at now, not what was
+    # pushed. Between create and merge anyone can push to the branch, and merging
+    # on the state read at create publishes a commit nobody reviewed.
+    world = make_world(remote="pr")
+    repo = _seed(world)
+    _stage(world)
+    detail = review.detail(world, make_cfg(), PATTERN)
+
+    seen: list[tuple] = []
+
+    def gh(repo_arg, *args):
+        seen.append(args)
+        if args[:2] == ("pr", "list"):
+            return json.dumps([{"number": 7, "url": "https://example.invalid/pr/7"}])
+        if args[:2] == ("pr", "view"):
+            return json.dumps({"headRefOid": "f" * 40})
+        return ""
+
+    _fake_remote(monkeypatch, gh)
+    out = review.accept(world, make_cfg(), PATTERN, detail.reviewed_state)
+
+    assert out["pr"] == 7
+    assert "ffffffffffff" in out["remote_error"]
+    assert not any(a[:2] == ("pr", "merge") for a in seen), seen
+    # Merged locally all the same: the remote step never undoes the acceptance.
+    assert (repo / "skills" / PATTERN / "SKILL.md").exists()
+
+
+def test_an_unmoved_pull_request_is_merged(env, monkeypatch):
+    world = make_world(remote="pr")
+    repo = _seed(world)
+    _stage(world)
+    detail = review.detail(world, make_cfg(), PATTERN)
+
+    seen: list[tuple] = []
+    branch = run.branch_name(world.name, PATTERN)
+
+    def gh(repo_arg, *args):
+        seen.append(args)
+        if args[:2] == ("pr", "list"):
+            return json.dumps([{"number": 7, "url": "https://example.invalid/pr/7"}])
+        if args[:2] == ("pr", "view"):
+            return json.dumps({"headRefOid": gitutil.git(repo, "rev-parse", branch)})
+        return ""
+
+    _fake_remote(monkeypatch, gh)
+    out = review.accept(world, make_cfg(), PATTERN, detail.reviewed_state)
+
+    assert "remote_error" not in out, out
+    assert any(a[:2] == ("pr", "merge") for a in seen), seen

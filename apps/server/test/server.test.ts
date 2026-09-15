@@ -48,10 +48,27 @@ function goodHeaders(extra: Record<string, string> = {}): Record<string, string>
 }
 
 describe("createServer host guard", () => {
-  test("refuses 0.0.0.0, :: and *", () => {
+  test("refuses a tokenless bind off loopback", () => {
     expect(() => createServer({ port: 0, host: "0.0.0.0", token: null })).toThrow();
     expect(() => createServer({ port: 0, host: "::", token: null })).toThrow();
     expect(() => createServer({ port: 0, host: "*", token: null })).toThrow();
+  });
+
+  test("allows a tokenless bind on loopback", () => {
+    const local = createServer({ port: 0, host: "127.0.0.1", token: null });
+    local.stop(true);
+  });
+
+  test("binds every interface when a token is set, and answers a LAN Host header", async () => {
+    const wide = createServer({ port: 0, host: "0.0.0.0", token: TOKEN });
+    try {
+      const res = await fetch(`http://127.0.0.1:${wide.port}/api/health/report`, {
+        headers: { [LOCAL_HEADER]: "1", [TOKEN_HEADER]: TOKEN, host: `192.168.1.10:${wide.port}` },
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      wide.stop(true);
+    }
   });
 });
 

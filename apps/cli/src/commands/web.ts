@@ -9,7 +9,7 @@ import { loadConfig } from "@sil/core";
 // apps/server/package.json has no "exports" field yet, so the bare
 // "@sil/server" specifier does not resolve. Import the entry file directly
 // until that lands; switch to the package specifier once it does.
-import { serve } from "../../../server/src/main.ts";
+import { serve, urlHost } from "../../../server/src/main.ts";
 
 export interface WebOptions {
   port?: number;
@@ -30,8 +30,8 @@ function openBrowser(url: string): void {
 export async function cmdWeb(opts: WebOptions): Promise<number> {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
-  const host = opts.host ?? "127.0.0.1";
-  const server = serve({ host, port, token: opts.token ?? true });
-  if (opts.open) openBrowser(`http://${host}:${server.port}/`);
+  const host = opts.host ?? cfg.web.host;
+  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
+  if (opts.open) openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise<number>(() => {});
 }

@@ -64,7 +64,16 @@ export const WorkerConfig = z.object({
 });
 export type WorkerConfig = z.infer<typeof WorkerConfig>;
 
-export const WebConfig = z.object({ port: z.number().int().default(8766) });
+export const WebConfig = z.object({
+  port: z.number().int().default(8766),
+  // Loopback by default. Set a LAN or tailscale address, or 0.0.0.0 for every
+  // interface, to reach the UI from another machine; the URL token still
+  // guards every op, and a tokenless non-loopback bind is refused.
+  host: z.string().default("127.0.0.1"),
+  // Extra Host header values, for names the private address check cannot
+  // cover: a tailscale MagicDNS name, a reverse proxy. Format host:port.
+  allowed_hosts: z.array(z.string()).default([]),
+});
 
 export const Config = z.object({
   version: z.number().int().default(1),

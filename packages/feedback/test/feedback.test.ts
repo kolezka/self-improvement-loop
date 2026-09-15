@@ -45,7 +45,7 @@ function world(name = "default"): World {
 }
 
 function cfg(w: World): Config {
-  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766 } };
+  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] } };
 }
 
 function buildWorldAndLedger(): { w: World; c: Config } {

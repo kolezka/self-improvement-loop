@@ -65,7 +65,11 @@ fi
 if [ "$have" != "$CURRENT" ]; then
   echo "warning: $HEALTH is at $have, not $CURRENT; setting it to $NEW anyway" >&2
 fi
-sed -i '' "s/^const SIL_VERSION = \"$have\";$/const SIL_VERSION = \"$NEW\";/" "$HEALTH"
+# temp + mv rather than `sed -i`: GNU and BSD sed disagree on the -i suffix
+# argument, and this matches the jq blocks above.
+tmp="$(mktemp)"
+sed "s/^const SIL_VERSION = \"$have\";$/const SIL_VERSION = \"$NEW\";/" "$HEALTH" > "$tmp"
+mv "$tmp" "$HEALTH"
 echo "  $HEALTH: $have -> $NEW"
 
 # Nothing outside dist/ and the lockfile may still carry the old version.

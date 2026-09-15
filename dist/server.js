@@ -17593,14 +17593,15 @@ function skipSession(sessionId) {
   moveToTerminal(entry, "done", "skipped by operator");
   return true;
 }
+var NO_TRANSCRIPT = "skipped: transcript not persisted";
 function eligible(entry, cfg, now) {
   if (!exists(entry.transcript_path))
-    return [false, "failed: transcript missing"];
+    return [false, NO_TRANSCRIPT];
   let idleOk = entry.ended;
   if (!idleOk) {
     const mtime = mtimeMs(entry.transcript_path);
     if (mtime === null)
-      return [false, "failed: transcript missing"];
+      return [false, NO_TRANSCRIPT];
     idleOk = (now.getTime() - mtime) / 60000 >= cfg.worker.idle_minutes;
   }
   if (!idleOk)
@@ -17671,6 +17672,9 @@ async function reflectPending(cfg, worldByName, worldName, now, chat, summary) {
       if (reason.startsWith("failed")) {
         moveToTerminal(entry, "failed", reason);
         summary.failed.push(entry.session_id);
+      } else if (reason.startsWith("skipped")) {
+        moveToTerminal(entry, "done", reason);
+        summary.skipped.push(entry.session_id);
       } else {
         summary.skipped.push(entry.session_id);
       }
@@ -18422,7 +18426,7 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
-var SIL_VERSION = "0.2.1";
+var SIL_VERSION = "0.2.4";
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};
@@ -18846,7 +18850,7 @@ function privateAddresses() {
 }
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
-  const token = opts.token ?? true ? newToken() : null;
+  const token = opts.token ?? !isLoopbackHost(host) ? newToken() : null;
   const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
   const port = server.port ?? opts.port;
   const fragment = token ? `#${token}` : "";
@@ -18858,7 +18862,7 @@ function serve(opts) {
 function parseCliArgs(argv) {
   let port = 8766;
   let host = "127.0.0.1";
-  let token = true;
+  let token;
   const allowedHosts = [];
   for (let i = 0;i < argv.length; i++) {
     const arg = argv[i];
@@ -18874,6 +18878,8 @@ function parseCliArgs(argv) {
       const value = argv[++i];
       if (value !== undefined)
         allowedHosts.push(value);
+    } else if (arg === "--token") {
+      token = true;
     } else if (arg === "--no-token") {
       token = false;
     }

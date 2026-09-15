@@ -31,7 +31,7 @@ export async function cmdWeb(opts: WebOptions): Promise<number> {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
   const host = opts.host ?? cfg.web.host;
-  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
+  const server = serve({ host, port, token: opts.token, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open) openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise<number>(() => {});
 }

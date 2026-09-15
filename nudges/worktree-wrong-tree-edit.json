@@ -1,0 +1,12 @@
+{
+  "pattern": "worktree-wrong-tree-edit",
+  "event": "PreToolUse",
+  "gate": {
+    "tool_is": [
+      "Edit",
+      "Write"
+    ]
+  },
+  "once_per": "session",
+  "text": "Before editing any file, verify that you are in a task-specific worktree, not the primary checkout. If you are in the main tree, stop and create a worktree: git worktree add -b <branch> <path>. Then re-invoke the edit. This is a precondition; do not explain the rule after making changes in the wrong tree."
+}

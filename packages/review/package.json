@@ -1,0 +1,17 @@
+{
+  "name": "@sil/review",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@sil/core": "workspace:*",
+    "@sil/store": "workspace:*",
+    "@sil/curriculum": "workspace:*",
+    "@sil/feedback": "workspace:*",
+    "@sil/worker": "workspace:*",
+    "@sil/providers": "workspace:*"
+  }
+}

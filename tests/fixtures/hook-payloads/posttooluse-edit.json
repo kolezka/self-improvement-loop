@@ -1,0 +1,1 @@
+{"session_id": "fixture-13", "hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": {"file_path": "/repo/kb/state.py", "old_string": "a", "new_string": "b"}, "tool_response": {"success": true}}

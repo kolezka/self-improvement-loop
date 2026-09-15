@@ -1,0 +1,1 @@
+{"session_id": "fixture-17", "hook_event_name": "PostToolUse", "tool_name": "Glob", "tool_input": {"pattern": "tests/*.py", "path": "/repo"}, "tool_response": {"count": 30}}

@@ -1,0 +1,79 @@
+#!/bin/sh
+# Shim for self-improvement-loop: resolves the plugin root, then execs `sil`
+# inside it via bun. Installed to ~/.local/bin/sil by `sil schedule install`,
+# so a plugin version bump never breaks an installed systemd/launchd unit
+# (those call this fixed path, not one under a versioned plugin cache dir).
+set -eu
+
+# launchd and systemd start with a minimal PATH that has no bun on it. This
+# runs before resolve_root, which needs bun to read installed_plugins.json.
+if ! command -v bun >/dev/null 2>&1; then
+  for d in "$HOME/.bun/bin" /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$d/bun" ]; then
+      PATH="$d:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
+
+resolve_root() {
+  if [ -n "${SIL_PLUGIN_ROOT:-}" ]; then
+    printf '%s\n' "$SIL_PLUGIN_ROOT"
+    return 0
+  fi
+
+  installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+  if [ -f "$installed" ]; then
+    runner=""
+    if command -v bun >/dev/null 2>&1; then
+      runner="bun"
+    elif command -v node >/dev/null 2>&1; then
+      runner="node"
+    fi
+    if [ -n "$runner" ]; then
+      found="$("$runner" - "$installed" <<'JSEOF'
+const fs = require("fs");
+try {
+  const data = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  // Any marketplace counts: a dev install from a local marketplace is keyed
+  // "self-improvement-loop@<name>", not "@kolezka".
+  const plugins = data.plugins || {};
+  const entries = Object.keys(plugins)
+    .filter((k) => k.split("@")[0] === "self-improvement-loop")
+    .flatMap((k) => plugins[k] || []);
+  if (entries.length) {
+    const newest = entries.reduce((a, b) => ((a.lastUpdated || "") >= (b.lastUpdated || "") ? a : b));
+    if (newest.installPath) console.log(newest.installPath);
+  }
+} catch {
+  // fall through to the two-dirs-up fallback below
+}
+JSEOF
+)"
+      if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        return 0
+      fi
+    fi
+  fi
+
+  # Fall back to two levels up from this script (scripts/sil -> plugin root).
+  script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  CDPATH= cd -- "$script_dir/.." && pwd
+}
+
+ROOT="$(resolve_root)"
+
+# Claude Code sets this for hooks and commands, but nothing sets it for a
+# systemd/launchd unit or a plain shell. Without it paths.pluginRoot() and
+# resolveRunner() have to guess, and a scheduled worker guesses wrong.
+CLAUDE_PLUGIN_ROOT="$ROOT"
+export CLAUDE_PLUGIN_ROOT
+
+if [ -f "$ROOT/dist/cli.js" ]; then
+  exec bun "$ROOT/dist/cli.js" "$@"
+fi
+
+# Dev checkout with no build yet: run the CLI straight from source.
+exec bun "$ROOT/apps/cli/src/main.ts" "$@"

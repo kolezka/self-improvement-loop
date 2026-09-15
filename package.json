@@ -1,0 +1,36 @@
+{
+  "name": "self-improvement-loop",
+  "version": "0.2.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "bench": "bun run scripts/bench.ts",
+    "test": "bun test",
+    "typecheck": "bun x tsc -p tsconfig.json --noEmit",
+    "check:web": "bun run --cwd apps/web check",
+    "lint:dashes": "bun run scripts/lint-dashes.ts",
+    "dev:web": "bun run --cwd apps/web dev",
+    "sil": "bun run apps/cli/src/main.ts"
+  },
+  "devDependencies": {
+    "@sil/core": "workspace:*",
+    "@sil/critic": "workspace:*",
+    "@sil/curriculum": "workspace:*",
+    "@sil/feedback": "workspace:*",
+    "@sil/nudges": "workspace:*",
+    "@sil/ops": "workspace:*",
+    "@sil/providers": "workspace:*",
+    "@sil/review": "workspace:*",
+    "@sil/store": "workspace:*",
+    "@sil/transcript": "workspace:*",
+    "@sil/worker": "workspace:*",
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.9.0"
+  }
+}

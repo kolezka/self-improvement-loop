@@ -1,0 +1,1 @@
+{"session_id": "fixture-12", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "git status --porcelain"}, "tool_response": {"stdout": "", "stderr": "", "exit_code": 0}}

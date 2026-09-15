@@ -1,0 +1,114 @@
+PROPRIETARY SOFTWARE LICENSE
+
+Copyright (c) 2026 Mariusz Rakus (raqz.pl). All rights reserved.
+
+This repository and everything in it, that is source code, scripts,
+configuration, documentation, diagrams, prompts, skills, hooks, tests, data
+and any other files, in any form and in any medium (together, the
+"Software"), is the exclusive property of Mariusz Rakus (the "Licensor") and is protected by
+copyright law and international treaties.
+
+Access to the Software, by any means, does NOT grant you any rights to it.
+Nothing in this file grants you a license. This file exists to state that no
+license is granted by default and to explain how one may be obtained.
+
+1. NO USE WITHOUT A PURCHASED LICENSE
+
+   You may not use the Software, in whole or in part, for any purpose,
+   including running it, installing it, executing it, evaluating it, or
+   deploying it in any environment, unless you have first:
+
+   (a) purchased a license from the Licensor, and
+   (b) received the Licensor's express, prior, written consent
+
+   covering that use. The purchase and the written consent are both required;
+   neither one alone is sufficient.
+
+2. NO COPYING, MODIFICATION OR DERIVATIVE WORKS
+
+   You may not copy, reproduce, modify, adapt, translate, port, or create
+   derivative works of the Software, in whole or in part, without the
+   Licensor's express, prior, written consent and payment of the applicable
+   fee. This includes incorporating any part of the Software into other
+   software, and using the Software or its output to train, fine-tune,
+   evaluate or prompt any machine-learning or artificial-intelligence system.
+
+3. NO SHARING, DISTRIBUTION OR RESALE
+
+   You may not share, distribute, publish, upload, mirror, disclose, transfer,
+   sublicense, sell, resell, rent, lease, lend, offer as a service, or
+   otherwise make the Software or any part of it available to any third
+   party, in any form, whether or not for payment. This prohibition applies
+   even if you hold a purchased license, unless that license expressly
+   provides otherwise in writing.
+
+4. OBTAINING A LICENSE
+
+   Licenses are granted only by the Licensor, only in writing, and only
+   against payment of the license fee set by the Licensor. To obtain a
+   license, contact:
+
+       Mariusz Rakus
+       mariusz@raqz.pl
+
+   The scope of any license (permitted uses, number of users or machines,
+   term, territory, right to modify, right to share) is defined exclusively
+   by the written license agreement issued by the Licensor. Any right not
+   expressly granted in that agreement is reserved by the Licensor. Unless
+   the agreement states otherwise, a license is personal, non-exclusive,
+   non-transferable, non-sublicensable and revocable, and license fees are
+   non-refundable.
+
+5. THIRD-PARTY COMPONENTS
+
+   Third-party libraries, packages and tools that the Software depends on and
+   that are obtained separately (for example through a package manager) are
+   not part of the Software and remain governed by their own licenses.
+   Nothing in this file restricts your rights under those licenses.
+
+6. RESERVATION OF RIGHTS AND ENFORCEMENT
+
+   All rights not expressly granted in a written license agreement are
+   reserved by the Licensor. Any use, copying, modification, sharing,
+   distribution or sale of the Software that is not covered by such an
+   agreement is unauthorized, constitutes infringement of the Licensor's
+   copyright, and may result in civil and criminal liability. The Licensor
+   may seek injunctive relief, damages, and recovery of legal costs.
+
+7. TERMINATION
+
+   Any license granted by the Licensor terminates automatically and without
+   notice if you breach any of its terms or any term of this file. Upon
+   termination you must immediately stop all use of the Software and
+   permanently destroy every copy in your possession or control, and confirm
+   in writing that you have done so if the Licensor requests it.
+
+8. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+9. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+   LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+10. GOVERNING LAW
+
+   This file and any license agreement issued under it are governed by the
+   laws of the Republic of Poland. Any dispute shall be submitted to the
+   courts having jurisdiction over the Licensor's registered seat, unless
+   mandatory provisions of applicable law provide otherwise.
+
+11. SEVERABILITY
+
+   If any provision of this file is held to be unenforceable, the remaining
+   provisions remain in full force, and the unenforceable provision shall be
+   enforced to the maximum extent permitted by law.
+
+If you are reading this without a written license agreement from the
+Licensor, you have no right to use, copy, modify, share or sell this Software.
+Contact mariusz@raqz.pl to purchase one.

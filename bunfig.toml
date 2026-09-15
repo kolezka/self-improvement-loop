@@ -1,0 +1,7 @@
+[test]
+# Package tests live next to their package; the repo-level e2e suite in tests/.
+root = "."
+coverageSkipTestFiles = true
+
+[install]
+exact = false

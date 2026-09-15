@@ -1,0 +1,1 @@
+{"session_id": "fixture-11", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"subagent_type": "critic", "description": "Reflect", "prompt": "Reflect on the change"}}

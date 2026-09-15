@@ -1,0 +1,17 @@
+{
+  "name": "@sil/curriculum",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@sil/core": "workspace:*",
+    "@sil/store": "workspace:*",
+    "@sil/nudges": "workspace:*",
+    "@sil/providers": "workspace:*",
+    "@sil/feedback": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

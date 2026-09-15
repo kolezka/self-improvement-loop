@@ -1,0 +1,1 @@
+{"session_id": "fixture-15", "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {"file_path": "/repo/pyproject.toml"}, "tool_response": {"success": true}}

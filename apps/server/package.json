@@ -1,0 +1,11 @@
+{
+  "name": "@sil/server",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@sil/core": "workspace:*",
+    "@sil/ops": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

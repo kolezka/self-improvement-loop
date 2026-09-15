@@ -17586,14 +17586,15 @@ function skipSession(sessionId) {
   moveToTerminal(entry, "done", "skipped by operator");
   return true;
 }
+var NO_TRANSCRIPT = "skipped: transcript not persisted";
 function eligible(entry, cfg, now) {
   if (!exists(entry.transcript_path))
-    return [false, "failed: transcript missing"];
+    return [false, NO_TRANSCRIPT];
   let idleOk = entry.ended;
   if (!idleOk) {
     const mtime = mtimeMs(entry.transcript_path);
     if (mtime === null)
-      return [false, "failed: transcript missing"];
+      return [false, NO_TRANSCRIPT];
     idleOk = (now.getTime() - mtime) / 60000 >= cfg.worker.idle_minutes;
   }
   if (!idleOk)
@@ -17664,6 +17665,9 @@ async function reflectPending(cfg, worldByName, worldName, now, chat, summary) {
       if (reason.startsWith("failed")) {
         moveToTerminal(entry, "failed", reason);
         summary.failed.push(entry.session_id);
+      } else if (reason.startsWith("skipped")) {
+        moveToTerminal(entry, "done", reason);
+        summary.skipped.push(entry.session_id);
       } else {
         summary.skipped.push(entry.session_id);
       }

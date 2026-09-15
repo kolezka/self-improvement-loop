@@ -99,11 +99,14 @@ function privateAddresses(): string[] {
   return out;
 }
 
-/** Start the server, print the URL with the token in the fragment, and keep
- * running. `token: false` runs tokenless: X-SIL-Local is then the sole guard. */
+/** Start the server, print the URL, and keep running. Token default is auto:
+ * off on loopback (X-SIL-Local plus the Host guard are enough there, so no
+ * token in the URL), on for any non-loopback bind. `token` overrides: false
+ * forces tokenless, true forces a token. A tokenless non-loopback bind is
+ * refused by createServer. */
 export function serve(opts: ServeOptions): Bun.Server<undefined> {
   const host = opts.host ?? "127.0.0.1";
-  const token = (opts.token ?? true) ? newToken() : null;
+  const token = (opts.token ?? !isLoopbackHost(host)) ? newToken() : null;
   const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
   const port = server.port ?? opts.port;
   const fragment = token ? `#${token}` : "";
@@ -115,14 +118,15 @@ export function serve(opts: ServeOptions): Bun.Server<undefined> {
 interface Cli {
   port: number;
   host: string;
-  token: boolean;
+  // undefined = auto: tokenless on loopback, token on elsewhere.
+  token: boolean | undefined;
   allowedHosts: string[];
 }
 
 function parseCliArgs(argv: string[]): Cli {
   let port = 8766;
   let host = "127.0.0.1";
-  let token = true;
+  let token: boolean | undefined;
   const allowedHosts: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -135,6 +139,8 @@ function parseCliArgs(argv: string[]): Cli {
     } else if (arg === "--allowed-host") {
       const value = argv[++i];
       if (value !== undefined) allowedHosts.push(value);
+    } else if (arg === "--token") {
+      token = true;
     } else if (arg === "--no-token") {
       token = false;
     }

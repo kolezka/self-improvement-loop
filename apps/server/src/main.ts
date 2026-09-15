@@ -1,8 +1,9 @@
-// HTTP API + static UI entry point. Bun.serve on loopback only, a route per
-// op generated from the registry, static files unguarded underneath.
+// HTTP API + static UI entry point. Bun.serve on loopback by default, a route
+// per op generated from the registry, static files unguarded underneath.
 
 import { randomBytes } from "node:crypto";
-import { guard } from "./guard.ts";
+import { networkInterfaces } from "node:os";
+import { guard, isPrivateAddress } from "./guard.ts";
 import { buildRoutes, handleOp, handleOps } from "./routes.ts";
 import { serveStatic } from "./static.ts";
 
@@ -10,16 +11,23 @@ export interface CreateServerOptions {
   port: number;
   host?: string;
   token: string | null;
+  allowedHosts?: readonly string[];
 }
 
-const REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 
 export const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
 
+export function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
+
 export function createServer(opts: CreateServerOptions): Bun.Server<undefined> {
   const host = opts.host ?? "127.0.0.1";
-  if (REFUSED_HOSTS.has(host)) {
-    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)}: loopback only`);
+  // Off loopback the token is the only thing between the LAN and every op,
+  // so a tokenless bind there fails loud instead of quietly exposing them.
+  if (opts.token === null && !isLoopbackHost(host)) {
+    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)} without a token: drop --no-token or bind 127.0.0.1`);
   }
 
   const routes = buildRoutes();
@@ -36,7 +44,7 @@ export function createServer(opts: CreateServerOptions): Bun.Server<undefined> {
       const pathname = url.pathname;
 
       if (pathname === "/api/ops" || routes.has(pathname)) {
-        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token });
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
         if (denied) return denied;
         if (pathname === "/api/ops") return handleOps();
         const route = routes.get(pathname)!;
@@ -64,10 +72,31 @@ export interface ServeOptions {
   port: number;
   host?: string;
   token?: boolean;
+  allowedHosts?: readonly string[];
 }
 
 function newToken(): string {
   return randomBytes(32).toString("base64url");
+}
+
+/** The host to put in a URL for a given bind host: a wildcard bind has no
+ * address of its own, and an IPv6 literal needs brackets. */
+export function urlHost(host: string): string {
+  if (WILDCARD_HOSTS.has(host)) return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
+}
+
+/** Every private address this machine answers on, so a wildcard bind prints
+ * a URL that works from the LAN or from tailscale, not just from here. */
+function privateAddresses(): string[] {
+  const out: string[] = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.internal || !isPrivateAddress(addr.address)) continue;
+      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
+    }
+  }
+  return out;
 }
 
 /** Start the server, print the URL with the token in the fragment, and keep
@@ -75,9 +104,11 @@ function newToken(): string {
 export function serve(opts: ServeOptions): Bun.Server<undefined> {
   const host = opts.host ?? "127.0.0.1";
   const token = (opts.token ?? true) ? newToken() : null;
-  const server = createServer({ port: opts.port, host, token });
-  const url = `http://${host}:${server.port ?? opts.port}/` + (token ? `#${token}` : "");
-  console.log(url);
+  const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
+  const port = server.port ?? opts.port;
+  const fragment = token ? `#${token}` : "";
+  const hosts = WILDCARD_HOSTS.has(host) ? [urlHost(host), ...privateAddresses()] : [urlHost(host)];
+  for (const h of hosts) console.log(`http://${h}:${port}/${fragment}`);
   return server;
 }
 
@@ -85,12 +116,14 @@ interface Cli {
   port: number;
   host: string;
   token: boolean;
+  allowedHosts: string[];
 }
 
 function parseCliArgs(argv: string[]): Cli {
   let port = 8766;
   let host = "127.0.0.1";
   let token = true;
+  const allowedHosts: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--port") {
@@ -99,11 +132,14 @@ function parseCliArgs(argv: string[]): Cli {
     } else if (arg === "--host") {
       const value = argv[++i];
       if (value !== undefined) host = value;
+    } else if (arg === "--allowed-host") {
+      const value = argv[++i];
+      if (value !== undefined) allowedHosts.push(value);
     } else if (arg === "--no-token") {
       token = false;
     }
   }
-  return { port, host, token };
+  return { port, host, token, allowedHosts };
 }
 
 if (import.meta.main) {

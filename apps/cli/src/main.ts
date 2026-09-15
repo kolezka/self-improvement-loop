@@ -188,7 +188,7 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .option("--port <n>", "", intOption)
     .option("--no-token")
     .option("--open")
-    .option("--host <host>")
+    .option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine")
     .action(wire((opts) => cmdWeb(opts)));
 
   const worlds = program.command("worlds");

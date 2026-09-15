@@ -126,6 +126,8 @@ worker:
   min_tool_uses: 6                 # skip trivial sessions
 web:
   port: 8766
+  host: 127.0.0.1                  # 0.0.0.0 or a LAN/tailscale address to reach it remotely
+  allowed_hosts: []                # extra Host header values, e.g. a MagicDNS name
 ```
 
 A session is mapped to a world by longest `repos` prefix match on `cwd`; the
@@ -266,9 +268,12 @@ delete the branch and record the rejected watermark. Rehome and retire as in V1.
 
 ## Web UI (`sil web`)
 
-FastAPI + uvicorn on loopback only, token in the URL fragment, `X-SIL-Local`
-header on every call, routes generated from the ops registry (READ = GET, LOCAL and
-REMOTE = POST, REMOTE ops declare a gate). Frontend is vanilla ES modules with no
+FastAPI + uvicorn bound to `web.host` (loopback by default), token in the URL
+fragment, `X-SIL-Local` header on every call, routes generated from the ops registry
+(READ = GET, LOCAL and REMOTE = POST, REMOTE ops declare a gate). A bind off
+loopback requires the token, and the `Host` header must be a private IP literal
+(LAN, CGNAT/tailscale, IPv6 ULA) or a name in `web.allowed_hosts`, which keeps DNS
+rebinding blocked. Frontend is vanilla ES modules with no
 build step (a plugin install is a git clone). Panes: Overview, Queue, Reflections,
 Review, Artifacts, Loop, Models, Worlds, Logs.
 

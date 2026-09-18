@@ -13901,6 +13901,51 @@ function patternCounts(world, extraDirs = []) {
   }
   return counts;
 }
+// packages/store/src/alias-suggest.ts
+var tokens = (s) => new Set(s.split("-"));
+function jaccard(a, b) {
+  let shared = 0;
+  for (const t of a)
+    if (b.has(t))
+      shared++;
+  const union = a.size + b.size - shared;
+  return union === 0 ? 0 : shared / union;
+}
+function isProperSubset(a, b) {
+  if (a.size >= b.size)
+    return false;
+  for (const t of a)
+    if (!b.has(t))
+      return false;
+  return true;
+}
+function suggestAliases(world) {
+  const counts = patternCounts(world);
+  const slugs = Object.keys(counts).sort();
+  const out = [];
+  for (let i = 0;i < slugs.length; i++) {
+    for (let j = i + 1;j < slugs.length; j++) {
+      const a = slugs[i];
+      const b = slugs[j];
+      const setA = tokens(a);
+      const setB = tokens(b);
+      const score = jaccard(setA, setB);
+      if (score < 0.5 && !isProperSubset(setA, setB) && !isProperSubset(setB, setA))
+        continue;
+      const canonical = counts[a] >= counts[b] ? a : b;
+      const alias = canonical === a ? b : a;
+      out.push({ alias, canonical, alias_count: counts[alias], canonical_count: counts[canonical], score });
+    }
+  }
+  out.sort((x, y) => {
+    if (y.score !== x.score)
+      return y.score - x.score;
+    if (x.canonical !== y.canonical)
+      return x.canonical < y.canonical ? -1 : 1;
+    return x.alias < y.alias ? -1 : 1;
+  });
+  return out;
+}
 // packages/store/src/ledger.ts
 function loadLedger(path) {
   if (!exists(path))
@@ -14025,6 +14070,9 @@ function aliasesGet(args) {
 function aliasesSet(args) {
   saveAliases(args.world, args.aliases);
   return loadAliases(args.world);
+}
+function aliasesSuggest(args) {
+  return suggestAliases(args.world);
 }
 
 // packages/ops/src/cfg-world.ts
@@ -16837,9 +16885,11 @@ function propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, las
   }
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    const stale = lastDt === null || lastDt.getTime() < retireCutoff.getTime();
+    const basisDt = lastDt ?? parseTs(entry.last_updated);
+    const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
-      return ["retire-candidate", `no uses or fires in the last window, last_used=${lastUsed || "never"}, older than ${retireDays}d`];
+      const basis = lastDt !== null ? `last used ${lastUsed}, older than ${retireDays}d` : basisDt !== null ? `never used, promoted ${entry.last_updated}, older than ${retireDays}d` : "no parsable date to judge staleness from";
+      return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }
   }
   if (misfired + humanBad >= 2 && misfired + humanBad > helpful + humanGood) {
@@ -18666,6 +18716,7 @@ register({ name: "reflections.list", tier: "read", gate: "none", args: Reflectio
 register({ name: "reflections.get", tier: "read", gate: "none", args: ReflectionArgs, fn: reflectionsGet, doc: "Full body of one reflection." });
 register({ name: "aliases.get", tier: "read", gate: "none", args: WorldArgs, fn: aliasesGet, doc: "Pattern alias map for a world." });
 register({ name: "aliases.set", tier: "local", gate: "none", args: AliasArgs, fn: aliasesSet, doc: "Replace the alias map for a world." });
+register({ name: "aliases.suggest", tier: "read", gate: "none", args: WorldArgs, fn: aliasesSuggest, doc: "Deterministic near-duplicate pattern slug suggestions for a world." });
 register({ name: "review.queue", tier: "read", gate: "none", args: WorldArgs, fn: reviewQueue, doc: "Staged proposals waiting for review." });
 register({ name: "review.detail", tier: "read", gate: "none", args: PatternArgs, fn: reviewDetail, doc: "Body and reviewed_state of one proposal." });
 register({ name: "review.diff", tier: "read", gate: "none", args: PatternArgs, fn: reviewDiff, doc: "Diff of one staged proposal." });

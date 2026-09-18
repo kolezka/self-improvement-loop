@@ -186,7 +186,8 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
   program
     .command("web")
     .option("--port <n>", "", intOption)
-    .option("--no-token")
+    .option("--token", "force a URL token (default: on only for non-loopback binds)")
+    .option("--no-token", "force tokenless (loopback only)")
     .option("--open")
     .option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine")
     .action(wire((opts) => cmdWeb(opts)));

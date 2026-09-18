@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listOps } from "@sil/ops";
 import { LOCAL_HEADER, TOKEN_HEADER } from "../src/guard.ts";
-import { createServer } from "../src/main.ts";
+import { createServer, serve } from "../src/main.ts";
 
 const TOKEN = "test-token-xyz";
 let tmp: string;
@@ -57,6 +57,34 @@ describe("createServer host guard", () => {
   test("allows a tokenless bind on loopback", () => {
     const local = createServer({ port: 0, host: "127.0.0.1", token: null });
     local.stop(true);
+  });
+
+  test("serve default is tokenless on loopback: URL has no token fragment", () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (msg?: unknown) => void lines.push(String(msg));
+    const local = serve({ port: 0, host: "127.0.0.1" });
+    console.log = orig;
+    try {
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines) expect(line).not.toContain("#");
+    } finally {
+      local.stop(true);
+    }
+  });
+
+  test("serve default keeps a token off loopback: URL carries a fragment", () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (msg?: unknown) => void lines.push(String(msg));
+    const wide = serve({ port: 0, host: "0.0.0.0" });
+    console.log = orig;
+    try {
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.every((line) => line.includes("#"))).toBe(true);
+    } finally {
+      wide.stop(true);
+    }
   });
 
   test("binds every interface when a token is set, and answers a LAN Host header", async () => {

@@ -1,8 +1,8 @@
 {
   "name": "self-improvement-loop",
-  "version": "0.2.1",
+  "version": "0.2.6",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "workspaces": [
     "packages/*",

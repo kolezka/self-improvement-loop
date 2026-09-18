@@ -411,6 +411,32 @@ describe("gates", () => {
     expect(report.gated_out["bbb-pattern"]).toContain("cap");
   });
 
+  test("a gated-out pattern frees its cap slot for the next candidate", async () => {
+    // The starvation bug: the cap was spent while planning, so a pattern that
+    // fails a gate still burned a budget slot and a viable later pattern was
+    // stranded at over-cap, staging nothing. Here the alphabetically-first
+    // pattern fails the judge; with a cap of one the second must still get its
+    // turn and stage.
+    const world = makeWorld();
+    addReflections(world, "aaa-pattern", 3);
+    addReflections(world, "bbb-pattern", 3, { startDay: 20 });
+    initTarget(world);
+
+    const chat: ChatFn = async (role, messages) => {
+      const isAaa = messages[messages.length - 1]!.content.includes("aaa-pattern");
+      if (role === "judge") {
+        return JSON.stringify({ verdict: isAaa ? "no" : "yes", reason: isAaa ? "rule 2: vague" : "quoted" });
+      }
+      return JSON.stringify(skillDraft(isAaa ? "aaa-pattern" : "bbb-pattern", QUOTE));
+    };
+
+    const report = await run(world, makeCfg({ per_run_cap: 1 }), opts({ apply: true, chat }));
+
+    expect(report.staged).toEqual(["bbb-pattern"]);
+    expect(report.gated_out["aaa-pattern"]).toContain("judge:");
+    expect(report.gated_out["bbb-pattern"]).toBeUndefined();
+  });
+
   test("a declined pattern stages nothing", async () => {
     const world = worldWith();
     initTarget(world);

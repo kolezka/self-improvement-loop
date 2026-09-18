@@ -1209,7 +1209,7 @@ var init_kick = __esm(() => {
 });
 
 // apps/hook/src/queue.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync6 } from "fs";
 function isRecord6(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -1233,6 +1233,14 @@ function str3(v) {
 }
 function truthyStr(v) {
   return typeof v === "string" && v !== "" ? v : null;
+}
+function hasTranscript(payload, sessionId) {
+  const claimed = truthyStr(payload["transcript_path"]);
+  if (claimed === null)
+    return true;
+  if (existsSync5(claimed))
+    return true;
+  return Object.keys(readQueueEntry(queuePath(sessionId))).length > 0;
 }
 function startGitHead(sessionId) {
   try {
@@ -1566,6 +1574,10 @@ function handleStop(payload, world) {
   const sessionId = sessionIdOf(payload);
   const worldName = world.name || "default";
   sessionLock(sessionId, () => {
+    if (!hasTranscript(payload, sessionId)) {
+      log(`Stop not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+      return;
+    }
     upsertStopQueue(payload, worldName, sessionId);
     scanTranscript(payload, sessionId, (kind, ref, detail) => {
       appendUsageEvent(usageEventsFile(), { ts: nowIso(), session_id: sessionId, world: worldName, kind, ref, detail });
@@ -1593,6 +1605,10 @@ function handleSubagentStop(payload, world) {
 function handleSessionEnd(payload, world) {
   const sessionId = sessionIdOf(payload);
   const worldName = world.name || "default";
+  if (!hasTranscript(payload, sessionId)) {
+    log(`SessionEnd not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+    return "";
+  }
   markQueueEnded(payload, worldName, sessionId);
   return "";
 }

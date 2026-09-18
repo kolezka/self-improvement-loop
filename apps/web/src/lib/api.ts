@@ -18,9 +18,9 @@ let opsMeta: Map<string, OpMeta> | null = null;
  *
  * The same fragment carries both: the server prints `#<token>` once, and the
  * UI then writes `#/review` into it on every navigation. Reading a route as a
- * token overwrote the stored one with "/review" on any reload, and every call
- * after that was refused by the guard. A token is base64url and never starts
- * with "/". */
+ * token overwrote the stored one with "/review" on any reload, every call after
+ * that was refused by the guard, and a deep link to a pane was swallowed as if
+ * it were a token. A token is base64url and never starts with "/". */
 export function tokenFromFragment(fragment: string): string {
   const raw = fragment.replace(/^#/, "");
   return raw.startsWith("/") ? "" : raw;

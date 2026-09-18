@@ -147,9 +147,17 @@ function propose(
 
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    const stale = lastDt === null || lastDt.getTime() < retireCutoff.getTime();
+    // never used: measure staleness from promotion time, not from a null last-use date
+    const basisDt = lastDt ?? parseTs(entry.last_updated);
+    const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
-      return ["retire-candidate", `no uses or fires in the last window, last_used=${lastUsed || "never"}, older than ${retireDays}d`];
+      const basis =
+        lastDt !== null
+          ? `last used ${lastUsed}, older than ${retireDays}d`
+          : basisDt !== null
+            ? `never used, promoted ${entry.last_updated}, older than ${retireDays}d`
+            : "no parsable date to judge staleness from";
+      return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }
   }
 

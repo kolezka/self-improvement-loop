@@ -125,6 +125,79 @@ describe("scorecards proposals", () => {
     const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
     expect(cards.has("skill:staged-thing")).toBe(false);
   });
+
+  test("keep for a never-used artifact still inside retire_after_days of its promotion", () => {
+    const { w, c } = buildWorldAndLedger();
+    // no seedSignals: new-thing has never been used, but was promoted only 2 days ago
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    const card = cards.get("skill:new-thing")!;
+    expect(card.proposal).toBe("new");
+  });
+
+  test("keep for a never-used artifact promoted 8 days ago, inside retire_after_days 45", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(8)), commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    const card = cards.get("skill:never-used")!;
+    expect(card.proposal).toBe("keep");
+    expect(card.last_used).toBeNull();
+  });
+
+  test("retire-candidate for a never-used artifact promoted 60 days ago, past retire_after_days 45", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    const card = cards.get("skill:never-used")!;
+    expect(card.proposal).toBe("retire-candidate");
+    expect(card.reason).toContain("promoted");
+  });
+
+  test("retire-candidate when used once then idle past the cutoff (guards existing behaviour)", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        "idle-thing": { pattern: "idle-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(80)), session_id: "s1", world: "default", kind: "skill", ref: "skill:idle-thing" });
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    const card = cards.get("skill:idle-thing")!;
+    expect(card.proposal).toBe("retire-candidate");
+    expect(card.reason).toContain("last used");
+  });
+
+  test("retire-candidate with honest reason when neither last_used nor last_updated parse", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        "no-date-thing": { pattern: "no-date-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: "not-a-date", commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    const card = cards.get("skill:no-date-thing")!;
+    expect(card.proposal).toBe("retire-candidate");
+    expect(card.reason).toContain("no parsable date");
+  });
 });
 
 describe("rebuild and load", () => {

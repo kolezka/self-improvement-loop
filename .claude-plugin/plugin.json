@@ -1,12 +1,12 @@
 {
   "name": "self-improvement-loop",
-  "version": "0.2.1",
+  "version": "0.2.6",
   "description": "Background reflection on Claude Code sessions that promotes recurring lessons into skills, hooks, rules and agents, tracks artifact usage feedback, and ships a local web UI to review and rate them. Runs on Bun, no Python required.",
   "author": {
     "name": "Mariusz Rakus"
   },
   "repository": "https://github.com/kolezka/self-improvement-loop",
-  "license": "Proprietary",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "keywords": [
     "self-improvement",
     "reflection",

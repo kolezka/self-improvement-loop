@@ -19007,14 +19007,16 @@ function plan(world, cfg, opts = {}) {
     }
     actions.push({ pattern, count, watermark: mark, action, sources, reason });
   }
-  let budget = cap;
-  for (const item of actions) {
-    if (item.action === "promote" || item.action === "refine") {
-      if (budget > 0)
-        budget -= 1;
-      else {
-        item.action = "over-cap";
-        item.reason = `over the per-run cap of ${cap}`;
+  if (opts.enforceCap ?? true) {
+    let budget = cap;
+    for (const item of actions) {
+      if (item.action === "promote" || item.action === "refine") {
+        if (budget > 0)
+          budget -= 1;
+        else {
+          item.action = "over-cap";
+          item.reason = `over the per-run cap of ${cap}`;
+        }
       }
     }
   }
@@ -19081,18 +19083,19 @@ async function run(world, cfg, opts) {
   const target = targetRoot(world);
   const items = reflections2(world, opts.extraDirs ?? []);
   const groups = new Map(cluster(items).map((c) => [c.pattern, c.items]));
-  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items });
+  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items, enforceCap: false });
+  const cap = cfg.promotion.per_run_cap;
   const actionable = [];
   for (const action of planned.actions) {
     if (action.action === "below-threshold")
       report.dropped[action.pattern] = action.count;
-    else if (action.action === "over-cap")
-      report.gated_out[action.pattern] = action.reason || "over per-run cap";
     else if (action.action === "promote" || action.action === "refine")
       actionable.push(action);
   }
   if (!opts.apply) {
-    report.staged = actionable.map((a) => a.pattern);
+    report.staged = actionable.slice(0, cap).map((a) => a.pattern);
+    for (const a of actionable.slice(cap))
+      report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
     report.finished = nowIso();
     return report;
   }
@@ -19111,6 +19114,10 @@ async function run(world, cfg, opts) {
   const ledger = loadLedger2(world);
   const ledgerRel = world.layout.ledger.replace(/^\/+|\/+$/g, "");
   for (const action of actionable) {
+    if (report.staged.length >= cap) {
+      report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
+      continue;
+    }
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat2, {
         target,
@@ -19560,14 +19567,15 @@ function skipSession(sessionId) {
   moveToTerminal(entry, "done", "skipped by operator");
   return true;
 }
+var NO_TRANSCRIPT = "skipped: transcript not persisted";
 function eligible(entry, cfg, now) {
   if (!exists(entry.transcript_path))
-    return [false, "failed: transcript missing"];
+    return [false, NO_TRANSCRIPT];
   let idleOk = entry.ended;
   if (!idleOk) {
     const mtime = mtimeMs(entry.transcript_path);
     if (mtime === null)
-      return [false, "failed: transcript missing"];
+      return [false, NO_TRANSCRIPT];
     idleOk = (now.getTime() - mtime) / 60000 >= cfg.worker.idle_minutes;
   }
   if (!idleOk)
@@ -19638,6 +19646,9 @@ async function reflectPending(cfg, worldByName, worldName, now, chat, summary) {
       if (reason.startsWith("failed")) {
         moveToTerminal(entry, "failed", reason);
         summary.failed.push(entry.session_id);
+      } else if (reason.startsWith("skipped")) {
+        moveToTerminal(entry, "done", reason);
+        summary.skipped.push(entry.session_id);
       } else {
         summary.skipped.push(entry.session_id);
       }
@@ -21374,7 +21385,7 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
-var SIL_VERSION = "0.2.1";
+var SIL_VERSION = "0.2.6";
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};
@@ -21798,7 +21809,7 @@ function privateAddresses() {
 }
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
-  const token = opts.token ?? true ? newToken() : null;
+  const token = opts.token ?? !isLoopbackHost(host) ? newToken() : null;
   const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
   const port = server.port ?? opts.port;
   const fragment = token ? `#${token}` : "";
@@ -21820,7 +21831,7 @@ async function cmdWeb(opts) {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
   const host = opts.host ?? cfg.web.host;
-  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
+  const server = serve({ host, port, token: opts.token, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
     openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise(() => {});
@@ -21933,7 +21944,7 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--token", "force a URL token (default: on only for non-loopback binds)").option("--no-token", "force tokenless (loopback only)").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));

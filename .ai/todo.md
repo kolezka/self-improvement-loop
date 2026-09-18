@@ -54,3 +54,16 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 ## Small
 - [ ] decide whether `.ai/` stays in the repo
 - [ ] revisit command texts and `argument-hint` after first real use
+
+## Logs console polish (branch polish-ui-ux-logs-console-view)
+- [x] `apps/web/src/lib/logs.ts`: pure parse of worker JSON lines and `ISO msg` lines, level detection, filter match, highlight split, size text
+- [x] `apps/web/test/logs.test.ts`: unit tests for the parser, level rules, filter and highlight
+- [x] `apps/web/src/panes/Logs.svelte`: console view (toolbar, line meta, level colours, filter, wrap toggle, copy, download, smart autoscroll with jump-to-latest)
+- [x] verify: bun test, typecheck, check:web, lint:dashes, bun run build (dist drift), browser smoke on the running web UI
+
+### Review pass
+An independent reviewer found and this branch fixed: filter matched the raw JSON
+while the console showed `key=value`, a late tail response could overwrite the
+pane after a log switch, `highlight` built a node per segment with no cap,
+`levelOf` painted `errors=0` red, wrap toggling stranded a pinned view, and a
+failed first load left the pane on "loading" for ever.

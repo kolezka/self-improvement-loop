@@ -122,7 +122,9 @@ sil aliases set stale-env stale-cached-env
 sil aliases list
 ```
 
-`suggest` is deterministic and calls no model. It proposes; you apply.
+`suggest` is deterministic and calls no model. It proposes; you apply. `set`
+re-points any alias that pointed at the slug you just aliased, so a two hop chain
+(which would resolve to nothing) can never form.
 
 ## Privacy
 

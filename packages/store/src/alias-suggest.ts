@@ -24,15 +24,19 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : shared / union;
 }
 
+// A one-token slug (`auth`, `env`) is a subset of every slug containing that
+// token, which would fire against everything sharing it. Require at least
+// two tokens on the smaller side so the rule stays about real near-duplicates.
 function isProperSubset(a: Set<string>, b: Set<string>): boolean {
-  if (a.size >= b.size) return false;
+  if (a.size < 2 || a.size >= b.size) return false;
   for (const t of a) if (!b.has(t)) return false;
   return true;
 }
 
 /** `patternCounts` is already alias-resolved, so a slug that already has an
- * alias never appears here under its own name: it was already folded into
- * its canonical target and cannot be suggested again. */
+ * alias never appears here under its own name. That holds because
+ * `saveAliases` (aliases.ts) refuses to write a map where a key is also a
+ * value, so a chain can never form and split a cluster back apart. */
 export function suggestAliases(world: string): AliasSuggestion[] {
   const counts = patternCounts(world);
   const slugs = Object.keys(counts).sort();

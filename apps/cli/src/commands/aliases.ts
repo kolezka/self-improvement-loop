@@ -28,18 +28,32 @@ export interface AliasesSetOptions {
 export function cmdAliasesSet(alias: string, canonical: string, opts: AliasesSetOptions): number {
   if (!isSlug(alias)) throw new ValidationError(`alias ${JSON.stringify(alias)} is not a valid slug`);
   if (!isSlug(canonical)) throw new ValidationError(`canonical ${JSON.stringify(canonical)} is not a valid slug`);
+  if (alias === canonical) throw new ValidationError(`alias and canonical cannot both be ${JSON.stringify(alias)}`);
   const cfg = loadConfig();
   const world = resolveWorld(cfg, opts.world);
   const current = loadAliases(world.name);
   // Resolution is one hop only: aliasing to something that is itself an
   // alias would silently need a second hop to resolve.
-  if (canonical in current) {
+  if (Object.hasOwn(current, canonical)) {
     throw new ValidationError(
       `${JSON.stringify(canonical)} is itself an alias for ${JSON.stringify(current[canonical])}; point ${JSON.stringify(alias)} at ${JSON.stringify(current[canonical])} instead`,
     );
   }
-  saveAliases(world.name, { ...current, [alias]: canonical });
+  // The new alias may already be the canonical target of other entries.
+  // Left alone that forms a chain the moment we add alias -> canonical, so
+  // re-point those entries at the new canonical instead of splitting them off.
+  const next: Record<string, string> = { ...current, [alias]: canonical };
+  const repointed: string[] = [];
+  for (const [k, v] of Object.entries(current)) {
+    if (v === alias) {
+      next[k] = canonical;
+      repointed.push(k);
+    }
+  }
+  repointed.sort();
+  saveAliases(world.name, next);
   console.log(`aliased ${alias} -> ${canonical} in world ${world.name}`);
+  for (const k of repointed) console.log(`re-pointed ${k} -> ${canonical} (was -> ${alias})`);
   return 0;
 }
 
@@ -51,7 +65,7 @@ export function cmdAliasesRm(alias: string, opts: AliasesRmOptions): number {
   const cfg = loadConfig();
   const world = resolveWorld(cfg, opts.world);
   const current = loadAliases(world.name);
-  if (!(alias in current)) {
+  if (!Object.hasOwn(current, alias)) {
     console.log(`no alias ${alias} in world ${world.name}`);
     return 0;
   }

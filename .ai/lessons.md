@@ -37,3 +37,18 @@
   versions are stale, then a plain `bun install` rewrites it. With `bun.lock` as a
   build-hash input that turns every contributor's first local run red for a reason
   they did not cause. A freshness flag is not a freshness check; diff the file.
+- 2026-09-19: The `x in obj` trap above was recorded on 2026-09-14 and then written
+  again, five days later, in `sil aliases set` and `rm`. A lesson only pays off if it
+  is re-read before writing the same kind of code. Grep `.ai/lessons.md` for the
+  construct, not for the feature.
+- 2026-09-19: A guard placed at one caller is not an invariant. The alias two-hop
+  check lived in the CLI and covered one direction of the chain, while the ops
+  handler and the web pane wrote whole maps with no check at all. Enforce an
+  invariant at the single write point every caller passes through, and make the
+  caller collapse the conflict rather than refuse, when refusing leaves the data in
+  the broken state the feature exists to fix.
+- 2026-09-19: `last_updated` is not "when this happened". Reject, re-home and retire
+  all bumped it, so a refused redraft restarted the retire clock on an artifact
+  nobody used, and the reason string named the rejection date while claiming it was
+  the promotion. When a decision depends on when an event happened, store that
+  event's own timestamp.

@@ -113,6 +113,32 @@ Each item was checked against `origin/main`, not against a local worktree.
   exclusive create; the 60 ms settle only covers reclaiming after a crash and
   resolves last-write-wins.
 
+### Review pass
+An independent reviewer (Fable) read the branch against `origin/main` and found
+four defects in the fixes themselves. All four are fixed here.
+
+- [x] The two-hop guard in `sil aliases set` covered one direction only: it rejected
+      a canonical that was already an alias key, but accepted an alias key that was
+      already another entry's canonical, which formed the chain and split the cluster
+      the command exists to merge. The invariant now lives in `saveAliases`, so the
+      ops handler and the web pane get it too, and `set` re-points the dependent
+      entries instead of refusing. Smoke: 3 + 5 reflections merge to one count of 8,
+      where the old code left 6 + 2.
+- [x] `propose()` measured "never used" staleness from `last_updated`, which reject,
+      re-home and retire all bump. A refused redraft restarted the retire clock and
+      the reason string printed the rejection date as the promotion date. Added
+      `promoted_at` to the ledger row, set by accept and by an auto-merge only, with
+      a fallback to `last_updated` for rows written before the field existed.
+- [x] `x in obj` in `aliases set` and `rm`: `constructor` is a valid slug, so `rm`
+      reported a removal it never made. Now `Object.hasOwn`. This trap is already in
+      `.ai/lessons.md` from 2026-09-14.
+- [x] Smaller: `set foo foo` is refused, the subset rule in the suggester no longer
+      fires on single-token slugs, `tests/lockfile.test.ts` no longer claims to prove
+      the lockfile is current (only that a version bump did not leave it behind), the
+      CI dist check uses `git status` so a new untracked file cannot pass, the
+      workflow declares `permissions: contents: read`, and the bun version moved into
+      `.bun-version` so a contributor builds `dist/` on the version CI verifies it on.
+
 ### Still open, by design not by accident
 - [ ] No cross-artifact consistency check: the judge sees one draft against its own
       sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact

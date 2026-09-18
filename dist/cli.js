@@ -15039,7 +15039,11 @@ var WorkerConfig = object({
   min_tool_uses: number2().int().min(0).default(6),
   auto_kick: boolean2().default(true)
 });
-var WebConfig = object({ port: number2().int().default(8766) });
+var WebConfig = object({
+  port: number2().int().default(8766),
+  host: string2().default("127.0.0.1"),
+  allowed_hosts: array(string2()).default([])
+});
 var Config = object({
   version: number2().int().default(1),
   worlds: array(World).default(() => [World.parse({ name: "default" })]),
@@ -15310,6 +15314,9 @@ function atomicWrite(path, text) {
 function writeJson(path, value) {
   atomicWrite(path, JSON.stringify(value, null, 2) + `
 `);
+}
+function readJson(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 function readJsonOr(path, fallback) {
   try {
@@ -17811,8 +17818,9 @@ function stripNulls(v) {
   return v;
 }
 // packages/store/src/inbox.ts
-import { readdirSync as readdirSync4 } from "fs";
-import { join as join10 } from "path";
+import { mkdirSync as mkdirSync5, readdirSync as readdirSync4, renameSync as renameSync2 } from "fs";
+import { basename as basename2, join as join10 } from "path";
+var LESSON_ARCHIVE_AT_DELIVERIES = 5;
 function putLesson(lesson) {
   const p = join10(inboxDir(lesson.world), `${safeComponent(lesson.id)}.json`);
   writeJson(p, Lesson.parse(lesson));
@@ -17835,6 +17843,21 @@ function listLessons(world) {
   }
   out.sort((a, b) => a.created < b.created ? 1 : -1);
   return out;
+}
+function markDelivered(world, id) {
+  const path = join10(inboxDir(world), `${safeComponent(id)}.json`);
+  const raw = readJsonOr(path, null);
+  const parsed = Lesson.safeParse(raw);
+  if (!parsed.success)
+    return null;
+  const deliveries = parsed.data.deliveries + 1;
+  writeJson(path, { ...parsed.data, deliveries });
+  if (deliveries >= LESSON_ARCHIVE_AT_DELIVERIES) {
+    const archiveDir = join10(inboxDir(world), "archive");
+    mkdirSync5(archiveDir, { recursive: true });
+    renameSync2(path, join10(archiveDir, basename2(path)));
+  }
+  return deliveries;
 }
 // packages/store/src/queue.ts
 import { readdirSync as readdirSync5, rmSync as rmSync3 } from "fs";
@@ -18103,10 +18126,102 @@ async function chatClaudeCli(endpoint, model, messages, _opts) {
 
 // packages/transcript/src/index.ts
 import { existsSync as existsSync7, readFileSync as readFileSync3 } from "fs";
+
+// packages/transcript/src/openclaw.ts
+var SKILL_PATH_RE = /(?:^|\/)skills\/([A-Za-z0-9][A-Za-z0-9._-]*)\/SKILL\.md$/;
+var TOOL_NAMES = { exec: "Bash" };
+function asRecord(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+}
+function isOpenclawRecord(rec) {
+  if (rec["type"] === "session" && typeof rec["id"] === "string" && rec["message"] === undefined)
+    return true;
+  if (rec["type"] !== "message")
+    return false;
+  const message = asRecord(rec["message"]);
+  return message !== null && typeof message["role"] === "string" && rec["sessionId"] === undefined;
+}
+function textBlocks(content) {
+  if (typeof content === "string")
+    return content ? [{ type: "text", text: content }] : [];
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (block && block["type"] === "text")
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+  }
+  return out;
+}
+function skillBlock(id, name, args) {
+  if (name !== "read")
+    return null;
+  const path = args["path"];
+  if (typeof path !== "string")
+    return null;
+  const m = SKILL_PATH_RE.exec(path);
+  return m ? { type: "tool_use", id, name: "Skill", input: { skill: m[1] } } : null;
+}
+function assistantBlocks(content) {
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (!block)
+      continue;
+    if (block["type"] === "text") {
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+      continue;
+    }
+    if (block["type"] !== "toolCall")
+      continue;
+    const name = String(block["name"] ?? "");
+    const args = asRecord(block["arguments"]) ?? {};
+    const id = block["id"] != null ? String(block["id"]) : null;
+    out.push(skillBlock(id, name, args) ?? { type: "tool_use", id, name: TOOL_NAMES[name] ?? name, input: args });
+  }
+  return out;
+}
+function toolResultBlock(message) {
+  return {
+    type: "tool_result",
+    tool_use_id: message["toolCallId"] != null ? String(message["toolCallId"]) : "",
+    is_error: message["isError"] === true,
+    content: message["content"]
+  };
+}
+function* adaptOpenclawRecords(records) {
+  let sessionId = "";
+  for (const rec of records) {
+    const type = rec["type"];
+    if (type === "session") {
+      if (typeof rec["id"] === "string")
+        sessionId = rec["id"];
+      continue;
+    }
+    if (type !== "message")
+      continue;
+    const message = asRecord(rec["message"]);
+    if (!message)
+      continue;
+    const role = message["role"];
+    if (role === "user") {
+      yield { type: "user", sessionId, message: { content: textBlocks(message["content"]) } };
+    } else if (role === "assistant") {
+      yield { type: "assistant", sessionId, message: { content: assistantBlocks(message["content"]) } };
+    } else if (role === "toolResult") {
+      yield { type: "user", sessionId, message: { content: [toolResultBlock(message)] } };
+    }
+  }
+}
+
+// packages/transcript/src/index.ts
 var NOISE_TYPES = new Set(["ai-title", "last-prompt", "queue-operation", "atis-latch"]);
 var TEST_LIKE_RE = /pytest|jest|vitest|go test|cargo test|npm test|pnpm test|make test|ruff|eslint|tsc|mypy/;
 var SUMMARY_KEYS = ["command", "file_path", "skill", "subagent_type", "pattern", "path"];
-function asRecord(v) {
+function asRecord2(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : null;
 }
 function asArray(v) {
@@ -18136,18 +18251,35 @@ function* iterRecords(path, maxBytes = 50000000) {
     } catch {
       continue;
     }
-    const obj = asRecord(rec);
+    const obj = asRecord2(rec);
     if (obj)
       yield obj;
   }
 }
+function* iterEvidenceRecords(path, maxBytes = 50000000) {
+  const raw = iterRecords(path, maxBytes);
+  const first = raw.next();
+  if (first.done)
+    return;
+  if (isOpenclawRecord(first.value)) {
+    yield* adaptOpenclawRecords(prepend(first.value, raw));
+    return;
+  }
+  yield first.value;
+  yield* raw;
+}
+function* prepend(head, rest) {
+  yield head;
+  for (let step = rest.next();!step.done; step = rest.next())
+    yield step.value;
+}
 function countToolUses(path) {
   let count = 0;
-  for (const rec of iterRecords(path)) {
+  for (const rec of iterEvidenceRecords(path)) {
     if (rec["type"] !== "assistant")
       continue;
     for (const block of contentBlocks(rec)) {
-      const b = asRecord(block);
+      const b = asRecord2(block);
       if (b && b["type"] === "tool_use")
         count++;
     }
@@ -18155,16 +18287,16 @@ function countToolUses(path) {
   return count;
 }
 function contentBlocks(rec) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   return asArray(message["content"]);
 }
 function recordText(rec) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   const content = message["content"];
   if (typeof content === "string")
     return content;
   if (Array.isArray(content)) {
-    const parts = content.map((b) => asRecord(b)).filter((b) => b !== null && b["type"] === "text").map((b) => String(b["text"] ?? ""));
+    const parts = content.map((b) => asRecord2(b)).filter((b) => b !== null && b["type"] === "text").map((b) => String(b["text"] ?? ""));
     return parts.join(`
 `);
   }
@@ -18176,7 +18308,7 @@ function stringifyToolResultContent(content) {
   if (Array.isArray(content)) {
     const parts = [];
     for (const b of content) {
-      const obj = asRecord(b);
+      const obj = asRecord2(b);
       if (obj && obj["type"] === "text")
         parts.push(String(obj["text"] ?? ""));
       else if (typeof b === "string")
@@ -18198,7 +18330,7 @@ function toolSummary(inp) {
   return Object.keys(inp).length > 0 ? JSON.stringify(inp).slice(0, 160) : "";
 }
 function recordHook(rec, hooks) {
-  const att = asRecord(rec["attachment"]);
+  const att = asRecord2(rec["attachment"]);
   if (!att || !att["hookName"])
     return;
   const name = String(att["hookName"]);
@@ -18210,15 +18342,15 @@ function recordHook(rec, hooks) {
   h.max_ms = Math.max(h.max_ms, Number.isFinite(ms) ? ms : 0);
 }
 function recordUser(rec, prompts, counts, toolResultById, errors) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   const content = message["content"];
   const blocks = asArray(content);
   const hasText = typeof content === "string" || blocks.some((b) => {
-    const obj = asRecord(b);
+    const obj = asRecord2(b);
     return obj !== null && obj["type"] === "text";
   });
   for (const b of blocks) {
-    const obj = asRecord(b);
+    const obj = asRecord2(b);
     if (!obj || obj["type"] !== "tool_result")
       continue;
     const toolUseId = obj["tool_use_id"];
@@ -18250,7 +18382,7 @@ function evidencePack(transcriptPath, cwd, opts = {}) {
   const hooks = {};
   const errors = [];
   const counts = { tool_uses: 0, turns: 0, user_prompts: 0, attachments: 0 };
-  for (const rec of iterRecords(transcriptPath)) {
+  for (const rec of iterEvidenceRecords(transcriptPath)) {
     const rtype = rec["type"];
     if (typeof rtype === "string" && NOISE_TYPES.has(rtype))
       continue;
@@ -18271,12 +18403,12 @@ function evidencePack(transcriptPath, cwd, opts = {}) {
       if (text && text.trim())
         finalAssistantTexts.push(text.trim().slice(0, 800));
       for (const block of contentBlocks(rec)) {
-        const b = asRecord(block);
+        const b = asRecord2(block);
         if (!b || b["type"] !== "tool_use")
           continue;
         counts.tool_uses += 1;
         const name = String(b["name"] ?? "");
-        const inp = asRecord(b["input"]) ?? {};
+        const inp = asRecord2(b["input"]) ?? {};
         const summary = toolSummary(inp);
         toolUseEntries.push({ id: b["id"] != null ? String(b["id"]) : null, name, summary: summary.slice(0, 160) });
         if (name === "Skill" && inp["skill"])
@@ -19315,7 +19447,7 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync6, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
 import { existsSync as existsSync9 } from "fs";
 import { dirname as dirname6, join as join17, resolve as resolve6 } from "path";
 
@@ -19340,7 +19472,7 @@ import { dirname as dirname5, join as join16 } from "path";
 
 // packages/worker/src/outline.ts
 import { readdirSync as readdirSync8 } from "fs";
-import { basename as basename2, join as join15 } from "path";
+import { basename as basename3, join as join15 } from "path";
 async function exportNew(world, _cfg) {
   if (world.outline === null)
     return { skipped: "not configured" };
@@ -19359,7 +19491,7 @@ async function exportNew(world, _cfg) {
     return { exported, errors };
   }
   for (const name of names) {
-    const rid = basename2(name, ".md");
+    const rid = basename3(name, ".md");
     if (exportedIds.has(rid))
       continue;
     let body;
@@ -20287,7 +20419,7 @@ function relink(world, pattern, artifactType) {
   const rel = artifactRel(world, artifactType, pattern);
   const source = artifactType === "skill" ? dirname6(join17(target, rel)) : join17(target, rel);
   const link = artifactType === "skill" ? join17(claudeConfigDir(), "skills", pattern) : join17(claudeConfigDir(), "agents", `${pattern}.md`);
-  mkdirSync5(dirname6(link), { recursive: true });
+  mkdirSync6(dirname6(link), { recursive: true });
   let isLink = false;
   try {
     isLink = lstatSync2(link).isSymbolicLink();
@@ -20419,7 +20551,7 @@ function cmdHookSnapshot() {
 }
 
 // apps/cli/src/importer.ts
-import { copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync6, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
+import { copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync7, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
 import { join as join18, relative as relative3 } from "path";
 function walkMarkdownFiles(dir) {
   const out = [];
@@ -20450,7 +20582,7 @@ function walkMarkdownFiles(dir) {
 function importReflections(dir, world) {
   const src = expandHome(dir);
   const dest = reflectionsDir(world);
-  mkdirSync6(dest, { recursive: true });
+  mkdirSync7(dest, { recursive: true });
   let copied = 0;
   let skippedDuplicate = 0;
   let skippedNonReflection = 0;
@@ -20465,7 +20597,7 @@ function importReflections(dir, world) {
       skippedDuplicate++;
       continue;
     }
-    mkdirSync6(join18(target, ".."), { recursive: true });
+    mkdirSync7(join18(target, ".."), { recursive: true });
     copyFileSync(p, target);
     copied++;
   }
@@ -20704,11 +20836,435 @@ function cmdLogs(name, opts) {
   return 0;
 }
 
+// apps/cli/src/commands/openclaw.ts
+import { existsSync as existsSync12 } from "fs";
+import { join as join24 } from "path";
+
+// packages/openclaw/src/paths.ts
+import { homedir as homedir2 } from "os";
+import { isAbsolute as isAbsolute2, join as join20, resolve as resolve7 } from "path";
+var PLUGIN_ID = "self-improvement-loop";
+var SKILL_NAME = "self-improvement-loop";
+function expandHome2(p) {
+  if (p === "~")
+    return homedir2();
+  if (p.startsWith("~/"))
+    return join20(homedir2(), p.slice(2));
+  return p;
+}
+function openclawDir(env = process.env) {
+  const configured = env.OPENCLAW_CONFIG_DIR;
+  if (configured)
+    return resolve7(expandHome2(configured));
+  const home = env.OPENCLAW_HOME || homedir2();
+  return join20(home, ".openclaw");
+}
+function configFile2(env = process.env) {
+  return join20(openclawDir(env), "openclaw.json");
+}
+function agentsDir(env = process.env) {
+  return join20(openclawDir(env), "agents");
+}
+function extensionsDir(env = process.env) {
+  return join20(openclawDir(env), "extensions");
+}
+function pluginDir(env = process.env) {
+  return join20(extensionsDir(env), PLUGIN_ID);
+}
+function workspaceDir(env = process.env) {
+  const configured = env.OPENCLAW_WORKSPACE_DIR || env.OPENCLAW_WORKSPACE;
+  if (configured)
+    return resolve7(expandHome2(configured));
+  const cfg = readJsonOr(configFile2(env), {});
+  const agents = cfg["agents"];
+  const defaults = agents?.["defaults"];
+  const fromConfig = defaults?.["workspace"];
+  if (typeof fromConfig === "string" && fromConfig) {
+    const expanded = expandHome2(fromConfig);
+    return isAbsolute2(expanded) ? expanded : resolve7(openclawDir(env), expanded);
+  }
+  return join20(openclawDir(env), "workspace");
+}
+function skillDir(workspace) {
+  return join20(workspace, "skills", SKILL_NAME);
+}
+function installed(env = process.env) {
+  return exists(openclawDir(env));
+}
+// packages/openclaw/src/sessions.ts
+import { readdirSync as readdirSync11, statSync as statSync10 } from "fs";
+import { basename as basename4, join as join21 } from "path";
+function readDirOr(dir) {
+  try {
+    return readdirSync11(dir).sort();
+  } catch {
+    return [];
+  }
+}
+function sessionCwd(file) {
+  let text;
+  try {
+    text = readText(file);
+  } catch {
+    return null;
+  }
+  const firstLine = text.slice(0, text.indexOf(`
+`) === -1 ? text.length : text.indexOf(`
+`)).trim();
+  if (!firstLine)
+    return null;
+  try {
+    const rec = JSON.parse(firstLine);
+    if (rec && typeof rec === "object" && !Array.isArray(rec)) {
+      const cwd = rec["cwd"];
+      if (typeof cwd === "string" && cwd)
+        return cwd;
+    }
+  } catch {}
+  return null;
+}
+function listSessions(env = process.env) {
+  const root = agentsDir(env);
+  const fallbackCwd = workspaceDir(env);
+  const out = [];
+  for (const agentId of readDirOr(root)) {
+    const sessionsDir = join21(root, agentId, "sessions");
+    for (const name of readDirOr(sessionsDir)) {
+      if (!name.endsWith(".jsonl"))
+        continue;
+      const file = join21(sessionsDir, name);
+      let mtime;
+      try {
+        mtime = statSync10(file).mtimeMs;
+      } catch {
+        continue;
+      }
+      out.push({
+        agent_id: agentId,
+        session_id: basename4(name, ".jsonl"),
+        file,
+        cwd: sessionCwd(file) ?? fallbackCwd,
+        mtime_ms: mtime
+      });
+    }
+  }
+  out.sort((a, b) => a.mtime_ms - b.mtime_ms);
+  return out;
+}
+function findSession(sessionId, agentId, env = process.env) {
+  for (const session of listSessions(env)) {
+    if (session.session_id !== sessionId)
+      continue;
+    if (agentId && session.agent_id !== agentId)
+      continue;
+    return session;
+  }
+  return null;
+}
+// packages/openclaw/src/queue.ts
+function enqueueSession(cfg, session, opts = {}) {
+  const world = opts.world ?? worldForCwd(cfg, session.cwd).name;
+  for (const bucket of ["done", "failed"]) {
+    if (loadEntry(bucket, session.session_id)) {
+      return { session_id: session.session_id, status: "skipped", world, reason: `already ${bucket}` };
+    }
+  }
+  const now = nowIso();
+  const existing = loadEntry("pending", session.session_id);
+  const entry = {
+    session_id: session.session_id,
+    transcript_path: session.file,
+    cwd: session.cwd,
+    world,
+    git_head: existing?.git_head ?? null,
+    first_stop: existing?.first_stop ?? now,
+    last_stop: now,
+    stops: (existing?.stops ?? 0) + 1,
+    ended: opts.ended === true || existing?.ended === true,
+    tool_uses: existing?.tool_uses ?? 0,
+    attempts: existing?.attempts ?? 0,
+    result: existing?.result ?? null
+  };
+  writeEntry("pending", entry);
+  return {
+    session_id: session.session_id,
+    status: existing ? "updated" : "queued",
+    world,
+    reason: entry.ended ? "ended" : "waiting for idle"
+  };
+}
+function scanSessions(cfg, opts = {}) {
+  const maxAgeHours = opts.maxAgeHours ?? 0;
+  const cutoff = maxAgeHours > 0 ? Date.now() - maxAgeHours * 3600000 : 0;
+  const out = [];
+  for (const session of listSessions(opts.env ?? process.env)) {
+    if (cutoff && session.mtime_ms < cutoff)
+      continue;
+    out.push(enqueueSession(cfg, session, { ended: opts.ended, world: opts.world }));
+  }
+  return out;
+}
+// packages/openclaw/src/workspace.ts
+import { join as join22 } from "path";
+var BLOCK_START = "<!--sil:start-->";
+var BLOCK_END = "<!--sil:end-->";
+var MAX_BLOCK_CHARS = 4000;
+var DEFAULT_BOOTSTRAP_FILE = "AGENTS.md";
+var DEFAULT_LESSON_LIMIT = 5;
+function rulesText(world) {
+  if (!world.rules_inject)
+    return "";
+  const path = join22(targetRoot(world), world.layout.rules_file);
+  const text = readTextOr(path, "");
+  const start = text.indexOf(RULE_START);
+  const end = text.indexOf(RULE_END);
+  if (start === -1 || end === -1 || end < start)
+    return "";
+  return text.slice(start + RULE_START.length, end).trim();
+}
+function lessonLine(pattern, text) {
+  return `- (${pattern}) ${text}`;
+}
+function renderBlock(worldName, rules, lessons) {
+  const parts = [
+    BLOCK_START,
+    `## self-improvement-loop (world: ${worldName})`,
+    "",
+    "Written by `sil openclaw sync`. Anything inside this block is replaced on the next sync."
+  ];
+  if (rules)
+    parts.push("", "### Rules", "", rules);
+  if (lessons.length > 0)
+    parts.push("", "### Lessons", "", ...lessons);
+  parts.push(BLOCK_END, "");
+  return parts.join(`
+`);
+}
+function applyBlock(text, block) {
+  const start = text.indexOf(BLOCK_START);
+  const end = text.indexOf(BLOCK_END);
+  if (start !== -1 && end !== -1 && end > start) {
+    return text.slice(0, start) + block + text.slice(end + BLOCK_END.length).replace(/^\n/, "");
+  }
+  const base = text.length === 0 || text.endsWith(`
+`) ? text : text + `
+`;
+  return `${base}${text.length > 0 ? `
+` : ""}${block}`;
+}
+function fitRules(worldName, rules, maxChars) {
+  const suffix = `
+(rules trimmed by sil)`;
+  let out = rules;
+  while (out && renderBlock(worldName, out, []).length > maxChars) {
+    const overflow = renderBlock(worldName, out, []).length - maxChars;
+    const keep = out.length - overflow - suffix.length;
+    if (keep <= 0)
+      return "";
+    out = out.slice(0, keep).trimEnd() + suffix;
+  }
+  return out;
+}
+function syncWorkspace(world, opts) {
+  const file = opts.file ?? DEFAULT_BOOTSTRAP_FILE;
+  const limit = opts.limit ?? DEFAULT_LESSON_LIMIT;
+  const maxChars = opts.maxChars ?? MAX_BLOCK_CHARS;
+  const path = join22(opts.workspace, file);
+  const rules = fitRules(world.name, rulesText(world), maxChars);
+  const candidates = listLessons(world.name).slice(0, limit);
+  const delivered = [];
+  const lines = [];
+  let block = renderBlock(world.name, rules, lines);
+  for (const lesson of candidates) {
+    const next = [...lines, lessonLine(lesson.pattern, lesson.text)];
+    const candidate = renderBlock(world.name, rules, next);
+    if (candidate.length > maxChars)
+      break;
+    lines.push(next[next.length - 1]);
+    block = candidate;
+    delivered.push(lesson.id);
+  }
+  if (opts.dryRun) {
+    return { path, lessons: delivered, rules: rules.length > 0, block, written: false };
+  }
+  const current = readTextOr(path, "");
+  atomicWrite(path, applyBlock(current, block));
+  for (const id of delivered)
+    markDelivered(world.name, id);
+  return { path, lessons: delivered, rules: rules.length > 0, block, written: true };
+}
+// packages/openclaw/src/install.ts
+import { copyFileSync as copyFileSync2, readdirSync as readdirSync12, statSync as statSync11 } from "fs";
+import { join as join23 } from "path";
+var PLUGIN_CONFIG_FILE = "sil-config.json";
+function sourceDir() {
+  return join23(pluginRoot(), "integrations", "openclaw");
+}
+function silCommand() {
+  const shim = join23(pluginRoot(), "scripts", "sil");
+  return exists(shim) ? shim : "sil";
+}
+function copyDir(from, to) {
+  ensureDir(to);
+  const written = [];
+  for (const name of readdirSync12(from).sort()) {
+    const src = join23(from, name);
+    if (statSync11(src).isDirectory()) {
+      written.push(...copyDir(src, join23(to, name)));
+      continue;
+    }
+    const dest = join23(to, name);
+    copyFileSync2(src, dest);
+    written.push(dest);
+  }
+  return written;
+}
+function installIntegration(opts) {
+  const env = opts.env ?? process.env;
+  const src = sourceDir();
+  if (!exists(src)) {
+    throw new Error(`openclaw integration sources missing: ${src}`);
+  }
+  const pluginDir2 = pluginDir(env);
+  const files = copyDir(join23(src, "plugin"), pluginDir2);
+  const config = {
+    sil: silCommand(),
+    world: opts.world,
+    state_dir: stateDir()
+  };
+  const configPath = join23(pluginDir2, PLUGIN_CONFIG_FILE);
+  writeJson(configPath, config);
+  files.push(configPath);
+  const workspace = opts.workspace ?? workspaceDir(env);
+  const skillDir2 = skillDir(workspace);
+  ensureDir(skillDir2);
+  const skillFile = join23(skillDir2, "SKILL.md");
+  copyFileSync2(join23(src, "skill", "SKILL.md"), skillFile);
+  files.push(skillFile);
+  const enabled = opts.enable === true ? enablePlugin(env) : false;
+  return { plugin_dir: pluginDir2, skill_file: skillFile, files, enabled, config_file: configFile2(env) };
+}
+function enablePlugin(env = process.env) {
+  const path = configFile2(env);
+  if (!exists(path))
+    throw new Error(`openclaw config missing: ${path}`);
+  const cfg = readJson(path);
+  const plugins = cfg["plugins"] ?? {};
+  const entries = plugins["entries"] ?? {};
+  const entry = entries[PLUGIN_ID] ?? {};
+  if (entry["enabled"] === true)
+    return false;
+  atomicWrite(`${path}.sil-bak`, readText(path));
+  entry["enabled"] = true;
+  entries[PLUGIN_ID] = entry;
+  plugins["entries"] = entries;
+  cfg["plugins"] = plugins;
+  writeJson(path, cfg);
+  return true;
+}
+function pluginEnabled(env = process.env) {
+  const cfg = readJsonOr(configFile2(env), {});
+  const plugins = cfg["plugins"];
+  const entries = plugins?.["entries"];
+  const entry = entries?.[PLUGIN_ID];
+  return entry?.["enabled"] === true;
+}
+// apps/cli/src/commands/openclaw.ts
+function requireOpenclaw() {
+  if (!installed()) {
+    throw new ConfigError(`no OpenClaw install at ${openclawDir()}. Set OPENCLAW_CONFIG_DIR when it lives elsewhere`);
+  }
+}
+function printResults(results, json) {
+  if (json === true) {
+    console.log(JSON.stringify(results, null, 2));
+    return;
+  }
+  for (const r of results)
+    console.log(`${r.status.padEnd(7)} ${r.session_id}  world=${r.world}  ${r.reason}`);
+  if (results.length === 0)
+    console.log("no OpenClaw sessions found");
+}
+function cmdOpenclawInstall(opts) {
+  requireOpenclaw();
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const result = installIntegration({ world: world.name, workspace: opts.workspace, enable: opts.enable === true });
+  console.log(`plugin  ${result.plugin_dir}`);
+  console.log(`skill   ${result.skill_file}`);
+  console.log(`world   ${world.name}`);
+  if (opts.enable === true) {
+    console.log(result.enabled ? `enabled in ${result.config_file} (backup at ${result.config_file}.sil-bak)` : "already enabled");
+    console.log("restart the OpenClaw gateway to load the plugin");
+  } else {
+    console.log(`not enabled yet. Run: openclaw plugins enable ${PLUGIN_ID}`);
+  }
+  return 0;
+}
+function cmdOpenclawSync(opts) {
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const workspace = opts.workspace ?? workspaceDir();
+  const result = syncWorkspace(world, { workspace, file: opts.file, limit: opts.limit, dryRun: opts.dryRun === true });
+  if (opts.dryRun === true) {
+    console.log(result.block);
+    console.log(`would write ${result.path}`);
+    return 0;
+  }
+  console.log(`${result.path}: rules=${result.rules ? "yes" : "no"} lessons=${result.lessons.length}`);
+  return 0;
+}
+function cmdOpenclawScan(opts) {
+  requireOpenclaw();
+  const cfg = loadConfig();
+  printResults(scanSessions(cfg, { world: opts.world, maxAgeHours: opts.maxAgeHours }), opts.json);
+  return 0;
+}
+function cmdOpenclawEnqueue(opts) {
+  requireOpenclaw();
+  if (!opts.session)
+    throw new ValidationError("--session <id> is required");
+  const cfg = loadConfig();
+  const session = findSession(opts.session, opts.agent);
+  if (!session) {
+    console.error(`error: no OpenClaw transcript for session ${opts.session}`);
+    return 1;
+  }
+  printResults([enqueueSession(cfg, session, { ended: opts.ended === true, world: opts.world })], opts.json);
+  return 0;
+}
+function cmdOpenclawStatus(opts) {
+  const installed2 = installed();
+  const workspace = installed2 ? workspaceDir() : null;
+  const sessions = installed2 ? listSessions() : [];
+  const status = {
+    openclaw_dir: openclawDir(),
+    installed: installed2,
+    workspace,
+    plugin_dir: pluginDir(),
+    plugin_installed: existsSync12(join24(pluginDir(), "openclaw.plugin.json")),
+    plugin_enabled: installed2 ? pluginEnabled() : false,
+    skill_installed: workspace ? existsSync12(join24(skillDir(workspace), "SKILL.md")) : false,
+    sessions: sessions.length,
+    queued: sessions.filter((s) => loadEntry("pending", s.session_id) !== null).length
+  };
+  if (opts.json === true) {
+    console.log(JSON.stringify(status, null, 2));
+    return 0;
+  }
+  console.log(`openclaw dir     ${status.openclaw_dir}${status.installed ? "" : " (missing)"}`);
+  console.log(`workspace        ${status.workspace ?? "-"}`);
+  console.log(`plugin           ${status.plugin_installed ? "installed" : "not installed"}, ${status.plugin_enabled ? "enabled" : "not enabled"}`);
+  console.log(`skill            ${status.skill_installed ? "installed" : "not installed"}`);
+  console.log(`sessions         ${status.sessions} (${status.queued} pending in queue)`);
+  return 0;
+}
+
 // apps/cli/src/commands/reflect.ts
 import { realpathSync as realpathSync3 } from "fs";
-import { resolve as resolve7 } from "path";
+import { resolve as resolve8 } from "path";
 function realOrResolve2(p) {
-  const abs = resolve7(p);
+  const abs = resolve8(p);
   try {
     return realpathSync3(abs);
   } catch {
@@ -20852,9 +21408,9 @@ function cmdReviewRetire(pattern, opts, deps = defaultDeps) {
 }
 
 // apps/cli/src/schedule.ts
-import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync12, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
-import { homedir as homedir2 } from "os";
-import { dirname as dirname7, join as join20 } from "path";
+import { chmodSync, copyFileSync as copyFileSync3, existsSync as existsSync13, mkdirSync as mkdirSync8, readdirSync as readdirSync13, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
+import { homedir as homedir3 } from "os";
+import { dirname as dirname7, join as join25 } from "path";
 var SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"];
 var SYSTEMD_WEB_UNIT = "sil-web.service";
 var LAUNCHD_WORKER_PLIST = "com.raqz.sil-worker.plist";
@@ -20867,16 +21423,16 @@ var realRunner = (cmd) => {
   } catch {}
 };
 function home() {
-  return process.env["HOME"] || homedir2();
+  return process.env["HOME"] || homedir3();
 }
 function shimPath() {
-  return join20(home(), ".local", "bin", "sil");
+  return join25(home(), ".local", "bin", "sil");
 }
 function systemdDir() {
-  return join20(home(), ".config", "systemd", "user");
+  return join25(home(), ".config", "systemd", "user");
 }
 function launchdDir() {
-  return join20(home(), "Library", "LaunchAgents");
+  return join25(home(), "Library", "LaunchAgents");
 }
 function renderSystemd(intervalMin, web) {
   const shim = shimPath();
@@ -20965,20 +21521,20 @@ function renderLaunchd(intervalMin, web) {
 }
 function installShim() {
   const dest = shimPath();
-  mkdirSync7(dirname7(dest), { recursive: true });
-  const src = join20(pluginRoot(), "scripts", "sil");
-  copyFileSync2(src, dest);
+  mkdirSync8(dirname7(dest), { recursive: true });
+  const src = join25(pluginRoot(), "scripts", "sil");
+  copyFileSync3(src, dest);
   chmodSync(dest, 493);
   return dest;
 }
-function install(kind, intervalMin = 60, web = false, run = realRunner) {
+function install2(kind, intervalMin = 60, web = false, run = realRunner) {
   installShim();
   if (kind === "systemd") {
     const d = systemdDir();
-    mkdirSync7(d, { recursive: true });
+    mkdirSync8(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderSystemd(intervalMin, web))) {
-      const p = join20(d, name);
+      const p = join25(d, name);
       writeFileSync5(p, content, "utf8");
       written.push(p);
     }
@@ -20990,10 +21546,10 @@ function install(kind, intervalMin = 60, web = false, run = realRunner) {
   }
   if (kind === "launchd") {
     const d = launchdDir();
-    mkdirSync7(d, { recursive: true });
+    mkdirSync8(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderLaunchd(intervalMin, web))) {
-      const p = join20(d, name);
+      const p = join25(d, name);
       writeFileSync5(p, content, "utf8");
       written.push(p);
       run(["launchctl", "load", p]);
@@ -21009,8 +21565,8 @@ function uninstall(kind, run = realRunner) {
     run(["systemctl", "--user", "disable", "--now", SYSTEMD_WEB_UNIT]);
     const removed = [];
     for (const name of [...SYSTEMD_WORKER_UNITS, SYSTEMD_WEB_UNIT]) {
-      const p = join20(d, name);
-      if (existsSync12(p)) {
+      const p = join25(d, name);
+      if (existsSync13(p)) {
         rmSync5(p);
         removed.push(p);
       }
@@ -21022,8 +21578,8 @@ function uninstall(kind, run = realRunner) {
     const d = launchdDir();
     const removed = [];
     for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST, ...LEGACY_LAUNCHD_PLISTS]) {
-      const p = join20(d, name);
-      if (existsSync12(p)) {
+      const p = join25(d, name);
+      if (existsSync13(p)) {
         run(["launchctl", "unload", p]);
         rmSync5(p);
         removed.push(p);
@@ -21035,9 +21591,9 @@ function uninstall(kind, run = realRunner) {
 }
 function show2() {
   const d = systemdDir();
-  const systemd = existsSync12(d) ? readdirSync11(d).filter((n) => n.startsWith("sil-")).sort() : [];
+  const systemd = existsSync13(d) ? readdirSync13(d).filter((n) => n.startsWith("sil-")).sort() : [];
   const ld = launchdDir();
-  const launchd = existsSync12(ld) ? readdirSync11(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
+  const launchd = existsSync13(ld) ? readdirSync13(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
   return { systemd, launchd };
 }
 
@@ -21052,7 +21608,7 @@ function cmdScheduleInstall(opts) {
     return 2;
   }
   const kind = opts.systemd ? "systemd" : "launchd";
-  const written = install(kind, opts.intervalMin ?? 60, opts.web ?? false);
+  const written = install2(kind, opts.intervalMin ?? 60, opts.web ?? false);
   for (const p of written)
     console.log(`wrote ${p}`);
   return 0;
@@ -21136,20 +21692,80 @@ async function cmdStatus(opts, deps = defaultDeps) {
 
 // apps/server/src/main.ts
 import { randomBytes } from "crypto";
+import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
 import { timingSafeEqual } from "crypto";
 var LOCAL_HEADER = "X-SIL-Local";
 var TOKEN_HEADER = "X-SIL-Token";
-function allowedHosts(port) {
-  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const extra = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
-  for (const raw of extra.split(",")) {
+function allowedHosts(port, extra = []) {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const env = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
+  for (const raw of [...env.split(","), ...extra]) {
     const host = raw.trim();
     if (host)
       hosts.add(host);
   }
   return hosts;
+}
+function splitHostPort(value) {
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end === -1)
+      return null;
+    const rest = value.slice(end + 1);
+    if (rest !== "" && !rest.startsWith(":"))
+      return null;
+    return { hostname: value.slice(1, end), port: rest.slice(1) };
+  }
+  const colon = value.indexOf(":");
+  if (colon === -1)
+    return { hostname: value, port: "" };
+  if (value.indexOf(":", colon + 1) !== -1)
+    return null;
+  return { hostname: value.slice(0, colon), port: value.slice(colon + 1) };
+}
+function ipv4Private(hostname) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!m)
+    return null;
+  const parts = m.slice(1).map(Number);
+  if (parts.some((n) => n > 255))
+    return false;
+  const [a, b] = parts;
+  if (a === 127 || a === 10)
+    return true;
+  if (a === 172 && b >= 16 && b <= 31)
+    return true;
+  if (a === 192 && b === 168)
+    return true;
+  if (a === 169 && b === 254)
+    return true;
+  if (a === 100 && b >= 64 && b <= 127)
+    return true;
+  return false;
+}
+function isPrivateAddress(hostname) {
+  const v4 = ipv4Private(hostname);
+  if (v4 !== null)
+    return v4;
+  const v6 = hostname.toLowerCase().split("%")[0];
+  if (!v6.includes(":"))
+    return false;
+  if (!/^[0-9a-f:.]+$/.test(v6))
+    return false;
+  if (v6 === "::1")
+    return true;
+  if (v6.startsWith("::ffff:"))
+    return ipv4Private(v6.slice(7)) === true;
+  const head = Number.parseInt(v6.split(":")[0] || "0", 16);
+  if (Number.isNaN(head))
+    return false;
+  if ((head & 65024) === 64512)
+    return true;
+  if ((head & 65472) === 65152)
+    return true;
+  return false;
 }
 function safeEqual(a, b) {
   const bufA = Buffer.from(a, "utf8");
@@ -21160,12 +21776,20 @@ function safeEqual(a, b) {
   }
   return timingSafeEqual(bufA, bufB);
 }
+function hostAllowed(host, opts) {
+  if (allowedHosts(opts.port, opts.allowedHosts ?? []).has(host))
+    return true;
+  const parts = splitHostPort(host);
+  if (!parts || parts.port !== String(opts.port))
+    return false;
+  return isPrivateAddress(parts.hostname);
+}
 function jsonError(status, detail) {
   return new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } });
 }
 function guard(request, opts) {
   const host = request.headers.get("host") ?? "";
-  if (!allowedHosts(opts.port).has(host)) {
+  if (!hostAllowed(host, opts)) {
     return jsonError(403, "bad Host header");
   }
   if (request.headers.get(LOCAL_HEADER) !== "1") {
@@ -21266,14 +21890,14 @@ function lessonsList(args) {
 }
 
 // packages/ops/src/spawn.ts
-import { closeSync as closeSync2, existsSync as existsSync13, openSync as openSync2 } from "fs";
-import { dirname as dirname8, join as join21 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync14, openSync as openSync2 } from "fs";
+import { dirname as dirname8, join as join26 } from "path";
 function cliCommand(args) {
   const root = pluginRoot();
-  const distCli = join21(root, "dist", "cli.js");
-  if (existsSync13(distCli))
+  const distCli = join26(root, "dist", "cli.js");
+  if (existsSync14(distCli))
     return ["bun", distCli, ...args];
-  return ["bun", "run", join21(root, "apps", "cli", "src", "main.ts"), ...args];
+  return ["bun", "run", join26(root, "apps", "cli", "src", "main.ts"), ...args];
 }
 function spawnCli(args, logName) {
   const logPath = logFile(logName);
@@ -21355,9 +21979,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync10 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync15, openSync as openSync3, readSync, statSync as statSync12 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync10 };
+var REAL_TAIL_IO = { existsSync: existsSync15, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync12 };
 function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
   if (knownSize === undefined && !io.existsSync(path))
     return [];
@@ -21394,7 +22018,7 @@ function logsTail(args) {
   let size = 0;
   let exists = true;
   try {
-    size = statSync10(path).size;
+    size = statSync12(path).size;
   } catch {
     exists = false;
   }
@@ -21422,7 +22046,7 @@ function loopRun(args) {
 }
 
 // packages/ops/src/handlers/reflections.ts
-import { join as join22 } from "path";
+import { join as join27 } from "path";
 function reflectionsList(args) {
   let refs = listReflections(args.world);
   if (args.pattern)
@@ -21440,7 +22064,7 @@ function reflectionsList(args) {
   }));
 }
 function reflectionsGet(args) {
-  const path = join22(reflectionsDir(args.world), `${args.id}.md`);
+  const path = join27(reflectionsDir(args.world), `${args.id}.md`);
   const r = parseReflection(path, args.world);
   if (r === null)
     throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
@@ -21618,10 +22242,10 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync15, statSync as statSync11 } from "fs";
-import { join as join23, normalize, sep } from "path";
+import { existsSync as existsSync16, statSync as statSync13 } from "fs";
+import { join as join28, normalize, sep } from "path";
 function staticRoot() {
-  return join23(pluginRoot(), "dist", "web");
+  return join28(pluginRoot(), "dist", "web");
 }
 function hasDotSegment(pathname) {
   return pathname.split("/").some((seg) => seg === "." || seg === "..");
@@ -21636,7 +22260,7 @@ function resolveStaticPath(root, pathname) {
   if (hasDotSegment(decoded) || decoded.split("/").some((seg) => seg.startsWith(".")))
     return null;
   const cleaned = decoded.replace(/^\/+/, "");
-  const full = normalize(join23(root, cleaned));
+  const full = normalize(join28(root, cleaned));
   if (full !== root && !full.startsWith(root + sep))
     return null;
   return full;
@@ -21646,7 +22270,7 @@ function fileResponse(path) {
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
-  if (!existsSync15(root))
+  if (!existsSync16(root))
     return new Response("not found", { status: 404 });
   const wanted = pathname === "/" ? "/index.html" : pathname;
   const target = resolveStaticPath(root, wanted);
@@ -21654,7 +22278,7 @@ async function serveStatic(pathname) {
     return new Response("not found", { status: 404 });
   let st;
   try {
-    st = statSync11(target);
+    st = statSync13(target);
   } catch {
     st = null;
   }
@@ -21664,12 +22288,15 @@ async function serveStatic(pathname) {
 }
 
 // apps/server/src/main.ts
-var REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+function isLoopbackHost(host) {
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
 function createServer(opts) {
   const host = opts.host ?? "127.0.0.1";
-  if (REFUSED_HOSTS.has(host)) {
-    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)}: loopback only`);
+  if (opts.token === null && !isLoopbackHost(host)) {
+    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)} without a token: drop --no-token or bind 127.0.0.1`);
   }
   const routes = buildRoutes();
   const server = Bun.serve({
@@ -21680,7 +22307,7 @@ function createServer(opts) {
       const url = new URL(request.url);
       const pathname = url.pathname;
       if (pathname === "/api/ops" || routes.has(pathname)) {
-        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token });
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
         if (denied)
           return denied;
         if (pathname === "/api/ops")
@@ -21705,12 +22332,31 @@ function createServer(opts) {
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
+function urlHost(host) {
+  if (WILDCARD_HOSTS.has(host))
+    return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
+}
+function privateAddresses() {
+  const out = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.internal || !isPrivateAddress(addr.address))
+        continue;
+      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
+    }
+  }
+  return out;
+}
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
   const token = opts.token ?? true ? newToken() : null;
-  const server = createServer({ port: opts.port, host, token });
-  const url = `http://${host}:${server.port ?? opts.port}/` + (token ? `#${token}` : "");
-  console.log(url);
+  const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
+  const port = server.port ?? opts.port;
+  const fragment = token ? `#${token}` : "";
+  const hosts = WILDCARD_HOSTS.has(host) ? [urlHost(host), ...privateAddresses()] : [urlHost(host)];
+  for (const h of hosts)
+    console.log(`http://${h}:${port}/${fragment}`);
   return server;
 }
 if (false) {}
@@ -21725,10 +22371,10 @@ function openBrowser(url) {
 async function cmdWeb(opts) {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
-  const host = opts.host ?? "127.0.0.1";
-  const server = serve({ host, port, token: opts.token ?? true });
+  const host = opts.host ?? cfg.web.host;
+  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
-    openBrowser(`http://${host}:${server.port}/`);
+    openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise(() => {});
 }
 
@@ -21839,11 +22485,17 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));
   worlds.command("import-kb").argument("<path>").action(wire((path) => cmdWorldsImportKb(path)));
+  const openclaw = program.command("openclaw").description("run the loop against an OpenClaw install");
+  openclaw.command("install").option("--world <name>").option("--workspace <path>", "OpenClaw agent workspace; defaults to the one in openclaw.json").option("--enable", "also set plugins.entries enabled in openclaw.json").action(wire((opts) => cmdOpenclawInstall(opts)));
+  openclaw.command("sync").description("write rules and pending lessons into the workspace bootstrap file").option("--world <name>").option("--workspace <path>").option("--file <name>", "bootstrap file inside the workspace", "AGENTS.md").option("--limit <n>", "", intOption).option("--dry-run").action(wire((opts) => cmdOpenclawSync(opts)));
+  openclaw.command("scan").description("queue OpenClaw session transcripts for reflection").option("--world <name>", "force a world instead of resolving one per session cwd").option("--max-age-hours <n>", "", intOption).option("--json").action(wire((opts) => cmdOpenclawScan(opts)));
+  openclaw.command("enqueue").requiredOption("--session <id>").option("--agent <id>").option("--ended", "the session is over: do not wait for the idle window").option("--world <name>").option("--json").action(wire((opts) => cmdOpenclawEnqueue(opts)));
+  openclaw.command("status").option("--json").action(wire((opts) => cmdOpenclawStatus(opts)));
   const imp = program.command("import");
   imp.command("reflections").argument("<dir>").requiredOption("--world <name>").action(wire((dir, opts) => cmdImportReflections(dir, opts)));
   imp.command("ledger").argument("<file>").requiredOption("--world <name>").action(wire((file, opts) => cmdImportLedger(file, opts)));

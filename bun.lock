@@ -10,6 +10,7 @@
         "@sil/curriculum": "workspace:*",
         "@sil/feedback": "workspace:*",
         "@sil/nudges": "workspace:*",
+        "@sil/openclaw": "workspace:*",
         "@sil/ops": "workspace:*",
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
@@ -28,6 +29,7 @@
         "@sil/critic": "workspace:*",
         "@sil/curriculum": "workspace:*",
         "@sil/feedback": "workspace:*",
+        "@sil/openclaw": "workspace:*",
         "@sil/ops": "workspace:*",
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
@@ -110,6 +112,15 @@
       "version": "0.2.1",
       "dependencies": {
         "@sil/core": "workspace:*",
+      },
+    },
+    "packages/openclaw": {
+      "name": "@sil/openclaw",
+      "version": "0.2.1",
+      "dependencies": {
+        "@sil/core": "workspace:*",
+        "@sil/store": "workspace:*",
+        "@sil/transcript": "workspace:*",
       },
     },
     "packages/ops": {
@@ -233,6 +244,8 @@
     "@sil/hook": ["@sil/hook@workspace:apps/hook"],
 
     "@sil/nudges": ["@sil/nudges@workspace:packages/nudges"],
+
+    "@sil/openclaw": ["@sil/openclaw@workspace:packages/openclaw"],
 
     "@sil/ops": ["@sil/ops@workspace:packages/ops"],
 

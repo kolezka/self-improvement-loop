@@ -6969,20 +6969,80 @@ var require_public_api = __commonJS(function(exports) {
 
 // apps/server/src/main.ts
 import { randomBytes } from "crypto";
+import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
 import { timingSafeEqual } from "crypto";
 var LOCAL_HEADER = "X-SIL-Local";
 var TOKEN_HEADER = "X-SIL-Token";
-function allowedHosts(port) {
-  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const extra = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
-  for (const raw of extra.split(",")) {
+function allowedHosts(port, extra = []) {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const env = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
+  for (const raw of [...env.split(","), ...extra]) {
     const host = raw.trim();
     if (host)
       hosts.add(host);
   }
   return hosts;
+}
+function splitHostPort(value) {
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end === -1)
+      return null;
+    const rest = value.slice(end + 1);
+    if (rest !== "" && !rest.startsWith(":"))
+      return null;
+    return { hostname: value.slice(1, end), port: rest.slice(1) };
+  }
+  const colon = value.indexOf(":");
+  if (colon === -1)
+    return { hostname: value, port: "" };
+  if (value.indexOf(":", colon + 1) !== -1)
+    return null;
+  return { hostname: value.slice(0, colon), port: value.slice(colon + 1) };
+}
+function ipv4Private(hostname) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!m)
+    return null;
+  const parts = m.slice(1).map(Number);
+  if (parts.some((n) => n > 255))
+    return false;
+  const [a, b] = parts;
+  if (a === 127 || a === 10)
+    return true;
+  if (a === 172 && b >= 16 && b <= 31)
+    return true;
+  if (a === 192 && b === 168)
+    return true;
+  if (a === 169 && b === 254)
+    return true;
+  if (a === 100 && b >= 64 && b <= 127)
+    return true;
+  return false;
+}
+function isPrivateAddress(hostname) {
+  const v4 = ipv4Private(hostname);
+  if (v4 !== null)
+    return v4;
+  const v6 = hostname.toLowerCase().split("%")[0];
+  if (!v6.includes(":"))
+    return false;
+  if (!/^[0-9a-f:.]+$/.test(v6))
+    return false;
+  if (v6 === "::1")
+    return true;
+  if (v6.startsWith("::ffff:"))
+    return ipv4Private(v6.slice(7)) === true;
+  const head = Number.parseInt(v6.split(":")[0] || "0", 16);
+  if (Number.isNaN(head))
+    return false;
+  if ((head & 65024) === 64512)
+    return true;
+  if ((head & 65472) === 65152)
+    return true;
+  return false;
 }
 function safeEqual(a, b) {
   const bufA = Buffer.from(a, "utf8");
@@ -6993,12 +7053,20 @@ function safeEqual(a, b) {
   }
   return timingSafeEqual(bufA, bufB);
 }
+function hostAllowed(host, opts) {
+  if (allowedHosts(opts.port, opts.allowedHosts ?? []).has(host))
+    return true;
+  const parts = splitHostPort(host);
+  if (!parts || parts.port !== String(opts.port))
+    return false;
+  return isPrivateAddress(parts.hostname);
+}
 function jsonError(status, detail) {
   return new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } });
 }
 function guard(request, opts) {
   const host = request.headers.get("host") ?? "";
-  if (!allowedHosts(opts.port).has(host)) {
+  if (!hostAllowed(host, opts)) {
     return jsonError(403, "bad Host header");
   }
   if (request.headers.get(LOCAL_HEADER) !== "1") {
@@ -13034,7 +13102,11 @@ var WorkerConfig = object({
   min_tool_uses: number2().int().min(0).default(6),
   auto_kick: boolean2().default(true)
 });
-var WebConfig = object({ port: number2().int().default(8766) });
+var WebConfig = object({
+  port: number2().int().default(8766),
+  host: string2().default("127.0.0.1"),
+  allowed_hosts: array(string2()).default([])
+});
 var Config = object({
   version: number2().int().default(1),
   worlds: array(World).default(() => [World.parse({ name: "default" })]),
@@ -13885,8 +13957,8 @@ function stripNulls(v) {
   return v;
 }
 // packages/store/src/inbox.ts
-import { readdirSync as readdirSync2 } from "fs";
-import { join as join5 } from "path";
+import { mkdirSync as mkdirSync2, readdirSync as readdirSync2, renameSync as renameSync2 } from "fs";
+import { basename as basename2, join as join5 } from "path";
 function putLesson(lesson) {
   const p = join5(inboxDir(lesson.world), `${safeComponent(lesson.id)}.json`);
   writeJson(p, Lesson.parse(lesson));
@@ -14042,7 +14114,7 @@ __export(exports_git, {
   signalMessage: () => signalMessage,
   withScratchWorktree: () => withScratchWorktree
 });
-import { mkdirSync as mkdirSync2, mkdtempSync, rmSync as rmSync2, statSync as statSync3 } from "fs";
+import { mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync2, statSync as statSync3 } from "fs";
 import { tmpdir } from "os";
 import { join as join7 } from "path";
 var DEFAULT_TIMEOUT_MS = 60000;
@@ -14117,7 +14189,7 @@ function defaultBranch(repo) {
   return currentBranch(repo) || "main";
 }
 function ensureRepo(path) {
-  mkdirSync2(path, { recursive: true });
+  mkdirSync3(path, { recursive: true });
   if (isRepo(path))
     return path;
   git(path, ["init", "-q", "-b", "main"]);
@@ -14129,7 +14201,7 @@ function ensureRepo(path) {
 }
 function hooksOff(parent) {
   const empty = join7(parent, "nohooks");
-  mkdirSync2(empty, { recursive: true });
+  mkdirSync3(empty, { recursive: true });
   return ["-c", `core.hooksPath=${empty}`];
 }
 function withScratchWorktree(repo, branch, base, fn) {
@@ -14204,7 +14276,7 @@ __export(exports_artifacts, {
   rulesProblem: () => rulesProblem,
   writeArtifact: () => writeArtifact
 });
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync4, rmdirSync, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync4, rmdirSync, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
 import { dirname as dirname3, join as join8, resolve as resolve3 } from "path";
 var TYPES = ["skill", "hook", "rule", "agent"];
 var HOOK_KEYS = ["pattern", "event", "matcher", "gate", "once_per", "text"];
@@ -14270,7 +14342,7 @@ function writeArtifact(world, artifactType, pattern, payload, root) {
     writeRule(path, pattern, String(payload).trim());
     return path;
   }
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname3(path), { recursive: true });
   if (artifactType === "hook") {
     writeFileSync2(path, JSON.stringify(hookPayload(payload), null, 2) + `
 `, "utf8");
@@ -14379,7 +14451,7 @@ function ensureRulesFile(world, root) {
   const path = join8(rootFor(world, root), strip(world.layout.rules_file));
   if (existsSync3(path))
     return path;
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname3(path), { recursive: true });
   writeFileSync2(path, `# Learned rules
 
 Promoted by the loop. Edit outside the markers only.
@@ -14550,7 +14622,7 @@ import { join as join9 } from "path";
 
 // packages/nudges/src/firelog.ts
 import { createHash } from "crypto";
-import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync2, rmSync as rmSync3, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
+import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync2, rmSync as rmSync3, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname4 } from "path";
 var ROTATE_AT_BYTES2 = 10 * 1024 * 1024;
 var ROTATE_KEEP_LINES2 = 5000;
@@ -14588,7 +14660,7 @@ function withDirLock(lockDir, fn, staleMs = DEFAULT_STALE_MS) {
   for (;; ) {
     let held = false;
     try {
-      mkdirSync4(lockDir);
+      mkdirSync5(lockDir);
       held = true;
     } catch (e) {
       if (e.code !== "EEXIST")
@@ -14633,7 +14705,7 @@ function rotateIfNeeded(path, rotateAt, keep) {
 }
 function appendLine2(path, line, rotateAt = ROTATE_AT_BYTES2, keep = ROTATE_KEEP_LINES2) {
   try {
-    mkdirSync4(dirname4(path), { recursive: true });
+    mkdirSync5(dirname4(path), { recursive: true });
     withDirLock(`${path}.lockdir`, () => {
       rotateIfNeeded(path, rotateAt, keep);
       appendFileSync2(path, line.endsWith(`
@@ -14650,7 +14722,7 @@ function markerSlug(raw) {
 function claimMarker(sessionDir, name) {
   try {
     const markers = `${sessionDir}/nudge-markers`;
-    mkdirSync4(markers, { recursive: true });
+    mkdirSync5(markers, { recursive: true });
     const mark = `${markers}/${markerSlug(name)}`;
     if (existsSync4(mark))
       return false;
@@ -16061,10 +16133,102 @@ async function chatClaudeCli(endpoint, model, messages, _opts) {
 
 // packages/transcript/src/index.ts
 import { existsSync as existsSync6, readFileSync as readFileSync3 } from "fs";
+
+// packages/transcript/src/openclaw.ts
+var SKILL_PATH_RE = /(?:^|\/)skills\/([A-Za-z0-9][A-Za-z0-9._-]*)\/SKILL\.md$/;
+var TOOL_NAMES = { exec: "Bash" };
+function asRecord(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+}
+function isOpenclawRecord(rec) {
+  if (rec["type"] === "session" && typeof rec["id"] === "string" && rec["message"] === undefined)
+    return true;
+  if (rec["type"] !== "message")
+    return false;
+  const message = asRecord(rec["message"]);
+  return message !== null && typeof message["role"] === "string" && rec["sessionId"] === undefined;
+}
+function textBlocks(content) {
+  if (typeof content === "string")
+    return content ? [{ type: "text", text: content }] : [];
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (block && block["type"] === "text")
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+  }
+  return out;
+}
+function skillBlock(id, name, args) {
+  if (name !== "read")
+    return null;
+  const path = args["path"];
+  if (typeof path !== "string")
+    return null;
+  const m = SKILL_PATH_RE.exec(path);
+  return m ? { type: "tool_use", id, name: "Skill", input: { skill: m[1] } } : null;
+}
+function assistantBlocks(content) {
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (!block)
+      continue;
+    if (block["type"] === "text") {
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+      continue;
+    }
+    if (block["type"] !== "toolCall")
+      continue;
+    const name = String(block["name"] ?? "");
+    const args = asRecord(block["arguments"]) ?? {};
+    const id = block["id"] != null ? String(block["id"]) : null;
+    out.push(skillBlock(id, name, args) ?? { type: "tool_use", id, name: TOOL_NAMES[name] ?? name, input: args });
+  }
+  return out;
+}
+function toolResultBlock(message) {
+  return {
+    type: "tool_result",
+    tool_use_id: message["toolCallId"] != null ? String(message["toolCallId"]) : "",
+    is_error: message["isError"] === true,
+    content: message["content"]
+  };
+}
+function* adaptOpenclawRecords(records) {
+  let sessionId = "";
+  for (const rec of records) {
+    const type = rec["type"];
+    if (type === "session") {
+      if (typeof rec["id"] === "string")
+        sessionId = rec["id"];
+      continue;
+    }
+    if (type !== "message")
+      continue;
+    const message = asRecord(rec["message"]);
+    if (!message)
+      continue;
+    const role = message["role"];
+    if (role === "user") {
+      yield { type: "user", sessionId, message: { content: textBlocks(message["content"]) } };
+    } else if (role === "assistant") {
+      yield { type: "assistant", sessionId, message: { content: assistantBlocks(message["content"]) } };
+    } else if (role === "toolResult") {
+      yield { type: "user", sessionId, message: { content: [toolResultBlock(message)] } };
+    }
+  }
+}
+
+// packages/transcript/src/index.ts
 var NOISE_TYPES = new Set(["ai-title", "last-prompt", "queue-operation", "atis-latch"]);
 var TEST_LIKE_RE = /pytest|jest|vitest|go test|cargo test|npm test|pnpm test|make test|ruff|eslint|tsc|mypy/;
 var SUMMARY_KEYS = ["command", "file_path", "skill", "subagent_type", "pattern", "path"];
-function asRecord(v) {
+function asRecord2(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : null;
 }
 function asArray(v) {
@@ -16094,18 +16258,35 @@ function* iterRecords(path, maxBytes = 50000000) {
     } catch {
       continue;
     }
-    const obj = asRecord(rec);
+    const obj = asRecord2(rec);
     if (obj)
       yield obj;
   }
 }
+function* iterEvidenceRecords(path, maxBytes = 50000000) {
+  const raw = iterRecords(path, maxBytes);
+  const first = raw.next();
+  if (first.done)
+    return;
+  if (isOpenclawRecord(first.value)) {
+    yield* adaptOpenclawRecords(prepend(first.value, raw));
+    return;
+  }
+  yield first.value;
+  yield* raw;
+}
+function* prepend(head, rest) {
+  yield head;
+  for (let step = rest.next();!step.done; step = rest.next())
+    yield step.value;
+}
 function countToolUses(path) {
   let count = 0;
-  for (const rec of iterRecords(path)) {
+  for (const rec of iterEvidenceRecords(path)) {
     if (rec["type"] !== "assistant")
       continue;
     for (const block of contentBlocks(rec)) {
-      const b = asRecord(block);
+      const b = asRecord2(block);
       if (b && b["type"] === "tool_use")
         count++;
     }
@@ -16113,16 +16294,16 @@ function countToolUses(path) {
   return count;
 }
 function contentBlocks(rec) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   return asArray(message["content"]);
 }
 function recordText(rec) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   const content = message["content"];
   if (typeof content === "string")
     return content;
   if (Array.isArray(content)) {
-    const parts = content.map((b) => asRecord(b)).filter((b) => b !== null && b["type"] === "text").map((b) => String(b["text"] ?? ""));
+    const parts = content.map((b) => asRecord2(b)).filter((b) => b !== null && b["type"] === "text").map((b) => String(b["text"] ?? ""));
     return parts.join(`
 `);
   }
@@ -16134,7 +16315,7 @@ function stringifyToolResultContent(content) {
   if (Array.isArray(content)) {
     const parts = [];
     for (const b of content) {
-      const obj = asRecord(b);
+      const obj = asRecord2(b);
       if (obj && obj["type"] === "text")
         parts.push(String(obj["text"] ?? ""));
       else if (typeof b === "string")
@@ -16156,7 +16337,7 @@ function toolSummary(inp) {
   return Object.keys(inp).length > 0 ? JSON.stringify(inp).slice(0, 160) : "";
 }
 function recordHook(rec, hooks) {
-  const att = asRecord(rec["attachment"]);
+  const att = asRecord2(rec["attachment"]);
   if (!att || !att["hookName"])
     return;
   const name = String(att["hookName"]);
@@ -16168,15 +16349,15 @@ function recordHook(rec, hooks) {
   h.max_ms = Math.max(h.max_ms, Number.isFinite(ms) ? ms : 0);
 }
 function recordUser(rec, prompts, counts, toolResultById, errors) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   const content = message["content"];
   const blocks = asArray(content);
   const hasText = typeof content === "string" || blocks.some((b) => {
-    const obj = asRecord(b);
+    const obj = asRecord2(b);
     return obj !== null && obj["type"] === "text";
   });
   for (const b of blocks) {
-    const obj = asRecord(b);
+    const obj = asRecord2(b);
     if (!obj || obj["type"] !== "tool_result")
       continue;
     const toolUseId = obj["tool_use_id"];
@@ -16208,7 +16389,7 @@ function evidencePack(transcriptPath, cwd, opts = {}) {
   const hooks = {};
   const errors = [];
   const counts = { tool_uses: 0, turns: 0, user_prompts: 0, attachments: 0 };
-  for (const rec of iterRecords(transcriptPath)) {
+  for (const rec of iterEvidenceRecords(transcriptPath)) {
     const rtype = rec["type"];
     if (typeof rtype === "string" && NOISE_TYPES.has(rtype))
       continue;
@@ -16229,12 +16410,12 @@ function evidencePack(transcriptPath, cwd, opts = {}) {
       if (text && text.trim())
         finalAssistantTexts.push(text.trim().slice(0, 800));
       for (const block of contentBlocks(rec)) {
-        const b = asRecord(block);
+        const b = asRecord2(block);
         if (!b || b["type"] !== "tool_use")
           continue;
         counts.tool_uses += 1;
         const name = String(b["name"] ?? "");
-        const inp = asRecord(b["input"]) ?? {};
+        const inp = asRecord2(b["input"]) ?? {};
         const summary = toolSummary(inp);
         toolUseEntries.push({ id: b["id"] != null ? String(b["id"]) : null, name, summary: summary.slice(0, 160) });
         if (name === "Skill" && inp["skill"])
@@ -17273,7 +17454,7 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync6, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
 import { existsSync as existsSync8 } from "fs";
 import { dirname as dirname6, join as join16, resolve as resolve6 } from "path";
 
@@ -17298,7 +17479,7 @@ import { dirname as dirname5, join as join15 } from "path";
 
 // packages/worker/src/outline.ts
 import { readdirSync as readdirSync8 } from "fs";
-import { basename as basename2, join as join14 } from "path";
+import { basename as basename3, join as join14 } from "path";
 async function exportNew(world, _cfg) {
   if (world.outline === null)
     return { skipped: "not configured" };
@@ -17317,7 +17498,7 @@ async function exportNew(world, _cfg) {
     return { exported, errors };
   }
   for (const name of names) {
-    const rid = basename2(name, ".md");
+    const rid = basename3(name, ".md");
     if (exportedIds.has(rid))
       continue;
     let body;
@@ -18245,7 +18426,7 @@ function relink(world, pattern, artifactType) {
   const rel = artifactRel(world, artifactType, pattern);
   const source = artifactType === "skill" ? dirname6(join16(target, rel)) : join16(target, rel);
   const link = artifactType === "skill" ? join16(claudeConfigDir(), "skills", pattern) : join16(claudeConfigDir(), "agents", `${pattern}.md`);
-  mkdirSync5(dirname6(link), { recursive: true });
+  mkdirSync6(dirname6(link), { recursive: true });
   let isLink = false;
   try {
     isLink = lstatSync2(link).isSymbolicLink();
@@ -18705,12 +18886,15 @@ async function serveStatic(pathname) {
 }
 
 // apps/server/src/main.ts
-var REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+function isLoopbackHost(host) {
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
 function createServer(opts) {
   const host = opts.host ?? "127.0.0.1";
-  if (REFUSED_HOSTS.has(host)) {
-    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)}: loopback only`);
+  if (opts.token === null && !isLoopbackHost(host)) {
+    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)} without a token: drop --no-token or bind 127.0.0.1`);
   }
   const routes = buildRoutes();
   const server = Bun.serve({
@@ -18721,7 +18905,7 @@ function createServer(opts) {
       const url = new URL(request.url);
       const pathname = url.pathname;
       if (pathname === "/api/ops" || routes.has(pathname)) {
-        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token });
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
         if (denied)
           return denied;
         if (pathname === "/api/ops")
@@ -18746,18 +18930,38 @@ function createServer(opts) {
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
+function urlHost(host) {
+  if (WILDCARD_HOSTS.has(host))
+    return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
+}
+function privateAddresses() {
+  const out = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.internal || !isPrivateAddress(addr.address))
+        continue;
+      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
+    }
+  }
+  return out;
+}
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
   const token = opts.token ?? true ? newToken() : null;
-  const server = createServer({ port: opts.port, host, token });
-  const url = `http://${host}:${server.port ?? opts.port}/` + (token ? `#${token}` : "");
-  console.log(url);
+  const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
+  const port = server.port ?? opts.port;
+  const fragment = token ? `#${token}` : "";
+  const hosts = WILDCARD_HOSTS.has(host) ? [urlHost(host), ...privateAddresses()] : [urlHost(host)];
+  for (const h of hosts)
+    console.log(`http://${h}:${port}/${fragment}`);
   return server;
 }
 function parseCliArgs(argv) {
   let port = 8766;
   let host = "127.0.0.1";
   let token = true;
+  const allowedHosts = [];
   for (let i = 0;i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--port") {
@@ -18768,11 +18972,15 @@ function parseCliArgs(argv) {
       const value = argv[++i];
       if (value !== undefined)
         host = value;
+    } else if (arg === "--allowed-host") {
+      const value = argv[++i];
+      if (value !== undefined)
+        allowedHosts.push(value);
     } else if (arg === "--no-token") {
       token = false;
     }
   }
-  return { port, host, token };
+  return { port, host, token, allowedHosts };
 }
 if (import.meta.main) {
   const cli = parseCliArgs(process.argv.slice(2));
@@ -18781,5 +18989,7 @@ if (import.meta.main) {
 export {
   MAX_REQUEST_BODY_BYTES,
   createServer,
-  serve
+  isLoopbackHost,
+  serve,
+  urlHost
 };

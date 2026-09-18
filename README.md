@@ -5,6 +5,8 @@ background, and promotes recurring lessons into skills, hooks, rules and agents.
 It tracks whether those artifacts actually get used, and feeds that back into the
 next promotion decision. Nothing reaches a shared remote without a human.
 
+OpenClaw sessions feed the same loop. See `docs/OPENCLAW.md`.
+
 ## The loop, in words
 
 Hooks record what happened in a session (fast, one bundled script, never blocks, never
@@ -123,6 +125,7 @@ that.
 - `docs/ARCHITECTURE.md`: design rules, runtime layout, full loop mechanics.
 - `docs/INSTALL.md`: marketplace install, local dev install, scheduling.
 - `docs/OPERATIONS.md`: daily loop, reviewing, key rotation, troubleshooting.
+- `docs/OPENCLAW.md`: running the loop on OpenClaw sessions.
 - `docs/V1-PARITY.md`: what carried over from V1 and what changed.
 
 ## License

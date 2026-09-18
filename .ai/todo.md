@@ -1,56 +1,62 @@
-# self-improvement-loop v2 (TypeScript + Bun): build plan
+# OpenClaw integration for self-improvement-loop
 
-Design: `docs/ARCHITECTURE.md`. The interim Python V2 was the port source and is
-gone from the tree (last Python commit 97d8b42). Default branch is `main`
-(fast-forwarded from `feat/loop-v2`), repo is private, license is proprietary.
+Goal: run the same loop (reflect, promote, deliver, measure) for OpenClaw
+sessions, not only Claude Code sessions.
 
-## Phase 0: contracts
-- [x] monorepo: workspaces, tsconfig, bunfig, scripts/build.ts (committed dist/ + srchash), scripts/lint-dashes.ts
-- [x] @sil/core, @sil/store with tests; typed stubs for the rest; apps/web skeleton
+## Facts the design is built on (verified in this session)
 
-## Phase 1: parallel port
-- [x] A @sil/nudges + apps/hook (bundle, exit 0 always, 14 ms p50)
-- [x] B @sil/transcript, providers, critic, feedback, worker (+ outline export)
-- [x] C @sil/curriculum (git, artifacts, lint, router, prompts, plan, run) + @sil/review
-- [x] D @sil/ops + apps/server (Bun.serve) + apps/web (Svelte 5, 9 panes)
-- [x] E apps/cli (commander), schedule, importer, hooks.json -> dist/hook.js, commands, docs, scripts/sil
+- OpenClaw writes one JSONL transcript per session at
+  `~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl`. Record types:
+  `session` (header, holds `id` and `cwd`), `message`, `model_change`,
+  `thinking_level_change`, `custom`. A `message` holds `message.role` of
+  `user`, `assistant` or `toolResult`; assistant content holds `toolCall`
+  blocks; shell runs through the `exec` tool.
+- OpenClaw has no Claude Code style hook contract. Third party code plugs in
+  as a plugin under `~/.openclaw/extensions/<id>/` with an
+  `openclaw.plugin.json` manifest, loaded by jiti (`.ts`, `.js`, `.mjs`).
+- Typed plugin hooks used here: `session_start`, `session_end`,
+  `after_tool_call`. They are not gated by config. Internal hooks
+  (`agent:bootstrap`) are gated by `hooks.internal.enabled === true`, so they
+  are not used.
+- Workspace bootstrap files (AGENTS.md, SOUL.md, ...) are injected in every
+  session. OpenClaw caps each file at 20000 chars (`BOOTSTRAP_MAX_CHARS`) and
+  the whole set at 150000 (`BOOTSTRAP_TOTAL_MAX_CHARS`), verified in the
+  2026.2.26 bundle. That is the lesson delivery path.
+- Skills live at `<workspace>/skills/<name>/SKILL.md`; `description` is
+  required, `name` is optional.
 
-## Phase 2: integration
-- [x] bun install, typecheck, bun test green (699 pass, 51 files)
-- [x] bun run build; dist drift test; hooks.json points at dist/hook.js
-- [x] tests/e2e.test.ts: hook bundle -> queue -> worker (fake chat) -> reflection -> inbox -> SessionStart; reflections -> run -> review -> accept -> relink; HTTP API
-- [x] browser smoke of the Svelte UI (Overview, Review detail + diff, Accept)
-- [x] independent review (hook, curriculum/review, web security); all blockers fixed in a7d0e41
-- [x] Python tree removed, docs updated
-- [x] commits on feat/loop-v2
+## Tasks
 
-## Phase 3: repository decisions (done 2026-09-14)
-- [x] repo set to private
-- [x] `main` created from `feat/loop-v2` (c01128d), pushed, set as default branch
-- [x] license switched to proprietary (LICENSE, plugin.json, package.json, README)
-- [ ] delete `feat/loop-v2` on origin and the stale local `master` (cc10ccb) once nothing references them
-- [ ] decide whether the MIT commit in history matters; the repo was public for about 5 hours
+- [x] `packages/transcript`: OpenClaw record adapter, format autodetect, so
+      `evidencePack()` and `countToolUses()` work on both formats.
+- [x] `packages/store`: `markDelivered()` on the lesson inbox (deliveries
+      counter plus archive at 5), so the OpenClaw path shares the Claude Code
+      delivery accounting.
+- [x] `packages/openclaw`: host paths, session discovery, queue enqueue,
+      workspace lesson block sync, plugin and skill install.
+- [x] `apps/cli`: `sil openclaw install|sync|scan|enqueue|status`.
+- [x] `integrations/openclaw/plugin`: the OpenClaw plugin (session_start ->
+      sync, session_end -> enqueue, after_tool_call -> skill usage event).
+- [x] `integrations/openclaw/skill`: workspace skill that tells the agent what
+      the loop is and how to give feedback.
+- [x] Tests: adapter, discovery, enqueue, workspace sync, CLI.
+- [x] Docs: `docs/OPENCLAW.md`, README pointer, ARCHITECTURE note.
 
-## Phase 4: release (operator)
-- [ ] `scripts/register-marketplace.sh`, push its branch, open the PR to kolezka/marketplace
-- [ ] `claude plugin marketplace update kolezka` and `claude plugin install self-improvement-loop@kolezka`
-- [ ] confirm the installed plugin carries dist/ and that dist/hook.js runs in a real session (logs/hook.log)
+## Review
 
-## Phase 5: first run (operator)
-- [ ] `sil init`; set LiteLLM base_url, LITELLM_API_KEY and the critic/drafter/judge models in llm.yaml
-- [ ] optional dotfiles-next world: `sil worlds add ... --layout v1 --target ~/Development/dotfiles-next`, then `sil import reflections`, `sil import ledger`, `sil worlds import-kb`
-- [ ] `sil schedule install --systemd --web`; check `sil status` and the Queue pane after an hour
-- [ ] disable the old nudge-dispatch hooks in dotfiles-next so only one dispatcher runs
-
-## Phase 6: engineering follow-ups
-- [ ] live model run of critic, drafter and judge; prompts are unverified beyond fake chat
-- [ ] exercise `remote: pr` against GitHub and the Outline export against a live server
-- [ ] worker lock is a pid file with a 60 ms reclaim window; consider flock via FFI
-- [ ] a lint-clean regex gate is bounded only by JavaScriptCore's backtracking cap inside one hook call
-- [ ] CI workflow: bun install, typecheck, bun test, bun run build, dist drift test
-- [ ] second review by another model family (Codex) before use on employer repos
-- [ ] Codex and OpenCode have no hook equivalent; V1 had a parity build, V2 has none
-
-## Small
-- [ ] decide whether `.ai/` stays in the repo
-- [ ] revisit command texts and `argument-hint` after first real use
+- Reflection trigger has two paths: the plugin (`session_end`, immediate) and
+  `sil openclaw scan` (poll, idle based). The scan path works with no plugin
+  installed, so the integration degrades to "install nothing in OpenClaw".
+- Lesson delivery lags one session when it runs from `session_start`, because
+  bootstrap files are read before the hook writes the block. `sil openclaw
+  sync` before a session removes the lag. This is documented, not hidden.
+- Usage events from OpenClaw count a read of `skills/<name>/SKILL.md` as a
+  skill use. OpenClaw has no `Skill` tool; reading the file is how a skill is
+  used there.
+- The SKILL.md read is renamed to a `Skill` tool call, not duplicated. The
+  first version emitted both and inflated `counts.tool_uses`, which feeds the
+  `worker.min_tool_uses` eligibility gate.
+- Verified: `bun test` 845 pass 0 fail, `bun run typecheck` clean,
+  `bun run lint:dashes` clean, and `sil openclaw status` plus
+  `sil openclaw sync --dry-run` run against the real `~/.openclaw` install
+  without writing to it.

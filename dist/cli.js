@@ -19007,14 +19007,16 @@ function plan(world, cfg, opts = {}) {
     }
     actions.push({ pattern, count, watermark: mark, action, sources, reason });
   }
-  let budget = cap;
-  for (const item of actions) {
-    if (item.action === "promote" || item.action === "refine") {
-      if (budget > 0)
-        budget -= 1;
-      else {
-        item.action = "over-cap";
-        item.reason = `over the per-run cap of ${cap}`;
+  if (opts.enforceCap ?? true) {
+    let budget = cap;
+    for (const item of actions) {
+      if (item.action === "promote" || item.action === "refine") {
+        if (budget > 0)
+          budget -= 1;
+        else {
+          item.action = "over-cap";
+          item.reason = `over the per-run cap of ${cap}`;
+        }
       }
     }
   }
@@ -19081,18 +19083,19 @@ async function run(world, cfg, opts) {
   const target = targetRoot(world);
   const items = reflections2(world, opts.extraDirs ?? []);
   const groups = new Map(cluster(items).map((c) => [c.pattern, c.items]));
-  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items });
+  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items, enforceCap: false });
+  const cap = cfg.promotion.per_run_cap;
   const actionable = [];
   for (const action of planned.actions) {
     if (action.action === "below-threshold")
       report.dropped[action.pattern] = action.count;
-    else if (action.action === "over-cap")
-      report.gated_out[action.pattern] = action.reason || "over per-run cap";
     else if (action.action === "promote" || action.action === "refine")
       actionable.push(action);
   }
   if (!opts.apply) {
-    report.staged = actionable.map((a) => a.pattern);
+    report.staged = actionable.slice(0, cap).map((a) => a.pattern);
+    for (const a of actionable.slice(cap))
+      report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
     report.finished = nowIso();
     return report;
   }
@@ -19111,6 +19114,10 @@ async function run(world, cfg, opts) {
   const ledger = loadLedger2(world);
   const ledgerRel = world.layout.ledger.replace(/^\/+|\/+$/g, "");
   for (const action of actionable) {
+    if (report.staged.length >= cap) {
+      report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
+      continue;
+    }
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat2, {
         target,

@@ -127,4 +127,13 @@ that.
 
 ## License
 
-Proprietary. All rights reserved. See `LICENSE`; contact mariusz@raqz.pl for a license.
+Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE)
+(SPDX: `PolyForm-Noncommercial-1.0.0`). Any noncommercial use is free: run it,
+study it, change it, share it. That covers personal and hobby use, research, and
+use by schools, charities, public research bodies and government institutions.
+
+Commercial use is not granted by that license. See
+[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) or contact mariusz@raqz.pl.
+
+This license is not OSI-approved, because it restricts a field of endeavour. Call
+it source-available, not open source.

@@ -33,3 +33,7 @@
 - 2026-09-19: A subagent named the untimed regex gate the most dangerous open hole
   while quoting the very comment block that documents the 4000 character subject cap
   defending it. Read the primary source before repeating a subagent's severity call.
+- 2026-09-19: `bun install --frozen-lockfile` exits 0 on a lockfile whose workspace
+  versions are stale, then a plain `bun install` rewrites it. With `bun.lock` as a
+  build-hash input that turns every contributor's first local run red for a reason
+  they did not cause. A freshness flag is not a freshness check; diff the file.

@@ -72,7 +72,13 @@ sed "s/^const SIL_VERSION = \"$have\";$/const SIL_VERSION = \"$NEW\";/" "$HEALTH
 mv "$tmp" "$HEALTH"
 echo "  $HEALTH: $have -> $NEW"
 
-# Nothing outside dist/ and the lockfile may still carry the old version.
+# The lockfile records every workspace version, so leaving it behind means the
+# next plain `bun install` rewrites it. bun.lock is a sourceHash() input, so that
+# rewrite fails tests/dist.test.ts on an otherwise untouched checkout.
+echo "Refreshing bun.lock ..."
+bun install --lockfile-only
+
+# Nothing outside dist/ may still carry the old version.
 stale="$(grep -rlF "\"$CURRENT\"" --include='*.json' --include='*.ts' \
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.claude \
   --exclude-dir=.svelte-kit . || true)"

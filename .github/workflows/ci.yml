@@ -20,8 +20,15 @@ jobs:
         with:
           bun-version: 1.4.2
 
+      # A plain install, not --frozen-lockfile: bun accepts a lockfile whose
+      # workspace versions are stale, then rewrites it on the next install.
+      # bun.lock is a sourceHash() input, so that rewrite fails the dist drift
+      # test on a checkout nobody touched. The diff below is the real guard.
       - name: install
-        run: bun install --frozen-lockfile
+        run: bun install
+
+      - name: lockfile is current
+        run: git diff --exit-code -- bun.lock
 
       - name: lint dashes
         run: bun run lint:dashes

@@ -119,3 +119,10 @@ Each item was checked against `origin/main`, not against a local worktree.
       can contradict an accepted rule and nothing notices.
 - [ ] No offline evaluation: every critic/drafter/judge test uses a fake chat, so a
       prompt regression ships unseen. This is the "replay" half of the dreaming design.
+- [x] `bun.lock` carried the workspace versions from before the 0.2.3 to 0.2.6 bumps,
+      so a plain `bun install` on untouched `origin/main` rewrote it, and because
+      `bun.lock` is a `sourceHash()` input (`scripts/build.ts:23`) that rewrite failed
+      `tests/dist.test.ts`. Reproduced on a `git archive origin/main` tree: 5 pass, 1
+      fail. `bun install --frozen-lockfile` does not catch it, it exits 0. Fixed at the
+      root in `scripts/bump-version.sh`, guarded by `tests/lockfile.test.ts` and by a
+      `git diff --exit-code -- bun.lock` step in CI.

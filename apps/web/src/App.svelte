@@ -103,6 +103,7 @@
     {/each}
   </select>
   <span class="badge">{workerBadge}</span>
+  <span class="badge" title="self-improvement-loop version">v{__SIL_VERSION__}</span>
 </footer>
 
 <Toast />

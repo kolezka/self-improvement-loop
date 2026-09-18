@@ -15039,7 +15039,11 @@ var WorkerConfig = object({
   min_tool_uses: number2().int().min(0).default(6),
   auto_kick: boolean2().default(true)
 });
-var WebConfig = object({ port: number2().int().default(8766) });
+var WebConfig = object({
+  port: number2().int().default(8766),
+  host: string2().default("127.0.0.1"),
+  allowed_hosts: array(string2()).default([])
+});
 var Config = object({
   version: number2().int().default(1),
   worlds: array(World).default(() => [World.parse({ name: "default" })]),
@@ -21136,20 +21140,80 @@ async function cmdStatus(opts, deps = defaultDeps) {
 
 // apps/server/src/main.ts
 import { randomBytes } from "crypto";
+import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
 import { timingSafeEqual } from "crypto";
 var LOCAL_HEADER = "X-SIL-Local";
 var TOKEN_HEADER = "X-SIL-Token";
-function allowedHosts(port) {
-  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const extra = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
-  for (const raw of extra.split(",")) {
+function allowedHosts(port, extra = []) {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const env = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
+  for (const raw of [...env.split(","), ...extra]) {
     const host = raw.trim();
     if (host)
       hosts.add(host);
   }
   return hosts;
+}
+function splitHostPort(value) {
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end === -1)
+      return null;
+    const rest = value.slice(end + 1);
+    if (rest !== "" && !rest.startsWith(":"))
+      return null;
+    return { hostname: value.slice(1, end), port: rest.slice(1) };
+  }
+  const colon = value.indexOf(":");
+  if (colon === -1)
+    return { hostname: value, port: "" };
+  if (value.indexOf(":", colon + 1) !== -1)
+    return null;
+  return { hostname: value.slice(0, colon), port: value.slice(colon + 1) };
+}
+function ipv4Private(hostname) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!m)
+    return null;
+  const parts = m.slice(1).map(Number);
+  if (parts.some((n) => n > 255))
+    return false;
+  const [a, b] = parts;
+  if (a === 127 || a === 10)
+    return true;
+  if (a === 172 && b >= 16 && b <= 31)
+    return true;
+  if (a === 192 && b === 168)
+    return true;
+  if (a === 169 && b === 254)
+    return true;
+  if (a === 100 && b >= 64 && b <= 127)
+    return true;
+  return false;
+}
+function isPrivateAddress(hostname) {
+  const v4 = ipv4Private(hostname);
+  if (v4 !== null)
+    return v4;
+  const v6 = hostname.toLowerCase().split("%")[0];
+  if (!v6.includes(":"))
+    return false;
+  if (!/^[0-9a-f:.]+$/.test(v6))
+    return false;
+  if (v6 === "::1")
+    return true;
+  if (v6.startsWith("::ffff:"))
+    return ipv4Private(v6.slice(7)) === true;
+  const head = Number.parseInt(v6.split(":")[0] || "0", 16);
+  if (Number.isNaN(head))
+    return false;
+  if ((head & 65024) === 64512)
+    return true;
+  if ((head & 65472) === 65152)
+    return true;
+  return false;
 }
 function safeEqual(a, b) {
   const bufA = Buffer.from(a, "utf8");
@@ -21160,12 +21224,20 @@ function safeEqual(a, b) {
   }
   return timingSafeEqual(bufA, bufB);
 }
+function hostAllowed(host, opts) {
+  if (allowedHosts(opts.port, opts.allowedHosts ?? []).has(host))
+    return true;
+  const parts = splitHostPort(host);
+  if (!parts || parts.port !== String(opts.port))
+    return false;
+  return isPrivateAddress(parts.hostname);
+}
 function jsonError(status, detail) {
   return new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } });
 }
 function guard(request, opts) {
   const host = request.headers.get("host") ?? "";
-  if (!allowedHosts(opts.port).has(host)) {
+  if (!hostAllowed(host, opts)) {
     return jsonError(403, "bad Host header");
   }
   if (request.headers.get(LOCAL_HEADER) !== "1") {
@@ -21664,12 +21736,15 @@ async function serveStatic(pathname) {
 }
 
 // apps/server/src/main.ts
-var REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+function isLoopbackHost(host) {
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
 function createServer(opts) {
   const host = opts.host ?? "127.0.0.1";
-  if (REFUSED_HOSTS.has(host)) {
-    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)}: loopback only`);
+  if (opts.token === null && !isLoopbackHost(host)) {
+    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)} without a token: drop --no-token or bind 127.0.0.1`);
   }
   const routes = buildRoutes();
   const server = Bun.serve({
@@ -21680,7 +21755,7 @@ function createServer(opts) {
       const url = new URL(request.url);
       const pathname = url.pathname;
       if (pathname === "/api/ops" || routes.has(pathname)) {
-        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token });
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
         if (denied)
           return denied;
         if (pathname === "/api/ops")
@@ -21705,12 +21780,31 @@ function createServer(opts) {
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
+function urlHost(host) {
+  if (WILDCARD_HOSTS.has(host))
+    return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
+}
+function privateAddresses() {
+  const out = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.internal || !isPrivateAddress(addr.address))
+        continue;
+      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
+    }
+  }
+  return out;
+}
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
   const token = opts.token ?? true ? newToken() : null;
-  const server = createServer({ port: opts.port, host, token });
-  const url = `http://${host}:${server.port ?? opts.port}/` + (token ? `#${token}` : "");
-  console.log(url);
+  const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
+  const port = server.port ?? opts.port;
+  const fragment = token ? `#${token}` : "";
+  const hosts = WILDCARD_HOSTS.has(host) ? [urlHost(host), ...privateAddresses()] : [urlHost(host)];
+  for (const h of hosts)
+    console.log(`http://${h}:${port}/${fragment}`);
   return server;
 }
 if (false) {}
@@ -21725,10 +21819,10 @@ function openBrowser(url) {
 async function cmdWeb(opts) {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
-  const host = opts.host ?? "127.0.0.1";
-  const server = serve({ host, port, token: opts.token ?? true });
+  const host = opts.host ?? cfg.web.host;
+  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
-    openBrowser(`http://${host}:${server.port}/`);
+    openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise(() => {});
 }
 
@@ -21839,7 +21933,7 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));

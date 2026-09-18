@@ -10,6 +10,7 @@ import {
   ledgerPath,
   type PromotionEntry,
   RULE_END,
+  RULE_START,
   ruleTag,
   targetRoot,
   type World,
@@ -250,6 +251,40 @@ describe("gates", () => {
     expect(report.gated_out[PATTERN]).toContain("managed-block marker");
     expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(false);
     expect(existsSync(join(repo, "RULES.md"))).toBe(false);
+  });
+
+  test("a refined rule that carries its own tag is normalised, not gated", async () => {
+    // The refine path shows the drafter the bullet it is replacing. That bullet
+    // lives in the managed block with a `<!--rule:pattern-->` tag, the drafter
+    // copies the tag, and the lint refuses a tagged bullet: the pattern is stuck
+    // on every run with no way out but a hand edit. The tag is the writer's, so
+    // reading drops it and a draft that still carries one is normalised.
+    const world = worldWith();
+    const repo = initTarget(world);
+    const old = `- old wording ${ruleTag(PATTERN)}`;
+    commitFile(repo, "RULES.md", `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+    const chat = new FakeChat({ draft: { artifact: `${ruleBody()} ${ruleTag(PATTERN)}` } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+
+    expect(report.gated_out).toEqual({});
+    expect(report.staged).toEqual([PATTERN]);
+    // The drafter never saw a tag, so it had none to copy.
+    expect(chat.promptsFor("drafter")[0]).toContain("- old wording");
+    expect(chat.promptsFor("drafter")[0]).not.toContain(ruleTag(PATTERN));
+    const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(found).toBe(true);
+    expect(text.split(ruleTag(PATTERN)).length - 1).toBe(1);
+    expect(text).toContain(ruleBody());
   });
 
   test("a custom target without a marker pair refuses the rule write", async () => {

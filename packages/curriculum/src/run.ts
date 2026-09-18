@@ -303,6 +303,13 @@ async function stageOne(
     [body] = prompts.parseDraft(raw, { forcedType: routedType });
   }
 
+  // The writer appends the `<!--rule:pattern-->` tag itself, so a draft that
+  // carries one says the same thing as a draft that does not. Normalise it away
+  // instead of gating: the refine path used to hand the drafter a tagged bullet,
+  // the drafter copied the tag, and the lint then refused every redraft. One
+  // pattern sat on that loop with 50 reflections behind it.
+  if (routedType === "rule" && typeof body === "string") body = artifacts.stripRuleTag(body, pattern);
+
   const problems = lint(routedType, body, pattern, sources);
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");

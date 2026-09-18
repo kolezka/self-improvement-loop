@@ -80,7 +80,8 @@ export function ruleShape(_pattern: string): string {
   return (
     "Exactly one line, starting with '- ', under 300 characters. No heading, " +
     "no frontmatter, no second line: the single imperative the agent must " +
-    "follow, naming the actual command or check the lessons name."
+    "follow, naming the actual command or check the lessons name. No HTML " +
+    "comment and no '<!--rule:...-->' tag: the writer adds the tag itself."
   );
 }
 

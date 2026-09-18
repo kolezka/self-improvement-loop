@@ -15150,6 +15150,7 @@ var PromotionEntry = object({
   artifact_type: ArtifactType.default("none"),
   served_by: ArtifactRef.nullable().default(null),
   last_updated: isoTs.default(() => new Date().toISOString()),
+  promoted_at: isoTs.nullable().default(null),
   commit: string2().nullable().default(null),
   feedback: Scorecard.nullable().default(null)
 });
@@ -17600,6 +17601,13 @@ function loadAliases(world) {
   return out;
 }
 function saveAliases(world, aliases) {
+  const values = new Set(Object.values(aliases));
+  for (const key of Object.keys(aliases)) {
+    if (!values.has(key))
+      continue;
+    const source = Object.entries(aliases).find(([k, v]) => v === key && k !== key)?.[0];
+    throw new ValidationError(source ? `"${key}" is a key (-> "${aliases[key]}") and also the value of "${source}" (-> "${key}"); aliases resolve one hop only` : `"${key}" is a key (-> "${aliases[key]}") and also its own value`);
+  }
   const sorted = Object.fromEntries(Object.entries(aliases).sort(([a], [b]) => a < b ? -1 : 1));
   const p = aliasesFile(world);
   writeJson(p, sorted);
@@ -17770,7 +17778,7 @@ function jaccard(a, b) {
   return union === 0 ? 0 : shared / union;
 }
 function isProperSubset(a, b) {
-  if (a.size >= b.size)
+  if (a.size < 2 || a.size >= b.size)
     return false;
   for (const t of a)
     if (!b.has(t))
@@ -18847,19 +18855,19 @@ function scorecards(world, cfg, opts = {}) {
   return out;
 }
 function propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, lastUsed, now, retireCutoff, retireDays) {
-  if (entry !== undefined) {
-    const updated = parseTs(entry.last_updated);
-    if (updated !== null && updated.getTime() >= now.getTime() - 7 * 86400000) {
-      const days = Math.floor((now.getTime() - updated.getTime()) / 86400000);
-      return ["new", `promoted ${days}d ago, within the 7 day new window`];
-    }
+  const promotedTs = entry === undefined ? null : entry.promoted_at ?? entry.last_updated;
+  const promotedDt = parseTs(promotedTs);
+  if (promotedDt !== null && promotedDt.getTime() >= now.getTime() - 7 * 86400000) {
+    const days = Math.floor((now.getTime() - promotedDt.getTime()) / 86400000);
+    return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    const basisDt = lastDt ?? parseTs(entry.last_updated);
+    const basisDt = lastDt ?? promotedDt;
     const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
-      const basis = lastDt !== null ? `last used ${lastUsed}, older than ${retireDays}d` : basisDt !== null ? `never used, promoted ${entry.last_updated}, older than ${retireDays}d` : "no parsable date to judge staleness from";
+      const used = lastUsed === null ? "never used" : `last used ${lastUsed}, which is not a readable date`;
+      const basis = lastDt !== null ? `last used ${lastUsed}, older than ${retireDays}d` : basisDt !== null ? `${used}, promoted ${promotedTs}, older than ${retireDays}d` : "no parsable date to judge staleness from";
       return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }
   }
@@ -19290,6 +19298,7 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     artifact_type: routedType,
     served_by: { type: routedType, path: rel },
     last_updated: nowIso(),
+    promoted_at: autoMerge ? (prior?.status === "promoted" ? prior.promoted_at : null) ?? nowIso() : prior?.promoted_at ?? null,
     commit: null,
     feedback: null
   };
@@ -20142,7 +20151,8 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
         ...row,
         status: "promoted",
         commit: snap.branch_sha.slice(0, 12),
-        last_updated: nowIso()
+        last_updated: nowIso(),
+        promoted_at: row.status === "promoted" ? row.promoted_at ?? nowIso() : nowIso()
       };
     }
     saveLedger(join17(tree, rel), merged);
@@ -20234,6 +20244,7 @@ function rejectInner(world, _cfg, pattern, opts) {
         artifact_type: entryType(branchRow),
         served_by: null,
         last_updated: nowIso(),
+        promoted_at: null,
         commit: null,
         feedback: null
       };
@@ -20401,21 +20412,34 @@ function cmdAliasesSet(alias, canonical, opts) {
     throw new ValidationError(`alias ${JSON.stringify(alias)} is not a valid slug`);
   if (!isSlug(canonical))
     throw new ValidationError(`canonical ${JSON.stringify(canonical)} is not a valid slug`);
+  if (alias === canonical)
+    throw new ValidationError(`alias and canonical cannot both be ${JSON.stringify(alias)}`);
   const cfg = loadConfig();
   const world = resolveWorld(cfg, opts.world);
   const current = loadAliases(world.name);
-  if (canonical in current) {
+  if (Object.hasOwn(current, canonical)) {
     throw new ValidationError(`${JSON.stringify(canonical)} is itself an alias for ${JSON.stringify(current[canonical])}; point ${JSON.stringify(alias)} at ${JSON.stringify(current[canonical])} instead`);
   }
-  saveAliases(world.name, { ...current, [alias]: canonical });
+  const next = { ...current, [alias]: canonical };
+  const repointed = [];
+  for (const [k, v] of Object.entries(current)) {
+    if (v === alias) {
+      next[k] = canonical;
+      repointed.push(k);
+    }
+  }
+  repointed.sort();
+  saveAliases(world.name, next);
   console.log(`aliased ${alias} -> ${canonical} in world ${world.name}`);
+  for (const k of repointed)
+    console.log(`re-pointed ${k} -> ${canonical} (was -> ${alias})`);
   return 0;
 }
 function cmdAliasesRm(alias, opts) {
   const cfg = loadConfig();
   const world = resolveWorld(cfg, opts.world);
   const current = loadAliases(world.name);
-  if (!(alias in current)) {
+  if (!Object.hasOwn(current, alias)) {
     console.log(`no alias ${alias} in world ${world.name}`);
     return 0;
   }

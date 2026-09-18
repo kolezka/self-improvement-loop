@@ -75,10 +75,17 @@
   });
 </script>
 
-<h2>Queue</h2>
-<div class="actions"><button onclick={refreshAll}>Refresh</button></div>
-<div class="card"><WorkerStatus status={workerStatus} compact={true} /></div>
+<div class="toolbar">
+  <button onclick={refreshAll}>Refresh</button>
+</div>
+
+<div class="card">
+  <WorkerStatus status={workerStatus} compact={true} />
+</div>
 
 <QueueBucket name="pending" entries={pending} skippable={true} onSkip={skip} />
-<QueueBucket name="done" entries={done} />
-<QueueBucket name="failed" entries={failed} />
+
+<div class="grid">
+  <QueueBucket name="done" entries={done} />
+  <QueueBucket name="failed" entries={failed} />
+</div>

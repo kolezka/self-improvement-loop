@@ -18426,7 +18426,7 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
-var SIL_VERSION = "0.2.5";
+var SIL_VERSION = "0.2.6";
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};

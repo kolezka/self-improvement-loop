@@ -19,7 +19,10 @@ let opsMeta: Map<string, OpMeta> | null = null;
  * the token never lingers in browser history. */
 export function captureToken(): string {
   const fromHash = window.location.hash.replace(/^#/, "");
-  if (fromHash) {
+  // A route fragment always starts with a slash ("#/logs"); a token is
+  // base64url and never contains one. Without this test a deep link to a pane
+  // was swallowed as if it were a token and the pane never opened.
+  if (fromHash && !fromHash.startsWith("/")) {
     token = fromHash;
     try {
       sessionStorage.setItem(STORAGE_KEY, token);

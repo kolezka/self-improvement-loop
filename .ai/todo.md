@@ -88,3 +88,34 @@ staged proposal was rendered as markdown, which dropped the frontmatter and the
 line breaks a reviewer needs to judge the file. Dark mode was checked by
 injecting the built stylesheet's own dark block, and the narrow layout by
 rendering the app in a 420 px frame.
+
+## Phase 7: system holes (2026-09-19)
+
+Each item was checked against `origin/main`, not against a local worktree.
+
+- [x] No CI at all: `.github` was absent on `origin/main`. Added
+      `.github/workflows/ci.yml`: install, lint:dashes, typecheck, check:web, `bun
+      test`, and a build that must leave `dist/` byte-identical.
+- [x] `propose()` in `@sil/feedback` judged a never-used artifact stale from a null
+      `last_used`, so `retire_after_days` never applied to it: it flipped to
+      `retire-candidate` on day 8 and the reason string claimed an age it had not
+      checked. Now measured from `entry.last_updated`, reason names its basis.
+- [x] Pattern fragmentation had no terminal path and no detector. Added `sil aliases
+      list|set|rm|suggest`, a deterministic token-overlap suggester in `@sil/store`,
+      and the `aliases.suggest` read op. A human applies every merge.
+
+### Checked and NOT a hole
+- `dist/` drift: `git archive origin/main` plus `tests/dist.test.ts` gives 6 pass, 0
+  fail. Main is in sync. The drift was local to a stale worktree.
+- Untimed nudge gate regex in the hook: `packages/nudges/src/gates.ts:58-79` caps
+  every subject at `MAX_MATCH_LEN = 4000` and rejects the exponential shapes at load.
+- Worker lock reclaim window: `packages/worker/src/index.ts:91-107` uses an atomic
+  exclusive create; the 60 ms settle only covers reclaiming after a crash and
+  resolves last-write-wins.
+
+### Still open, by design not by accident
+- [ ] No cross-artifact consistency check: the judge sees one draft against its own
+      sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact
+      can contradict an accepted rule and nothing notices.
+- [ ] No offline evaluation: every critic/drafter/judge test uses a fake chat, so a
+      prompt regression ships unseen. This is the "replay" half of the dreaming design.

@@ -25,3 +25,11 @@
   Every test that spawns must build its env from the tmp dirs.
 - 2026-09-14 (TS port): `x in obj` accepts Object.prototype keys; use
   Object.hasOwn for any lookup keyed by untrusted strings (events, matchers).
+- 2026-09-19: A worktree 22 commits behind `origin/main` made a stale `dist/` look
+  like a live shipping hole. `git archive origin/main` into a temp tree ran
+  `tests/dist.test.ts` at 6 pass, 0 fail, so main was in sync the whole time. Fetch
+  and re-check every candidate hole against `origin/main` before naming it one; a
+  worktree's own state is not evidence about the branch.
+- 2026-09-19: A subagent named the untimed regex gate the most dangerous open hole
+  while quoting the very comment block that documents the 4000 character subject cap
+  defending it. Read the primary source before repeating a subagent's severity call.

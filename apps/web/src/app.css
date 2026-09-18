@@ -158,6 +158,17 @@ th {
   border: 1px solid var(--border);
 }
 
+.badge.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+/* Pushes the reload button to the far end of the status line. */
+footer#status-line button {
+  margin-left: auto;
+  font-size: 0.8rem;
+}
+
 .card {
   border: 1px solid var(--border);
   border-radius: 8px;

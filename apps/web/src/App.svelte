@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Component } from "svelte";
   import { onMount } from "svelte";
-  import { captureToken, call } from "./lib/api.ts";
+  import { captureToken, call, dropReloadParam, reloadForBuild } from "./lib/api.ts";
   import { appState, toast } from "./lib/state.svelte.ts";
   import Toast from "./components/Toast.svelte";
   import Overview from "./panes/Overview.svelte";
@@ -35,6 +35,12 @@
 
   let hash = $state(currentHash());
   let workerBadge = $state("worker: ...");
+  // The build this page was served from, and the build on disk now. They differ
+  // after a plugin update, which is what the reload button is for.
+  let loadedBuild = $state<string | null>(null);
+  let diskBuild = $state<string | null>(null);
+  let serverStale = $state(false);
+  const newBuild = $derived(diskBuild !== null && diskBuild !== loadedBuild);
 
   function onHashChange() {
     hash = currentHash();
@@ -61,11 +67,34 @@
     }
   }
 
+  // A plugin update rewrites dist/ under a page that already holds the old JS.
+  // Static files are read from disk per request, so a reload gives the UI the new
+  // build. The server process keeps running the bundle it started with until it
+  // is restarted, and that is what server_stale reports.
+  async function checkBuild() {
+    try {
+      const info = (await call("health.build", {})) as { build: string | null; server_stale: boolean };
+      // The first answer defines what "loaded" means: nothing in the page says
+      // which build produced it, and this poll runs seconds after it was served.
+      loadedBuild ??= info.build;
+      diskBuild = info.build;
+      serverStale = info.server_stale;
+    } catch {
+      // A failed poll says nothing about the build on disk. Keep the last answer.
+    }
+  }
+
   onMount(() => {
     captureToken();
+    dropReloadParam();
     window.addEventListener("hashchange", onHashChange);
     loadWorlds().then(refreshWorkerBadge);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    checkBuild();
+    const buildTimer = setInterval(checkBuild, 30_000);
+    return () => {
+      clearInterval(buildTimer);
+      window.removeEventListener("hashchange", onHashChange);
+    };
   });
 
   // Refresh the worker badge on every navigation, same as the status line
@@ -103,6 +132,16 @@
     {/each}
   </select>
   <span class="badge">{workerBadge}</span>
+  {#if serverStale}
+    <span class="badge warn" title="A reload cannot fix this: the process runs the bundle it started with. Restart `sil web`.">server older than build: restart sil web</span>
+  {/if}
+  <button
+    class:primary={newBuild}
+    title={newBuild ? "A newer plugin build is on disk. Reload to run it." : "Reload the UI from disk."}
+    onclick={() => reloadForBuild(diskBuild)}
+  >
+    {newBuild ? "new build: reload UI" : "reload UI"}
+  </button>
 </footer>
 
 <Toast />

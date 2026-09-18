@@ -1,4 +1,4 @@
-// Registers the 31 ops the web UI and CLI invoke. Every handler validates its
+// Registers the 32 ops the web UI and CLI invoke. Every handler validates its
 // own payload via args.ts before touching disk, git or a spawned process.
 // Same names, tiers and gates as the Python port (sil/ops.py).
 
@@ -16,6 +16,7 @@ import * as worlds from "./handlers/worlds.ts";
 import { register } from "./registry.ts";
 
 register({ name: "health.report", tier: "read", gate: "none", args: Args.NoArgs, fn: health.healthReport, doc: "Config paths, per-world provider status, worker status, versions." });
+register({ name: "health.build", tier: "read", gate: "none", args: Args.NoArgs, fn: health.buildInfo, doc: "Build hash on disk, and whether the running server predates it." });
 register({ name: "worlds.list", tier: "read", gate: "none", args: Args.NoArgs, fn: worlds.worldsList, doc: "List configured worlds." });
 register({ name: "config.get", tier: "read", gate: "none", args: Args.NoArgs, fn: worlds.configGet, doc: "Read config.yaml." });
 register({ name: "config.set", tier: "local", gate: "none", args: Args.ConfigArgs, fn: worlds.configSet, doc: "Validate and write config.yaml; refresh the hook snapshot." });

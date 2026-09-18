@@ -21386,7 +21386,27 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
+import { readFileSync as readFileSync4, statSync as statSync10 } from "fs";
+import { join as join22 } from "path";
 var SIL_VERSION = "0.2.1";
+function buildInfo(_args) {
+  const path = join22(pluginRoot(), "dist", ".srchash");
+  let build = null;
+  let builtAt = null;
+  try {
+    build = readFileSync4(path, "utf8").trim() || null;
+    builtAt = statSync10(path).mtime.toISOString();
+  } catch {}
+  const startedMs = Date.now() - process.uptime() * 1000;
+  return {
+    build,
+    built_at: builtAt,
+    server_started: new Date(startedMs).toISOString(),
+    server_stale: builtAt !== null && Date.parse(builtAt) > startedMs,
+    plugin_root: pluginRoot(),
+    version: SIL_VERSION
+  };
+}
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};
@@ -21439,9 +21459,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync10 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync11 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync10 };
+var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync11 };
 function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
   if (knownSize === undefined && !io.existsSync(path))
     return [];
@@ -21478,7 +21498,7 @@ function logsTail(args) {
   let size = 0;
   let exists = true;
   try {
-    size = statSync10(path).size;
+    size = statSync11(path).size;
   } catch {
     exists = false;
   }
@@ -21506,7 +21526,7 @@ function loopRun(args) {
 }
 
 // packages/ops/src/handlers/reflections.ts
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 function reflectionsList(args) {
   let refs = listReflections(args.world);
   if (args.pattern)
@@ -21524,7 +21544,7 @@ function reflectionsList(args) {
   }));
 }
 function reflectionsGet(args) {
-  const path = join22(reflectionsDir(args.world), `${args.id}.md`);
+  const path = join23(reflectionsDir(args.world), `${args.id}.md`);
   const r = parseReflection(path, args.world);
   if (r === null)
     throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
@@ -21609,6 +21629,7 @@ function opPath(name) {
 
 // packages/ops/src/index.ts
 register({ name: "health.report", tier: "read", gate: "none", args: NoArgs, fn: healthReport, doc: "Config paths, per-world provider status, worker status, versions." });
+register({ name: "health.build", tier: "read", gate: "none", args: NoArgs, fn: buildInfo, doc: "Build hash on disk, and whether the running server predates it." });
 register({ name: "worlds.list", tier: "read", gate: "none", args: NoArgs, fn: worldsList, doc: "List configured worlds." });
 register({ name: "config.get", tier: "read", gate: "none", args: NoArgs, fn: configGet, doc: "Read config.yaml." });
 register({ name: "config.set", tier: "local", gate: "none", args: ConfigArgs, fn: configSet, doc: "Validate and write config.yaml; refresh the hook snapshot." });
@@ -21702,10 +21723,10 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync15, statSync as statSync11 } from "fs";
-import { join as join23, normalize, sep } from "path";
+import { existsSync as existsSync15, statSync as statSync12 } from "fs";
+import { join as join24, normalize, sep } from "path";
 function staticRoot() {
-  return join23(pluginRoot(), "dist", "web");
+  return join24(pluginRoot(), "dist", "web");
 }
 function hasDotSegment(pathname) {
   return pathname.split("/").some((seg) => seg === "." || seg === "..");
@@ -21720,13 +21741,16 @@ function resolveStaticPath(root, pathname) {
   if (hasDotSegment(decoded) || decoded.split("/").some((seg) => seg.startsWith(".")))
     return null;
   const cleaned = decoded.replace(/^\/+/, "");
-  const full = normalize(join23(root, cleaned));
+  const full = normalize(join24(root, cleaned));
   if (full !== root && !full.startsWith(root + sep))
     return null;
   return full;
 }
-function fileResponse(path) {
-  return new Response(Bun.file(path));
+function cacheControl(pathname) {
+  return pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store";
+}
+function fileResponse(path, pathname) {
+  return new Response(Bun.file(path), { headers: { "cache-control": cacheControl(pathname) } });
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
@@ -21738,12 +21762,12 @@ async function serveStatic(pathname) {
     return new Response("not found", { status: 404 });
   let st;
   try {
-    st = statSync11(target);
+    st = statSync12(target);
   } catch {
     st = null;
   }
   if (st && st.isFile())
-    return fileResponse(target);
+    return fileResponse(target, wanted);
   return new Response("not found", { status: 404 });
 }
 

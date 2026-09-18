@@ -109,6 +109,21 @@ runs at temperature 0 for reproducibility. A world set to `llm: local` may only
 use models in `llm.yaml`'s `local_models` allowlist; the loop refuses rather than
 silently falling back to a cloud model.
 
+## Patterns and aliases
+
+Reflections cluster by their `Pattern:` slug, and the match is exact. Two
+reflections about the same mechanism under different slugs never reach the
+promotion threshold together. The alias map folds one into the other, one hop
+only:
+
+```
+sil aliases suggest          # near-duplicate slugs, by token overlap
+sil aliases set stale-env stale-cached-env
+sil aliases list
+```
+
+`suggest` is deterministic and calls no model. It proposes; you apply.
+
 ## Privacy
 
 Reflections, the ledger, scorecards and the queue all live on disk under

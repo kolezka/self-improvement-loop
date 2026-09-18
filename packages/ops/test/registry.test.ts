@@ -50,7 +50,7 @@ describe("register() self-checks", () => {
   });
 });
 
-// Name -> [tier, gate]: the 30 ops of sil/ops.py plus llm.use.
+// Name -> [tier, gate]: the 30 ops of sil/ops.py plus llm.use and aliases.suggest.
 const EXPECTED: Record<string, [Tier, GateKind]> = {
   "health.report": ["read", "none"],
   "worlds.list": ["read", "none"],
@@ -70,6 +70,7 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "reflections.get": ["read", "none"],
   "aliases.get": ["read", "none"],
   "aliases.set": ["local", "none"],
+  "aliases.suggest": ["read", "none"],
   "review.queue": ["read", "none"],
   "review.detail": ["read", "none"],
   "review.diff": ["read", "none"],

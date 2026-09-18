@@ -17,6 +17,7 @@ import {
   saveLedger,
   section,
   splitFrontMatter,
+  suggestAliases,
   writeEntry,
   writeReflection,
 } from "../src/index.ts";
@@ -183,5 +184,55 @@ describe("inbox and queue", () => {
     moveEntry(entry, "pending", "done", "ok");
     expect(listQueue("pending")).toHaveLength(0);
     expect(listQueue("done")[0]!.result).toBe("ok");
+  });
+});
+
+describe("suggestAliases", () => {
+  test("a strongly overlapping pair is suggested, canonical is the higher count", () => {
+    writeReflection("w", { id: "1" }, body("stale-env"));
+    writeReflection("w", { id: "2" }, body("stale-env"));
+    writeReflection("w", { id: "3" }, body("stale-cached-env"));
+    const suggestions = suggestAliases("w");
+    expect(suggestions).toEqual([
+      { alias: "stale-cached-env", canonical: "stale-env", alias_count: 1, canonical_count: 2, score: 2 / 3 },
+    ]);
+  });
+
+  test("an unrelated pair is not suggested", () => {
+    writeReflection("w", { id: "1" }, body("auth-pkce-redirect"));
+    writeReflection("w", { id: "2" }, body("billing-invoice-export"));
+    expect(suggestAliases("w")).toEqual([]);
+  });
+
+  test("a proper token subset is suggested even below the jaccard cutoff", () => {
+    writeReflection("w", { id: "1" }, body("auth"));
+    writeReflection("w", { id: "2" }, body("auth-pkce-redirect"));
+    writeReflection("w", { id: "3" }, body("auth-pkce-redirect"));
+    writeReflection("w", { id: "4" }, body("auth-pkce-redirect"));
+    const suggestions = suggestAliases("w");
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.canonical).toBe("auth-pkce-redirect");
+    expect(suggestions[0]!.alias).toBe("auth");
+    expect(suggestions[0]!.score).toBeLessThan(0.5);
+  });
+
+  test("an already-aliased slug is folded away and never suggested again", () => {
+    writeReflection("w", { id: "1" }, body("stale-env"));
+    writeReflection("w", { id: "2" }, body("stale-cached-env"));
+    saveAliases("w", { "stale-env": "stale-cached-env" });
+    expect(suggestAliases("w")).toEqual([]);
+  });
+
+  test("a tied count breaks to the lexicographically smaller canonical, deterministically", () => {
+    writeReflection("w", { id: "1" }, body("stale-env"));
+    writeReflection("w", { id: "2" }, body("env-stale"));
+    const suggestions = suggestAliases("w");
+    expect(suggestions).toEqual([{ alias: "stale-env", canonical: "env-stale", alias_count: 1, canonical_count: 1, score: 1 }]);
+    // a rerun over the same data is byte-identical
+    expect(suggestAliases("w")).toEqual(suggestions);
+  });
+
+  test("a world with no reflections has no suggestions", () => {
+    expect(suggestAliases("empty-world")).toEqual([]);
   });
 });

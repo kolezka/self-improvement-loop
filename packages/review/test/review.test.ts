@@ -85,6 +85,7 @@ function seed(world: World, opts: { sibling?: boolean } = {}): string {
       artifact_type: "hook",
       served_by: null,
       last_updated: "2026-09-01T00:00:00Z",
+      promoted_at: null,
       commit: null,
       feedback: null,
     };
@@ -177,6 +178,7 @@ describe("read side", () => {
             status: "promoted",
             artifact_type: "skill",
             last_updated: "2026-09-01T00:00:00Z",
+            promoted_at: null,
           },
           { pattern: SIBLING, promoted_at_count: 7, status: "rejected", artifact_type: "rule" },
         ],
@@ -273,6 +275,9 @@ describe("accept", () => {
     const ledger = loadLedger(ledgerPath(world));
     expect(ledger.entries[PATTERN]!.status).toBe("promoted");
     expect(ledger.entries[PATTERN]!.commit).toBeTruthy();
+    // Scorecards judge a never-used artifact from this date, so accept is the
+    // one place that may set it.
+    expect(ledger.entries[PATTERN]!.promoted_at).toBeTruthy();
     // The sibling a human refused keeps its watermark and its status.
     expect(ledger.entries[SIBLING]!.status).toBe("rejected");
     expect(ledger.entries[SIBLING]!.rejected_at_count).toBe(7);
@@ -657,6 +662,8 @@ describe("reject", () => {
     // pending forever.
     const world = makeWorld();
     const repo = await accepted(world);
+    const promotedAt = loadLedger(ledgerPath(world)).entries[PATTERN]!.promoted_at;
+    expect(promotedAt).toBeTruthy();
     addReflections(world, PATTERN, 3, { startDay: 20 });
     await stage(world);
 
@@ -664,6 +671,9 @@ describe("reject", () => {
 
     expect(out.rejected_at_count).toBe(6);
     const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    // The refusal of a redraft is not a new promotion. Moving this date would
+    // restart the retire clock on an artifact nobody is using.
+    expect(entry.promoted_at).toBe(promotedAt);
     expect(entry.rejected_at_count).toBe(6);
     expect(entry.promoted_at_count).toBe(3);
     expect(entry.status).toBe("promoted");

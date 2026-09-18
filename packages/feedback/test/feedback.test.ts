@@ -54,11 +54,11 @@ function buildWorldAndLedger(): { w: World; c: Config } {
   const ledger: Ledger = {
     version: 1,
     entries: {
-      "new-thing": { pattern: "new-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), commit: null, feedback: null },
-      "steady-thing": { pattern: "steady-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(40)), commit: null, feedback: null },
-      "flaky-thing": { pattern: "flaky-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "hook", served_by: null, last_updated: iso(daysAgo(40)), commit: null, feedback: null },
-      "dead-thing": { pattern: "dead-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "agent", served_by: null, last_updated: iso(daysAgo(90)), commit: null, feedback: null },
-      "staged-thing": { pattern: "staged-thing", promoted_at_count: 0, rejected_at_count: 0, status: "staged", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(1)), commit: null, feedback: null },
+      "new-thing": { pattern: "new-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: null, commit: null, feedback: null },
+      "steady-thing": { pattern: "steady-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, commit: null, feedback: null },
+      "flaky-thing": { pattern: "flaky-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "hook", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, commit: null, feedback: null },
+      "dead-thing": { pattern: "dead-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "agent", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: null, commit: null, feedback: null },
+      "staged-thing": { pattern: "staged-thing", promoted_at_count: 0, rejected_at_count: 0, status: "staged", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(1)), promoted_at: null, commit: null, feedback: null },
     },
   };
   saveLedger(ledgerPath(w), ledger);
@@ -140,7 +140,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(8)), commit: null, feedback: null },
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(8)), promoted_at: null, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -156,7 +156,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), commit: null, feedback: null },
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), promoted_at: null, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -172,7 +172,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "idle-thing": { pattern: "idle-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), commit: null, feedback: null },
+        "idle-thing": { pattern: "idle-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: null, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -189,7 +189,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "no-date-thing": { pattern: "no-date-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: "not-a-date", commit: null, feedback: null },
+        "no-date-thing": { pattern: "no-date-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: "not-a-date", promoted_at: null, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -197,6 +197,60 @@ describe("scorecards proposals", () => {
     const card = cards.get("skill:no-date-thing")!;
     expect(card.proposal).toBe("retire-candidate");
     expect(card.reason).toContain("no parsable date");
+  });
+
+  // The invariant: a promoted artifact's age is judged from its promotion, and
+  // nothing that merely writes to its ledger row counts as a promotion. Reject,
+  // re-home and retire all bump last_updated, so any of them would otherwise
+  // restart the retire clock and hide a dead artifact from the human forever.
+  test("a later write to the ledger row does not restart the retire clock", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 1, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(5)), promoted_at: iso(daysAgo(60)), commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    const card = cards.get("skill:never-used")!;
+    expect(card.proposal).toBe("retire-candidate");
+    expect(card.reason).toContain(iso(daysAgo(60)));
+    expect(card.reason).not.toContain(iso(daysAgo(5)));
+  });
+
+  test("the 7 day new window runs from promoted_at too, not from the last row write", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        // promoted 60 days ago, row rewritten today: still not new.
+        "old-thing": { pattern: "old-thing", promoted_at_count: 0, rejected_at_count: 1, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(0)), promoted_at: iso(daysAgo(60)), commit: null, feedback: null },
+        // promoted 2 days ago, row untouched since: new.
+        "fresh-thing": { pattern: "fresh-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: iso(daysAgo(2)), commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("skill:old-thing")!.proposal).toBe("retire-candidate");
+    expect(cards.get("skill:fresh-thing")!.proposal).toBe("new");
+  });
+
+  test("a row written before promoted_at existed still falls back to last_updated", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        "legacy-thing": { pattern: "legacy-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), promoted_at: null, commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    const card = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("skill:legacy-thing")!;
+    expect(card.proposal).toBe("retire-candidate");
+    expect(card.reason).toContain(iso(daysAgo(60)));
   });
 });
 

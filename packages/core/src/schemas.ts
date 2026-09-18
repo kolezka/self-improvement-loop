@@ -231,6 +231,11 @@ export const PromotionEntry = z.object({
   // V1 rows predate this field. Dated now rather than rejected: one old row
   // without it used to make the whole ledger unreadable.
   last_updated: isoTs.default(() => new Date().toISOString()),
+  // When this row last became promoted. `last_updated` is not that: reject,
+  // re-home and retire all bump it, so judging staleness from it restarts the
+  // retire clock every time a human refuses a redraft. Null on rows written
+  // before this field existed, and on rows that were never promoted.
+  promoted_at: isoTs.nullable().default(null),
   commit: z.string().nullable().default(null),
   feedback: Scorecard.nullable().default(null),
 });

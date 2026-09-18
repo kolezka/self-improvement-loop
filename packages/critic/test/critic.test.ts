@@ -244,8 +244,8 @@ describe("installedArtifacts", () => {
     const ledger = {
       version: 1,
       entries: {
-        "good-skill": { pattern: "good-skill", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", commit: null, feedback: null },
-        "staged-thing": { pattern: "staged-thing", promoted_at_count: 1, rejected_at_count: 0, status: "staged" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", commit: null, feedback: null },
+        "good-skill": { pattern: "good-skill", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
+        "staged-thing": { pattern: "staged-thing", promoted_at_count: 1, rejected_at_count: 0, status: "staged" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);

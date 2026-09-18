@@ -137,25 +137,29 @@ function propose(
   retireCutoff: Date,
   retireDays: number,
 ): [Scorecard["proposal"], string] {
-  if (entry !== undefined) {
-    const updated = parseTs(entry.last_updated);
-    if (updated !== null && updated.getTime() >= now.getTime() - 7 * 86_400_000) {
-      const days = Math.floor((now.getTime() - updated.getTime()) / 86_400_000);
-      return ["new", `promoted ${days}d ago, within the 7 day new window`];
-    }
+  // Both clocks below run from the promotion, not from the last write to the
+  // row: reject, re-home and retire all bump last_updated, and a refused
+  // redraft is neither a new promotion nor evidence of use. Rows written
+  // before promoted_at existed fall back to the old approximation.
+  const promotedTs = entry === undefined ? null : (entry.promoted_at ?? entry.last_updated);
+  const promotedDt = parseTs(promotedTs);
+
+  if (promotedDt !== null && promotedDt.getTime() >= now.getTime() - 7 * 86_400_000) {
+    const days = Math.floor((now.getTime() - promotedDt.getTime()) / 86_400_000);
+    return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
 
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    // never used: measure staleness from promotion time, not from a null last-use date
-    const basisDt = lastDt ?? parseTs(entry.last_updated);
+    const basisDt = lastDt ?? promotedDt;
     const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
+      const used = lastUsed === null ? "never used" : `last used ${lastUsed}, which is not a readable date`;
       const basis =
         lastDt !== null
           ? `last used ${lastUsed}, older than ${retireDays}d`
           : basisDt !== null
-            ? `never used, promoted ${entry.last_updated}, older than ${retireDays}d`
+            ? `${used}, promoted ${promotedTs}, older than ${retireDays}d`
             : "no parsable date to judge staleness from";
       return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: install
+        run: bun install --frozen-lockfile
+
+      - name: lint dashes
+        run: bun run lint:dashes
+
+      - name: typecheck
+        run: bun run typecheck
+
+      - name: typecheck web
+        run: bun run check:web
+
+      - name: test
+        run: bun test
+
+      # The plugin runs the committed dist/, so a build that changes it means
+      # the bundle on main was stale. tests/dist.test.ts catches the hash
+      # drift; this catches a build whose output differs for any other reason.
+      - name: build is reproducible
+        run: |
+          bun run build
+          git diff --exit-code -- dist

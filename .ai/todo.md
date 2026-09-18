@@ -67,3 +67,24 @@ while the console showed `key=value`, a late tail response could overwrite the
 pane after a log switch, `highlight` built a node per segment with no cap,
 `levelOf` painted `errors=0` red, wrap toggling stranded a pinned view, and a
 failed first load left the pane on "loading" for ever.
+
+## UI and UX overhaul (branch polish-ui-ux-logs-console-view)
+- [x] `.ai/design-plan.md`: palette, type scale, layout wireframes and principles written before any code
+- [x] `apps/web/src/app.css`: rewritten as a single design system (tokens, panels, tables, chips, dots, empty states, notices, toasts, responsive rail, reduced motion)
+- [x] `apps/web/src/App.svelte`: rail plus topbar shell, panes grouped Watch / Decide / Configure, pane title and blurb centralised, live worker light and staged count in the rail
+- [x] `apps/web/src/panes/Overview.svelte`: loop band with the five stages and the return path, worker, provider and install panels
+- [x] Queue, Reflections, Review, Artifacts, Loop, Models, Worlds, Logs: rebuilt on the shared classes, every empty state says what to do next, every button names its effect
+- [x] `apps/web/src/lib/api.ts`: a deep link such as `#/logs` is no longer swallowed as if the fragment were a token
+- [x] `apps/web/src/panes/Review.svelte`: the proposal is shown verbatim as the file it is, with its repo path, instead of being rendered as prose markdown
+- [x] `apps/web/src/lib/format.ts`: `plural()` so counts read "1 stop", not "1 stops"
+- [x] rail counts refresh the moment a proposal is accepted, through `appState.statusSeq`
+- [x] verify: bun test (842 pass), typecheck, check:web (0 errors), lint:dashes, bun run build, browser smoke of all nine panes against a seeded temp state dir
+
+### Review pass
+Browser smoke on http://127.0.0.1:7788 with a seeded fixture found three defects,
+all fixed here: the worker badge in the rail kept a stale count after an accept,
+"1 worlds" and "1 stops" printed the plural form for a single item, and the
+staged proposal was rendered as markdown, which dropped the frontmatter and the
+line breaks a reviewer needs to judge the file. Dark mode was checked by
+injecting the built stylesheet's own dark block, and the narrow layout by
+rendering the app in a 420 px frame.

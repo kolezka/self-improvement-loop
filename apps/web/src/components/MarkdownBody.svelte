@@ -28,3 +28,17 @@
     {/if}
   {/each}
 </div>
+
+<style>
+  /* body-doc lands inside a panel__body or a card with its own top/bottom
+     margin trim; without this, the first heading still carries its 1rem
+     top margin and looks like a gap above the content. */
+  .body-doc > :first-child {
+    margin-top: 0;
+  }
+
+  .body-doc > :last-child {
+    margin-bottom: 0;
+  }
+</style>
+

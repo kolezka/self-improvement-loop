@@ -151,9 +151,7 @@
   onMount(load);
 </script>
 
-<h2>Logs</h2>
-
-<div class="actions">
+<div class="toolbar">
   <label class="control">
     <span>log</span>
     <select bind:value={name} onchange={reload}>
@@ -288,7 +286,7 @@
   .console {
     /* Fills what the header, toolbar and status line leave, so the console
        scrolls instead of pushing the page into a second scrollbar. */
-    height: clamp(16rem, calc(100vh - 17rem), 60rem);
+    height: clamp(16rem, calc(100vh - 20rem), 60rem);
     resize: vertical;
     overflow: auto;
     padding: 0.4rem 0;

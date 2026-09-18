@@ -15699,8 +15699,9 @@ function skillShape(pattern) {
 function agentShape(pattern) {
   return "The same file shape as a skill: three hyphens alone, a line 'name:' " + `followed by exactly ${pattern}, a line 'description:' followed by 'Use ` + "when ' and one specific trigger situation, then three hyphens alone. " + "Then a markdown '## ' heading, then the sub-agent's brief: what it " + "investigates, what it must read, what it reports back. Over 80 " + "characters, naming the actual commands, fields or checks the lessons name.";
 }
-function ruleShape(_pattern) {
-  return "Exactly one line, starting with '- ', under 300 characters. No heading, " + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name. No HTML " + "comment and no '<!--rule:...-->' tag: the writer adds the tag itself.";
+function ruleShape(pattern) {
+  const budget = MAX_RULE_CHARS - ruleTag(pattern).length - 1;
+  return `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name. No HTML " + "comment and no '<!--rule:...-->' tag: the writer adds the tag itself.";
 }
 var GATE_VOCABULARY = {
   always: "taking true, which fires on every matching call",

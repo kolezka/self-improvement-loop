@@ -21,6 +21,7 @@ import {
   branchName,
   draftMessages,
   git,
+  lintRule,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
   run,
@@ -584,6 +585,18 @@ describe("redraft after a route change", () => {
     const prompt = draftMessages(PATTERN, ["a lesson"], null, null).at(-1)!.content;
     expect(prompt).toContain(`${MIN_QUOTE_WORDS} words`);
     expect(prompt).toContain(`${MIN_QUOTE_CHARS} characters`);
+  });
+
+  test("a rule written to the length the prompt states passes the lint", () => {
+    // The lint measures the line the writer produces, tag included. A prompt
+    // quoting the raw cap asks for a bullet that is then refused for being a
+    // few characters over, on every run, with nothing saying why.
+    const prompt = draftMessages(PATTERN, ["a lesson"], null, "rule").at(-1)!.content;
+    const stated = Number(/(?:at most|under) (\d+) characters/.exec(prompt)?.[1]);
+    expect(stated).toBeGreaterThan(0);
+    const bullet = "- " + "x".repeat(stated - 2);
+    expect(bullet.length).toBe(stated);
+    expect(lintRule(bullet, PATTERN)).toEqual([]);
   });
 });
 

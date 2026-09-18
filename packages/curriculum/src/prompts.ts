@@ -12,8 +12,12 @@
 // risks only a malformed delimiter, which lint catches reliably. Prefer the
 // failure mode the gates catch.
 
+import { ruleTag } from "@sil/core";
 import type { ChatMessage } from "@sil/providers";
 import { nudgeEvents } from "./deps.ts";
+// The rule cap, imported rather than restated: a prompt quoting a number the
+// lint no longer uses is a gate the drafter cannot see.
+import { MAX_RULE_CHARS } from "./lint.ts";
 // The router's own bar for a quote, imported rather than restated. A prompt
 // asking for "an exact substring" while the router demands five words is a
 // drafter answering honestly and being downgraded for it on every run.
@@ -76,9 +80,14 @@ export function agentShape(pattern: string): string {
   );
 }
 
-export function ruleShape(_pattern: string): string {
+export function ruleShape(pattern: string): string {
+  // The lint caps the line the writer produces, tag included, so the budget the
+  // drafter gets has to have the tag taken out of it already. Quoting the raw
+  // cap asks for a bullet that is then refused for being 18 characters over,
+  // which is an honest drafter gated on every run and never told why.
+  const budget = MAX_RULE_CHARS - ruleTag(pattern).length - 1;
   return (
-    "Exactly one line, starting with '- ', under 300 characters. No heading, " +
+    `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` +
     "no frontmatter, no second line: the single imperative the agent must " +
     "follow, naming the actual command or check the lessons name. No HTML " +
     "comment and no '<!--rule:...-->' tag: the writer adds the tag itself."

@@ -15150,6 +15150,7 @@ var PromotionEntry = object({
   artifact_type: ArtifactType.default("none"),
   served_by: ArtifactRef.nullable().default(null),
   last_updated: isoTs.default(() => new Date().toISOString()),
+  promoted_at: isoTs.nullable().default(null),
   commit: string2().nullable().default(null),
   feedback: Scorecard.nullable().default(null)
 });
@@ -15655,9 +15656,6 @@ function writeHookSnapshot(cfg = loadConfig()) {
   return p;
 }
 // apps/cli/src/common.ts
-import { execFileSync } from "child_process";
-import { existsSync as existsSync3 } from "fs";
-import { join as join4 } from "path";
 function resolveWorld(cfg, name) {
   if (name)
     return worldNamed(cfg, name);
@@ -15694,24 +15692,6 @@ function mapKnownError(err) {
     return 1;
   }
   return null;
-}
-function ensureLearnedRepo(path) {
-  ensureDir(path);
-  if (!existsSync3(join4(path, ".git"))) {
-    execFileSync("git", ["init", "-b", "main", path], { stdio: "ignore" });
-  }
-  const hasHead = trySpawn(() => execFileSync("git", ["-C", path, "rev-parse", "--verify", "HEAD"], { stdio: "ignore" }));
-  if (!hasHead) {
-    execFileSync("git", ["-C", path, "-c", "user.name=self-improvement-loop", "-c", "user.email=sil@local", "commit", "--allow-empty", "-m", "init"], { stdio: "ignore" });
-  }
-}
-function trySpawn(fn) {
-  try {
-    fn();
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 // packages/curriculum/src/index.ts
@@ -15783,6 +15763,7 @@ __export(exports_git, {
   currentBranch: () => currentBranch,
   defaultBranch: () => defaultBranch,
   dirtyPaths: () => dirtyPaths,
+  ensureIdentity: () => ensureIdentity,
   ensureRepo: () => ensureRepo,
   git: () => git,
   gitRaw: () => gitRaw,
@@ -15798,7 +15779,7 @@ __export(exports_git, {
 });
 import { mkdirSync as mkdirSync2, mkdtempSync, rmSync, statSync as statSync2 } from "fs";
 import { tmpdir } from "os";
-import { join as join5 } from "path";
+import { join as join4 } from "path";
 var DEFAULT_TIMEOUT_MS = 60000;
 function isTimeoutSignal(signal, elapsedMs, timeoutMs) {
   return signal === "SIGTERM" && elapsedMs >= timeoutMs;
@@ -15870,25 +15851,36 @@ function defaultBranch(repo) {
   }
   return currentBranch(repo) || "main";
 }
+var LOOP_EMAIL = "loop@self-improvement-loop.local";
+var LOOP_NAME = "self-improvement-loop";
+function ensureIdentity(repo) {
+  if (gitRaw(repo, ["var", "GIT_COMMITTER_IDENT"]).code === 0)
+    return;
+  git(repo, ["config", "user.email", LOOP_EMAIL]);
+  git(repo, ["config", "user.name", LOOP_NAME]);
+  git(repo, ["config", "commit.gpgsign", "false"]);
+}
 function ensureRepo(path) {
   mkdirSync2(path, { recursive: true });
-  if (isRepo(path))
+  if (isRepo(path)) {
+    ensureIdentity(path);
     return path;
+  }
   git(path, ["init", "-q", "-b", "main"]);
-  git(path, ["config", "user.email", "loop@self-improvement-loop.local"]);
-  git(path, ["config", "user.name", "self-improvement-loop"]);
+  git(path, ["config", "user.email", LOOP_EMAIL]);
+  git(path, ["config", "user.name", LOOP_NAME]);
   git(path, ["config", "commit.gpgsign", "false"]);
   git(path, ["commit", "-q", "--allow-empty", "-m", "chore: initialise learned repo"]);
   return path;
 }
 function hooksOff(parent) {
-  const empty = join5(parent, "nohooks");
+  const empty = join4(parent, "nohooks");
   mkdirSync2(empty, { recursive: true });
   return ["-c", `core.hooksPath=${empty}`];
 }
 function withScratchWorktree(repo, branch, base, fn) {
-  const tmp = mkdtempSync(join5(tmpdir(), "sil-wt-"));
-  const workDir = join5(tmp, "wt");
+  const tmp = mkdtempSync(join4(tmpdir(), "sil-wt-"));
+  const workDir = join4(tmp, "wt");
   const created = !refExists(repo, `refs/heads/${branch}`);
   let threw = true;
   try {
@@ -15959,8 +15951,8 @@ __export(exports_artifacts, {
   stripRuleTag: () => stripRuleTag,
   writeArtifact: () => writeArtifact
 });
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readdirSync, rmdirSync, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
-import { dirname as dirname3, join as join6, resolve as resolve3 } from "path";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync, rmdirSync, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname3, join as join5, resolve as resolve3 } from "path";
 var TYPES = ["skill", "hook", "rule", "agent"];
 var HOOK_KEYS = ["pattern", "event", "matcher", "gate", "once_per", "text"];
 var RULE_TAG_OPEN = ruleTag("").replace("-->", "");
@@ -16010,8 +16002,8 @@ function readArtifact(world, artifactType, pattern, root) {
   const rel = artifactRel(world, artifactType, pattern);
   if (!rel)
     return "";
-  const path = join6(rootFor(world, root), rel);
-  if (!existsSync4(path))
+  const path = join5(rootFor(world, root), rel);
+  if (!existsSync3(path))
     return "";
   const text = readText(path);
   return artifactType === "rule" ? stripRuleTag(ruleBulletInText(text, pattern), pattern) : text;
@@ -16020,7 +16012,7 @@ function writeArtifact(world, artifactType, pattern, payload, root) {
   const rel = artifactRel(world, artifactType, pattern);
   if (!rel)
     return null;
-  const path = join6(rootFor(world, root), rel);
+  const path = join5(rootFor(world, root), rel);
   if (artifactType === "rule") {
     writeRule(path, pattern, String(payload).trim());
     return path;
@@ -16049,10 +16041,10 @@ function removeArtifact(world, artifactType, pattern, root) {
   const rel = artifactRel(world, artifactType, pattern);
   if (!rel)
     return "";
-  const path = join6(rootFor(world, root), rel);
+  const path = join5(rootFor(world, root), rel);
   if (artifactType === "rule")
     return removeRuleBullet(path, pattern) ? rel : "";
-  if (!existsSync4(path))
+  if (!existsSync3(path))
     return "";
   unlinkSync(path);
   const parent = dirname3(path);
@@ -16106,10 +16098,10 @@ function ruleBulletInText(text, pattern) {
   return "";
 }
 function rulesProblem(world, root) {
-  const path = join6(rootFor(world, root), strip(world.layout.rules_file));
+  const path = join5(rootFor(world, root), strip(world.layout.rules_file));
   let text;
   try {
-    text = existsSync4(path) ? readText(path) : "";
+    text = existsSync3(path) ? readText(path) : "";
   } catch (e) {
     return `${path} is unreadable: ${e.message}`;
   }
@@ -16138,8 +16130,8 @@ function ownsRulesFile(world) {
 function ensureRulesFile(world, root) {
   if (!ownsRulesFile(world))
     return null;
-  const path = join6(rootFor(world, root), strip(world.layout.rules_file));
-  if (existsSync4(path))
+  const path = join5(rootFor(world, root), strip(world.layout.rules_file));
+  if (existsSync3(path))
     return path;
   mkdirSync3(dirname3(path), { recursive: true });
   writeFileSync2(path, `# Learned rules
@@ -16157,7 +16149,7 @@ function writeRule(path, pattern, bullet) {
       throw new ValidationError(`refusing to write a rule bullet containing ${JSON.stringify(marker)}: it would wedge ${path} for every later write and for retire`);
     }
   }
-  const text = existsSync4(path) ? readText(path) : "";
+  const text = existsSync3(path) ? readText(path) : "";
   const problem = markerProblem(path, text);
   if (problem)
     throw new ValidationError(problem);
@@ -16172,7 +16164,7 @@ ${kept.join(`
 ${RULE_END}${tail}`, "utf8");
 }
 function removeRuleBullet(path, pattern) {
-  if (!existsSync4(path))
+  if (!existsSync3(path))
     return false;
   const text = readText(path);
   const tag = ruleTag(pattern);
@@ -16308,11 +16300,11 @@ __export(exports_src, {
 
 // packages/nudges/src/dispatch.ts
 import { readdirSync as readdirSync2 } from "fs";
-import { join as join7 } from "path";
+import { join as join6 } from "path";
 
 // packages/nudges/src/firelog.ts
 import { createHash } from "crypto";
-import { appendFileSync as appendFileSync2, existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync2, rmSync as rmSync2, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
+import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync2, rmSync as rmSync2, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname4 } from "path";
 var ROTATE_AT_BYTES2 = 10 * 1024 * 1024;
 var ROTATE_KEEP_LINES2 = 5000;
@@ -16414,7 +16406,7 @@ function claimMarker(sessionDir, name) {
     const markers = `${sessionDir}/nudge-markers`;
     mkdirSync4(markers, { recursive: true });
     const mark = `${markers}/${markerSlug(name)}`;
-    if (existsSync5(mark))
+    if (existsSync4(mark))
       return false;
     writeFileSync3(mark, "", { flag: "wx" });
     return true;
@@ -16875,7 +16867,7 @@ function loadNudgesDetailed(dirs) {
       continue;
     }
     for (const name of names) {
-      const file = join7(d, name);
+      const file = join6(d, name);
       const raw = readJsonOr(file, null);
       if (!isRecord3(raw)) {
         rejected.push({ file, problems: ["not readable as a JSON object"] });
@@ -16948,16 +16940,16 @@ function dispatch(payload, nudges, opts) {
   }
 }
 // packages/nudges/src/gate-runner.ts
-import { existsSync as existsSync6 } from "fs";
-import { join as join8 } from "path";
+import { existsSync as existsSync5 } from "fs";
+import { join as join7 } from "path";
 function isRecord4(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function resolveRunner() {
-  const built = join8(pluginRoot(), "dist", "gate-runner.js");
-  if (existsSync6(built))
+  const built = join7(pluginRoot(), "dist", "gate-runner.js");
+  if (existsSync5(built))
     return built;
-  return join8(pluginRoot(), "packages", "nudges", "src", "gate-runner.ts");
+  return join7(pluginRoot(), "packages", "nudges", "src", "gate-runner.ts");
 }
 function runGateCorpus(gate, payloads, timeoutMs = 250) {
   const runner = resolveRunner();
@@ -17580,7 +17572,7 @@ function parseVerdict(raw) {
 }
 // packages/curriculum/src/plan.ts
 import { readdirSync as readdirSync7, statSync as statSync7 } from "fs";
-import { join as join13 } from "path";
+import { join as join12 } from "path";
 
 // packages/feedback/src/index.ts
 var exports_src3 = {};
@@ -17595,7 +17587,7 @@ __export(exports_src3, {
 
 // packages/store/src/reflections.ts
 import { lstatSync, readdirSync as readdirSync3, realpathSync as realpathSync2, statSync as statSync5 } from "fs";
-import { basename, join as join9, relative as relative2 } from "path";
+import { basename, join as join8, relative as relative2 } from "path";
 
 // packages/store/src/aliases.ts
 function loadAliases(world) {
@@ -17610,6 +17602,13 @@ function loadAliases(world) {
   return out;
 }
 function saveAliases(world, aliases) {
+  const values = new Set(Object.values(aliases));
+  for (const key of Object.keys(aliases)) {
+    if (!values.has(key))
+      continue;
+    const source = Object.entries(aliases).find(([k, v]) => v === key && k !== key)?.[0];
+    throw new ValidationError(source ? `"${key}" is a key (-> "${aliases[key]}") and also the value of "${source}" (-> "${key}"); aliases resolve one hop only` : `"${key}" is a key (-> "${aliases[key]}") and also its own value`);
+  }
   const sorted = Object.fromEntries(Object.entries(aliases).sort(([a], [b]) => a < b ? -1 : 1));
   const p = aliasesFile(world);
   writeJson(p, sorted);
@@ -17692,7 +17691,7 @@ function* walkMarkdown(dir, seen) {
   for (const name of entries) {
     if (name.startsWith(".") || name === "graphify-out" || name === "vec-index")
       continue;
-    const p = join9(dir, name);
+    const p = join8(dir, name);
     let st;
     try {
       st = lstatSync(p);
@@ -17749,7 +17748,7 @@ function writeReflection(world, meta, body) {
     created: meta["created"] ? String(meta["created"]) : today(),
     ...meta
   };
-  const path = join9(reflectionsDir(world), `${id}.md`);
+  const path = join8(reflectionsDir(world), `${id}.md`);
   if (exists(path))
     throw new Error(`reflection already exists: ${path}`);
   const front = exports_dist.stringify(full).trimEnd();
@@ -17768,6 +17767,51 @@ function patternCounts(world, extraDirs = []) {
     counts[p] = (counts[p] ?? 0) + 1;
   }
   return counts;
+}
+// packages/store/src/alias-suggest.ts
+var tokens = (s) => new Set(s.split("-"));
+function jaccard(a, b) {
+  let shared = 0;
+  for (const t of a)
+    if (b.has(t))
+      shared++;
+  const union = a.size + b.size - shared;
+  return union === 0 ? 0 : shared / union;
+}
+function isProperSubset(a, b) {
+  if (a.size < 2 || a.size >= b.size)
+    return false;
+  for (const t of a)
+    if (!b.has(t))
+      return false;
+  return true;
+}
+function suggestAliases(world) {
+  const counts = patternCounts(world);
+  const slugs = Object.keys(counts).sort();
+  const out = [];
+  for (let i = 0;i < slugs.length; i++) {
+    for (let j = i + 1;j < slugs.length; j++) {
+      const a = slugs[i];
+      const b = slugs[j];
+      const setA = tokens(a);
+      const setB = tokens(b);
+      const score = jaccard(setA, setB);
+      if (score < 0.5 && !isProperSubset(setA, setB) && !isProperSubset(setB, setA))
+        continue;
+      const canonical = counts[a] >= counts[b] ? a : b;
+      const alias = canonical === a ? b : a;
+      out.push({ alias, canonical, alias_count: counts[alias], canonical_count: counts[canonical], score });
+    }
+  }
+  out.sort((x, y) => {
+    if (y.score !== x.score)
+      return y.score - x.score;
+    if (x.canonical !== y.canonical)
+      return x.canonical < y.canonical ? -1 : 1;
+    return x.alias < y.alias ? -1 : 1;
+  });
+  return out;
 }
 // packages/store/src/ledger.ts
 function loadLedger(path) {
@@ -17826,9 +17870,9 @@ function stripNulls(v) {
 }
 // packages/store/src/inbox.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { join as join10 } from "path";
+import { join as join9 } from "path";
 function putLesson(lesson) {
-  const p = join10(inboxDir(lesson.world), `${safeComponent(lesson.id)}.json`);
+  const p = join9(inboxDir(lesson.world), `${safeComponent(lesson.id)}.json`);
   writeJson(p, Lesson.parse(lesson));
   return p;
 }
@@ -17842,7 +17886,7 @@ function listLessons(world) {
   }
   const out = [];
   for (const name of names) {
-    const raw = readJsonOr(join10(dir, name), null);
+    const raw = readJsonOr(join9(dir, name), null);
     const parsed = Lesson.safeParse(raw);
     if (parsed.success)
       out.push(parsed.data);
@@ -17852,9 +17896,9 @@ function listLessons(world) {
 }
 // packages/store/src/queue.ts
 import { readdirSync as readdirSync5, rmSync as rmSync3 } from "fs";
-import { join as join11 } from "path";
+import { join as join10 } from "path";
 function entryPath(bucket, sessionId) {
-  return join11(queueDir(bucket), `${safeComponent(sessionId)}.json`);
+  return join10(queueDir(bucket), `${safeComponent(sessionId)}.json`);
 }
 function listQueue(bucket) {
   let names;
@@ -17865,7 +17909,7 @@ function listQueue(bucket) {
   }
   const out = [];
   for (const name of names) {
-    const parsed = QueueEntry.safeParse(readJsonOr(join11(queueDir(bucket), name), null));
+    const parsed = QueueEntry.safeParse(readJsonOr(join10(queueDir(bucket), name), null));
     if (parsed.success)
       out.push(parsed.data);
   }
@@ -17888,7 +17932,7 @@ function moveEntry(entry, from, to, result = null) {
 }
 // packages/critic/src/index.ts
 import { readdirSync as readdirSync6, statSync as statSync6 } from "fs";
-import { join as join12 } from "path";
+import { join as join11 } from "path";
 
 // packages/providers/src/index.ts
 var exports_src2 = {};
@@ -18116,7 +18160,7 @@ async function chatClaudeCli(endpoint, model, messages, _opts) {
 }
 
 // packages/transcript/src/index.ts
-import { existsSync as existsSync7, readFileSync as readFileSync3 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync3 } from "fs";
 var NOISE_TYPES = new Set(["ai-title", "last-prompt", "queue-operation", "atis-latch"]);
 var TEST_LIKE_RE = /pytest|jest|vitest|go test|cargo test|npm test|pnpm test|make test|ruff|eslint|tsc|mypy/;
 var SUMMARY_KEYS = ["command", "file_path", "skill", "subagent_type", "pattern", "path"];
@@ -18127,7 +18171,7 @@ function asArray(v) {
   return Array.isArray(v) ? v : [];
 }
 function* iterRecords(path, maxBytes = 50000000) {
-  if (!existsSync7(path))
+  if (!existsSync6(path))
     return;
   let text;
   try {
@@ -18419,22 +18463,22 @@ function installedArtifacts(world, _cfg) {
   } catch {
     return [...refs].sort();
   }
-  const skillsDir = join12(root, world.layout.skills_dir);
+  const skillsDir = join11(root, world.layout.skills_dir);
   for (const name of listDir(skillsDir)) {
-    if (isDir(join12(skillsDir, name)))
+    if (isDir(join11(skillsDir, name)))
       refs.add(`skill:${name}`);
   }
-  const nudgesDir = join12(root, world.layout.nudges_dir);
+  const nudgesDir = join11(root, world.layout.nudges_dir);
   for (const name of listDir(nudgesDir)) {
     if (name.endsWith(".json"))
-      refs.add(`hook:${nudgePattern(join12(nudgesDir, name))}`);
+      refs.add(`hook:${nudgePattern(join11(nudgesDir, name))}`);
   }
-  const agentsDir = join12(root, world.layout.agents_dir);
+  const agentsDir = join11(root, world.layout.agents_dir);
   for (const name of listDir(agentsDir)) {
     if (name.endsWith(".md"))
       refs.add(`agent:${name.replace(/\.md$/, "")}`);
   }
-  const rulesFile = join12(root, world.layout.rules_file);
+  const rulesFile = join11(root, world.layout.rules_file);
   if (exists(rulesFile)) {
     const text = readTextOr(rulesFile, "");
     for (const m of text.matchAll(/<!--rule:([a-z0-9-]+)-->/g))
@@ -18814,18 +18858,20 @@ function scorecards(world, cfg, opts = {}) {
   return out;
 }
 function propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, lastUsed, now, retireCutoff, retireDays) {
-  if (entry !== undefined) {
-    const updated = parseTs(entry.last_updated);
-    if (updated !== null && updated.getTime() >= now.getTime() - 7 * 86400000) {
-      const days = Math.floor((now.getTime() - updated.getTime()) / 86400000);
-      return ["new", `promoted ${days}d ago, within the 7 day new window`];
-    }
+  const promotedTs = entry === undefined ? null : entry.promoted_at ?? entry.last_updated;
+  const promotedDt = parseTs(promotedTs);
+  if (promotedDt !== null && promotedDt.getTime() >= now.getTime() - 7 * 86400000) {
+    const days = Math.floor((now.getTime() - promotedDt.getTime()) / 86400000);
+    return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    const stale = lastDt === null || lastDt.getTime() < retireCutoff.getTime();
+    const basisDt = lastDt ?? promotedDt;
+    const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
-      return ["retire-candidate", `no uses or fires in the last window, last_used=${lastUsed || "never"}, older than ${retireDays}d`];
+      const used = lastUsed === null ? "never used" : `last used ${lastUsed}, which is not a readable date`;
+      const basis = lastDt !== null ? `last used ${lastUsed}, older than ${retireDays}d` : basisDt !== null ? `${used}, promoted ${promotedTs}, older than ${retireDays}d` : "no parsable date to judge staleness from";
+      return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }
   }
   if (misfired + humanBad >= 2 && misfired + humanBad > helpful + humanGood) {
@@ -18934,7 +18980,7 @@ function loadPayloadCorpus(world) {
   const out = [];
   const seen = new Set;
   for (const root of roots) {
-    const dir = join13(root, "tests", "fixtures", "hook-payloads");
+    const dir = join12(root, "tests", "fixtures", "hook-payloads");
     if (seen.has(dir))
       continue;
     try {
@@ -18945,7 +18991,7 @@ function loadPayloadCorpus(world) {
     }
     seen.add(dir);
     for (const name of readdirSync7(dir).filter((n) => n.endsWith(".json")).sort()) {
-      const path = join13(dir, name);
+      const path = join12(dir, name);
       let parsed;
       try {
         parsed = JSON.parse(readText(path));
@@ -19035,8 +19081,8 @@ function plan(world, cfg, opts = {}) {
   return { world: world.name, threshold, actions };
 }
 // packages/curriculum/src/run.ts
-import { existsSync as existsSync8 } from "fs";
-import { join as join14, resolve as resolve4 } from "path";
+import { existsSync as existsSync7 } from "fs";
+import { join as join13, resolve as resolve4 } from "path";
 function branchName(world, pattern) {
   return `curriculum/${world.toLowerCase()}/${pattern}`;
 }
@@ -19257,6 +19303,7 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     artifact_type: routedType,
     served_by: { type: routedType, path: rel },
     last_updated: nowIso(),
+    promoted_at: autoMerge ? (prior?.status === "promoted" ? prior.promoted_at : null) ?? nowIso() : prior?.promoted_at ?? null,
     commit: null,
     feedback: null
   };
@@ -19275,9 +19322,9 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
       if (foreign.length > 0)
         throw new Error(`${rel} also changes rule(s) for ${foreign.join(", ")}`);
     }
-    const treeLedger = loadLedger(join14(tree, ctx.ledgerRel));
+    const treeLedger = loadLedger(join13(tree, ctx.ledgerRel));
     treeLedger.entries[pattern] = entry;
-    saveLedger(join14(tree, ctx.ledgerRel), treeLedger);
+    saveLedger(join13(tree, ctx.ledgerRel), treeLedger);
     git(tree, ["add", "--", rel, ctx.ledgerRel]);
     git(tree, ["commit", "-q", "-m", message]);
     return git(tree, ["rev-parse", "HEAD"]);
@@ -19306,8 +19353,8 @@ function autoMergeBranch(report, target, defaultRef, branch, pattern) {
 }
 function ruleProblem(world) {
   try {
-    const rules = join14(targetRoot(world), world.layout.rules_file.replace(/^\/+|\/+$/g, ""));
-    if (!existsSync8(rules)) {
+    const rules = join13(targetRoot(world), world.layout.rules_file.replace(/^\/+|\/+$/g, ""));
+    if (!existsSync7(rules)) {
       if (ownsRulesFile(world))
         return null;
       return `${rules} does not exist; add it with a ${RULE_START} / ${RULE_END} marker pair to opt this repo into rule writes`;
@@ -19341,8 +19388,8 @@ __export(exports_src6, {
   snapshot: () => snapshot
 });
 import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
-import { existsSync as existsSync9 } from "fs";
-import { dirname as dirname6, join as join17, resolve as resolve6 } from "path";
+import { existsSync as existsSync8 } from "fs";
+import { dirname as dirname6, join as join16, resolve as resolve6 } from "path";
 
 // packages/worker/src/index.ts
 var exports_src5 = {};
@@ -19361,18 +19408,18 @@ __export(exports_src5, {
   withLock: () => withLock
 });
 import { closeSync, openSync, readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync8, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4, writeSync } from "fs";
-import { dirname as dirname5, join as join16 } from "path";
+import { dirname as dirname5, join as join15 } from "path";
 
 // packages/worker/src/outline.ts
 import { readdirSync as readdirSync8 } from "fs";
-import { basename as basename2, join as join15 } from "path";
+import { basename as basename2, join as join14 } from "path";
 async function exportNew(world, _cfg) {
   if (world.outline === null)
     return { skipped: "not configured" };
   const apiKey = process.env[world.outline.api_key_env];
   if (!apiKey)
     return { exported: 0, errors: [`env var ${world.outline.api_key_env} is not set`] };
-  const markerPath = join15(stateDir(), `outline-exported-${world.name}.txt`);
+  const markerPath = join14(stateDir(), `outline-exported-${world.name}.txt`);
   const exportedIds = readMarker(markerPath);
   const errors = [];
   let exported = 0;
@@ -19389,7 +19436,7 @@ async function exportNew(world, _cfg) {
       continue;
     let body;
     try {
-      body = readText(join15(dir, name));
+      body = readText(join14(dir, name));
     } catch (e) {
       errors.push(`${rid}: ${e.message}`);
       continue;
@@ -19530,7 +19577,7 @@ function reapSessionDir(sessionId) {
   log({ action: "reap_session_dir", session_id: sessionId, result: "removed" });
 }
 function reapStaleSessionDirs(now, maxAgeDays = 7, limit = 500) {
-  const root = join16(stateDir(), "sessions");
+  const root = join15(stateDir(), "sessions");
   let names;
   try {
     names = readdirSync9(root).sort();
@@ -19542,7 +19589,7 @@ function reapStaleSessionDirs(now, maxAgeDays = 7, limit = 500) {
   for (const name of names) {
     if (removed >= limit)
       break;
-    const p = join16(root, name);
+    const p = join15(root, name);
     let st;
     try {
       st = statSync8(p);
@@ -19634,7 +19681,7 @@ async function runOnce(cfg, opts = {}) {
         }
       }
       summary.duration_s = Math.round((Date.now() - started) / 1000 * 1000) / 1000;
-      writeJson(join16(stateDir(), "worker-status.json"), { last_run: nowIso(), last_summary: summary });
+      writeJson(join15(stateDir(), "worker-status.json"), { last_run: nowIso(), last_summary: summary });
     });
   } catch (e) {
     if (e instanceof LockHeld)
@@ -19692,7 +19739,7 @@ async function reflectPending(cfg, worldByName, worldName, now, chat, summary) {
   }
 }
 async function runCurriculumIfDue(world, cfg, curriculumEnabled, now, summary) {
-  const marker = join16(stateDir(), `last-curriculum-${world.name}`);
+  const marker = join15(stateDir(), `last-curriculum-${world.name}`);
   if (!curriculumEnabled || !curriculumDue(marker, cfg.worker.curriculum_interval_minutes, now))
     return;
   try {
@@ -19717,7 +19764,7 @@ function log(payload) {
 function status2() {
   let lastRun = null;
   let lastSummary = null;
-  const raw = readJsonOr(join16(stateDir(), "worker-status.json"), null);
+  const raw = readJsonOr(join15(stateDir(), "worker-status.json"), null);
   if (raw) {
     lastRun = raw.last_run ?? null;
     lastSummary = raw.last_summary ?? null;
@@ -19731,7 +19778,7 @@ function status2() {
     if (!name.startsWith("last-curriculum-"))
       continue;
     const world = name.slice("last-curriculum-".length);
-    const mtime = mtimeMs(join16(stateDir(), name));
+    const mtime = mtimeMs(join15(stateDir(), name));
     if (mtime !== null)
       lastCurriculum[world] = new Date(mtime).toISOString();
   }
@@ -20109,10 +20156,11 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
         ...row,
         status: "promoted",
         commit: snap.branch_sha.slice(0, 12),
-        last_updated: nowIso()
+        last_updated: nowIso(),
+        promoted_at: row.status === "promoted" ? row.promoted_at ?? nowIso() : nowIso()
       };
     }
-    saveLedger(join17(tree, rel), merged);
+    saveLedger(join16(tree, rel), merged);
     git(tree, ["add", "--", rel]);
     git(tree, ["commit", "-q", "-m", `feat(${atype}): ${pattern} (reviewed)`]);
     return git(tree, ["rev-parse", "HEAD"]);
@@ -20188,7 +20236,7 @@ function rejectInner(world, _cfg, pattern, opts) {
   const at = reflections2(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   const rel = ledgerRel(world);
   const sha = commitOnDefault(world, repo, defaultRef, `chore(curriculum): reject ${pattern}`, (tree) => {
-    const ledger = loadLedger(join17(tree, rel));
+    const ledger = loadLedger(join16(tree, rel));
     const prior = ledger.entries[pattern];
     if (prior) {
       ledger.entries[pattern] = { ...prior, rejected_at_count: at, last_updated: nowIso() };
@@ -20201,11 +20249,12 @@ function rejectInner(world, _cfg, pattern, opts) {
         artifact_type: entryType(branchRow),
         served_by: null,
         last_updated: nowIso(),
+        promoted_at: null,
         commit: null,
         feedback: null
       };
     }
-    saveLedger(join17(tree, rel), ledger);
+    saveLedger(join16(tree, rel), ledger);
     return [rel];
   });
   git(repo, ["branch", "-q", "-D", snap.branch], { check: false });
@@ -20256,7 +20305,7 @@ function rehomeInner(world, _cfg, pattern, artifactType) {
   const rel = ledgerRel(world);
   let newRel = "";
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
-    const ledger = loadLedger(join17(tree, rel));
+    const ledger = loadLedger(join16(tree, rel));
     const entry = ledger.entries[pattern];
     if (!entry)
       throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to re-home`);
@@ -20281,7 +20330,7 @@ function rehomeInner(world, _cfg, pattern, artifactType) {
       status: "staged",
       last_updated: nowIso()
     };
-    saveLedger(join17(tree, rel), ledger);
+    saveLedger(join16(tree, rel), ledger);
     touched.push(rel);
     return [touched, `feat(${artifactType}): re-home ${pattern} (auto, gated)`];
   });
@@ -20295,7 +20344,7 @@ function retireInner(world, _cfg, pattern) {
   const rel = ledgerRel(world);
   let removed = "";
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
-    const ledger = loadLedger(join17(tree, rel));
+    const ledger = loadLedger(join16(tree, rel));
     const entry = ledger.entries[pattern];
     if (!entry)
       throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to retire`);
@@ -20304,7 +20353,7 @@ function retireInner(world, _cfg, pattern) {
     const oldType = entryType(entry);
     removed = removeArtifact(world, oldType, pattern, tree);
     ledger.entries[pattern] = { ...entry, status: "retired", served_by: null, last_updated: nowIso() };
-    saveLedger(join17(tree, rel), ledger);
+    saveLedger(join16(tree, rel), ledger);
     return [[...removed ? [removed] : [], rel], `feat(${oldType}): retire ${pattern} (auto, gated)`];
   });
   return { branch, pattern, removed };
@@ -20314,8 +20363,8 @@ function relink(world, pattern, artifactType) {
     return null;
   const target = targetRoot(world);
   const rel = artifactRel(world, artifactType, pattern);
-  const source = artifactType === "skill" ? dirname6(join17(target, rel)) : join17(target, rel);
-  const link = artifactType === "skill" ? join17(claudeConfigDir(), "skills", pattern) : join17(claudeConfigDir(), "agents", `${pattern}.md`);
+  const source = artifactType === "skill" ? dirname6(join16(target, rel)) : join16(target, rel);
+  const link = artifactType === "skill" ? join16(claudeConfigDir(), "skills", pattern) : join16(claudeConfigDir(), "agents", `${pattern}.md`);
   mkdirSync5(dirname6(link), { recursive: true });
   let isLink = false;
   try {
@@ -20325,17 +20374,17 @@ function relink(world, pattern, artifactType) {
   }
   if (isLink) {
     const current = readlinkSync(link);
-    if (!existsSync9(source)) {
+    if (!existsSync8(source)) {
       unlinkSync3(link);
       return null;
     }
     if (resolve6(dirname6(link), current) === resolve6(source))
       return link;
     unlinkSync3(link);
-  } else if (existsSync9(link)) {
+  } else if (existsSync8(link)) {
     throw new ReviewError(`${link} already exists and is not a symlink; refusing to replace it. Move it aside and relink.`);
   }
-  if (!existsSync9(source))
+  if (!existsSync8(source))
     return null;
   symlinkSync(source, link, artifactType === "skill" ? "dir" : "file");
   return link;
@@ -20349,6 +20398,76 @@ var defaultDeps = {
   review: exports_src6,
   curriculum: exports_src4
 };
+
+// apps/cli/src/commands/aliases.ts
+function cmdAliasesList(opts) {
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const entries = Object.entries(loadAliases(world.name)).sort(([a], [b]) => a < b ? -1 : 1);
+  if (entries.length === 0) {
+    console.log(`no aliases for world ${world.name}`);
+    return 0;
+  }
+  for (const [alias, canonical] of entries)
+    console.log(`${alias.padEnd(30)} -> ${canonical}`);
+  return 0;
+}
+function cmdAliasesSet(alias, canonical, opts) {
+  if (!isSlug(alias))
+    throw new ValidationError(`alias ${JSON.stringify(alias)} is not a valid slug`);
+  if (!isSlug(canonical))
+    throw new ValidationError(`canonical ${JSON.stringify(canonical)} is not a valid slug`);
+  if (alias === canonical)
+    throw new ValidationError(`alias and canonical cannot both be ${JSON.stringify(alias)}`);
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const current = loadAliases(world.name);
+  if (Object.hasOwn(current, canonical)) {
+    throw new ValidationError(`${JSON.stringify(canonical)} is itself an alias for ${JSON.stringify(current[canonical])}; point ${JSON.stringify(alias)} at ${JSON.stringify(current[canonical])} instead`);
+  }
+  const next = { ...current, [alias]: canonical };
+  const repointed = [];
+  for (const [k, v] of Object.entries(current)) {
+    if (v === alias) {
+      next[k] = canonical;
+      repointed.push(k);
+    }
+  }
+  repointed.sort();
+  saveAliases(world.name, next);
+  console.log(`aliased ${alias} -> ${canonical} in world ${world.name}`);
+  for (const k of repointed)
+    console.log(`re-pointed ${k} -> ${canonical} (was -> ${alias})`);
+  return 0;
+}
+function cmdAliasesRm(alias, opts) {
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const current = loadAliases(world.name);
+  if (!Object.hasOwn(current, alias)) {
+    console.log(`no alias ${alias} in world ${world.name}`);
+    return 0;
+  }
+  const { [alias]: _removed, ...rest } = current;
+  saveAliases(world.name, rest);
+  console.log(`removed alias ${alias} in world ${world.name}`);
+  return 0;
+}
+function cmdAliasesSuggest(opts) {
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const suggestions = suggestAliases(world.name);
+  if (suggestions.length === 0) {
+    console.log(`no alias suggestions for world ${world.name}`);
+    return 0;
+  }
+  console.log(`possible near-duplicate patterns (same mechanism, different slug). Review each, then apply with the command shown:`);
+  for (const s of suggestions) {
+    console.log(`  ${s.alias} (${s.alias_count}) ~ ${s.canonical} (${s.canonical_count})  score=${s.score.toFixed(2)}`);
+    console.log(`    sil aliases set ${s.alias} ${s.canonical} --world ${world.name}`);
+  }
+  return 0;
+}
 
 // apps/cli/src/commands/artifacts.ts
 function cmdArtifacts(opts, deps = defaultDeps) {
@@ -20448,8 +20567,8 @@ function cmdHookSnapshot() {
 }
 
 // apps/cli/src/importer.ts
-import { copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync6, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
-import { join as join18, relative as relative3 } from "path";
+import { copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync6, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
+import { join as join17, relative as relative3 } from "path";
 function walkMarkdownFiles(dir) {
   const out = [];
   const walk = (p) => {
@@ -20460,7 +20579,7 @@ function walkMarkdownFiles(dir) {
       return;
     }
     for (const name of entries) {
-      const full = join18(p, name);
+      const full = join17(p, name);
       let st;
       try {
         st = statSync9(full);
@@ -20489,12 +20608,12 @@ function importReflections(dir, world) {
       skippedNonReflection++;
       continue;
     }
-    const target = join18(dest, relative3(src, p));
-    if (existsSync10(target)) {
+    const target = join17(dest, relative3(src, p));
+    if (existsSync9(target)) {
       skippedDuplicate++;
       continue;
     }
-    mkdirSync6(join18(target, ".."), { recursive: true });
+    mkdirSync6(join17(target, ".."), { recursive: true });
     copyFileSync(p, target);
     copied++;
   }
@@ -20549,7 +20668,7 @@ function cmdImportLedger(file, opts) {
 }
 
 // apps/cli/src/commands/init.ts
-import { join as join19 } from "path";
+import { join as join18 } from "path";
 var DEFAULT_LITELLM_MODEL = "deepseek/deepseek-flash";
 function cmdInit(opts) {
   const cfgPath = configFile();
@@ -20593,14 +20712,14 @@ function cmdInit(opts) {
   }
   for (const world of cfg.worlds) {
     if (world.target === null)
-      ensureLearnedRepo(targetRoot(world));
+      ensureRepo(targetRoot(world));
     ensureDir(reflectionsDir(world.name));
     ensureDir(inboxDir(world.name));
   }
   for (const bucket of ["pending", "done", "failed"])
     ensureDir(queueDir(bucket));
   for (const sub of ["logs", "sessions", "usage", "feedback"])
-    ensureDir(join19(stateDir(), sub));
+    ensureDir(join18(stateDir(), sub));
   const snap = writeHookSnapshot(cfg);
   console.log(`wrote hook snapshot at ${snap}`);
   console.log();
@@ -20713,14 +20832,14 @@ function cmdLlmSetModel(roleArg, model, opts) {
 }
 
 // apps/cli/src/commands/logs.ts
-import { existsSync as existsSync11 } from "fs";
+import { existsSync as existsSync10 } from "fs";
 function cmdLogs(name, opts) {
   if (!LOG_NAMES.includes(name)) {
     console.error(`error: unknown log ${JSON.stringify(name)}, choose from ${LOG_NAMES.join(", ")}`);
     return 2;
   }
   const p = logFile(name);
-  if (!existsSync11(p)) {
+  if (!existsSync10(p)) {
     console.log(`no log file at ${p}`);
     return 0;
   }
@@ -20881,9 +21000,9 @@ function cmdReviewRetire(pattern, opts, deps = defaultDeps) {
 }
 
 // apps/cli/src/schedule.ts
-import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync12, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
+import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
 import { homedir as homedir2 } from "os";
-import { dirname as dirname7, join as join20 } from "path";
+import { dirname as dirname7, join as join19 } from "path";
 var SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"];
 var SYSTEMD_WEB_UNIT = "sil-web.service";
 var LAUNCHD_WORKER_PLIST = "com.raqz.sil-worker.plist";
@@ -20899,13 +21018,13 @@ function home() {
   return process.env["HOME"] || homedir2();
 }
 function shimPath() {
-  return join20(home(), ".local", "bin", "sil");
+  return join19(home(), ".local", "bin", "sil");
 }
 function systemdDir() {
-  return join20(home(), ".config", "systemd", "user");
+  return join19(home(), ".config", "systemd", "user");
 }
 function launchdDir() {
-  return join20(home(), "Library", "LaunchAgents");
+  return join19(home(), "Library", "LaunchAgents");
 }
 function renderSystemd(intervalMin, web) {
   const shim = shimPath();
@@ -20995,7 +21114,7 @@ function renderLaunchd(intervalMin, web) {
 function installShim() {
   const dest = shimPath();
   mkdirSync7(dirname7(dest), { recursive: true });
-  const src = join20(pluginRoot(), "scripts", "sil");
+  const src = join19(pluginRoot(), "scripts", "sil");
   copyFileSync2(src, dest);
   chmodSync(dest, 493);
   return dest;
@@ -21007,7 +21126,7 @@ function install(kind, intervalMin = 60, web = false, run = realRunner) {
     mkdirSync7(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderSystemd(intervalMin, web))) {
-      const p = join20(d, name);
+      const p = join19(d, name);
       writeFileSync5(p, content, "utf8");
       written.push(p);
     }
@@ -21022,7 +21141,7 @@ function install(kind, intervalMin = 60, web = false, run = realRunner) {
     mkdirSync7(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderLaunchd(intervalMin, web))) {
-      const p = join20(d, name);
+      const p = join19(d, name);
       writeFileSync5(p, content, "utf8");
       written.push(p);
       run(["launchctl", "load", p]);
@@ -21038,8 +21157,8 @@ function uninstall(kind, run = realRunner) {
     run(["systemctl", "--user", "disable", "--now", SYSTEMD_WEB_UNIT]);
     const removed = [];
     for (const name of [...SYSTEMD_WORKER_UNITS, SYSTEMD_WEB_UNIT]) {
-      const p = join20(d, name);
-      if (existsSync12(p)) {
+      const p = join19(d, name);
+      if (existsSync11(p)) {
         rmSync5(p);
         removed.push(p);
       }
@@ -21051,8 +21170,8 @@ function uninstall(kind, run = realRunner) {
     const d = launchdDir();
     const removed = [];
     for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST, ...LEGACY_LAUNCHD_PLISTS]) {
-      const p = join20(d, name);
-      if (existsSync12(p)) {
+      const p = join19(d, name);
+      if (existsSync11(p)) {
         run(["launchctl", "unload", p]);
         rmSync5(p);
         removed.push(p);
@@ -21064,9 +21183,9 @@ function uninstall(kind, run = realRunner) {
 }
 function show2() {
   const d = systemdDir();
-  const systemd = existsSync12(d) ? readdirSync11(d).filter((n) => n.startsWith("sil-")).sort() : [];
+  const systemd = existsSync11(d) ? readdirSync11(d).filter((n) => n.startsWith("sil-")).sort() : [];
   const ld = launchdDir();
-  const launchd = existsSync12(ld) ? readdirSync11(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
+  const launchd = existsSync11(ld) ? readdirSync11(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
   return { systemd, launchd };
 }
 
@@ -21319,6 +21438,9 @@ function aliasesSet(args) {
   saveAliases(args.world, args.aliases);
   return loadAliases(args.world);
 }
+function aliasesSuggest(args) {
+  return suggestAliases(args.world);
+}
 
 // packages/ops/src/cfg-world.ts
 function cfgWorld(name) {
@@ -21363,14 +21485,14 @@ function lessonsList(args) {
 }
 
 // packages/ops/src/spawn.ts
-import { closeSync as closeSync2, existsSync as existsSync13, openSync as openSync2 } from "fs";
-import { dirname as dirname8, join as join21 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync12, openSync as openSync2 } from "fs";
+import { dirname as dirname8, join as join20 } from "path";
 function cliCommand(args) {
   const root = pluginRoot();
-  const distCli = join21(root, "dist", "cli.js");
-  if (existsSync13(distCli))
+  const distCli = join20(root, "dist", "cli.js");
+  if (existsSync12(distCli))
     return ["bun", distCli, ...args];
-  return ["bun", "run", join21(root, "apps", "cli", "src", "main.ts"), ...args];
+  return ["bun", "run", join20(root, "apps", "cli", "src", "main.ts"), ...args];
 }
 function spawnCli(args, logName) {
   const logPath = logFile(logName);
@@ -21400,10 +21522,10 @@ function curriculumRun(args) {
 
 // packages/ops/src/handlers/health.ts
 import { readFileSync as readFileSync4, statSync as statSync10 } from "fs";
-import { join as join22 } from "path";
+import { join as join21 } from "path";
 var SIL_VERSION = "0.2.6";
 function buildInfo(_args) {
-  const path = join22(pluginRoot(), "dist", ".srchash");
+  const path = join21(pluginRoot(), "dist", ".srchash");
   let build = null;
   let builtAt = null;
   try {
@@ -21472,9 +21594,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync11 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync13, openSync as openSync3, readSync, statSync as statSync11 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync11 };
+var REAL_TAIL_IO = { existsSync: existsSync13, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync11 };
 function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
   if (knownSize === undefined && !io.existsSync(path))
     return [];
@@ -21539,7 +21661,7 @@ function loopRun(args) {
 }
 
 // packages/ops/src/handlers/reflections.ts
-import { join as join23 } from "path";
+import { join as join22 } from "path";
 function reflectionsList(args) {
   let refs = listReflections(args.world);
   if (args.pattern)
@@ -21557,7 +21679,7 @@ function reflectionsList(args) {
   }));
 }
 function reflectionsGet(args) {
-  const path = join23(reflectionsDir(args.world), `${args.id}.md`);
+  const path = join22(reflectionsDir(args.world), `${args.id}.md`);
   const r = parseReflection(path, args.world);
   if (r === null)
     throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
@@ -21660,6 +21782,7 @@ register({ name: "reflections.list", tier: "read", gate: "none", args: Reflectio
 register({ name: "reflections.get", tier: "read", gate: "none", args: ReflectionArgs, fn: reflectionsGet, doc: "Full body of one reflection." });
 register({ name: "aliases.get", tier: "read", gate: "none", args: WorldArgs, fn: aliasesGet, doc: "Pattern alias map for a world." });
 register({ name: "aliases.set", tier: "local", gate: "none", args: AliasArgs, fn: aliasesSet, doc: "Replace the alias map for a world." });
+register({ name: "aliases.suggest", tier: "read", gate: "none", args: WorldArgs, fn: aliasesSuggest, doc: "Deterministic near-duplicate pattern slug suggestions for a world." });
 register({ name: "review.queue", tier: "read", gate: "none", args: WorldArgs, fn: reviewQueue, doc: "Staged proposals waiting for review." });
 register({ name: "review.detail", tier: "read", gate: "none", args: PatternArgs, fn: reviewDetail, doc: "Body and reviewed_state of one proposal." });
 register({ name: "review.diff", tier: "read", gate: "none", args: PatternArgs, fn: reviewDiff, doc: "Diff of one staged proposal." });
@@ -21736,10 +21859,10 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync15, statSync as statSync12 } from "fs";
-import { join as join24, normalize, sep } from "path";
+import { existsSync as existsSync14, statSync as statSync12 } from "fs";
+import { join as join23, normalize, sep } from "path";
 function staticRoot() {
-  return join24(pluginRoot(), "dist", "web");
+  return join23(pluginRoot(), "dist", "web");
 }
 function hasDotSegment(pathname) {
   return pathname.split("/").some((seg) => seg === "." || seg === "..");
@@ -21754,7 +21877,7 @@ function resolveStaticPath(root, pathname) {
   if (hasDotSegment(decoded) || decoded.split("/").some((seg) => seg.startsWith(".")))
     return null;
   const cleaned = decoded.replace(/^\/+/, "");
-  const full = normalize(join24(root, cleaned));
+  const full = normalize(join23(root, cleaned));
   if (full !== root && !full.startsWith(root + sep))
     return null;
   return full;
@@ -21767,7 +21890,7 @@ function fileResponse(path, pathname) {
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
-  if (!existsSync15(root))
+  if (!existsSync14(root))
     return new Response("not found", { status: 404 });
   const wanted = pathname === "/" ? "/index.html" : pathname;
   const target = resolveStaticPath(root, wanted);
@@ -21969,6 +22092,11 @@ function buildProgram(deps, onExit, onRun) {
   const reflections = program.command("reflections");
   reflections.command("list").option("--world <name>").option("--pattern <pattern>").option("--limit <n>", "", intOption).action(wire((opts) => cmdReflectionsList(opts)));
   reflections.command("show").argument("<id>").requiredOption("--world <name>").action(wire((id, opts) => cmdReflectionsShow(id, opts)));
+  const aliases = program.command("aliases");
+  aliases.command("list").option("--world <name>").action(wire((opts) => cmdAliasesList(opts)));
+  aliases.command("set").argument("<alias>").argument("<canonical>").option("--world <name>").action(wire((alias, canonical, opts) => cmdAliasesSet(alias, canonical, opts)));
+  aliases.command("rm").argument("<alias>").option("--world <name>").action(wire((alias, opts) => cmdAliasesRm(alias, opts)));
+  aliases.command("suggest").option("--world <name>").action(wire((opts) => cmdAliasesSuggest(opts)));
   program.command("artifacts").argument("[action]").option("--world <name>").option("--json").action(wire((action, opts) => cmdArtifacts({ ...opts, action }, deps)));
   const feedback = program.command("feedback");
   feedback.command("add").argument("<ref>").argument("<vote>").option("--note <text>").option("--world <name>").action(wire((ref, vote, opts) => {

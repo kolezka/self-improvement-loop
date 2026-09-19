@@ -13213,6 +13213,7 @@ var PromotionEntry = object({
   artifact_type: ArtifactType.default("none"),
   served_by: ArtifactRef.nullable().default(null),
   last_updated: isoTs.default(() => new Date().toISOString()),
+  promoted_at: isoTs.nullable().default(null),
   commit: string2().nullable().default(null),
   feedback: Scorecard.nullable().default(null)
 });
@@ -13742,6 +13743,13 @@ function loadAliases(world) {
   return out;
 }
 function saveAliases(world, aliases) {
+  const values = new Set(Object.values(aliases));
+  for (const key of Object.keys(aliases)) {
+    if (!values.has(key))
+      continue;
+    const source = Object.entries(aliases).find(([k, v]) => v === key && k !== key)?.[0];
+    throw new ValidationError(source ? `"${key}" is a key (-> "${aliases[key]}") and also the value of "${source}" (-> "${key}"); aliases resolve one hop only` : `"${key}" is a key (-> "${aliases[key]}") and also its own value`);
+  }
   const sorted = Object.fromEntries(Object.entries(aliases).sort(([a], [b]) => a < b ? -1 : 1));
   const p = aliasesFile(world);
   writeJson(p, sorted);
@@ -13901,6 +13909,51 @@ function patternCounts(world, extraDirs = []) {
   }
   return counts;
 }
+// packages/store/src/alias-suggest.ts
+var tokens = (s) => new Set(s.split("-"));
+function jaccard(a, b) {
+  let shared = 0;
+  for (const t of a)
+    if (b.has(t))
+      shared++;
+  const union = a.size + b.size - shared;
+  return union === 0 ? 0 : shared / union;
+}
+function isProperSubset(a, b) {
+  if (a.size < 2 || a.size >= b.size)
+    return false;
+  for (const t of a)
+    if (!b.has(t))
+      return false;
+  return true;
+}
+function suggestAliases(world) {
+  const counts = patternCounts(world);
+  const slugs = Object.keys(counts).sort();
+  const out = [];
+  for (let i = 0;i < slugs.length; i++) {
+    for (let j = i + 1;j < slugs.length; j++) {
+      const a = slugs[i];
+      const b = slugs[j];
+      const setA = tokens(a);
+      const setB = tokens(b);
+      const score = jaccard(setA, setB);
+      if (score < 0.5 && !isProperSubset(setA, setB) && !isProperSubset(setB, setA))
+        continue;
+      const canonical = counts[a] >= counts[b] ? a : b;
+      const alias = canonical === a ? b : a;
+      out.push({ alias, canonical, alias_count: counts[alias], canonical_count: counts[canonical], score });
+    }
+  }
+  out.sort((x, y) => {
+    if (y.score !== x.score)
+      return y.score - x.score;
+    if (x.canonical !== y.canonical)
+      return x.canonical < y.canonical ? -1 : 1;
+    return x.alias < y.alias ? -1 : 1;
+  });
+  return out;
+}
 // packages/store/src/ledger.ts
 function loadLedger(path) {
   if (!exists(path))
@@ -14026,6 +14079,9 @@ function aliasesSet(args) {
   saveAliases(args.world, args.aliases);
   return loadAliases(args.world);
 }
+function aliasesSuggest(args) {
+  return suggestAliases(args.world);
+}
 
 // packages/ops/src/cfg-world.ts
 function cfgWorld(name) {
@@ -14102,6 +14158,7 @@ __export(exports_git, {
   currentBranch: () => currentBranch,
   defaultBranch: () => defaultBranch,
   dirtyPaths: () => dirtyPaths,
+  ensureIdentity: () => ensureIdentity,
   ensureRepo: () => ensureRepo,
   git: () => git,
   gitRaw: () => gitRaw,
@@ -14189,13 +14246,24 @@ function defaultBranch(repo) {
   }
   return currentBranch(repo) || "main";
 }
+var LOOP_EMAIL = "loop@self-improvement-loop.local";
+var LOOP_NAME = "self-improvement-loop";
+function ensureIdentity(repo) {
+  if (gitRaw(repo, ["var", "GIT_COMMITTER_IDENT"]).code === 0)
+    return;
+  git(repo, ["config", "user.email", LOOP_EMAIL]);
+  git(repo, ["config", "user.name", LOOP_NAME]);
+  git(repo, ["config", "commit.gpgsign", "false"]);
+}
 function ensureRepo(path) {
   mkdirSync2(path, { recursive: true });
-  if (isRepo(path))
+  if (isRepo(path)) {
+    ensureIdentity(path);
     return path;
+  }
   git(path, ["init", "-q", "-b", "main"]);
-  git(path, ["config", "user.email", "loop@self-improvement-loop.local"]);
-  git(path, ["config", "user.name", "self-improvement-loop"]);
+  git(path, ["config", "user.email", LOOP_EMAIL]);
+  git(path, ["config", "user.name", LOOP_NAME]);
   git(path, ["config", "commit.gpgsign", "false"]);
   git(path, ["commit", "-q", "--allow-empty", "-m", "chore: initialise learned repo"]);
   return path;
@@ -16840,18 +16908,20 @@ function scorecards(world, cfg, opts = {}) {
   return out;
 }
 function propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, lastUsed, now, retireCutoff, retireDays) {
-  if (entry !== undefined) {
-    const updated = parseTs(entry.last_updated);
-    if (updated !== null && updated.getTime() >= now.getTime() - 7 * 86400000) {
-      const days = Math.floor((now.getTime() - updated.getTime()) / 86400000);
-      return ["new", `promoted ${days}d ago, within the 7 day new window`];
-    }
+  const promotedTs = entry === undefined ? null : entry.promoted_at ?? entry.last_updated;
+  const promotedDt = parseTs(promotedTs);
+  if (promotedDt !== null && promotedDt.getTime() >= now.getTime() - 7 * 86400000) {
+    const days = Math.floor((now.getTime() - promotedDt.getTime()) / 86400000);
+    return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    const stale = lastDt === null || lastDt.getTime() < retireCutoff.getTime();
+    const basisDt = lastDt ?? promotedDt;
+    const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
-      return ["retire-candidate", `no uses or fires in the last window, last_used=${lastUsed || "never"}, older than ${retireDays}d`];
+      const used = lastUsed === null ? "never used" : `last used ${lastUsed}, which is not a readable date`;
+      const basis = lastDt !== null ? `last used ${lastUsed}, older than ${retireDays}d` : basisDt !== null ? `${used}, promoted ${promotedTs}, older than ${retireDays}d` : "no parsable date to judge staleness from";
+      return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }
   }
   if (misfired + humanBad >= 2 && misfired + humanBad > helpful + humanGood) {
@@ -17283,6 +17353,7 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     artifact_type: routedType,
     served_by: { type: routedType, path: rel },
     last_updated: nowIso(),
+    promoted_at: autoMerge ? (prior?.status === "promoted" ? prior.promoted_at : null) ?? nowIso() : prior?.promoted_at ?? null,
     commit: null,
     feedback: null
   };
@@ -18135,7 +18206,8 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
         ...row,
         status: "promoted",
         commit: snap.branch_sha.slice(0, 12),
-        last_updated: nowIso()
+        last_updated: nowIso(),
+        promoted_at: row.status === "promoted" ? row.promoted_at ?? nowIso() : nowIso()
       };
     }
     saveLedger(join16(tree, rel), merged);
@@ -18227,6 +18299,7 @@ function rejectInner(world, _cfg, pattern, opts) {
         artifact_type: entryType(branchRow),
         served_by: null,
         last_updated: nowIso(),
+        promoted_at: null,
         commit: null,
         feedback: null
       };
@@ -18701,6 +18774,7 @@ register({ name: "reflections.list", tier: "read", gate: "none", args: Reflectio
 register({ name: "reflections.get", tier: "read", gate: "none", args: ReflectionArgs, fn: reflectionsGet, doc: "Full body of one reflection." });
 register({ name: "aliases.get", tier: "read", gate: "none", args: WorldArgs, fn: aliasesGet, doc: "Pattern alias map for a world." });
 register({ name: "aliases.set", tier: "local", gate: "none", args: AliasArgs, fn: aliasesSet, doc: "Replace the alias map for a world." });
+register({ name: "aliases.suggest", tier: "read", gate: "none", args: WorldArgs, fn: aliasesSuggest, doc: "Deterministic near-duplicate pattern slug suggestions for a world." });
 register({ name: "review.queue", tier: "read", gate: "none", args: WorldArgs, fn: reviewQueue, doc: "Staged proposals waiting for review." });
 register({ name: "review.detail", tier: "read", gate: "none", args: PatternArgs, fn: reviewDetail, doc: "Body and reviewed_state of one proposal." });
 register({ name: "review.diff", tier: "read", gate: "none", args: PatternArgs, fn: reviewDiff, doc: "Diff of one staged proposal." });

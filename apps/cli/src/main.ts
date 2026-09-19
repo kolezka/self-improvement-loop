@@ -10,6 +10,7 @@ import { Command, CommanderError } from "commander";
 import { ValidationError } from "@sil/core";
 import { mapKnownError } from "./common.ts";
 import { defaultDeps, type Deps } from "./deps.ts";
+import { cmdAliasesList, cmdAliasesRm, cmdAliasesSet, cmdAliasesSuggest } from "./commands/aliases.ts";
 import { cmdArtifacts } from "./commands/artifacts.ts";
 import { cmdCurriculumPlan, cmdCurriculumRun } from "./commands/curriculum.ts";
 import { cmdFeedbackAdd, cmdFeedbackList } from "./commands/feedback.ts";
@@ -137,6 +138,27 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .argument("<id>")
     .requiredOption("--world <name>")
     .action(wire((id: string, opts) => cmdReflectionsShow(id, opts)));
+
+  const aliases = program.command("aliases");
+  aliases
+    .command("list")
+    .option("--world <name>")
+    .action(wire((opts) => cmdAliasesList(opts)));
+  aliases
+    .command("set")
+    .argument("<alias>")
+    .argument("<canonical>")
+    .option("--world <name>")
+    .action(wire((alias: string, canonical: string, opts) => cmdAliasesSet(alias, canonical, opts)));
+  aliases
+    .command("rm")
+    .argument("<alias>")
+    .option("--world <name>")
+    .action(wire((alias: string, opts) => cmdAliasesRm(alias, opts)));
+  aliases
+    .command("suggest")
+    .option("--world <name>")
+    .action(wire((opts) => cmdAliasesSuggest(opts)));
 
   program
     .command("artifacts")

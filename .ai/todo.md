@@ -93,3 +93,83 @@ staged proposal was rendered as markdown, which dropped the frontmatter and the
 line breaks a reviewer needs to judge the file. Dark mode was checked by
 injecting the built stylesheet's own dark block, and the narrow layout by
 rendering the app in a 420 px frame.
+
+## Phase 7: system holes (2026-09-19)
+
+Each item was checked against `origin/main`, not against a local worktree.
+
+- [x] No CI at all: `.github` was absent on `origin/main`. Added
+      `.github/workflows/ci.yml`: install, lint:dashes, typecheck, check:web, `bun
+      test`, and a build that must leave `dist/` byte-identical.
+- [x] `propose()` in `@sil/feedback` judged a never-used artifact stale from a null
+      `last_used`, so `retire_after_days` never applied to it: it flipped to
+      `retire-candidate` on day 8 and the reason string claimed an age it had not
+      checked. Now measured from `entry.last_updated`, reason names its basis.
+- [x] Pattern fragmentation had no terminal path and no detector. Added `sil aliases
+      list|set|rm|suggest`, a deterministic token-overlap suggester in `@sil/store`,
+      and the `aliases.suggest` read op. A human applies every merge.
+
+### Checked and NOT a hole
+- `dist/` drift: `git archive origin/main` plus `tests/dist.test.ts` gives 6 pass, 0
+  fail. Main is in sync. The drift was local to a stale worktree.
+- Untimed nudge gate regex in the hook: `packages/nudges/src/gates.ts:58-79` caps
+  every subject at `MAX_MATCH_LEN = 4000` and rejects the exponential shapes at load.
+- Worker lock reclaim window: `packages/worker/src/index.ts:91-107` uses an atomic
+  exclusive create; the 60 ms settle only covers reclaiming after a crash and
+  resolves last-write-wins.
+
+### Review pass
+An independent reviewer (Fable) read the branch against `origin/main` and found
+four defects in the fixes themselves. All four are fixed here.
+
+- [x] The two-hop guard in `sil aliases set` covered one direction only: it rejected
+      a canonical that was already an alias key, but accepted an alias key that was
+      already another entry's canonical, which formed the chain and split the cluster
+      the command exists to merge. The invariant now lives in `saveAliases`, so the
+      ops handler and the web pane get it too, and `set` re-points the dependent
+      entries instead of refusing. Smoke: 3 + 5 reflections merge to one count of 8,
+      where the old code left 6 + 2.
+- [x] `propose()` measured "never used" staleness from `last_updated`, which reject,
+      re-home and retire all bump. A refused redraft restarted the retire clock and
+      the reason string printed the rejection date as the promotion date. Added
+      `promoted_at` to the ledger row, set by accept and by an auto-merge only, with
+      a fallback to `last_updated` for rows written before the field existed.
+- [x] `x in obj` in `aliases set` and `rm`: `constructor` is a valid slug, so `rm`
+      reported a removal it never made. Now `Object.hasOwn`. This trap is already in
+      `.ai/lessons.md` from 2026-09-14.
+- [x] Smaller: `set foo foo` is refused, the subset rule in the suggester no longer
+      fires on single-token slugs, `tests/lockfile.test.ts` no longer claims to prove
+      the lockfile is current (only that a version bump did not leave it behind), the
+      CI dist check uses `git status` so a new untracked file cannot pass, the
+      workflow declares `permissions: contents: read`, and the bun version moved into
+      `.bun-version` so a contributor builds `dist/` on the version CI verifies it on.
+
+### First CI run (2026-09-19)
+
+The workflow this branch added ran for the first time on PR #18 and went red on
+one e2e test, which turned out to be a real hole rather than a CI quirk.
+
+- [x] `sil init` created the built-in `learned/` repo with no `user.name` and no
+      `user.email` of its own and gave an identity only to the initial empty
+      commit, so every later commit ran as whatever git could resolve globally.
+      On a machine with no global identity (CI, a container, a per-repo identity
+      setup) staging and accept both fail with "Author identity unknown", and the
+      curriculum run folds that into one `gated_out` string nobody prints: the
+      install looks alive and promotes nothing. The CLI helper and
+      `git.ensureRepo` are one path now, and `ensureRepo` fills in a missing
+      identity on a repo an older install already created. An identity git can
+      resolve is never overwritten.
+
+### Still open, by design not by accident
+- [ ] No cross-artifact consistency check: the judge sees one draft against its own
+      sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact
+      can contradict an accepted rule and nothing notices.
+- [ ] No offline evaluation: every critic/drafter/judge test uses a fake chat, so a
+      prompt regression ships unseen. This is the "replay" half of the dreaming design.
+- [x] `bun.lock` carried the workspace versions from before the 0.2.3 to 0.2.6 bumps,
+      so a plain `bun install` on untouched `origin/main` rewrote it, and because
+      `bun.lock` is a `sourceHash()` input (`scripts/build.ts:23`) that rewrite failed
+      `tests/dist.test.ts`. Reproduced on a `git archive origin/main` tree: 5 pass, 1
+      fail. `bun install --frozen-lockfile` does not catch it, it exits 0. Fixed at the
+      root in `scripts/bump-version.sh`, guarded by `tests/lockfile.test.ts` and by a
+      `git diff --exit-code -- bun.lock` step in CI.

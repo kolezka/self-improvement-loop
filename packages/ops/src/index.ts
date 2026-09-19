@@ -1,4 +1,4 @@
-// Registers the 32 ops the web UI and CLI invoke. Every handler validates its
+// Registers the 33 ops the web UI and CLI invoke. Every handler validates its
 // own payload via args.ts before touching disk, git or a spawned process.
 // Same names, tiers and gates as the Python port (sil/ops.py).
 
@@ -34,6 +34,7 @@ register({ name: "reflections.list", tier: "read", gate: "none", args: Args.Refl
 register({ name: "reflections.get", tier: "read", gate: "none", args: Args.ReflectionArgs, fn: reflections.reflectionsGet, doc: "Full body of one reflection." });
 register({ name: "aliases.get", tier: "read", gate: "none", args: Args.WorldArgs, fn: aliases.aliasesGet, doc: "Pattern alias map for a world." });
 register({ name: "aliases.set", tier: "local", gate: "none", args: Args.AliasArgs, fn: aliases.aliasesSet, doc: "Replace the alias map for a world." });
+register({ name: "aliases.suggest", tier: "read", gate: "none", args: Args.WorldArgs, fn: aliases.aliasesSuggest, doc: "Deterministic near-duplicate pattern slug suggestions for a world." });
 register({ name: "review.queue", tier: "read", gate: "none", args: Args.WorldArgs, fn: review.reviewQueue, doc: "Staged proposals waiting for review." });
 register({ name: "review.detail", tier: "read", gate: "none", args: Args.PatternArgs, fn: review.reviewDetail, doc: "Body and reviewed_state of one proposal." });
 register({ name: "review.diff", tier: "read", gate: "none", args: Args.PatternArgs, fn: review.reviewDiff, doc: "Diff of one staged proposal." });

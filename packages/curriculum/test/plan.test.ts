@@ -45,6 +45,7 @@ function entry(fields: Partial<PromotionEntry> & { pattern: string }): Promotion
     artifact_type: "none",
     served_by: null,
     last_updated: "2026-09-01T00:00:00Z",
+    promoted_at: null,
     commit: null,
     feedback: null,
     ...fields,

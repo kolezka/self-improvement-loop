@@ -368,6 +368,12 @@ async function stageOne(
     artifact_type: routedType as ArtifactType,
     served_by: { type: routedType as ArtifactType, path: rel },
     last_updated: fsx.nowIso(),
+    // Only an auto-merge promotes here, and re-promoting a row that is already
+    // promoted is a redraft, so the first promotion date stands. A staged row
+    // keeps the date of the artifact still live for this pattern.
+    promoted_at: autoMerge
+      ? ((prior?.status === "promoted" ? prior.promoted_at : null) ?? fsx.nowIso())
+      : (prior?.promoted_at ?? null),
     commit: null,
     feedback: null,
   };

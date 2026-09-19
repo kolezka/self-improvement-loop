@@ -1,13 +1,8 @@
-// Shared helpers: world resolution, the top level error mapper, git init for
-// the learned/ target repo.
+// Shared helpers: world resolution and the top level error mapper.
 
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { ZodError } from "zod";
 import {
   ConfigError,
-  fsx,
   GitError,
   LockHeld,
   ProviderError,
@@ -62,31 +57,4 @@ export function mapKnownError(err: unknown): number | null {
     return 1;
   }
   return null;
-}
-
-/** Make sure a world's built-in `learned/` target repo exists and has at
- * least one commit, so git operations that assume a `main` ref (fast-forward
- * merge, rev-parse) never fail on a freshly created repo. */
-export function ensureLearnedRepo(path: string): void {
-  fsx.ensureDir(path);
-  if (!existsSync(join(path, ".git"))) {
-    execFileSync("git", ["init", "-b", "main", path], { stdio: "ignore" });
-  }
-  const hasHead = trySpawn(() => execFileSync("git", ["-C", path, "rev-parse", "--verify", "HEAD"], { stdio: "ignore" }));
-  if (!hasHead) {
-    execFileSync(
-      "git",
-      ["-C", path, "-c", "user.name=self-improvement-loop", "-c", "user.email=sil@local", "commit", "--allow-empty", "-m", "init"],
-      { stdio: "ignore" },
-    );
-  }
-}
-
-function trySpawn(fn: () => void): boolean {
-  try {
-    fn();
-    return true;
-  } catch {
-    return false;
-  }
 }

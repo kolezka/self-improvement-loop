@@ -354,6 +354,10 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
         status: "promoted",
         commit: snap.branch_sha.slice(0, 12),
         last_updated: fsx.nowIso(),
+        // Accepting a row that is already promoted is a redraft of the same
+        // artifact, so the original promotion date stands. Anything else is
+        // this pattern becoming promoted now.
+        promoted_at: row.status === "promoted" ? (row.promoted_at ?? fsx.nowIso()) : fsx.nowIso(),
       };
     }
     saveLedger(join(tree, rel), merged);
@@ -504,6 +508,7 @@ function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
         artifact_type: entryType(branchRow),
         served_by: null,
         last_updated: fsx.nowIso(),
+        promoted_at: null,
         commit: null,
         feedback: null,
       };

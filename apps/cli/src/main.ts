@@ -212,6 +212,7 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .option("--no-token", "force tokenless (loopback only)")
     .option("--open")
     .option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine")
+    .option("--no-watch", "keep running after a plugin update instead of exiting for the supervisor to restart")
     .action(wire((opts) => cmdWeb(opts)));
 
   const worlds = program.command("worlds");

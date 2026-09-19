@@ -6968,7 +6968,6 @@ var require_public_api = __commonJS(function(exports) {
 });
 
 // apps/server/src/main.ts
-import { randomBytes } from "crypto";
 import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
@@ -13339,6 +13338,7 @@ var inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world));
 var sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId));
 var workerLockFile = () => join(stateDir(), "worker.lock");
 var hookSnapshotFile = () => join(stateDir(), "hook-config.json");
+var webTokenFile = () => join(stateDir(), "web-token");
 var logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`);
 var worldDir = (world) => join(dataDir(), "worlds", safeComponent(world));
 var reflectionsDir = (world) => join(worldDir(world), "reflections");
@@ -18923,6 +18923,27 @@ async function serveStatic(pathname) {
   return new Response("not found", { status: 404 });
 }
 
+// apps/server/src/token.ts
+import { randomBytes } from "crypto";
+import { chmodSync, mkdirSync as mkdirSync6, readFileSync as readFileSync4, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname8 } from "path";
+function newToken() {
+  return randomBytes(32).toString("base64url");
+}
+function loadOrCreateToken(file = webTokenFile()) {
+  try {
+    const stored = readFileSync4(file, "utf8").trim();
+    if (stored)
+      return stored;
+  } catch {}
+  const token = newToken();
+  mkdirSync6(dirname8(file), { recursive: true });
+  writeFileSync5(file, token + `
+`, { mode: 384 });
+  chmodSync(file, 384);
+  return token;
+}
+
 // apps/server/src/main.ts
 var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
@@ -18965,9 +18986,6 @@ function createServer(opts) {
   });
   return server;
 }
-function newToken() {
-  return randomBytes(32).toString("base64url");
-}
 function urlHost(host) {
   if (WILDCARD_HOSTS.has(host))
     return "127.0.0.1";
@@ -18986,7 +19004,7 @@ function privateAddresses() {
 }
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
-  const token = opts.token ?? !isLoopbackHost(host) ? newToken() : null;
+  const token = opts.token ?? !isLoopbackHost(host) ? loadOrCreateToken() : null;
   const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
   const port = server.port ?? opts.port;
   const fragment = token ? `#${token}` : "";

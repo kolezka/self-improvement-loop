@@ -456,6 +456,39 @@ describe("accept", () => {
     expect(Object.values(ledger.entries).every((e) => e.status === "promoted")).toBe(true);
   });
 
+  test("accepting a second rule resolves the shared rules-file conflict", async () => {
+    // Every rule appends a bullet to one managed block, so the second acceptance
+    // lands on the same lines as the first. Refused as a foreign conflict, no
+    // second rule could be accepted at all without a hand rebase: measured on a
+    // live target, where the first rule merged and the next branch answered
+    // "conflicts outside the ledger: RULES.md" forever.
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    addReflections(world, "bbb-pattern", 3, { startDay: 20 });
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: ruleDraft() }).fn,
+      gateRunner: fakeGateRunner,
+    });
+
+    for (const pattern of [PATTERN, "bbb-pattern"]) {
+      const detail = review.detail(world, cfg(), pattern);
+      expect(detail.artifact_type).toBe("rule");
+      review.accept(world, cfg(), pattern, detail.reviewed_state);
+    }
+
+    // The sibling's bullet is the one nobody accepted in this test: it must
+    // survive both acceptances, or the resolution is overwriting the file.
+    const text = readFileSync(join(repo, RULES), "utf8");
+    for (const tag of [ruleTag(SIBLING), ruleTag(PATTERN), ruleTag("bbb-pattern")]) {
+      expect(text).toContain(tag);
+    }
+    const entries = loadLedger(ledgerPath(world)).entries;
+    expect(entries[PATTERN]!.status).toBe("promoted");
+    expect(entries["bbb-pattern"]!.status).toBe("promoted");
+  });
+
   test("a branch may never record a sibling's promotion", async () => {
     // A branch written before the one-row rule carries its siblings' rows too.
     // Letting those through records artifacts a human refused, and the loop then

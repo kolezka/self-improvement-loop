@@ -136,19 +136,27 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   const target = targetRoot(world);
   const items = reflections(world, opts.extraDirs ?? []);
   const groups = new Map(cluster(items).map((c) => [c.pattern, c.items]));
-  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items });
+  // enforceCap: false, because the cap bounds artifacts actually staged, not
+  // attempts. Spending it while planning would burn slots on patterns that later
+  // gate out (a lint or judge refusal), stranding viable ones at over-cap and
+  // staging nothing. The cap is enforced below, on successes.
+  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items, enforceCap: false });
+  const cap = cfg.promotion.per_run_cap;
 
   const actionable = [];
   for (const action of planned.actions) {
     if (action.action === "below-threshold") report.dropped[action.pattern] = action.count;
-    else if (action.action === "over-cap") report.gated_out[action.pattern] = action.reason || "over per-run cap";
     else if (action.action === "promote" || action.action === "refine") actionable.push(action);
     // `done` is silent, and `retire-candidate` is a proposal for a human that
     // this function deliberately never executes.
   }
 
   if (!opts.apply) {
-    report.staged = actionable.map((a) => a.pattern);
+    // A dry run cannot know which drafts will pass their gates, so it forecasts
+    // like the plan: the first `cap` in sorted order would stage, the rest are
+    // over the cap.
+    report.staged = actionable.slice(0, cap).map((a) => a.pattern);
+    for (const a of actionable.slice(cap)) report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
     report.finished = fsx.nowIso();
     return report;
   }
@@ -171,6 +179,13 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   const ledgerRel = world.layout.ledger.replace(/^\/+|\/+$/g, "");
 
   for (const action of actionable) {
+    // The cap bounds successful stages, so it is checked against report.staged,
+    // which only a real stage grows. A pattern that gated out above passed its
+    // slot to the next candidate rather than wasting it.
+    if (report.staged.length >= cap) {
+      report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
+      continue;
+    }
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat, {
         target,
@@ -302,6 +317,13 @@ async function stageOne(
     }
     [body] = prompts.parseDraft(raw, { forcedType: routedType });
   }
+
+  // The writer appends the `<!--rule:pattern-->` tag itself, so a draft that
+  // carries one says the same thing as a draft that does not. Normalise it away
+  // instead of gating: the refine path used to hand the drafter a tagged bullet,
+  // the drafter copied the tag, and the lint then refused every redraft. One
+  // pattern sat on that loop with 50 reflections behind it.
+  if (routedType === "rule" && typeof body === "string") body = artifacts.stripRuleTag(body, pattern);
 
   const problems = lint(routedType, body, pattern, sources);
   if (problems.length > 0) {

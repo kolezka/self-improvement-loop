@@ -13,7 +13,7 @@ import type { HookSnapshot, HookWorld } from "./snapshot.ts";
 import { gitHead } from "./worlds.ts";
 import { formatLesson, pendingLessons, rulesBlock } from "./lessons.ts";
 import { maybeKickWorker } from "./kick.ts";
-import { markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
+import { hasTranscript, markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
 import { scanTranscript } from "./scan.ts";
 
 // --- usage event log ------------------------------------------------------
@@ -257,6 +257,10 @@ function handleStop(payload: Record<string, unknown>, world: HookWorld): string 
   // it (not in OUTPUT_EVENTS), so a nudge dispatch here would claim its
   // once-per marker and log a fire for a delivery that never happens.
   sessionLock(sessionId, () => {
+    if (!hasTranscript(payload, sessionId)) {
+      log(`Stop not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+      return;
+    }
     upsertStopQueue(payload, worldName, sessionId);
     scanTranscript(payload, sessionId, (kind, ref, detail) => {
       appendUsageEvent(paths.usageEventsFile(), { ts: nowIso(), session_id: sessionId, world: worldName, kind, ref, detail });
@@ -292,6 +296,10 @@ function handleSubagentStop(payload: Record<string, unknown>, world: HookWorld):
 function handleSessionEnd(payload: Record<string, unknown>, world: HookWorld): string {
   const sessionId = sessionIdOf(payload);
   const worldName = world.name || "default";
+  if (!hasTranscript(payload, sessionId)) {
+    log(`SessionEnd not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+    return "";
+  }
   markQueueEnded(payload, worldName, sessionId);
   return "";
 }

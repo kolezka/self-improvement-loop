@@ -15769,6 +15769,7 @@ __export(exports_src4, {
   setNudgeAdapter: () => setNudgeAdapter,
   sourcesText: () => sourcesText,
   splitTrigger: () => splitTrigger2,
+  stripRuleTag: () => stripRuleTag,
   substantiveQuote: () => substantiveQuote,
   watermark: () => watermark,
   writeArtifact: () => writeArtifact
@@ -15955,6 +15956,7 @@ __export(exports_artifacts, {
   ruleTag: () => ruleTag,
   rulesDiffOwnedBy: () => rulesDiffOwnedBy,
   rulesProblem: () => rulesProblem,
+  stripRuleTag: () => stripRuleTag,
   writeArtifact: () => writeArtifact
 });
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readdirSync, rmdirSync, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
@@ -16012,7 +16014,7 @@ function readArtifact(world, artifactType, pattern, root) {
   if (!existsSync4(path))
     return "";
   const text = readText(path);
-  return artifactType === "rule" ? ruleBulletInText(text, pattern) : text;
+  return artifactType === "rule" ? stripRuleTag(ruleBulletInText(text, pattern), pattern) : text;
 }
 function writeArtifact(world, artifactType, pattern, payload, root) {
   const rel = artifactRel(world, artifactType, pattern);
@@ -16086,6 +16088,13 @@ function rulesDiffOwnedBy(diffText, pattern) {
       return false;
   }
   return true;
+}
+function stripRuleTag(bullet, pattern) {
+  const tag = ruleTag(pattern);
+  let out = (bullet ?? "").replace(/\s+$/, "");
+  while (out.endsWith(tag))
+    out = out.slice(0, -tag.length).replace(/\s+$/, "");
+  return out;
 }
 function ruleBulletInText(text, pattern) {
   const tag = ruleTag(pattern);
@@ -17371,8 +17380,9 @@ function skillShape(pattern) {
 function agentShape(pattern) {
   return "The same file shape as a skill: three hyphens alone, a line 'name:' " + `followed by exactly ${pattern}, a line 'description:' followed by 'Use ` + "when ' and one specific trigger situation, then three hyphens alone. " + "Then a markdown '## ' heading, then the sub-agent's brief: what it " + "investigates, what it must read, what it reports back. Over 80 " + "characters, naming the actual commands, fields or checks the lessons name.";
 }
-function ruleShape(_pattern) {
-  return "Exactly one line, starting with '- ', under 300 characters. No heading, " + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name.";
+function ruleShape(pattern) {
+  const budget = MAX_RULE_CHARS - ruleTag(pattern).length - 1;
+  return `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name. No HTML " + "comment and no '<!--rule:...-->' tag: the writer adds the tag itself.";
 }
 var GATE_VOCABULARY = {
   always: "taking true, which fires on every matching call",
@@ -19009,14 +19019,16 @@ function plan(world, cfg, opts = {}) {
     }
     actions.push({ pattern, count, watermark: mark, action, sources, reason });
   }
-  let budget = cap;
-  for (const item of actions) {
-    if (item.action === "promote" || item.action === "refine") {
-      if (budget > 0)
-        budget -= 1;
-      else {
-        item.action = "over-cap";
-        item.reason = `over the per-run cap of ${cap}`;
+  if (opts.enforceCap ?? true) {
+    let budget = cap;
+    for (const item of actions) {
+      if (item.action === "promote" || item.action === "refine") {
+        if (budget > 0)
+          budget -= 1;
+        else {
+          item.action = "over-cap";
+          item.reason = `over the per-run cap of ${cap}`;
+        }
       }
     }
   }
@@ -19083,18 +19095,19 @@ async function run(world, cfg, opts) {
   const target = targetRoot(world);
   const items = reflections2(world, opts.extraDirs ?? []);
   const groups = new Map(cluster(items).map((c) => [c.pattern, c.items]));
-  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items });
+  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items, enforceCap: false });
+  const cap = cfg.promotion.per_run_cap;
   const actionable = [];
   for (const action of planned.actions) {
     if (action.action === "below-threshold")
       report.dropped[action.pattern] = action.count;
-    else if (action.action === "over-cap")
-      report.gated_out[action.pattern] = action.reason || "over per-run cap";
     else if (action.action === "promote" || action.action === "refine")
       actionable.push(action);
   }
   if (!opts.apply) {
-    report.staged = actionable.map((a) => a.pattern);
+    report.staged = actionable.slice(0, cap).map((a) => a.pattern);
+    for (const a of actionable.slice(cap))
+      report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
     report.finished = nowIso();
     return report;
   }
@@ -19113,6 +19126,10 @@ async function run(world, cfg, opts) {
   const ledger = loadLedger2(world);
   const ledgerRel = world.layout.ledger.replace(/^\/+|\/+$/g, "");
   for (const action of actionable) {
+    if (report.staged.length >= cap) {
+      report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
+      continue;
+    }
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat2, {
         target,
@@ -19199,6 +19216,8 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     }
     [body] = parseDraft(raw, { forcedType: routedType });
   }
+  if (routedType === "rule" && typeof body === "string")
+    body = stripRuleTag(body, pattern);
   const problems = lint(routedType, body, pattern, sources);
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");
@@ -19562,14 +19581,15 @@ function skipSession(sessionId) {
   moveToTerminal(entry, "done", "skipped by operator");
   return true;
 }
+var NO_TRANSCRIPT = "skipped: transcript not persisted";
 function eligible(entry, cfg, now) {
   if (!exists(entry.transcript_path))
-    return [false, "failed: transcript missing"];
+    return [false, NO_TRANSCRIPT];
   let idleOk = entry.ended;
   if (!idleOk) {
     const mtime = mtimeMs(entry.transcript_path);
     if (mtime === null)
-      return [false, "failed: transcript missing"];
+      return [false, NO_TRANSCRIPT];
     idleOk = (now.getTime() - mtime) / 60000 >= cfg.worker.idle_minutes;
   }
   if (!idleOk)
@@ -19640,6 +19660,9 @@ async function reflectPending(cfg, worldByName, worldName, now, chat, summary) {
       if (reason.startsWith("failed")) {
         moveToTerminal(entry, "failed", reason);
         summary.failed.push(entry.session_id);
+      } else if (reason.startsWith("skipped")) {
+        moveToTerminal(entry, "done", reason);
+        summary.skipped.push(entry.session_id);
       } else {
         summary.skipped.push(entry.session_id);
       }
@@ -21376,7 +21399,27 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
-var SIL_VERSION = "0.2.1";
+import { readFileSync as readFileSync4, statSync as statSync10 } from "fs";
+import { join as join22 } from "path";
+var SIL_VERSION = "0.2.6";
+function buildInfo(_args) {
+  const path = join22(pluginRoot(), "dist", ".srchash");
+  let build = null;
+  let builtAt = null;
+  try {
+    build = readFileSync4(path, "utf8").trim() || null;
+    builtAt = statSync10(path).mtime.toISOString();
+  } catch {}
+  const startedMs = Date.now() - process.uptime() * 1000;
+  return {
+    build,
+    built_at: builtAt,
+    server_started: new Date(startedMs).toISOString(),
+    server_stale: builtAt !== null && Date.parse(builtAt) > startedMs,
+    plugin_root: pluginRoot(),
+    version: SIL_VERSION
+  };
+}
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};
@@ -21429,9 +21472,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync10 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync11 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync10 };
+var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync11 };
 function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
   if (knownSize === undefined && !io.existsSync(path))
     return [];
@@ -21468,7 +21511,7 @@ function logsTail(args) {
   let size = 0;
   let exists = true;
   try {
-    size = statSync10(path).size;
+    size = statSync11(path).size;
   } catch {
     exists = false;
   }
@@ -21496,7 +21539,7 @@ function loopRun(args) {
 }
 
 // packages/ops/src/handlers/reflections.ts
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 function reflectionsList(args) {
   let refs = listReflections(args.world);
   if (args.pattern)
@@ -21514,7 +21557,7 @@ function reflectionsList(args) {
   }));
 }
 function reflectionsGet(args) {
-  const path = join22(reflectionsDir(args.world), `${args.id}.md`);
+  const path = join23(reflectionsDir(args.world), `${args.id}.md`);
   const r = parseReflection(path, args.world);
   if (r === null)
     throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
@@ -21599,6 +21642,7 @@ function opPath(name) {
 
 // packages/ops/src/index.ts
 register({ name: "health.report", tier: "read", gate: "none", args: NoArgs, fn: healthReport, doc: "Config paths, per-world provider status, worker status, versions." });
+register({ name: "health.build", tier: "read", gate: "none", args: NoArgs, fn: buildInfo, doc: "Build hash on disk, and whether the running server predates it." });
 register({ name: "worlds.list", tier: "read", gate: "none", args: NoArgs, fn: worldsList, doc: "List configured worlds." });
 register({ name: "config.get", tier: "read", gate: "none", args: NoArgs, fn: configGet, doc: "Read config.yaml." });
 register({ name: "config.set", tier: "local", gate: "none", args: ConfigArgs, fn: configSet, doc: "Validate and write config.yaml; refresh the hook snapshot." });
@@ -21692,10 +21736,10 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync15, statSync as statSync11 } from "fs";
-import { join as join23, normalize, sep } from "path";
+import { existsSync as existsSync15, statSync as statSync12 } from "fs";
+import { join as join24, normalize, sep } from "path";
 function staticRoot() {
-  return join23(pluginRoot(), "dist", "web");
+  return join24(pluginRoot(), "dist", "web");
 }
 function hasDotSegment(pathname) {
   return pathname.split("/").some((seg) => seg === "." || seg === "..");
@@ -21710,13 +21754,16 @@ function resolveStaticPath(root, pathname) {
   if (hasDotSegment(decoded) || decoded.split("/").some((seg) => seg.startsWith(".")))
     return null;
   const cleaned = decoded.replace(/^\/+/, "");
-  const full = normalize(join23(root, cleaned));
+  const full = normalize(join24(root, cleaned));
   if (full !== root && !full.startsWith(root + sep))
     return null;
   return full;
 }
-function fileResponse(path) {
-  return new Response(Bun.file(path));
+function cacheControl(pathname) {
+  return pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store";
+}
+function fileResponse(path, pathname) {
+  return new Response(Bun.file(path), { headers: { "cache-control": cacheControl(pathname) } });
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
@@ -21728,12 +21775,12 @@ async function serveStatic(pathname) {
     return new Response("not found", { status: 404 });
   let st;
   try {
-    st = statSync11(target);
+    st = statSync12(target);
   } catch {
     st = null;
   }
   if (st && st.isFile())
-    return fileResponse(target);
+    return fileResponse(target, wanted);
   return new Response("not found", { status: 404 });
 }
 
@@ -21800,7 +21847,7 @@ function privateAddresses() {
 }
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
-  const token = opts.token ?? true ? newToken() : null;
+  const token = opts.token ?? !isLoopbackHost(host) ? newToken() : null;
   const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
   const port = server.port ?? opts.port;
   const fragment = token ? `#${token}` : "";
@@ -21822,7 +21869,7 @@ async function cmdWeb(opts) {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
   const host = opts.host ?? cfg.web.host;
-  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
+  const server = serve({ host, port, token: opts.token, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
     openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise(() => {});
@@ -21935,7 +21982,7 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--token", "force a URL token (default: on only for non-loopback binds)").option("--no-token", "force tokenless (loopback only)").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));

@@ -215,6 +215,29 @@ describe("managed rules block", () => {
     expect(body.startsWith("- mine")).toBe(true);
     expect(body).not.toContain("theirs");
   });
+
+  test("reading a rule drops the machine-owned tag", () => {
+    const world = makeWorld();
+    const root = join(env.tmp, "target");
+    writeRules(root, MARKED);
+    artifacts.writeArtifact(world, "rule", PATTERN, "- mine", root);
+    // This is what the drafter is shown as the artifact to refine. A tag in it
+    // comes straight back in the redraft, and the lint refuses a tagged bullet.
+    expect(artifacts.readArtifact(world, "rule", PATTERN, root)).toBe("- mine");
+  });
+
+  test("stripRuleTag takes this pattern's trailing tag and nothing else", () => {
+    const tag = ruleTag(PATTERN);
+    const foreign = ruleTag("other-pattern");
+    expect(artifacts.stripRuleTag(`- mine ${tag}`, PATTERN)).toBe("- mine");
+    // A doubled tag already reached a live rules file, so one pass is not enough.
+    expect(artifacts.stripRuleTag(`- mine ${tag} ${tag}`, PATTERN)).toBe("- mine");
+    expect(artifacts.stripRuleTag("- mine", PATTERN)).toBe("- mine");
+    // A foreign tag and a mid-line tag are the wedge the lint exists for: keep
+    // them so the gate still sees them.
+    expect(artifacts.stripRuleTag(`- mine ${foreign}`, PATTERN)).toBe(`- mine ${foreign}`);
+    expect(artifacts.stripRuleTag(`- a ${tag} b`, PATTERN)).toBe(`- a ${tag} b`);
+  });
 });
 
 describe("rules-file ownership", () => {

@@ -34,6 +34,12 @@ export interface PlanOptions {
   extraDirs?: string[];
   cards?: Scorecard[];
   items?: Reflection[];
+  /** When false, no action is rewritten to `over-cap`: actionable patterns keep
+   * their true kind. `run()` sets this, because the per-run cap bounds artifacts
+   * actually staged, not planned attempts, so a pattern that later gates out must
+   * not spend a slot and strand a viable one. Default true, so the plan and
+   * dry-run forecast still show over-cap. */
+  enforceCap?: boolean;
 }
 
 export interface Cluster {
@@ -215,15 +221,20 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
     actions.push({ pattern, count, watermark: mark, action, sources, reason });
   }
 
-  // Only actionable work spends the budget, in sorted-pattern order, so a run is
-  // reproducible. `retire-candidate` is informational and costs nothing.
-  let budget = cap;
-  for (const item of actions) {
-    if (item.action === "promote" || item.action === "refine") {
-      if (budget > 0) budget -= 1;
-      else {
-        item.action = "over-cap";
-        item.reason = `over the per-run cap of ${cap}`;
+  // Only actionable work spends the budget, in sorted-pattern order, so the
+  // forecast is reproducible. `retire-candidate` is informational and costs
+  // nothing. This is a prediction: `run()` re-enforces the cap on real successes,
+  // so it disables this pass (`enforceCap: false`) and never strands a pattern
+  // behind another that will gate out.
+  if (opts.enforceCap ?? true) {
+    let budget = cap;
+    for (const item of actions) {
+      if (item.action === "promote" || item.action === "refine") {
+        if (budget > 0) budget -= 1;
+        else {
+          item.action = "over-cap";
+          item.reason = `over the per-run cap of ${cap}`;
+        }
       }
     }
   }

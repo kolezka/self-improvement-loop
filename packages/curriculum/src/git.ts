@@ -120,17 +120,44 @@ export function defaultBranch(repo: string): string {
   return currentBranch(repo) || "main";
 }
 
+const LOOP_EMAIL = "loop@self-improvement-loop.local";
+const LOOP_NAME = "self-improvement-loop";
+
+/** Give a repo the loop owns an identity of its own when git cannot resolve one.
+ *
+ * `git var` reads the environment, the local config and the global config, so
+ * an operator who set their own name keeps it. Without this, a machine with no
+ * global `user.email` (CI, a fresh container, a per-repo identity setup) fails
+ * every commit with "Author identity unknown", and a curriculum run reports
+ * that as one pattern gated out rather than as a broken install.
+ *
+ * The signing switch goes with the identity: once we supply the author, we must
+ * not ask the operator's key to sign for it. */
+export function ensureIdentity(repo: string): void {
+  if (gitRaw(repo, ["var", "GIT_COMMITTER_IDENT"]).code === 0) return;
+  git(repo, ["config", "user.email", LOOP_EMAIL]);
+  git(repo, ["config", "user.name", LOOP_NAME]);
+  git(repo, ["config", "commit.gpgsign", "false"]);
+}
+
 /** Make `path` a git repo with one empty commit on `main`.
  *
  * Only for the built-in `learned/` target. A world pointing at a repo the
  * operator maintains is never initialised here: creating a repo under someone
- * else's path is not this code's call. */
+ * else's path is not this code's call.
+ *
+ * A repo that is already there keeps its history and its author: only a missing
+ * identity is filled in, which is what an install from before this check left
+ * behind. */
 export function ensureRepo(path: string): string {
   mkdirSync(path, { recursive: true });
-  if (isRepo(path)) return path;
+  if (isRepo(path)) {
+    ensureIdentity(path);
+    return path;
+  }
   git(path, ["init", "-q", "-b", "main"]);
-  git(path, ["config", "user.email", "loop@self-improvement-loop.local"]);
-  git(path, ["config", "user.name", "self-improvement-loop"]);
+  git(path, ["config", "user.email", LOOP_EMAIL]);
+  git(path, ["config", "user.name", LOOP_NAME]);
   git(path, ["config", "commit.gpgsign", "false"]);
   git(path, ["commit", "-q", "--allow-empty", "-m", "chore: initialise learned repo"]);
   return path;

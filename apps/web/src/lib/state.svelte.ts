@@ -4,6 +4,10 @@
 export const appState = $state({
   world: "default",
   worldNames: [] as string[],
+  // Bumped by a pane after it changes something the rail counts. The shell
+  // watches it, so the Review badge drops the moment you accept a proposal
+  // instead of on the next ten second poll.
+  statusSeq: 0,
 });
 
 export type ToastKind = "error" | "ok" | "info";

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadLlm, paths } from "@sil/core";
+import { loadConfig, loadLlm, paths, targetRoot, worldNamed } from "@sil/core";
 import { run } from "../src/main.ts";
 
 let tmp: string;
@@ -97,5 +97,53 @@ describe("sil init provider defaults", () => {
       drafter: "deepseek/deepseek-flash",
       judge: "deepseek/deepseek-flash",
     });
+  });
+});
+
+describe("sil init on a machine with no git identity", () => {
+  // The loop commits into its own learned/ repo on every staged artifact and
+  // every accept. A machine where git can resolve no name and no address (CI, a
+  // fresh container, an operator who sets identity per repo) fails all of them
+  // with "Author identity unknown", and a curriculum run reports that as one
+  // pattern gated out rather than as a broken install. So init has to leave the
+  // repo able to commit on its own.
+  //
+  // Spawned rather than called in process: a git subprocess reads the
+  // environment this process started with, not one it changed since.
+  const CLI = join(import.meta.dir, "..", "src", "main.ts");
+
+  function strippedEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined) continue;
+      if (key.startsWith("GIT_AUTHOR_") || key.startsWith("GIT_COMMITTER_") || key === "EMAIL") continue;
+      env[key] = value;
+    }
+    // An empty file is a config with nothing in it, so git reads no identity
+    // from the global or the system scope.
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null";
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null";
+    return env;
+  }
+
+  function commits(repo: string, env: Record<string, string>): boolean {
+    return Bun.spawnSync(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "probe"], { env, stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  }
+
+  test("the learned repo it creates can commit", () => {
+    const env = strippedEnv();
+
+    // Positive control: prove the stripped environment really has no identity,
+    // so a passing assertion below cannot be the environment being intact.
+    const bare = join(tmp, "control");
+    mkdirSync(bare, { recursive: true });
+    expect(Bun.spawnSync(["git", "init", "-q", "-b", "main", bare], { env }).exitCode).toBe(0);
+    expect(commits(bare, env)).toBe(false);
+
+    const init = Bun.spawnSync(["bun", CLI, "init"], { env, stdout: "pipe", stderr: "pipe" });
+    expect(init.exitCode).toBe(0);
+
+    const cfg = loadConfig();
+    expect(commits(targetRoot(worldNamed(cfg, "default")), env)).toBe(true);
   });
 });

@@ -9,10 +9,11 @@ is what produces it.
 Actions > `release` > Run workflow, with `bump` set to `major`, `minor`, `patch`
 or an explicit `x.y.z`. The workflow (`.github/workflows/release.yml`) then:
 
-1. Bumps the version in the root `package.json`, every workspace
-   `package.json`, and `.claude-plugin/plugin.json` (`scripts/version.ts`).
-2. Builds `dist/` and runs `typecheck`, `lint:dashes` and `bun test`. The drift
-   test in `tests/dist.test.ts` runs here because a build is present.
+1. Turns the keyword into a version and runs `scripts/bump-version.sh`, which
+   rewrites every manifest, `SIL_VERSION` in the health handler and `bun.lock`,
+   then rebuilds `dist/`.
+2. Runs `lint:dashes`, `typecheck`, `check:web` and `bun test`. The drift test
+   in `tests/dist.test.ts` runs here because a build is present.
 3. Commits the bump on the branch the run started from and pushes it.
 4. Commits `dist/` on top (`git add --force`, since `.gitignore` hides it),
    tags it `v<version>`, and pushes the tag.
@@ -41,9 +42,13 @@ marketplace.
 `dist/hook.js`; the `sil` shim and the kick path fall back to source when it is
 missing, the hook does not.
 
+A version bump by hand is `scripts/bump-version.sh <x.y.z>`, the same script the
+workflow calls. It leaves the commit to you.
+
 ## Requirements on the repo
 
 - The workflow pushes to the branch it ran from. If that branch is protected,
   give the `github-actions` app a push exception or run the workflow from an
   unprotected release branch.
-- `permissions: contents: write` is already set in the workflow.
+- `permissions: contents: write` is set in the release workflow only. `ci.yml`
+  stays read-only.

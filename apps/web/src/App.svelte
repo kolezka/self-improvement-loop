@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Component } from "svelte";
   import { onMount } from "svelte";
-  import { captureToken, call } from "./lib/api.ts";
+  import { captureToken, call, dropReloadParam, reloadForBuild } from "./lib/api.ts";
   import { appState, toast } from "./lib/state.svelte.ts";
   import Toast from "./components/Toast.svelte";
   import Overview from "./panes/Overview.svelte";
@@ -41,6 +41,8 @@
   ];
 
   const STATUS_INTERVAL_MS = 10_000;
+  // Slower than the status poll: a plugin update is rarer than a worker tick.
+  const BUILD_INTERVAL_MS = 30_000;
 
   function currentHash(): string {
     const raw = window.location.hash.replace(/^#\/?/, "");
@@ -53,6 +55,12 @@
   let workerText = $state("Checking the worker");
   let stagedCount = $state(0);
   let statusPending = false;
+  // The build this page was served from, and the build on disk now. They differ
+  // after a plugin update, which is what the reload button is for.
+  let loadedBuild = $state<string | null>(null);
+  let diskBuild = $state<string | null>(null);
+  let serverStale = $state(false);
+  const newBuild = $derived(diskBuild !== null && diskBuild !== loadedBuild);
 
   function onHashChange() {
     hash = currentHash();
@@ -99,14 +107,35 @@
     }
   }
 
+  // A plugin update rewrites dist/ under a page that already holds the old JS.
+  // Static files are read from disk per request, so a reload gives the UI the new
+  // build. The server process keeps running the bundle it started with until it
+  // is restarted, and that is what server_stale reports.
+  async function checkBuild() {
+    try {
+      const info = (await call("health.build", {})) as { build: string | null; server_stale: boolean };
+      // The first answer defines what "loaded" means: nothing in the page says
+      // which build produced it, and this poll runs seconds after it was served.
+      loadedBuild ??= info.build;
+      diskBuild = info.build;
+      serverStale = info.server_stale;
+    } catch {
+      // A failed poll says nothing about the build on disk. Keep the last answer.
+    }
+  }
+
   onMount(() => {
     captureToken();
+    dropReloadParam();
     window.addEventListener("hashchange", onHashChange);
     loadWorlds().then(refreshStatus);
+    checkBuild();
     const timer = setInterval(refreshStatus, STATUS_INTERVAL_MS);
+    const buildTimer = setInterval(checkBuild, BUILD_INTERVAL_MS);
     return () => {
       window.removeEventListener("hashchange", onHashChange);
       clearInterval(timer);
+      clearInterval(buildTimer);
     };
   });
 
@@ -167,6 +196,17 @@
             <option value={name}>{name}</option>
           {/each}
         </select>
+        {#if serverStale}
+          <span class="chip warn" title="A reload cannot fix this: the process runs the bundle it started with. Restart `sil web`.">Server older than build</span>
+        {/if}
+        <button
+          class="small"
+          class:primary={newBuild}
+          title={newBuild ? "A newer plugin build is on disk. Reload to run it." : "Reload the UI from disk."}
+          onclick={() => reloadForBuild(diskBuild)}
+        >
+          {newBuild ? "New build: reload" : "Reload UI"}
+        </button>
       </div>
     </header>
 

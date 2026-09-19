@@ -2,7 +2,7 @@
 // the repo-wide no-long-dash writing rule for plugin-facing text.
 
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { globSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { HOOK_EVENTS } from "../packages/core/src/consts.ts";
 
@@ -39,15 +39,40 @@ function frontmatter(text: string): Record<string, string> {
 
 describe("plugin.json", () => {
   const data = JSON.parse(readFileSync(join(ROOT, ".claude-plugin", "plugin.json"), "utf8"));
+  const rootVersion = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version as string;
 
   test("has the expected fields", () => {
     expect(data.name).toBe("self-improvement-loop");
-    expect(data.version).toBe("0.2.3");
+    expect(rootVersion).toMatch(/^\d+\.\d+\.\d+/);
+    expect(data.version).toBe(rootVersion);
     expect(data.description).toBeTruthy();
     expect(data.author.name).toBe("Mariusz Rakus");
     expect(data.repository).toBe("https://github.com/kolezka/self-improvement-loop");
-    expect(data.license).toBe("Proprietary");
+    expect(data.license).toBe("PolyForm-Noncommercial-1.0.0");
     expect(Array.isArray(data.keywords) && data.keywords.length > 0).toBe(true);
+  });
+});
+
+// --- version consistency -----------------------------------------------------
+// scripts/bump-version.sh rewrites every copy; this catches a hand edit that
+// missed one.
+
+describe("version", () => {
+  const rootVersion = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version as string;
+
+  test("every workspace package.json matches the root", () => {
+    const manifests = [...globSync("packages/*/package.json", { cwd: ROOT }), ...globSync("apps/*/package.json", { cwd: ROOT })];
+    expect(manifests.length).toBeGreaterThan(0);
+    for (const rel of manifests) {
+      const v = JSON.parse(readFileSync(join(ROOT, rel), "utf8")).version;
+      expect([rel, v]).toEqual([rel, rootVersion]);
+    }
+  });
+
+  test("SIL_VERSION in the health handler matches the root", () => {
+    const src = readFileSync(join(ROOT, "packages", "ops", "src", "handlers", "health.ts"), "utf8");
+    const m = src.match(/const SIL_VERSION = "([^"]+)";/);
+    expect(m?.[1]).toBe(rootVersion);
   });
 });
 

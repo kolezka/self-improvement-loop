@@ -1,7 +1,10 @@
-// The git helpers themselves: how a killed subprocess is reported, and what a
-// scratch worktree leaves behind when the body it wraps throws.
+// The git helpers themselves: how a killed subprocess is reported, what a
+// scratch worktree leaves behind when the body it wraps throws, and how a repo
+// the loop owns commits on a machine with no git identity.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { DEFAULT_TIMEOUT_MS, isTimeoutSignal, signalMessage } from "../src/git.ts";
 import * as git from "../src/git.ts";
 import { cleanupEnv, initTarget, makeWorld, silEnv, type TestEnv } from "./fixtures.ts";
@@ -76,5 +79,36 @@ describe("withScratchWorktree", () => {
     });
 
     expect(git.refExists(repo, `refs/heads/${BRANCH}`)).toBe(true);
+  });
+});
+
+describe("ensureIdentity", () => {
+  // Every commit the loop makes runs as whatever git can resolve. An operator
+  // who never set a global user.email, a fresh container and CI are all the
+  // same state, and there the failure arrives as one pattern gated out with a
+  // "staging failed" string nobody reads. The test that a stripped environment
+  // still commits spawns the CLI, because a git subprocess does not see an
+  // environment this process changed after start: apps/cli/test/init.test.ts.
+
+  test("an identity git can already resolve is left alone", () => {
+    const repo = join(env.tmp, "learned");
+    mkdirSync(repo, { recursive: true });
+    git.git(repo, ["init", "-q", "-b", "main"]);
+    git.git(repo, ["config", "user.email", "operator@example.com"]);
+    git.git(repo, ["config", "user.name", "Operator"]);
+
+    git.ensureIdentity(repo);
+
+    expect(git.git(repo, ["config", "user.email"])).toBe("operator@example.com");
+    expect(git.git(repo, ["config", "user.name"])).toBe("Operator");
+  });
+
+  test("ensureRepo fills in nothing when the repo already commits", () => {
+    const repo = git.ensureRepo(join(env.tmp, "fresh"));
+    const before = git.git(repo, ["config", "user.email"]);
+
+    git.ensureRepo(repo);
+
+    expect(git.git(repo, ["config", "user.email"])).toBe(before);
   });
 });

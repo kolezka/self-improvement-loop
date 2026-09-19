@@ -13212,6 +13212,7 @@ var PromotionEntry = object({
   artifact_type: ArtifactType.default("none"),
   served_by: ArtifactRef.nullable().default(null),
   last_updated: isoTs.default(() => new Date().toISOString()),
+  promoted_at: isoTs.nullable().default(null),
   commit: string2().nullable().default(null),
   feedback: Scorecard.nullable().default(null)
 });
@@ -13742,6 +13743,13 @@ function loadAliases(world) {
   return out;
 }
 function saveAliases(world, aliases) {
+  const values = new Set(Object.values(aliases));
+  for (const key of Object.keys(aliases)) {
+    if (!values.has(key))
+      continue;
+    const source = Object.entries(aliases).find(([k, v]) => v === key && k !== key)?.[0];
+    throw new ValidationError(source ? `"${key}" is a key (-> "${aliases[key]}") and also the value of "${source}" (-> "${key}"); aliases resolve one hop only` : `"${key}" is a key (-> "${aliases[key]}") and also its own value`);
+  }
   const sorted = Object.fromEntries(Object.entries(aliases).sort(([a], [b]) => a < b ? -1 : 1));
   const p = aliasesFile(world);
   writeJson(p, sorted);
@@ -13901,6 +13909,51 @@ function patternCounts(world, extraDirs = []) {
   }
   return counts;
 }
+// packages/store/src/alias-suggest.ts
+var tokens = (s) => new Set(s.split("-"));
+function jaccard(a, b) {
+  let shared = 0;
+  for (const t of a)
+    if (b.has(t))
+      shared++;
+  const union = a.size + b.size - shared;
+  return union === 0 ? 0 : shared / union;
+}
+function isProperSubset(a, b) {
+  if (a.size < 2 || a.size >= b.size)
+    return false;
+  for (const t of a)
+    if (!b.has(t))
+      return false;
+  return true;
+}
+function suggestAliases(world) {
+  const counts = patternCounts(world);
+  const slugs = Object.keys(counts).sort();
+  const out = [];
+  for (let i = 0;i < slugs.length; i++) {
+    for (let j = i + 1;j < slugs.length; j++) {
+      const a = slugs[i];
+      const b = slugs[j];
+      const setA = tokens(a);
+      const setB = tokens(b);
+      const score = jaccard(setA, setB);
+      if (score < 0.5 && !isProperSubset(setA, setB) && !isProperSubset(setB, setA))
+        continue;
+      const canonical = counts[a] >= counts[b] ? a : b;
+      const alias = canonical === a ? b : a;
+      out.push({ alias, canonical, alias_count: counts[alias], canonical_count: counts[canonical], score });
+    }
+  }
+  out.sort((x, y) => {
+    if (y.score !== x.score)
+      return y.score - x.score;
+    if (x.canonical !== y.canonical)
+      return x.canonical < y.canonical ? -1 : 1;
+    return x.alias < y.alias ? -1 : 1;
+  });
+  return out;
+}
 // packages/store/src/ledger.ts
 function loadLedger(path) {
   if (!exists(path))
@@ -14026,6 +14079,9 @@ function aliasesSet(args) {
   saveAliases(args.world, args.aliases);
   return loadAliases(args.world);
 }
+function aliasesSuggest(args) {
+  return suggestAliases(args.world);
+}
 
 // packages/ops/src/cfg-world.ts
 function cfgWorld(name) {
@@ -14088,6 +14144,7 @@ __export(exports_src4, {
   setNudgeAdapter: () => setNudgeAdapter,
   sourcesText: () => sourcesText,
   splitTrigger: () => splitTrigger2,
+  stripRuleTag: () => stripRuleTag,
   substantiveQuote: () => substantiveQuote,
   watermark: () => watermark,
   writeArtifact: () => writeArtifact
@@ -14101,6 +14158,7 @@ __export(exports_git, {
   currentBranch: () => currentBranch,
   defaultBranch: () => defaultBranch,
   dirtyPaths: () => dirtyPaths,
+  ensureIdentity: () => ensureIdentity,
   ensureRepo: () => ensureRepo,
   git: () => git,
   gitRaw: () => gitRaw,
@@ -14188,13 +14246,24 @@ function defaultBranch(repo) {
   }
   return currentBranch(repo) || "main";
 }
+var LOOP_EMAIL = "loop@self-improvement-loop.local";
+var LOOP_NAME = "self-improvement-loop";
+function ensureIdentity(repo) {
+  if (gitRaw(repo, ["var", "GIT_COMMITTER_IDENT"]).code === 0)
+    return;
+  git(repo, ["config", "user.email", LOOP_EMAIL]);
+  git(repo, ["config", "user.name", LOOP_NAME]);
+  git(repo, ["config", "commit.gpgsign", "false"]);
+}
 function ensureRepo(path) {
   mkdirSync2(path, { recursive: true });
-  if (isRepo(path))
+  if (isRepo(path)) {
+    ensureIdentity(path);
     return path;
+  }
   git(path, ["init", "-q", "-b", "main"]);
-  git(path, ["config", "user.email", "loop@self-improvement-loop.local"]);
-  git(path, ["config", "user.name", "self-improvement-loop"]);
+  git(path, ["config", "user.email", LOOP_EMAIL]);
+  git(path, ["config", "user.name", LOOP_NAME]);
   git(path, ["config", "commit.gpgsign", "false"]);
   git(path, ["commit", "-q", "--allow-empty", "-m", "chore: initialise learned repo"]);
   return path;
@@ -14274,6 +14343,7 @@ __export(exports_artifacts, {
   ruleTag: () => ruleTag,
   rulesDiffOwnedBy: () => rulesDiffOwnedBy,
   rulesProblem: () => rulesProblem,
+  stripRuleTag: () => stripRuleTag,
   writeArtifact: () => writeArtifact
 });
 import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync4, rmdirSync, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
@@ -14331,7 +14401,7 @@ function readArtifact(world, artifactType, pattern, root) {
   if (!existsSync3(path))
     return "";
   const text = readText(path);
-  return artifactType === "rule" ? ruleBulletInText(text, pattern) : text;
+  return artifactType === "rule" ? stripRuleTag(ruleBulletInText(text, pattern), pattern) : text;
 }
 function writeArtifact(world, artifactType, pattern, payload, root) {
   const rel = artifactRel(world, artifactType, pattern);
@@ -14405,6 +14475,13 @@ function rulesDiffOwnedBy(diffText, pattern) {
       return false;
   }
   return true;
+}
+function stripRuleTag(bullet, pattern) {
+  const tag = ruleTag(pattern);
+  let out = (bullet ?? "").replace(/\s+$/, "");
+  while (out.endsWith(tag))
+    out = out.slice(0, -tag.length).replace(/\s+$/, "");
+  return out;
 }
 function ruleBulletInText(text, pattern) {
   const tag = ruleTag(pattern);
@@ -15690,8 +15767,9 @@ function skillShape(pattern) {
 function agentShape(pattern) {
   return "The same file shape as a skill: three hyphens alone, a line 'name:' " + `followed by exactly ${pattern}, a line 'description:' followed by 'Use ` + "when ' and one specific trigger situation, then three hyphens alone. " + "Then a markdown '## ' heading, then the sub-agent's brief: what it " + "investigates, what it must read, what it reports back. Over 80 " + "characters, naming the actual commands, fields or checks the lessons name.";
 }
-function ruleShape(_pattern) {
-  return "Exactly one line, starting with '- ', under 300 characters. No heading, " + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name.";
+function ruleShape(pattern) {
+  const budget = MAX_RULE_CHARS - ruleTag(pattern).length - 1;
+  return `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name. No HTML " + "comment and no '<!--rule:...-->' tag: the writer adds the tag itself.";
 }
 var GATE_VOCABULARY = {
   always: "taking true, which fires on every matching call",
@@ -16747,7 +16825,7 @@ function scorecards(world, cfg, opts = {}) {
     if (ev["world"] !== world.name)
       continue;
     const kind = ev["kind"];
-    if (kind !== "skill" && kind !== "agent")
+    if (kind !== "skill" && kind !== "agent" && kind !== "rule")
       continue;
     const ref = ev["ref"];
     if (!ref)
@@ -16765,8 +16843,10 @@ function scorecards(world, cfg, opts = {}) {
     const ref = `hook:${String(pattern)}`;
     refs.add(ref);
     noteTs(ref, line["ts"]);
-    if (within(line["ts"], windowStart, now))
+    if (within(line["ts"], windowStart, now)) {
       bump(firesByRef, ref);
+      bump(usesByRef, ref);
+    }
   }
   for (const ev of readJsonl(criticFeedbackFile())) {
     if (ev["world"] !== world.name)
@@ -16828,18 +16908,20 @@ function scorecards(world, cfg, opts = {}) {
   return out;
 }
 function propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, lastUsed, now, retireCutoff, retireDays) {
-  if (entry !== undefined) {
-    const updated = parseTs(entry.last_updated);
-    if (updated !== null && updated.getTime() >= now.getTime() - 7 * 86400000) {
-      const days = Math.floor((now.getTime() - updated.getTime()) / 86400000);
-      return ["new", `promoted ${days}d ago, within the 7 day new window`];
-    }
+  const promotedTs = entry === undefined ? null : entry.promoted_at ?? entry.last_updated;
+  const promotedDt = parseTs(promotedTs);
+  if (promotedDt !== null && promotedDt.getTime() >= now.getTime() - 7 * 86400000) {
+    const days = Math.floor((now.getTime() - promotedDt.getTime()) / 86400000);
+    return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    const stale = lastDt === null || lastDt.getTime() < retireCutoff.getTime();
+    const basisDt = lastDt ?? promotedDt;
+    const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
-      return ["retire-candidate", `no uses or fires in the last window, last_used=${lastUsed || "never"}, older than ${retireDays}d`];
+      const used = lastUsed === null ? "never used" : `last used ${lastUsed}, which is not a readable date`;
+      const basis = lastDt !== null ? `last used ${lastUsed}, older than ${retireDays}d` : basisDt !== null ? `${used}, promoted ${promotedTs}, older than ${retireDays}d` : "no parsable date to judge staleness from";
+      return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }
   }
   if (misfired + humanBad >= 2 && misfired + humanBad > helpful + humanGood) {
@@ -17033,14 +17115,16 @@ function plan(world, cfg, opts = {}) {
     }
     actions.push({ pattern, count, watermark: mark, action, sources, reason });
   }
-  let budget = cap;
-  for (const item of actions) {
-    if (item.action === "promote" || item.action === "refine") {
-      if (budget > 0)
-        budget -= 1;
-      else {
-        item.action = "over-cap";
-        item.reason = `over the per-run cap of ${cap}`;
+  if (opts.enforceCap ?? true) {
+    let budget = cap;
+    for (const item of actions) {
+      if (item.action === "promote" || item.action === "refine") {
+        if (budget > 0)
+          budget -= 1;
+        else {
+          item.action = "over-cap";
+          item.reason = `over the per-run cap of ${cap}`;
+        }
       }
     }
   }
@@ -17107,18 +17191,19 @@ async function run(world, cfg, opts) {
   const target = targetRoot(world);
   const items = reflections2(world, opts.extraDirs ?? []);
   const groups = new Map(cluster(items).map((c) => [c.pattern, c.items]));
-  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items });
+  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items, enforceCap: false });
+  const cap = cfg.promotion.per_run_cap;
   const actionable = [];
   for (const action of planned.actions) {
     if (action.action === "below-threshold")
       report.dropped[action.pattern] = action.count;
-    else if (action.action === "over-cap")
-      report.gated_out[action.pattern] = action.reason || "over per-run cap";
     else if (action.action === "promote" || action.action === "refine")
       actionable.push(action);
   }
   if (!opts.apply) {
-    report.staged = actionable.map((a) => a.pattern);
+    report.staged = actionable.slice(0, cap).map((a) => a.pattern);
+    for (const a of actionable.slice(cap))
+      report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
     report.finished = nowIso();
     return report;
   }
@@ -17137,6 +17222,10 @@ async function run(world, cfg, opts) {
   const ledger = loadLedger2(world);
   const ledgerRel = world.layout.ledger.replace(/^\/+|\/+$/g, "");
   for (const action of actionable) {
+    if (report.staged.length >= cap) {
+      report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
+      continue;
+    }
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat2, {
         target,
@@ -17223,6 +17312,8 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     }
     [body] = parseDraft(raw, { forcedType: routedType });
   }
+  if (routedType === "rule" && typeof body === "string")
+    body = stripRuleTag(body, pattern);
   const problems = lint(routedType, body, pattern, sources);
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");
@@ -17262,6 +17353,7 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     artifact_type: routedType,
     served_by: { type: routedType, path: rel },
     last_updated: nowIso(),
+    promoted_at: autoMerge ? (prior?.status === "promoted" ? prior.promoted_at : null) ?? nowIso() : prior?.promoted_at ?? null,
     commit: null,
     feedback: null
   };
@@ -17345,7 +17437,7 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
 import { existsSync as existsSync8 } from "fs";
 import { dirname as dirname6, join as join16, resolve as resolve6 } from "path";
 
@@ -18105,8 +18197,9 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
     if (checkedOut !== snap.branch_sha) {
       throw new ReviewError(`${snap.branch} moved from ${snap.branch_sha.slice(0, 12)} to ${checkedOut.slice(0, 12) || "an unreadable commit"} ` + "while accept was running; reload the review and accept again. Nothing was merged.");
     }
-    if (!isAncestor(repo, snap.base_sha, snap.branch_sha))
-      mergeBaseIntoBranch(tree, snap, rel);
+    if (!isAncestor(repo, snap.base_sha, snap.branch_sha)) {
+      mergeBaseIntoBranch(world, repo, tree, snap, pattern, rel);
+    }
     const merged = ledgerAt(world, repo, snap.base_sha);
     const row = entry ?? merged.entries[pattern] ?? null;
     if (row) {
@@ -18114,7 +18207,8 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
         ...row,
         status: "promoted",
         commit: snap.branch_sha.slice(0, 12),
-        last_updated: nowIso()
+        last_updated: nowIso(),
+        promoted_at: row.status === "promoted" ? row.promoted_at ?? nowIso() : nowIso()
       };
     }
     saveLedger(join16(tree, rel), merged);
@@ -18151,7 +18245,8 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
   }
   return out;
 }
-function mergeBaseIntoBranch(tree, snap, rel) {
+function mergeBaseIntoBranch(world, repo, tree, snap, pattern, rel) {
+  const rulesRel = artifactRel(world, "rule", pattern);
   try {
     git(tree, ["merge", "--no-ff", "--no-commit", "-q", snap.base_sha]);
   } catch (e) {
@@ -18162,10 +18257,32 @@ function mergeBaseIntoBranch(tree, snap, rel) {
     if (conflicted.length === 0) {
       throw e;
     }
-    if (conflicted.length !== 1 || conflicted[0] !== rel) {
+    const shared = new Set([rel, rulesRel].filter((p) => p));
+    if (conflicted.some((p) => !shared.has(p))) {
       git(tree, ["merge", "--abort"], { check: false });
       throw new ReviewError(`${snap.branch} conflicts outside the ledger: ${conflicted.join(", ")}`);
     }
+    if (conflicted.includes(rulesRel))
+      resolveRulesConflict(world, repo, tree, snap, pattern, rulesRel);
+  }
+}
+function resolveRulesConflict(world, repo, tree, snap, pattern, rulesRel) {
+  try {
+    const base = show(repo, snap.base_sha, rulesRel);
+    if (base.found)
+      writeFileSync5(join16(tree, rulesRel), base.text, "utf8");
+    else
+      ensureRulesFile(world, tree);
+    const onBranch = show(repo, snap.branch_sha, rulesRel);
+    const bullet = ruleBulletInText(onBranch.text, pattern).replace(ruleTag(pattern), "").trim();
+    if (bullet)
+      writeArtifact(world, "rule", pattern, bullet, tree);
+    else
+      removeArtifact(world, "rule", pattern, tree);
+    git(tree, ["add", "--", rulesRel]);
+  } catch (e) {
+    git(tree, ["merge", "--abort"], { check: false });
+    throw new ReviewError(`${snap.branch} conflicts in ${rulesRel} and it could not be rebuilt from ${snap.base_ref}: ` + `${e.message}. Nothing was merged.`);
   }
 }
 function ledgerAt(world, repo, ref) {
@@ -18206,6 +18323,7 @@ function rejectInner(world, _cfg, pattern, opts) {
         artifact_type: entryType(branchRow),
         served_by: null,
         last_updated: nowIso(),
+        promoted_at: null,
         commit: null,
         feedback: null
       };
@@ -18419,7 +18537,27 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
-var SIL_VERSION = "0.2.2";
+import { readFileSync as readFileSync4, statSync as statSync9 } from "fs";
+import { join as join18 } from "path";
+var SIL_VERSION = "0.2.7";
+function buildInfo(_args) {
+  const path = join18(pluginRoot(), "dist", ".srchash");
+  let build = null;
+  let builtAt = null;
+  try {
+    build = readFileSync4(path, "utf8").trim() || null;
+    builtAt = statSync9(path).mtime.toISOString();
+  } catch {}
+  const startedMs = Date.now() - process.uptime() * 1000;
+  return {
+    build,
+    built_at: builtAt,
+    server_started: new Date(startedMs).toISOString(),
+    server_stale: builtAt !== null && Date.parse(builtAt) > startedMs,
+    plugin_root: pluginRoot(),
+    version: SIL_VERSION
+  };
+}
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};
@@ -18472,9 +18610,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync3, existsSync as existsSync10, openSync as openSync3, readSync, statSync as statSync9 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync10, openSync as openSync3, readSync, statSync as statSync10 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync10, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync9 };
+var REAL_TAIL_IO = { existsSync: existsSync10, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync10 };
 function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
   if (knownSize === undefined && !io.existsSync(path))
     return [];
@@ -18511,7 +18649,7 @@ function logsTail(args) {
   let size = 0;
   let exists = true;
   try {
-    size = statSync9(path).size;
+    size = statSync10(path).size;
   } catch {
     exists = false;
   }
@@ -18539,7 +18677,7 @@ function loopRun(args) {
 }
 
 // packages/ops/src/handlers/reflections.ts
-import { join as join18 } from "path";
+import { join as join19 } from "path";
 function reflectionsList(args) {
   let refs = listReflections(args.world);
   if (args.pattern)
@@ -18557,7 +18695,7 @@ function reflectionsList(args) {
   }));
 }
 function reflectionsGet(args) {
-  const path = join18(reflectionsDir(args.world), `${args.id}.md`);
+  const path = join19(reflectionsDir(args.world), `${args.id}.md`);
   const r = parseReflection(path, args.world);
   if (r === null)
     throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
@@ -18642,6 +18780,7 @@ function opPath(name) {
 
 // packages/ops/src/index.ts
 register({ name: "health.report", tier: "read", gate: "none", args: NoArgs, fn: healthReport, doc: "Config paths, per-world provider status, worker status, versions." });
+register({ name: "health.build", tier: "read", gate: "none", args: NoArgs, fn: buildInfo, doc: "Build hash on disk, and whether the running server predates it." });
 register({ name: "worlds.list", tier: "read", gate: "none", args: NoArgs, fn: worldsList, doc: "List configured worlds." });
 register({ name: "config.get", tier: "read", gate: "none", args: NoArgs, fn: configGet, doc: "Read config.yaml." });
 register({ name: "config.set", tier: "local", gate: "none", args: ConfigArgs, fn: configSet, doc: "Validate and write config.yaml; refresh the hook snapshot." });
@@ -18659,6 +18798,7 @@ register({ name: "reflections.list", tier: "read", gate: "none", args: Reflectio
 register({ name: "reflections.get", tier: "read", gate: "none", args: ReflectionArgs, fn: reflectionsGet, doc: "Full body of one reflection." });
 register({ name: "aliases.get", tier: "read", gate: "none", args: WorldArgs, fn: aliasesGet, doc: "Pattern alias map for a world." });
 register({ name: "aliases.set", tier: "local", gate: "none", args: AliasArgs, fn: aliasesSet, doc: "Replace the alias map for a world." });
+register({ name: "aliases.suggest", tier: "read", gate: "none", args: WorldArgs, fn: aliasesSuggest, doc: "Deterministic near-duplicate pattern slug suggestions for a world." });
 register({ name: "review.queue", tier: "read", gate: "none", args: WorldArgs, fn: reviewQueue, doc: "Staged proposals waiting for review." });
 register({ name: "review.detail", tier: "read", gate: "none", args: PatternArgs, fn: reviewDetail, doc: "Body and reviewed_state of one proposal." });
 register({ name: "review.diff", tier: "read", gate: "none", args: PatternArgs, fn: reviewDiff, doc: "Diff of one staged proposal." });
@@ -18735,10 +18875,10 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync11, statSync as statSync10 } from "fs";
-import { join as join19, normalize, sep } from "path";
+import { existsSync as existsSync11, statSync as statSync11 } from "fs";
+import { join as join20, normalize, sep } from "path";
 function staticRoot() {
-  return join19(pluginRoot(), "dist", "web");
+  return join20(pluginRoot(), "dist", "web");
 }
 function hasDotSegment(pathname) {
   return pathname.split("/").some((seg) => seg === "." || seg === "..");
@@ -18753,13 +18893,16 @@ function resolveStaticPath(root, pathname) {
   if (hasDotSegment(decoded) || decoded.split("/").some((seg) => seg.startsWith(".")))
     return null;
   const cleaned = decoded.replace(/^\/+/, "");
-  const full = normalize(join19(root, cleaned));
+  const full = normalize(join20(root, cleaned));
   if (full !== root && !full.startsWith(root + sep))
     return null;
   return full;
 }
-function fileResponse(path) {
-  return new Response(Bun.file(path));
+function cacheControl(pathname) {
+  return pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store";
+}
+function fileResponse(path, pathname) {
+  return new Response(Bun.file(path), { headers: { "cache-control": cacheControl(pathname) } });
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
@@ -18771,12 +18914,12 @@ async function serveStatic(pathname) {
     return new Response("not found", { status: 404 });
   let st;
   try {
-    st = statSync10(target);
+    st = statSync11(target);
   } catch {
     st = null;
   }
   if (st && st.isFile())
-    return fileResponse(target);
+    return fileResponse(target, wanted);
   return new Response("not found", { status: 404 });
 }
 

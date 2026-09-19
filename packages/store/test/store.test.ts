@@ -7,6 +7,7 @@ import {
   listLessons,
   listQueue,
   listReflections,
+  loadAliases,
   loadLedger,
   moveEntry,
   parseLedger,
@@ -17,6 +18,7 @@ import {
   saveLedger,
   section,
   splitFrontMatter,
+  suggestAliases,
   writeEntry,
   writeReflection,
 } from "../src/index.ts";
@@ -66,6 +68,17 @@ describe("reflections", () => {
     writeReflection("w", { id: "2" }, body("new-name"));
     saveAliases("w", { "old-name": "new-name" });
     expect(patternCounts("w")).toEqual({ "new-name": 2 });
+  });
+
+  test("saveAliases refuses a map where an alias value is ever also a key, and the write never lands", () => {
+    saveAliases("w", { "old-env": "stale-env" });
+    expect(() => saveAliases("w", { "old-env": "stale-env", "stale-env": "stale-cached-env" })).toThrow(/stale-env/);
+    // the rejected write never landed
+    expect(loadAliases("w")).toEqual({ "old-env": "stale-env" });
+  });
+
+  test("saveAliases refuses a key that is its own value (alias === canonical is the same invariant)", () => {
+    expect(() => saveAliases("w", { foo: "foo" })).toThrow(/foo/);
   });
 
   test("never overwrites and requires a pattern", () => {
@@ -137,6 +150,7 @@ describe("ledger", () => {
             status: "promoted",
             artifact_type: "skill",
             last_updated: "2026-09-01T00:00:00Z",
+            promoted_at: null,
           },
           { pattern: "enumerate-full-set", promoted_at_count: 5, status: "promoted", artifact_type: "rule" },
         ],
@@ -183,5 +197,63 @@ describe("inbox and queue", () => {
     moveEntry(entry, "pending", "done", "ok");
     expect(listQueue("pending")).toHaveLength(0);
     expect(listQueue("done")[0]!.result).toBe("ok");
+  });
+});
+
+describe("suggestAliases", () => {
+  test("a strongly overlapping pair is suggested, canonical is the higher count", () => {
+    writeReflection("w", { id: "1" }, body("stale-env"));
+    writeReflection("w", { id: "2" }, body("stale-env"));
+    writeReflection("w", { id: "3" }, body("stale-cached-env"));
+    const suggestions = suggestAliases("w");
+    expect(suggestions).toEqual([
+      { alias: "stale-cached-env", canonical: "stale-env", alias_count: 1, canonical_count: 2, score: 2 / 3 },
+    ]);
+  });
+
+  test("an unrelated pair is not suggested", () => {
+    writeReflection("w", { id: "1" }, body("auth-pkce-redirect"));
+    writeReflection("w", { id: "2" }, body("billing-invoice-export"));
+    expect(suggestAliases("w")).toEqual([]);
+  });
+
+  test("a proper token subset of two or more tokens is suggested even below the jaccard cutoff", () => {
+    writeReflection("w", { id: "1" }, body("cache-miss"));
+    writeReflection("w", { id: "2" }, body("cache-miss-retry-backoff-jitter"));
+    writeReflection("w", { id: "3" }, body("cache-miss-retry-backoff-jitter"));
+    writeReflection("w", { id: "4" }, body("cache-miss-retry-backoff-jitter"));
+    const suggestions = suggestAliases("w");
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.canonical).toBe("cache-miss-retry-backoff-jitter");
+    expect(suggestions[0]!.alias).toBe("cache-miss");
+    expect(suggestions[0]!.score).toBeLessThan(0.5);
+  });
+
+  test("a single-token slug is not suggested against every slug that merely contains that token", () => {
+    writeReflection("w", { id: "1" }, body("auth"));
+    writeReflection("w", { id: "2" }, body("auth-pkce-redirect"));
+    writeReflection("w", { id: "3" }, body("auth-pkce-redirect"));
+    writeReflection("w", { id: "4" }, body("auth-pkce-redirect"));
+    expect(suggestAliases("w")).toEqual([]);
+  });
+
+  test("an already-aliased slug is folded away and never suggested again", () => {
+    writeReflection("w", { id: "1" }, body("stale-env"));
+    writeReflection("w", { id: "2" }, body("stale-cached-env"));
+    saveAliases("w", { "stale-env": "stale-cached-env" });
+    expect(suggestAliases("w")).toEqual([]);
+  });
+
+  test("a tied count breaks to the lexicographically smaller canonical, deterministically", () => {
+    writeReflection("w", { id: "1" }, body("stale-env"));
+    writeReflection("w", { id: "2" }, body("env-stale"));
+    const suggestions = suggestAliases("w");
+    expect(suggestions).toEqual([{ alias: "stale-env", canonical: "env-stale", alias_count: 1, canonical_count: 1, score: 1 }]);
+    // a rerun over the same data is byte-identical
+    expect(suggestAliases("w")).toEqual(suggestions);
+  });
+
+  test("a world with no reflections has no suggestions", () => {
+    expect(suggestAliases("empty-world")).toEqual([]);
   });
 });

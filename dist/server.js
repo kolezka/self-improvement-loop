@@ -14088,6 +14088,7 @@ __export(exports_src4, {
   setNudgeAdapter: () => setNudgeAdapter,
   sourcesText: () => sourcesText,
   splitTrigger: () => splitTrigger2,
+  stripRuleTag: () => stripRuleTag,
   substantiveQuote: () => substantiveQuote,
   watermark: () => watermark,
   writeArtifact: () => writeArtifact
@@ -14274,6 +14275,7 @@ __export(exports_artifacts, {
   ruleTag: () => ruleTag,
   rulesDiffOwnedBy: () => rulesDiffOwnedBy,
   rulesProblem: () => rulesProblem,
+  stripRuleTag: () => stripRuleTag,
   writeArtifact: () => writeArtifact
 });
 import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync4, rmdirSync, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
@@ -14331,7 +14333,7 @@ function readArtifact(world, artifactType, pattern, root) {
   if (!existsSync3(path))
     return "";
   const text = readText(path);
-  return artifactType === "rule" ? ruleBulletInText(text, pattern) : text;
+  return artifactType === "rule" ? stripRuleTag(ruleBulletInText(text, pattern), pattern) : text;
 }
 function writeArtifact(world, artifactType, pattern, payload, root) {
   const rel = artifactRel(world, artifactType, pattern);
@@ -14405,6 +14407,13 @@ function rulesDiffOwnedBy(diffText, pattern) {
       return false;
   }
   return true;
+}
+function stripRuleTag(bullet, pattern) {
+  const tag = ruleTag(pattern);
+  let out = (bullet ?? "").replace(/\s+$/, "");
+  while (out.endsWith(tag))
+    out = out.slice(0, -tag.length).replace(/\s+$/, "");
+  return out;
 }
 function ruleBulletInText(text, pattern) {
   const tag = ruleTag(pattern);
@@ -15690,8 +15699,9 @@ function skillShape(pattern) {
 function agentShape(pattern) {
   return "The same file shape as a skill: three hyphens alone, a line 'name:' " + `followed by exactly ${pattern}, a line 'description:' followed by 'Use ` + "when ' and one specific trigger situation, then three hyphens alone. " + "Then a markdown '## ' heading, then the sub-agent's brief: what it " + "investigates, what it must read, what it reports back. Over 80 " + "characters, naming the actual commands, fields or checks the lessons name.";
 }
-function ruleShape(_pattern) {
-  return "Exactly one line, starting with '- ', under 300 characters. No heading, " + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name.";
+function ruleShape(pattern) {
+  const budget = MAX_RULE_CHARS - ruleTag(pattern).length - 1;
+  return `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` + "no frontmatter, no second line: the single imperative the agent must " + "follow, naming the actual command or check the lessons name. No HTML " + "comment and no '<!--rule:...-->' tag: the writer adds the tag itself.";
 }
 var GATE_VOCABULARY = {
   always: "taking true, which fires on every matching call",
@@ -17230,6 +17240,8 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     }
     [body] = parseDraft(raw, { forcedType: routedType });
   }
+  if (routedType === "rule" && typeof body === "string")
+    body = stripRuleTag(body, pattern);
   const problems = lint(routedType, body, pattern, sources);
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");
@@ -18426,7 +18438,27 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
+import { readFileSync as readFileSync4, statSync as statSync9 } from "fs";
+import { join as join18 } from "path";
 var SIL_VERSION = "0.2.6";
+function buildInfo(_args) {
+  const path = join18(pluginRoot(), "dist", ".srchash");
+  let build = null;
+  let builtAt = null;
+  try {
+    build = readFileSync4(path, "utf8").trim() || null;
+    builtAt = statSync9(path).mtime.toISOString();
+  } catch {}
+  const startedMs = Date.now() - process.uptime() * 1000;
+  return {
+    build,
+    built_at: builtAt,
+    server_started: new Date(startedMs).toISOString(),
+    server_stale: builtAt !== null && Date.parse(builtAt) > startedMs,
+    plugin_root: pluginRoot(),
+    version: SIL_VERSION
+  };
+}
 async function healthReport(_args) {
   const cfg = loadConfig();
   const providersStatus = {};
@@ -18479,9 +18511,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync3, existsSync as existsSync10, openSync as openSync3, readSync, statSync as statSync9 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync10, openSync as openSync3, readSync, statSync as statSync10 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync10, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync9 };
+var REAL_TAIL_IO = { existsSync: existsSync10, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync10 };
 function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
   if (knownSize === undefined && !io.existsSync(path))
     return [];
@@ -18518,7 +18550,7 @@ function logsTail(args) {
   let size = 0;
   let exists = true;
   try {
-    size = statSync9(path).size;
+    size = statSync10(path).size;
   } catch {
     exists = false;
   }
@@ -18546,7 +18578,7 @@ function loopRun(args) {
 }
 
 // packages/ops/src/handlers/reflections.ts
-import { join as join18 } from "path";
+import { join as join19 } from "path";
 function reflectionsList(args) {
   let refs = listReflections(args.world);
   if (args.pattern)
@@ -18564,7 +18596,7 @@ function reflectionsList(args) {
   }));
 }
 function reflectionsGet(args) {
-  const path = join18(reflectionsDir(args.world), `${args.id}.md`);
+  const path = join19(reflectionsDir(args.world), `${args.id}.md`);
   const r = parseReflection(path, args.world);
   if (r === null)
     throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
@@ -18649,6 +18681,7 @@ function opPath(name) {
 
 // packages/ops/src/index.ts
 register({ name: "health.report", tier: "read", gate: "none", args: NoArgs, fn: healthReport, doc: "Config paths, per-world provider status, worker status, versions." });
+register({ name: "health.build", tier: "read", gate: "none", args: NoArgs, fn: buildInfo, doc: "Build hash on disk, and whether the running server predates it." });
 register({ name: "worlds.list", tier: "read", gate: "none", args: NoArgs, fn: worldsList, doc: "List configured worlds." });
 register({ name: "config.get", tier: "read", gate: "none", args: NoArgs, fn: configGet, doc: "Read config.yaml." });
 register({ name: "config.set", tier: "local", gate: "none", args: ConfigArgs, fn: configSet, doc: "Validate and write config.yaml; refresh the hook snapshot." });
@@ -18742,10 +18775,10 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync11, statSync as statSync10 } from "fs";
-import { join as join19, normalize, sep } from "path";
+import { existsSync as existsSync11, statSync as statSync11 } from "fs";
+import { join as join20, normalize, sep } from "path";
 function staticRoot() {
-  return join19(pluginRoot(), "dist", "web");
+  return join20(pluginRoot(), "dist", "web");
 }
 function hasDotSegment(pathname) {
   return pathname.split("/").some((seg) => seg === "." || seg === "..");
@@ -18760,13 +18793,16 @@ function resolveStaticPath(root, pathname) {
   if (hasDotSegment(decoded) || decoded.split("/").some((seg) => seg.startsWith(".")))
     return null;
   const cleaned = decoded.replace(/^\/+/, "");
-  const full = normalize(join19(root, cleaned));
+  const full = normalize(join20(root, cleaned));
   if (full !== root && !full.startsWith(root + sep))
     return null;
   return full;
 }
-function fileResponse(path) {
-  return new Response(Bun.file(path));
+function cacheControl(pathname) {
+  return pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store";
+}
+function fileResponse(path, pathname) {
+  return new Response(Bun.file(path), { headers: { "cache-control": cacheControl(pathname) } });
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
@@ -18778,12 +18814,12 @@ async function serveStatic(pathname) {
     return new Response("not found", { status: 404 });
   let st;
   try {
-    st = statSync10(target);
+    st = statSync11(target);
   } catch {
     st = null;
   }
   if (st && st.isFile())
-    return fileResponse(target);
+    return fileResponse(target, wanted);
   return new Response("not found", { status: 404 });
 }
 

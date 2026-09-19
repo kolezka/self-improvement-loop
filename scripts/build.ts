@@ -1,7 +1,9 @@
-// Build the committed dist/: single-file bundles for the hook, the CLI and the
-// server, the Svelte UI, and a source hash so a test can catch drift.
+// Build dist/: single-file bundles for the hook, the CLI and the server, the
+// Svelte UI, and a source hash so a test can catch drift.
 //
-// A plugin install is a git clone with no install step, so dist/ ships in git.
+// A plugin install has no install step, so the runtime needs a prebuilt dist/.
+// It is not committed on main: .github/workflows/release.yml builds it and
+// commits it on the release tag and the release branch. Locally, `make build`.
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";

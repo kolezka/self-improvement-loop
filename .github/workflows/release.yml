@@ -1,0 +1,115 @@
+name: release
+
+# Manual release. Bumps the version, builds dist/, then publishes it two ways:
+#   tag v<version> and the moving `release` branch carry a commit with dist/ in
+#   it (git installs), and a zip of that same tree is attached to the GitHub
+#   release (archive installs). main never carries dist/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "major, minor, patch or an explicit x.y.z version"
+        required: true
+        default: patch
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - run: bun install --frozen-lockfile
+
+      - name: Bump the version in every manifest
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          version="$(bun scripts/version.ts "$BUMP")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build dist/
+        run: bun run build
+
+      - name: Check
+        run: |
+          bun run typecheck
+          bun run lint:dashes
+          bun test
+
+      - name: Commit the bump on the branch this ran from
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json .claude-plugin/plugin.json packages/*/package.json apps/*/package.json
+          git commit -m "chore(release): v$VERSION"
+          git push origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Tag a release commit that carries dist/
+        run: |
+          git add --force dist
+          git commit -m "chore(release): build dist for v$VERSION"
+          git tag "v$VERSION"
+          git push origin "refs/tags/v$VERSION"
+          # `release` is generated output, not a development branch: every run
+          # replaces it with the commit the new tag points at.
+          git push --force origin "HEAD:refs/heads/release"
+
+      - name: Pack the install archive
+        id: archive
+        run: |
+          staging="$RUNNER_TEMP/pack"
+          mkdir -p "$staging/self-improvement-loop"
+          # Same tree as the tag, so a zip install and a git install match.
+          git archive --format=tar "v$VERSION" | tar -x -C "$staging/self-improvement-loop"
+          asset="$GITHUB_WORKSPACE/self-improvement-loop-$VERSION.zip"
+          (cd "$staging" && zip -qr "$asset" self-improvement-loop)
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$asset" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA256: ${{ steps.archive.outputs.sha256 }}
+          ASSET: ${{ steps.archive.outputs.asset }}
+          REPO: ${{ github.repository }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "Install from the marketplace:"
+            echo
+            echo '```'
+            echo "claude plugin marketplace add kolezka/marketplace"
+            echo "claude plugin install self-improvement-loop@kolezka"
+            echo '```'
+            echo
+            echo "The marketplace entry tracks the \`release\` branch, which now points at \`v$VERSION\`."
+            echo "Pin this exact version with \`\"ref\": \"v$VERSION\"\`, or install without git from the zip:"
+            echo
+            echo '```json'
+            echo '{'
+            echo '  "source": "archive",'
+            echo "  \"url\": \"https://github.com/$REPO/releases/download/v$VERSION/self-improvement-loop-$VERSION.zip\","
+            echo "  \"sha256\": \"$SHA256\""
+            echo '}'
+            echo '```'
+          } > "$notes"
+          gh release create "v$VERSION" --title "v$VERSION" --notes-file "$notes" "$ASSET"

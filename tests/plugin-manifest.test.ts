@@ -42,7 +42,9 @@ describe("plugin.json", () => {
 
   test("has the expected fields", () => {
     expect(data.name).toBe("self-improvement-loop");
-    expect(data.version).toBe("0.2.1");
+    // The exact number is owned by the release bump; tests/version.test.ts
+    // checks every manifest agrees with the root package.json.
+    expect(data.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(data.description).toBeTruthy();
     expect(data.author.name).toBe("Mariusz Rakus");
     expect(data.repository).toBe("https://github.com/kolezka/self-improvement-loop");

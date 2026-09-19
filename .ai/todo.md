@@ -47,7 +47,8 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [ ] exercise `remote: pr` against GitHub and the Outline export against a live server
 - [ ] worker lock is a pid file with a 60 ms reclaim window; consider flock via FFI
 - [ ] a lint-clean regex gate is bounded only by JavaScriptCore's backtracking cap inside one hook call
-- [ ] CI workflow: bun install, typecheck, bun test, bun run build, dist drift test
+- [x] release workflow: manual bump, build, tag + `release` branch + zip asset (`.github/workflows/release.yml`)
+- [ ] CI workflow on push/PR: bun install, typecheck, bun test, bun run build, dist drift test
 - [ ] second review by another model family (Codex) before use on employer repos
 - [ ] Codex and OpenCode have no hook equivalent; V1 had a parity build, V2 has none
 

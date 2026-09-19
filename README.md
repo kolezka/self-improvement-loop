@@ -123,6 +123,7 @@ that.
 - `docs/ARCHITECTURE.md`: design rules, runtime layout, full loop mechanics.
 - `docs/INSTALL.md`: marketplace install, local dev install, scheduling.
 - `docs/OPERATIONS.md`: daily loop, reviewing, key rotation, troubleshooting.
+- `docs/RELEASE.md`: how a version is cut and where the installed `dist/` comes from.
 - `docs/V1-PARITY.md`: what carried over from V1 and what changed.
 
 ## License

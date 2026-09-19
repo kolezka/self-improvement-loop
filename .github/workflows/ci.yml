@@ -46,20 +46,12 @@ jobs:
       - name: typecheck web
         run: bun run check:web
 
+      # Before the tests, not after: dist/ is untracked now, so a fresh
+      # checkout has none, and tests/dist.test.ts skips its drift checks
+      # unless a build ran first. A build here also proves the bundles still
+      # resolve, which no unit test covers.
+      - name: build
+        run: bun run build
+
       - name: test
         run: bun test
-
-      # The plugin runs the committed dist/, so a build that changes it means
-      # the bundle on main was stale. tests/dist.test.ts catches the hash
-      # drift; this catches a build whose output differs for any other reason.
-      # status, not diff: a build that adds a file leaves it untracked, and
-      # `git diff` says nothing about untracked files.
-      - name: build is reproducible
-        run: |
-          bun run build
-          if [ -n "$(git status --porcelain -- dist)" ]; then
-            echo "dist/ is not what a rebuild produces:"
-            git status --porcelain -- dist
-            git diff -- dist | head -200
-            exit 1
-          fi

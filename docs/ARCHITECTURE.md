@@ -63,7 +63,7 @@ commands/*.md               /reflect /loop /curriculum /feedback
 skills/self-improvement-loop/SKILL.md
 packages/*                  TypeScript engine, one package per concern (@sil/core, @sil/store, ...)
 apps/{cli,hook,server,web}  entry points: the sil CLI, the hook fast path, the web API, the Svelte UI
-dist/{hook,cli,server,gate-runner}.js, dist/web/    committed single-file bundles the plugin actually runs
+dist/{hook,cli,server,gate-runner}.js, dist/web/    built single-file bundles the plugin actually runs (built by the release workflow, not committed on main; see docs/RELEASE.md)
 scripts/sil                 shim: resolves the plugin root, execs `bun dist/cli.js` (or source, in a dev checkout)
 ```
 

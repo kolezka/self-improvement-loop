@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 // workspace package version is kept in step with.
 const rootPackage = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
 
-// Relative base so the bundle works on any port; output goes to the committed dist/web.
+// Relative base so the bundle works on any port; output goes to dist/web.
 export default defineConfig({
   plugins: [svelte()],
   base: "./",

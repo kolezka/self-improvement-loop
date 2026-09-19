@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installedStamp, isInstalledCopy, updateStamp, watchForUpdates } from "../src/webUpdate.ts";
 
+// The install paths below are opaque strings to webUpdate.ts, so they carry
+// labels, not versions. A real version here matches the stale-value grep in
+// scripts/bump-version.sh and aborts every bump.
+
 let tmp: string;
 let claudeConfig: string;
 
@@ -28,7 +32,7 @@ afterEach(() => {
 
 describe("isInstalledCopy", () => {
   test("true under the plugin cache, false for a dev checkout", () => {
-    expect(isInstalledCopy(join(claudeConfig, "plugins", "cache", "kolezka", "self-improvement-loop", "0.2.7"), claudeConfig)).toBe(true);
+    expect(isInstalledCopy(join(claudeConfig, "plugins", "cache", "kolezka", "self-improvement-loop", "cache-old"), claudeConfig)).toBe(true);
     expect(isInstalledCopy(join(tmp, "src", "self-improvement-loop"), claudeConfig)).toBe(false);
   });
 });
@@ -38,11 +42,11 @@ describe("installedStamp", () => {
     writeInstalled({
       "other-plugin@kolezka": [{ installPath: "/other", lastUpdated: "2030-01-01T00:00:00Z" }],
       "self-improvement-loop@kolezka": [
-        { installPath: "/cache/0.2.6", lastUpdated: "2026-09-01T00:00:00Z" },
-        { installPath: "/cache/0.2.7", lastUpdated: "2026-09-19T00:00:00Z" },
+        { installPath: "/cache/older", lastUpdated: "2026-09-01T00:00:00Z" },
+        { installPath: "/cache/newer", lastUpdated: "2026-09-19T00:00:00Z" },
       ],
     });
-    expect(installedStamp(claudeConfig)).toBe("/cache/0.2.7@2026-09-19T00:00:00Z");
+    expect(installedStamp(claudeConfig)).toBe("/cache/newer@2026-09-19T00:00:00Z");
   });
 
   test("empty for a missing or unparsable file", () => {
@@ -63,11 +67,11 @@ describe("updateStamp", () => {
   });
 
   test("changes when an installed copy is updated to a new version", () => {
-    const root = join(claudeConfig, "plugins", "cache", "kolezka", "self-improvement-loop", "0.2.7");
+    const root = join(claudeConfig, "plugins", "cache", "kolezka", "self-improvement-loop", "cache-old");
     writeSrcHash(root, "aaa");
     writeInstalled({ "self-improvement-loop@kolezka": [{ installPath: root, lastUpdated: "2026-09-19T00:00:00Z" }] });
     const before = updateStamp(root, claudeConfig);
-    const next = join(claudeConfig, "plugins", "cache", "kolezka", "self-improvement-loop", "0.2.8");
+    const next = join(claudeConfig, "plugins", "cache", "kolezka", "self-improvement-loop", "cache-new");
     writeInstalled({ "self-improvement-loop@kolezka": [{ installPath: next, lastUpdated: "2026-09-20T00:00:00Z" }] });
     expect(updateStamp(root, claudeConfig)).not.toBe(before);
   });
@@ -76,7 +80,7 @@ describe("updateStamp", () => {
     const root = join(tmp, "checkout");
     writeSrcHash(root, "aaa");
     const before = updateStamp(root, claudeConfig);
-    writeInstalled({ "self-improvement-loop@kolezka": [{ installPath: "/cache/0.2.9", lastUpdated: "2026-09-20T00:00:00Z" }] });
+    writeInstalled({ "self-improvement-loop@kolezka": [{ installPath: "/cache/other", lastUpdated: "2026-09-20T00:00:00Z" }] });
     expect(updateStamp(root, claudeConfig)).toBe(before);
   });
 });

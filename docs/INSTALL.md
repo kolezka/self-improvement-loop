@@ -23,16 +23,25 @@ Then in any Claude Code session:
 
 This prints status and confirms the plugin is wired up.
 
+The marketplace entry tracks the `release` branch of this repo, which a release
+run moves to the newest release commit. Only those commits carry the prebuilt
+`dist/` the plugin runs; `main` does not. To pin one version, set
+`"ref": "v<version>"` on the entry. On a machine with no git or npm, install the
+zip attached to the release with an `archive` source; the release notes carry the
+URL and its `sha256`. See `docs/RELEASE.md`.
+
 ## Local dev install
 
 From a checkout of this repo:
 
 ```
+make build
 claude --plugin-dir /path/to/self-improvement-loop
 ```
 
 This loads the plugin from disk without touching the marketplace. Useful while
-developing `sil` itself.
+developing `sil` itself. `make build` is not optional: `dist/` is untracked, and
+the hooks run `dist/hook.js`.
 
 ## First run
 

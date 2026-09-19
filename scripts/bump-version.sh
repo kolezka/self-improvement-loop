@@ -5,7 +5,8 @@
 #
 # Touches: root package.json, every workspace package.json under packages/ and
 # apps/, .claude-plugin/plugin.json, and SIL_VERSION in the health handler.
-# dist/ ships in git and embeds SIL_VERSION, so a rebuild is part of the bump.
+# dist/ is untracked but embeds SIL_VERSION, and the release workflow commits
+# the built dist/ on the tag, so a rebuild is part of the bump.
 # Nothing is committed; the script prints the commit command at the end.
 set -euo pipefail
 

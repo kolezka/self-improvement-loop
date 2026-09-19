@@ -143,6 +143,7 @@ that.
 - `docs/INSTALL.md`: marketplace install, local dev install, scheduling.
 - `docs/OPERATIONS.md`: daily loop, reviewing, key rotation, troubleshooting.
 - `docs/OPENCLAW.md`: running the loop on OpenClaw sessions.
+- `docs/RELEASE.md`: how a version is cut and where the installed `dist/` comes from.
 - `docs/V1-PARITY.md`: what carried over from V1 and what changed.
 
 ## License

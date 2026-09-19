@@ -52,7 +52,9 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.usageEventsFile())) {
     if (ev["world"] !== world.name) continue;
     const kind = ev["kind"];
-    if (kind !== "skill" && kind !== "agent") continue;
+    // agent_stop repeats an agent event already counted, hook_run counts
+    // hook process runs rather than artifact deliveries. Neither is a use.
+    if (kind !== "skill" && kind !== "agent" && kind !== "rule") continue;
     const ref = ev["ref"];
     if (!ref) continue;
     const r = String(ref);
@@ -67,7 +69,13 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
     const ref = `hook:${String(pattern)}`;
     refs.add(ref);
     noteTs(ref, line["ts"]);
-    if (within(line["ts"], windowStart, now)) bump(firesByRef, ref);
+    // A fire is how a hook gets used, so it counts in both columns: uses_30d
+    // is "times served" for every artifact type, fires_30d keeps the
+    // hook-only detail.
+    if (within(line["ts"], windowStart, now)) {
+      bump(firesByRef, ref);
+      bump(usesByRef, ref);
+    }
   }
 
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {

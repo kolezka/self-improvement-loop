@@ -15039,7 +15039,11 @@ var WorkerConfig = object({
   min_tool_uses: number2().int().min(0).default(6),
   auto_kick: boolean2().default(true)
 });
-var WebConfig = object({ port: number2().int().default(8766) });
+var WebConfig = object({
+  port: number2().int().default(8766),
+  host: string2().default("127.0.0.1"),
+  allowed_hosts: array(string2()).default([])
+});
 var Config = object({
   version: number2().int().default(1),
   worlds: array(World).default(() => [World.parse({ name: "default" })]),
@@ -15163,11 +15167,17 @@ var PlanAction = object({
   reason: string2().default("")
 });
 var PlanReport = object({ world: string2(), threshold: number2().int(), actions: array(PlanAction).default([]) });
+var RouteRecord = object({
+  drafted: string2(),
+  type: ArtifactType,
+  reason: string2()
+});
 var RunReport = object({
   world: string2(),
   dry_run: boolean2().default(true),
   staged: array(string2()).default([]),
   merged: array(string2()).default([]),
+  routed: record(string2(), RouteRecord).default({}),
   gated_out: record(string2(), string2()).default({}),
   dropped: record(string2(), number2().int()).default({}),
   started: isoTs,
@@ -15264,6 +15274,7 @@ var configFile = () => join(configDir(), "config.yaml");
 var llmFile = () => join(configDir(), "llm.yaml");
 var queueDir = (bucket) => join(stateDir(), "queue", bucket);
 var usageEventsFile = () => join(stateDir(), "usage", "events.jsonl");
+var payloadSamplesFile = (world) => join(stateDir(), "usage", "payloads", `${safeComponent(world)}.jsonl`);
 var nudgeFiresFile = () => join(stateDir(), "usage", "nudge-fires.jsonl");
 var humanFeedbackFile = () => join(stateDir(), "feedback", "human.jsonl");
 var criticFeedbackFile = () => join(stateDir(), "feedback", "critic.jsonl");
@@ -15352,14 +15363,24 @@ function appendLine(path, line, rotateAt = ROTATE_AT_BYTES, keep = ROTATE_KEEP_L
     if (statSync(path).size >= rotateAt) {
       const lines = readFileSync(path, "utf8").split(`
 `).filter((l) => l.length > 0);
-      atomicWrite(path, lines.slice(-keep).join(`
-`) + `
-`);
+      atomicWrite(path, rotated(lines, rotateAt, keep));
     }
   } catch {}
   appendFileSync(path, line.endsWith(`
 `) ? line : line + `
 `, "utf8");
+}
+function rotated(lines, rotateAt, keep) {
+  const kept = lines.slice(-keep);
+  let size = kept.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0);
+  let start = 0;
+  while (start < kept.length - 1 && size > rotateAt / 2) {
+    size -= Buffer.byteLength(kept[start], "utf8") + 1;
+    start += 1;
+  }
+  return kept.slice(start).join(`
+`) + `
+`;
 }
 function mtimeMs(path) {
   try {
@@ -15717,6 +15738,7 @@ __export(exports_src4, {
   HOOK_KEYS: () => HOOK_KEYS,
   MAX_DESCRIPTION: () => MAX_DESCRIPTION,
   MAX_RULE_CHARS: () => MAX_RULE_CHARS,
+  MAX_SAMPLED_PAYLOADS: () => MAX_SAMPLED_PAYLOADS,
   MIN_BODY_CHARS: () => MIN_BODY_CHARS,
   MIN_QUOTE_CHARS: () => MIN_QUOTE_CHARS,
   MIN_QUOTE_TERMS: () => MIN_QUOTE_TERMS,
@@ -15732,6 +15754,7 @@ __export(exports_src4, {
   cluster: () => cluster,
   distinctiveTerms: () => distinctiveTerms,
   draftMessages: () => draftMessages,
+  draftingTexts: () => draftingTexts,
   emptyAnswer: () => emptyAnswer,
   ensureRulesFile: () => ensureRulesFile,
   foreignRuleTags: () => foreignRuleTags,
@@ -15767,6 +15790,7 @@ __export(exports_src4, {
   splitTrigger: () => splitTrigger2,
   substantiveQuote: () => substantiveQuote,
   watermark: () => watermark,
+  withoutSections: () => withoutSections,
   writeArtifact: () => writeArtifact
 });
 
@@ -16444,11 +16468,12 @@ function readFires(path) {
 var MAX_MATCH_LEN = 4000;
 var MAX_PATTERN_LEN = 200;
 var MAX_QUANTIFIED_GROUPS = 3;
+var TOOL_MATCHERS = ["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "WebFetch", "WebSearch", "NotebookEdit"];
 var EVENTS = {
   SessionStart: null,
   UserPromptSubmit: null,
-  PreToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"]),
-  PostToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"])
+  PreToolUse: new Set(TOOL_MATCHERS),
+  PostToolUse: new Set(TOOL_MATCHERS)
 };
 var LOW_FREQUENCY_EVENTS = new Set(["SessionStart"]);
 var PREDICATES = new Set([
@@ -17266,10 +17291,14 @@ function route(answer, sourcesText, payloads, opts = {}) {
   if (reply.no_artifact) {
     return { artifact_type: "none", reason: "drafter declined: no artifact warranted" };
   }
-  const hookReason = whyNotHook(reply, corpus, opts);
-  if (hookReason === null) {
-    return { artifact_type: "hook", reason: `gate fires on the payload corpus at ${reply.trigger_event}` };
+  const verdict = hookVerdict(reply, corpus, opts);
+  if (typeof verdict !== "string") {
+    return {
+      artifact_type: "hook",
+      reason: `gate fires on ${verdict.hits} of ${verdict.total} recorded payload(s) at ${reply.trigger_event}`
+    };
   }
+  const hookReason = verdict;
   if (reply.needs_own_context) {
     const note = (reply.context_evidence ?? "").trim();
     if (!note) {
@@ -17301,7 +17330,8 @@ function route(answer, sourcesText, payloads, opts = {}) {
     reason: `no workable gate (${hookReason}), no own-context need, no capability evidence`
   };
 }
-function whyNotHook(answer, payloads, opts) {
+var MAX_GATE_MATCH_RATE = 0.5;
+function hookVerdict(answer, payloads, opts) {
   const gate = answer.gate;
   if (answer.trigger_event === "none" || gate == null || Object.keys(gate).length === 0) {
     return "no trigger event proposed";
@@ -17329,16 +17359,17 @@ function whyNotHook(answer, payloads, opts) {
   if (results.length !== payloads.length) {
     return `gate runner answered for ${results.length} of ${payloads.length} payload(s)`;
   }
-  if (!results.some(Boolean))
+  const hits = results.filter(Boolean).length;
+  if (hits === 0)
     return "gate matched nothing in the payload corpus";
-  if (results.every(Boolean) && payloads.length > 1) {
-    return "gate fires on every payload in the corpus; that is a broadcast";
+  if (payloads.length > 1 && hits / payloads.length > MAX_GATE_MATCH_RATE) {
+    return `gate fires on ${hits} of ${payloads.length} recorded payloads; that is a broadcast, not a nudge`;
   }
-  return null;
+  return { hits, total: payloads.length };
 }
 
 // packages/curriculum/src/prompts.ts
-var MAX_SOURCE_CHARS = 200000;
+var MAX_SOURCE_CHARS = 120000;
 var FENCE_RE = /^```[A-Za-z]*\s*\n([\s\S]*?)\n?```\s*$/;
 var THINK_RE = /^\s*<think>[\s\S]*?<\/think>\s*/i;
 function boundedSources(lessons) {
@@ -17413,7 +17444,7 @@ var FORCED_SUBJECT = {
   rule: "one-line rule bullet",
   hook: "Claude Code hook nudge (a JSON object)"
 };
-var ROUTING_FIELDS = 'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' + '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' + "be checked against mechanically on every matching tool call. gate is a " + "single-predicate object usable by the nudge dispatcher, or null if no gate " + "applies. needs_own_context is true only if acting on this lesson needs its " + "own agent and budget rather than a reminder, and when it is true " + "context_evidence MUST be an exact substring copied verbatim from the lessons " + `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` + `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` + `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` + "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " + "discipline rather than an agent. capability_evidence, if set, MUST be an " + "exact substring copied verbatim from the lessons below, never paraphrased, " + "under the same length rule, naming a concrete thing the agent can actually " + "do that neither a hook nor a rule can express. no_artifact is true only if no " + "artifact at all is warranted.";
+var ROUTING_FIELDS = 'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' + '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' + "be checked against mechanically on every matching tool call. gate is a " + "single-predicate object usable by the nudge dispatcher, or null if no gate " + "applies. needs_own_context is true only if acting on this lesson needs its " + "own agent and budget rather than a reminder: the lessons describe an " + "investigation that reads many files, logs or tool outputs and reports " + "back, or work that would consume the main context's budget. When it is true " + "context_evidence MUST be an exact substring copied verbatim from the lessons " + `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` + `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` + `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` + "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " + "discipline rather than an agent. capability_evidence, if set, MUST be an " + "exact substring copied verbatim from the lessons below, never paraphrased, " + "under the same length rule, naming a concrete thing the agent can actually " + "do that neither a hook nor a rule can express: a procedure of several " + "ordered commands or checks that does not fit one 300-character bullet. " + "Quote the passage that names those steps. no_artifact is true only if no " + "artifact at all is warranted.";
 var DRAFTER_SYSTEM = "You write Claude Code artifacts from recurring lessons. You reply with one " + "JSON object and nothing else: no prose, no code fence, no <think> block.";
 var JUDGE_SYSTEM = "You are the last gate before an artifact is committed and starts changing an " + "agent's behaviour. You reply with one JSON object and nothing else.";
 function draftMessages(pattern, lessons, existing = null, artifactType = null) {
@@ -18903,14 +18934,33 @@ function cluster(items) {
 function lessonTexts(items) {
   return items.map((r) => (r.lesson || r.body || "").trim());
 }
+var DRAFTING_SKIPPED = ["## What worked", "## Not verified"];
+var EVIDENCE_SKIPPED = ["## Not verified"];
+function withoutSections(body, headings) {
+  let out = body;
+  for (const heading of headings) {
+    const at = out.startsWith(heading) ? 0 : out.indexOf(`
+${heading}`);
+    if (at === -1)
+      continue;
+    const next = out.indexOf(`
+## `, at + heading.length);
+    out = next === -1 ? out.slice(0, at) : out.slice(0, at) + out.slice(next);
+  }
+  return out.trim();
+}
+function draftingTexts(items) {
+  return items.map((r) => (r.body ? withoutSections(r.body, DRAFTING_SKIPPED) : r.lesson || "").trim());
+}
 function sourcesText(items) {
-  return items.map((r) => r.body || "").join(`
+  return items.map((r) => withoutSections(r.body || "", EVIDENCE_SKIPPED)).join(`
 
 `);
 }
 function loadLedger2(world) {
   return loadLedger(ledgerPath(world));
 }
+var MAX_SAMPLED_PAYLOADS = 2000;
 function loadPayloadCorpus(world) {
   const roots = [pluginRoot()];
   if (world)
@@ -18940,6 +18990,18 @@ function loadPayloadCorpus(world) {
         throw new ValidationError(`unreadable hook payload ${path}: not a JSON object`);
       }
       out.push(parsed);
+    }
+  }
+  if (world) {
+    const shapes = new Set;
+    for (const record of readJsonl(payloadSamplesFile(world.name)).slice(-MAX_SAMPLED_PAYLOADS)) {
+      if (typeof record["tool_name"] !== "string")
+        continue;
+      const shape = JSON.stringify({ tool_name: record["tool_name"], tool_input: record["tool_input"] });
+      if (shapes.has(shape))
+        continue;
+      shapes.add(shape);
+      out.push(record);
     }
   }
   return out;
@@ -19068,6 +19130,7 @@ async function run(world, cfg, opts) {
     dry_run: !opts.apply,
     staged: [],
     merged: [],
+    routed: {},
     gated_out: {},
     dropped: {},
     started: nowIso(),
@@ -19126,8 +19189,10 @@ async function run(world, cfg, opts) {
 async function stageOne(world, cfg, report, action, items, chat, ctx) {
   const pattern = action.pattern;
   const sources = sourcesText(items);
+  const drafting = draftingTexts(items);
   const lessons = lessonTexts(items);
   if (action.action === "refine" && action.reason) {
+    drafting.push(`Artifact feedback: ${action.reason}`);
     lessons.push(`Artifact feedback: ${action.reason}`);
   }
   const branch = branchName(world.name, pattern);
@@ -19151,7 +19216,7 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
   }
   let raw;
   try {
-    raw = await chat("drafter", draftMessages(pattern, lessons, existing, forcedType), {
+    raw = await chat("drafter", draftMessages(pattern, drafting, existing, forcedType), {
       world,
       jsonMode: true
     });
@@ -19170,6 +19235,11 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     routedType = result.artifact_type;
     routedReason = result.reason;
   }
+  report.routed[pattern] = {
+    drafted: forcedType ?? draftedType(answer),
+    type: routedType,
+    reason: routedReason
+  };
   if (routedType === "none") {
     report.gated_out[pattern] = `router: ${routedReason}`;
     return;
@@ -19183,7 +19253,7 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
   }
   if (forcedType === null && routedType !== draftedType(answer)) {
     try {
-      raw = await chat("drafter", draftMessages(pattern, lessons, null, routedType), {
+      raw = await chat("drafter", draftMessages(pattern, drafting, null, routedType), {
         world,
         jsonMode: true
       });
@@ -20380,6 +20450,14 @@ async function cmdCurriculumRun(opts, deps = defaultDeps) {
   console.log(`world: ${report.world}  dry_run: ${report.dry_run}`);
   console.log(`staged: ${JSON.stringify(report.staged)}`);
   console.log(`merged: ${JSON.stringify(report.merged)}`);
+  const routed = Object.entries(report.routed);
+  if (routed.length > 0) {
+    console.log("routed:");
+    for (const [pattern, r] of routed) {
+      const change = r.drafted === r.type ? r.type : `${r.drafted} -> ${r.type}`;
+      console.log(`  ${pattern}: ${change} (${r.reason})`);
+    }
+  }
   const gatedOut = Object.entries(report.gated_out);
   if (gatedOut.length > 0) {
     console.log("gated out:");
@@ -21136,20 +21214,80 @@ async function cmdStatus(opts, deps = defaultDeps) {
 
 // apps/server/src/main.ts
 import { randomBytes } from "crypto";
+import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
 import { timingSafeEqual } from "crypto";
 var LOCAL_HEADER = "X-SIL-Local";
 var TOKEN_HEADER = "X-SIL-Token";
-function allowedHosts(port) {
-  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const extra = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
-  for (const raw of extra.split(",")) {
+function allowedHosts(port, extra = []) {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const env = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
+  for (const raw of [...env.split(","), ...extra]) {
     const host = raw.trim();
     if (host)
       hosts.add(host);
   }
   return hosts;
+}
+function splitHostPort(value) {
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end === -1)
+      return null;
+    const rest = value.slice(end + 1);
+    if (rest !== "" && !rest.startsWith(":"))
+      return null;
+    return { hostname: value.slice(1, end), port: rest.slice(1) };
+  }
+  const colon = value.indexOf(":");
+  if (colon === -1)
+    return { hostname: value, port: "" };
+  if (value.indexOf(":", colon + 1) !== -1)
+    return null;
+  return { hostname: value.slice(0, colon), port: value.slice(colon + 1) };
+}
+function ipv4Private(hostname) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!m)
+    return null;
+  const parts = m.slice(1).map(Number);
+  if (parts.some((n) => n > 255))
+    return false;
+  const [a, b] = parts;
+  if (a === 127 || a === 10)
+    return true;
+  if (a === 172 && b >= 16 && b <= 31)
+    return true;
+  if (a === 192 && b === 168)
+    return true;
+  if (a === 169 && b === 254)
+    return true;
+  if (a === 100 && b >= 64 && b <= 127)
+    return true;
+  return false;
+}
+function isPrivateAddress(hostname) {
+  const v4 = ipv4Private(hostname);
+  if (v4 !== null)
+    return v4;
+  const v6 = hostname.toLowerCase().split("%")[0];
+  if (!v6.includes(":"))
+    return false;
+  if (!/^[0-9a-f:.]+$/.test(v6))
+    return false;
+  if (v6 === "::1")
+    return true;
+  if (v6.startsWith("::ffff:"))
+    return ipv4Private(v6.slice(7)) === true;
+  const head = Number.parseInt(v6.split(":")[0] || "0", 16);
+  if (Number.isNaN(head))
+    return false;
+  if ((head & 65024) === 64512)
+    return true;
+  if ((head & 65472) === 65152)
+    return true;
+  return false;
 }
 function safeEqual(a, b) {
   const bufA = Buffer.from(a, "utf8");
@@ -21160,12 +21298,20 @@ function safeEqual(a, b) {
   }
   return timingSafeEqual(bufA, bufB);
 }
+function hostAllowed(host, opts) {
+  if (allowedHosts(opts.port, opts.allowedHosts ?? []).has(host))
+    return true;
+  const parts = splitHostPort(host);
+  if (!parts || parts.port !== String(opts.port))
+    return false;
+  return isPrivateAddress(parts.hostname);
+}
 function jsonError(status, detail) {
   return new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } });
 }
 function guard(request, opts) {
   const host = request.headers.get("host") ?? "";
-  if (!allowedHosts(opts.port).has(host)) {
+  if (!hostAllowed(host, opts)) {
     return jsonError(403, "bad Host header");
   }
   if (request.headers.get(LOCAL_HEADER) !== "1") {
@@ -21664,12 +21810,15 @@ async function serveStatic(pathname) {
 }
 
 // apps/server/src/main.ts
-var REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+function isLoopbackHost(host) {
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
 function createServer(opts) {
   const host = opts.host ?? "127.0.0.1";
-  if (REFUSED_HOSTS.has(host)) {
-    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)}: loopback only`);
+  if (opts.token === null && !isLoopbackHost(host)) {
+    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)} without a token: drop --no-token or bind 127.0.0.1`);
   }
   const routes = buildRoutes();
   const server = Bun.serve({
@@ -21680,7 +21829,7 @@ function createServer(opts) {
       const url = new URL(request.url);
       const pathname = url.pathname;
       if (pathname === "/api/ops" || routes.has(pathname)) {
-        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token });
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
         if (denied)
           return denied;
         if (pathname === "/api/ops")
@@ -21705,12 +21854,31 @@ function createServer(opts) {
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
+function urlHost(host) {
+  if (WILDCARD_HOSTS.has(host))
+    return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
+}
+function privateAddresses() {
+  const out = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.internal || !isPrivateAddress(addr.address))
+        continue;
+      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
+    }
+  }
+  return out;
+}
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
   const token = opts.token ?? true ? newToken() : null;
-  const server = createServer({ port: opts.port, host, token });
-  const url = `http://${host}:${server.port ?? opts.port}/` + (token ? `#${token}` : "");
-  console.log(url);
+  const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
+  const port = server.port ?? opts.port;
+  const fragment = token ? `#${token}` : "";
+  const hosts = WILDCARD_HOSTS.has(host) ? [urlHost(host), ...privateAddresses()] : [urlHost(host)];
+  for (const h of hosts)
+    console.log(`http://${h}:${port}/${fragment}`);
   return server;
 }
 if (false) {}
@@ -21725,10 +21893,10 @@ function openBrowser(url) {
 async function cmdWeb(opts) {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
-  const host = opts.host ?? "127.0.0.1";
-  const server = serve({ host, port, token: opts.token ?? true });
+  const host = opts.host ?? cfg.web.host;
+  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
-    openBrowser(`http://${host}:${server.port}/`);
+    openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise(() => {});
 }
 
@@ -21839,7 +22007,7 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));

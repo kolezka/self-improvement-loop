@@ -260,11 +260,23 @@ export type PlanAction = z.infer<typeof PlanAction>;
 export const PlanReport = z.object({ world: z.string(), threshold: z.number().int(), actions: z.array(PlanAction).default([]) });
 export type PlanReport = z.infer<typeof PlanReport>;
 
+// The type decision for one pattern: what the drafter committed to, what the
+// router (or the served_by row) settled on, and why. Recorded for every
+// pattern that reached the router, staged or not. Without it a downgrade from
+// hook to rule is invisible: the log shows a staged rule and nothing else.
+export const RouteRecord = z.object({
+  drafted: z.string(),
+  type: ArtifactType,
+  reason: z.string(),
+});
+export type RouteRecord = z.infer<typeof RouteRecord>;
+
 export const RunReport = z.object({
   world: z.string(),
   dry_run: z.boolean().default(true),
   staged: z.array(z.string()).default([]),
   merged: z.array(z.string()).default([]),
+  routed: z.record(z.string(), RouteRecord).default({}),
   gated_out: z.record(z.string(), z.string()).default({}),
   dropped: z.record(z.string(), z.number().int()).default({}),
   started: isoTs,

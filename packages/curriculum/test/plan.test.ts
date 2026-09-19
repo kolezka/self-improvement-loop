@@ -16,9 +16,22 @@ import {
   targetRoot,
   type World,
 } from "@sil/core";
-import { cluster, loadPayloadCorpus, plan, reflections, scorecards, watermark } from "@sil/curriculum";
+import {
+  cluster,
+  draftingTexts,
+  lessonTexts,
+  loadPayloadCorpus,
+  MAX_SAMPLED_PAYLOADS,
+  plan,
+  reflections,
+  scorecards,
+  sourcesText,
+  substantiveQuote,
+  watermark,
+  withoutSections,
+} from "@sil/curriculum";
 import { loadLedger, saveAliases, saveLedger } from "@sil/store";
-import { addReflections, cleanupEnv, makeCfg, makeWorld, silEnv, type TestEnv } from "./fixtures.ts";
+import { addReflections, cleanupEnv, LESSON, makeCfg, makeWorld, silEnv, type TestEnv } from "./fixtures.ts";
 
 const PATTERN = "verify-callsites";
 
@@ -247,6 +260,116 @@ describe("the payload corpus", () => {
     mkdirSync(extra, { recursive: true });
     writeFileSync(`${extra}/broken.json`, "{ not json", "utf8");
     expect(() => loadPayloadCorpus(world)).toThrow(/broken\.json/);
+  });
+
+  function sample(command: string, session = "s1"): Record<string, unknown> {
+    return {
+      ts: "2026-09-19T10:00:00.000Z",
+      session_id: session,
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command },
+    };
+  }
+
+  /** The samples file exactly as the hook leaves it: one JSON object per line. */
+  function writeSamples(text: string): void {
+    const path = paths.payloadSamplesFile(world.name);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text, "utf8");
+  }
+
+  function writeSampleLines(records: Record<string, unknown>[]): void {
+    writeSamples(records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  }
+
+  test("the world's recorded payloads add to the corpus", () => {
+    // The point of the whole file: a gate on a real flag has nothing to match
+    // in the synthetic fixtures, so every hook the drafter proposed became a rule.
+    const recorded = sample("git push --no-verify");
+    writeSampleLines([recorded]);
+    expect(loadPayloadCorpus(world)).toContainEqual(recorded);
+  });
+
+  test("a torn trailing line is skipped rather than thrown on", () => {
+    // Append only, and the hook may be mid-write. Unlike a fixture file, a half
+    // written sample must cost one record and not the run.
+    const good = sample("rm -rf build");
+    writeSamples(JSON.stringify(good) + '\n{"ts": "2026-09-19T10:00:01.000Z", "tool_na');
+    const corpus = loadPayloadCorpus(world);
+    expect(corpus).toContainEqual(good);
+  });
+
+  test("identical samples are counted once", () => {
+    const first = sample("git status", "s1");
+    const second = sample("git status", "s2");
+    writeSampleLines([first, second]);
+    const commands = loadPayloadCorpus(world).filter(
+      (p) => (p["tool_input"] as Record<string, unknown> | undefined)?.["command"] === "git status",
+    );
+    expect(commands.length).toBe(1);
+  });
+
+  test("only the newest MAX_SAMPLED_PAYLOADS records are kept", () => {
+    const records = Array.from({ length: MAX_SAMPLED_PAYLOADS + 5 }, (_, i) => sample(`sample-cmd-${i}`));
+    writeSampleLines(records);
+    const corpus = loadPayloadCorpus(world);
+    const commands = new Set(
+      corpus.map((p) => (p["tool_input"] as Record<string, unknown> | undefined)?.["command"]).filter((c) => typeof c === "string"),
+    );
+    for (let i = 0; i < 5; i++) expect(commands.has(`sample-cmd-${i}`)).toBe(false);
+    expect(commands.has("sample-cmd-5")).toBe(true);
+    expect(commands.has(`sample-cmd-${MAX_SAMPLED_PAYLOADS + 4}`)).toBe(true);
+  });
+
+  test("a record with no tool_name is dropped", () => {
+    writeSampleLines([{ ts: "2026-09-19T10:00:00.000Z", hook_event_name: "PreToolUse", tool_input: { command: "nameless" } }]);
+    const corpus = loadPayloadCorpus(world);
+    expect(corpus.some((p) => (p["tool_input"] as Record<string, unknown> | undefined)?.["command"] === "nameless")).toBe(false);
+  });
+});
+
+describe("the drafter's view of a reflection", () => {
+  // The fixture body's "Not verified" section, verbatim.
+  const NOT_VERIFIED = "Whether the graphify extraction covers wrapped call sites.";
+
+  test("it is what failed, the lesson and the verification, not the lesson line alone", () => {
+    // The lesson line is one imperative under 300 characters by the critic's
+    // own contract, which is a rule by construction. The procedure and the
+    // investigation that would justify a skill or an agent live in the other
+    // sections, so the drafter has to see them.
+    addReflections(world, PATTERN, 1);
+    const [text] = draftingTexts(reflections(world));
+    expect(text).toContain(LESSON);
+    expect(text).toContain("## What failed & why");
+    expect(text).toContain("## Verification");
+    expect(text).not.toContain("## What worked");
+    expect(text).not.toContain("## Not verified");
+    expect(text).not.toContain(NOT_VERIFIED);
+  });
+
+  test("the judge still reads the lesson line", () => {
+    addReflections(world, PATTERN, 1);
+    expect(lessonTexts(reflections(world))).toEqual([LESSON]);
+  });
+
+  test("a claim the critic refused to stand behind can buy nothing", () => {
+    // "Not verified" is in the body, so a quote from it was verbatim in the
+    // sources and cleared every bar the router sets. It is cut from the
+    // haystack, so the same quote now fails as it should.
+    addReflections(world, PATTERN, 1);
+    const items = reflections(world);
+    expect(substantiveQuote(NOT_VERIFIED, items.map((r) => r.body).join("\n\n"))).toBe(true);
+    expect(substantiveQuote(NOT_VERIFIED, sourcesText(items))).toBe(false);
+    expect(substantiveQuote(LESSON, sourcesText(items))).toBe(true);
+  });
+
+  test("withoutSections cuts heading to next heading, first or last section alike", () => {
+    const body = "## A\none\n\n## B\ntwo\n\n## C\nthree\n";
+    expect(withoutSections(body, ["## B"])).toBe("## A\none\n\n## C\nthree");
+    expect(withoutSections(body, ["## A"])).toBe("## B\ntwo\n\n## C\nthree");
+    expect(withoutSections(body, ["## C"])).toBe("## A\none\n\n## B\ntwo");
+    expect(withoutSections(body, ["## Z"])).toBe(body.trim());
   });
 });
 

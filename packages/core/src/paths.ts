@@ -70,6 +70,7 @@ export const llmFile = (): string => join(configDir(), "llm.yaml");
 export type QueueBucket = "pending" | "done" | "failed";
 export const queueDir = (bucket: QueueBucket): string => join(stateDir(), "queue", bucket);
 export const usageEventsFile = (): string => join(stateDir(), "usage", "events.jsonl");
+export const payloadSamplesFile = (world: string): string => join(stateDir(), "usage", "payloads", `${safeComponent(world)}.jsonl`);
 export const nudgeFiresFile = (): string => join(stateDir(), "usage", "nudge-fires.jsonl");
 export const humanFeedbackFile = (): string => join(stateDir(), "feedback", "human.jsonl");
 export const criticFeedbackFile = (): string => join(stateDir(), "feedback", "critic.jsonl");

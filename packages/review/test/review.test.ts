@@ -25,6 +25,7 @@ import * as review from "../src/index.ts";
 import { foreignChanges } from "../src/snapshot.ts";
 import {
   addReflections,
+  agentBody,
   cleanupEnv,
   commitFile,
   fakeGateRunner,
@@ -770,6 +771,32 @@ describe("relink", () => {
     expect(realpathSync(link)).toBe(realpathSync(join(repo, "skills", PATTERN)));
     expect(out.link).toBe(link);
     expect(out.link_error).toBeUndefined();
+  });
+
+  test("accept links an agent into the Claude config", async () => {
+    // The one migrated V1 agent was promoted in the ledger and linked nowhere,
+    // so Claude Code never listed it. The accept path has to do for an agent
+    // what it does for a skill.
+    const world = makeWorld();
+    const repo = seed(world);
+    const draft = {
+      trigger_event: "none",
+      gate: null,
+      needs_own_context: true,
+      context_evidence: QUOTE,
+      capability_evidence: null,
+      no_artifact: false,
+      artifact: agentBody(PATTERN, QUOTE),
+    };
+    await run(world, makeCfg(), { apply: true, chat: new FakeChat({ draft }).fn, gateRunner: fakeGateRunner });
+    const detail = review.detail(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+
+    expect(out.artifact_type).toBe("agent");
+    const link = join(paths.claudeConfigDir(), "agents", `${PATTERN}.md`);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(realpathSync(link)).toBe(realpathSync(join(repo, "agents", `${PATTERN}.md`)));
+    expect(out.link).toBe(link);
   });
 
   test("it refuses to replace a real directory", () => {

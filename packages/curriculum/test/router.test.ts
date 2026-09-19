@@ -2,8 +2,9 @@
 // Covers INVARIANTS 4 (total), 5 (verbatim evidence), 6 (the gate is executed).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { paths } from "@sil/core";
 import {
   emptyAnswer,
   loadPayloadCorpus,
@@ -13,7 +14,7 @@ import {
   RouteAnswer,
   splitTrigger,
 } from "@sil/curriculum";
-import { fakeGateRunner, installFakeNudge, uninstallFakeNudge } from "./fixtures.ts";
+import { cleanupEnv, fakeGateRunner, installFakeNudge, makeWorld, silEnv, type TestEnv, uninstallFakeNudge } from "./fixtures.ts";
 
 const PAYLOADS = loadPayloadCorpus();
 
@@ -62,6 +63,26 @@ describe("hook: the claim is executed, not read", () => {
     const result = route(answer({ trigger_event: "PreToolUse:Bash", gate: { always: true } }), SOURCES, PAYLOADS, opts);
     expect(result.artifact_type).not.toBe("hook");
     expect(result.reason).toContain("broadcast");
+  });
+
+  test("a gate that fires on more than half of a recorded corpus is a broadcast too", () => {
+    // With two thousand recorded tool calls in the corpus nothing but `always`
+    // matches every one, so "fires on everything" alone would let a gate on
+    // most Bash calls through as narrow.
+    const bash = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `cmd ${i}` } });
+    const edit = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: `/f${i}` } });
+    const wide = [...Array.from({ length: 6 }, (_, i) => bash(i)), ...Array.from({ length: 4 }, (_, i) => edit(i))];
+    const narrow = [...Array.from({ length: 4 }, (_, i) => bash(i)), ...Array.from({ length: 6 }, (_, i) => edit(i))];
+    const gate = answer({ trigger_event: "PreToolUse:Bash", gate: { tool_is: ["Bash"] } });
+
+    const refused = route(gate, SOURCES, wide, opts);
+    expect(refused.artifact_type).not.toBe("hook");
+    expect(refused.reason).toContain("6 of 10");
+    expect(refused.reason).toContain("broadcast");
+
+    const accepted = route(gate, SOURCES, narrow, opts);
+    expect(accepted.artifact_type).toBe("hook");
+    expect(accepted.reason).toContain("4 of 10");
   });
 
   test("a gate that raises is not a hook", () => {
@@ -398,6 +419,49 @@ describe("the payload corpus", () => {
     const fixtures = join(import.meta.dir, "..", "..", "..", "tests", "fixtures", "hook-payloads");
     expect(PAYLOADS.length).toBe(readdirSync(fixtures).filter((n) => n.endsWith(".json")).length);
     expect(PAYLOADS.every((p) => typeof p === "object" && p !== null)).toBe(true);
+  });
+
+  describe("recorded samples make a narrow gate testable", () => {
+    // The measured failure this fixes: 6 of 7 proposed hooks were downgraded
+    // with "gate matched nothing", because a gate on a real flag cannot match a
+    // synthetic fixture. Nothing about the gate changes here, only the corpus.
+    const NARROW_GATE = { command_matches: "--no-verify" };
+    let env: TestEnv;
+
+    beforeEach(() => {
+      env = silEnv();
+    });
+    afterEach(() => {
+      cleanupEnv(env);
+    });
+
+    test("a gate on a real command is a hook once that command has been recorded", () => {
+      const world = makeWorld();
+      const fixturesOnly = loadPayloadCorpus(world);
+      expect(route(answer({ trigger_event: "PreToolUse:Bash", gate: NARROW_GATE }), SOURCES, fixturesOnly, opts).artifact_type).toBe(
+        "rule",
+      );
+
+      const path = paths.payloadSamplesFile(world.name);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          ts: "2026-09-19T10:00:00.000Z",
+          session_id: "sess-1",
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "git push --no-verify" },
+        }) + "\n",
+        "utf8",
+      );
+
+      const withSamples = loadPayloadCorpus(world);
+      expect(withSamples.length).toBe(fixturesOnly.length + 1);
+      expect(route(answer({ trigger_event: "PreToolUse:Bash", gate: NARROW_GATE }), SOURCES, withSamples, opts).artifact_type).toBe(
+        "hook",
+      );
+    });
   });
 });
 

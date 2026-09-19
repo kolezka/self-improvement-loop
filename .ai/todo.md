@@ -54,3 +54,28 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 ## Small
 - [ ] decide whether `.ai/` stays in the repo
 - [ ] revisit command texts and `argument-hint` after first real use
+
+## Artifact type coverage (2026-09-20, branch verify-agents-skills-rules-hooks-created)
+
+Question: does curriculum produce skills, hooks, rules and agents, or one of them?
+Measured on the live world before any change: 20 `feat(rule)` and 8 `feat(hook)`
+commits since the V2 migration, 0 skills, 0 agents (every skill and the one agent
+in the ledger are V1 imports). Drafter replay on 5 real clusters: 7 of 9 replies
+asked for a hook and the router downgraded 6 to rule because the 20 synthetic
+fixtures never match a narrow gate; 0 of 9 asked for a skill or agent because the
+drafter only saw the 300-char lesson line.
+
+- [x] record `routed[pattern] = {drafted, type, reason}` in the run report; print in `sil curriculum run`, show in the web worker status
+- [x] hook records PreToolUse payload samples (allowlisted keys, rotated) into `usage/payloads/<world>.jsonl`; the router corpus includes them
+- [x] drafter and judge read the whole reflection body; prompt names what buys a skill (a procedure that does not fit one bullet) and an agent (an investigation across files, logs, outputs)
+- [x] ToolSearch, WebFetch, WebSearch, NotebookEdit accepted as nudge matchers, plus a ToolSearch fixture
+- [x] agent staging test, route record tests, sample and corpus tests (red on the old code: 11 failures in a temp copy of HEAD); agent accept-and-relink test is coverage only, it passes on the old code too
+- [x] relinked the migrated `outward-facing-artifacts` agent into `~/.claude/agents` (operator state, not repo)
+- [x] review fixes: `appendLine` rotation bounded by bytes as well as lines; samples keep only `command` and `file_path` with credential values blanked; `Not verified` cut from the drafter's view and the router's quote haystack; judge keeps reading lesson lines; `MAX_SOURCE_CHARS` 120k; broadcast ceiling at half the corpus with hit counts in the route reason
+- [ ] after the plugin picks up the new dist: watch `routed:` in curriculum.log for the first hook that survives on recorded samples, and the first skill or agent
+
+Review: the corpus test still cannot see prompts (`prompt_matches` gates only have the
+fixture), by design: prompts are free text. The gate runner deadline stays 250 ms;
+measured 52 ms median with 2020 payloads. Routing is now corpus-dependent: the same
+drafter answer can be a hook on a machine with samples and a rule on a fresh install;
+the route reason carries the hit count so that is visible.

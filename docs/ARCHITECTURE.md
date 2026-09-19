@@ -81,6 +81,7 @@ queue/pending/<session_id>.json     written by the Stop/SessionEnd hook
 queue/done/<session_id>.json
 queue/failed/<session_id>.json
 usage/events.jsonl                  skill / agent / hook usage events
+usage/payloads/<world>.jsonl        PreToolUse samples (tool name, command, file path), rotated; the router's gate corpus
 usage/nudge-fires.jsonl             nudge emissions (V1 format)
 feedback/human.jsonl                /feedback entries
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions
@@ -189,7 +190,7 @@ budget 250 ms shared by nudge gates. Everything is wrapped so a failure is a sil
 |---|---|
 | SessionStart | Inject: managed rules block of the world (if `rules_inject`), up to 3 undelivered inbox lessons for the world, one-line loop status. Kick the worker (detached) only when `sil init` has written the hook snapshot, no live worker holds the lock, the last kick is older than 15 minutes, and there is queued work or the curriculum interval elapsed. Record session start. |
 | UserPromptSubmit | Deliver inbox lessons that arrived since session start (once each). Nudge dispatch. |
-| PreToolUse | Nudge dispatch. |
+| PreToolUse | Record one payload sample for the world: tool name plus `tool_input.command` (credential values blanked) and `tool_input.file_path`, the two keys a gate can read; never `description`, `old_string`, `content` or a prompt. Nudge dispatch. |
 | PostToolUse | Record usage for `Skill` (skill name) and `Agent` (subagent_type, model). Nudge dispatch. |
 | Stop | Under a per-session lock: upsert the queue entry (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count) and scan the transcript from the stored byte offset for `attachment` hook records, appending hook usage events. No nudge dispatch: Claude Code does not deliver `additionalContext` on Stop. |
 | SubagentStop | Record `agent_stop` usage event. |
@@ -255,7 +256,31 @@ Ported from V1 with the same semantics: cluster by resolved pattern, threshold a
 watermarks (`promoted_at_count`, `rejected_at_count`), deterministic router with
 the hook gate executed against the payload corpus, artifact lint plus grounding
 lint, judge, one commit carrying artifact and ledger, scratch worktree, branch
-`curriculum/<world>/<pattern>`. New: the planner reads scorecards and adds
+`curriculum/<world>/<pattern>`.
+
+Three things keep all four artifact types reachable, each added after a measured
+failure:
+
+- The drafter reads each reflection's `What failed & why`, `Reusable lesson`
+  and `Verification` sections, not the lesson line alone. The critic writes
+  that line as one imperative under 300 characters, which is a rule by
+  construction; on lesson-only input the drafter proposed hook or rule on every
+  one of five real clusters, and with the fuller text it took a 56-reflection
+  pattern to a skill the router accepted. The judge still reads the lesson
+  lines, which are the conclusions it checks an artifact against. `Not
+  verified` is cut from the router's quote haystack as well, so a claim the
+  critic refused to stand behind can never buy a skill or an agent.
+- The payload corpus is the plugin's fixtures plus the world's recorded
+  `usage/payloads/<world>.jsonl` samples (newest 2000, deduplicated). A narrow
+  gate on a real command (`--no-verify`, `pkill`) can never match twenty
+  synthetic fixtures; six of seven drafted hooks were downgraded to rules that
+  way before the samples existed. A gate firing on more than half of the corpus
+  is refused as a broadcast, and the route reason carries the hit count.
+- The run report records `routed[pattern] = {drafted, type, reason}` for every
+  pattern that reached the router, so a downgrade shows in `sil curriculum run`
+  and the web worker status instead of looking like a rule that was asked for.
+
+New: the planner reads scorecards and adds
 `refine` (misfires outnumber helpful votes) and `retire-candidate` (no use in
 `retire_after_days`) proposals. Both are surfaced, never executed automatically.
 

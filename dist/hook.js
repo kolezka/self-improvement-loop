@@ -66,7 +66,7 @@ function safeComponent(name) {
   const cleaned = Array.from(name.normalize("NFC"), (c) => SAFE_CHAR.test(c) ? c : "_").join("");
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
-var manifestRoot, queueDir = (bucket) => join(stateDir(), "queue", bucket), usageEventsFile = () => join(stateDir(), "usage", "events.jsonl"), nudgeFiresFile = () => join(stateDir(), "usage", "nudge-fires.jsonl"), inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world)), sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId)), workerLockFile = () => join(stateDir(), "worker.lock"), hookSnapshotFile = () => join(stateDir(), "hook-config.json"), logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`), worldDir = (world) => join(dataDir(), "worlds", safeComponent(world)), defaultTarget = (world) => join(worldDir(world), "learned"), builtinNudgesDir = () => join(pluginRoot(), "nudges"), SAFE_CHAR;
+var manifestRoot, queueDir = (bucket) => join(stateDir(), "queue", bucket), usageEventsFile = () => join(stateDir(), "usage", "events.jsonl"), payloadSamplesFile = (world) => join(stateDir(), "usage", "payloads", `${safeComponent(world)}.jsonl`), nudgeFiresFile = () => join(stateDir(), "usage", "nudge-fires.jsonl"), inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world)), sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId)), workerLockFile = () => join(stateDir(), "worker.lock"), hookSnapshotFile = () => join(stateDir(), "hook-config.json"), logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`), worldDir = (world) => join(dataDir(), "worlds", safeComponent(world)), defaultTarget = (world) => join(worldDir(world), "learned"), builtinNudgesDir = () => join(pluginRoot(), "nudges"), SAFE_CHAR;
 var init_paths = __esm(() => {
   SAFE_CHAR = /[\p{L}\p{N}._-]/u;
 });
@@ -90,7 +90,32 @@ function readJsonOr(path, fallback) {
     return fallback;
   }
 }
-var ROTATE_AT_BYTES;
+function appendLine(path, line, rotateAt = ROTATE_AT_BYTES, keep = ROTATE_KEEP_LINES) {
+  ensureDir(dirname2(path));
+  try {
+    if (statSync(path).size >= rotateAt) {
+      const lines = readFileSync(path, "utf8").split(`
+`).filter((l) => l.length > 0);
+      atomicWrite(path, rotated(lines, rotateAt, keep));
+    }
+  } catch {}
+  appendFileSync(path, line.endsWith(`
+`) ? line : line + `
+`, "utf8");
+}
+function rotated(lines, rotateAt, keep) {
+  const kept = lines.slice(-keep);
+  let size = kept.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0);
+  let start = 0;
+  while (start < kept.length - 1 && size > rotateAt / 2) {
+    size -= Buffer.byteLength(kept[start], "utf8") + 1;
+    start += 1;
+  }
+  return kept.slice(start).join(`
+`) + `
+`;
+}
+var ROTATE_AT_BYTES, ROTATE_KEEP_LINES = 5000;
 var init_fsx = __esm(() => {
   ROTATE_AT_BYTES = 10 * 1024 * 1024;
 });
@@ -174,7 +199,7 @@ function rotateIfNeeded(path, rotateAt, keep) {
 `) + `
 `);
 }
-function appendLine(path, line, rotateAt = ROTATE_AT_BYTES2, keep = ROTATE_KEEP_LINES) {
+function appendLine2(path, line, rotateAt = ROTATE_AT_BYTES2, keep = ROTATE_KEEP_LINES2) {
   try {
     mkdirSync2(dirname3(path), { recursive: true });
     withDirLock(`${path}.lockdir`, () => {
@@ -210,9 +235,9 @@ function writeBreadcrumb(fireLog, sessionDir, kind, sessionId, event, extra = {}
   if (!claimMarker(sessionDir, `breadcrumb-${dedupeKey ?? `${kind}-${event}`}`))
     return;
   const record = { ts: ts(), kind, session_id: sessionId, event, ...extra };
-  appendLine(fireLog, JSON.stringify(record));
+  appendLine2(fireLog, JSON.stringify(record));
 }
-var ROTATE_AT_BYTES2, ROTATE_KEEP_LINES = 5000, DEFAULT_STALE_MS = 2000, MIN_WAIT_MS = 200;
+var ROTATE_AT_BYTES2, ROTATE_KEEP_LINES2 = 5000, DEFAULT_STALE_MS = 2000, MIN_WAIT_MS = 200;
 var init_firelog = __esm(() => {
   init_fsx();
   ROTATE_AT_BYTES2 = 10 * 1024 * 1024;
@@ -518,13 +543,14 @@ function gateTruth(gate) {
       return null;
   }
 }
-var MAX_MATCH_LEN = 4000, MAX_PATTERN_LEN = 200, MAX_QUANTIFIED_GROUPS = 3, EVENTS, LOW_FREQUENCY_EVENTS, PREDICATES, RISKY_GROUP_BODY, BRACE_QUANTIFIER;
+var MAX_MATCH_LEN = 4000, MAX_PATTERN_LEN = 200, MAX_QUANTIFIED_GROUPS = 3, TOOL_MATCHERS, EVENTS, LOW_FREQUENCY_EVENTS, PREDICATES, RISKY_GROUP_BODY, BRACE_QUANTIFIER;
 var init_gates = __esm(() => {
+  TOOL_MATCHERS = ["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "WebFetch", "WebSearch", "NotebookEdit"];
   EVENTS = {
     SessionStart: null,
     UserPromptSubmit: null,
-    PreToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"]),
-    PostToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"])
+    PreToolUse: new Set(TOOL_MATCHERS),
+    PostToolUse: new Set(TOOL_MATCHERS)
   };
   LOW_FREQUENCY_EVENTS = new Set(["SessionStart"]);
   PREDICATES = new Set([
@@ -703,7 +729,7 @@ function dispatch(payload, nudges, opts) {
         if (!claimMarker(opts.sessionDir, `nudge-${pattern}`))
           continue;
       }
-      appendLine(opts.fireLog, JSON.stringify({ ts: new Date().toISOString(), pattern, session_id: sessionId, event }));
+      appendLine2(opts.fireLog, JSON.stringify({ ts: new Date().toISOString(), pattern, session_id: sessionId, event }));
       return str(nudge["text"]);
     }
     if (budgetExhausted) {
@@ -750,7 +776,7 @@ function nowIso() {
 }
 function log(msg) {
   try {
-    appendLine(logFile("hook"), `${nowIso()} ${msg}`);
+    appendLine2(logFile("hook"), `${nowIso()} ${msg}`);
   } catch {}
 }
 function excSummary(e) {
@@ -1451,6 +1477,38 @@ function appendUsageEvent(path, event) {
 function isRecord8(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
+function redactCredentials(text) {
+  return text.replace(CREDENTIAL_RE, "$1<redacted>");
+}
+function recordPayloadSample(payload, worldName) {
+  const toolName = payload["tool_name"];
+  if (typeof toolName !== "string" || !toolName)
+    return;
+  try {
+    const rawInput = payload["tool_input"];
+    const toolInput = {};
+    if (isRecord8(rawInput)) {
+      for (const key of SAMPLED_INPUT_KEYS) {
+        const value = rawInput[key];
+        if (typeof value === "string")
+          toolInput[key] = redactCredentials(value.slice(0, SAMPLE_VALUE_MAX_CHARS));
+      }
+    }
+    const record = {
+      ts: nowIso(),
+      session_id: sessionIdOf(payload),
+      hook_event_name: typeof payload["hook_event_name"] === "string" ? payload["hook_event_name"] : "",
+      tool_name: toolName,
+      tool_input: toolInput
+    };
+    appendLine(payloadSamplesFile(worldName), JSON.stringify(record), SAMPLES_ROTATE_AT_BYTES, SAMPLES_KEEP_LINES);
+  } catch (e) {
+    if (sampleFailureLogged)
+      return;
+    sampleFailureLogged = true;
+    log(`usage.record_payload_sample failed for world ${worldName}: ${e.message}`);
+  }
+}
 function isDir(path) {
   try {
     return statSync6(path).isDirectory();
@@ -1531,6 +1589,7 @@ function handleUserPromptSubmit(payload, world) {
 `);
 }
 function handlePreToolUse(payload, world) {
+  recordPayloadSample(payload, world.name || "default");
   return dispatchNudge(payload, world, sessionIdOf(payload));
 }
 function handlePostToolUse(payload, world) {
@@ -1601,7 +1660,7 @@ function getHandler(event) {
     return;
   return HANDLERS[event];
 }
-var usageFailureLogged = false, HANDLERS;
+var usageFailureLogged = false, SAMPLED_INPUT_KEYS, SAMPLE_VALUE_MAX_CHARS = 500, SAMPLES_ROTATE_AT_BYTES, SAMPLES_KEEP_LINES = 2000, CREDENTIAL_RE, sampleFailureLogged = false, HANDLERS;
 var init_handlers = __esm(async () => {
   init_paths();
   init_fsx();
@@ -1614,6 +1673,9 @@ var init_handlers = __esm(async () => {
     init_queue(),
     init_scan()
   ]);
+  SAMPLED_INPUT_KEYS = ["command", "file_path"];
+  SAMPLES_ROTATE_AT_BYTES = 2 * 1024 * 1024;
+  CREDENTIAL_RE = /((?:authorization:\s*(?:bearer|basic|token)?\s*|bearer\s+|(?:token|api[_-]?key|password|passwd|secret)=)['"]?)[^\s'"]+/gi;
   HANDLERS = {
     SessionStart: handleSessionStart,
     UserPromptSubmit: handleUserPromptSubmit,

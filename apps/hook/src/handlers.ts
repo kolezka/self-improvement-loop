@@ -5,7 +5,7 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import * as paths from "@sil/core/paths";
-import { atomicWrite } from "@sil/core/fsx";
+import { appendLine, atomicWrite } from "@sil/core/fsx";
 import type { HookEvent } from "@sil/core/consts";
 import { dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
 import { log, nowIso } from "./log.ts";
@@ -42,6 +42,64 @@ export function appendUsageEvent(path: string, event: Record<string, unknown>): 
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// --- payload samples ------------------------------------------------------
+
+// The only tool_input keys a gate predicate reads: command_matches reads
+// `command`, file_path_matches reads `file_path` (tool_is reads the top-level
+// tool name). Nothing else can change a gate result, so nothing else is
+// sampled. `command` is free text the model wrote and does carry credentials
+// at times (`curl -H "Authorization: Bearer ..."`, `export GH_TOKEN=...`);
+// the feature does not exist without it, so it is kept and the usual
+// credential shapes are blanked before the write.
+export const SAMPLED_INPUT_KEYS = ["command", "file_path"] as const;
+export const SAMPLE_VALUE_MAX_CHARS = 500;
+export const SAMPLES_ROTATE_AT_BYTES = 2 * 1024 * 1024;
+export const SAMPLES_KEEP_LINES = 2000;
+
+// A gate matches flags and subcommands, never the value after them.
+const CREDENTIAL_RE =
+  /((?:authorization:\s*(?:bearer|basic|token)?\s*|bearer\s+|(?:token|api[_-]?key|password|passwd|secret)=)['"]?)[^\s'"]+/gi;
+
+export function redactCredentials(text: string): string {
+  return text.replace(CREDENTIAL_RE, "$1<redacted>");
+}
+
+// Same reason as usageFailureLogged: one line per process, not one per hook.
+let sampleFailureLogged = false;
+
+/** One line per PreToolUse call, allowlisted keys only, string values truncated. Never throws.
+ *
+ * The curriculum router proves a drafted gate by running it over recorded
+ * payloads. With only the synthetic fixtures to test against, a gate on a real
+ * command (`--no-verify`, `pkill`) can never match, and every hook it proposed
+ * was downgraded to a rule. */
+export function recordPayloadSample(payload: Record<string, unknown>, worldName: string): void {
+  const toolName = payload["tool_name"];
+  if (typeof toolName !== "string" || !toolName) return;
+  try {
+    const rawInput = payload["tool_input"];
+    const toolInput: Record<string, string> = {};
+    if (isRecord(rawInput)) {
+      for (const key of SAMPLED_INPUT_KEYS) {
+        const value = rawInput[key];
+        if (typeof value === "string") toolInput[key] = redactCredentials(value.slice(0, SAMPLE_VALUE_MAX_CHARS));
+      }
+    }
+    const record = {
+      ts: nowIso(),
+      session_id: sessionIdOf(payload),
+      hook_event_name: typeof payload["hook_event_name"] === "string" ? payload["hook_event_name"] : "",
+      tool_name: toolName,
+      tool_input: toolInput,
+    };
+    appendLine(paths.payloadSamplesFile(worldName), JSON.stringify(record), SAMPLES_ROTATE_AT_BYTES, SAMPLES_KEEP_LINES);
+  } catch (e) {
+    if (sampleFailureLogged) return;
+    sampleFailureLogged = true;
+    log(`usage.record_payload_sample failed for world ${worldName}: ${(e as Error).message}`);
+  }
 }
 
 /** All events in `path`, optionally filtered to `ts > sinceTs`. Tolerant of
@@ -177,6 +235,7 @@ function handleUserPromptSubmit(payload: Record<string, unknown>, world: HookWor
 }
 
 function handlePreToolUse(payload: Record<string, unknown>, world: HookWorld): string {
+  recordPayloadSample(payload, world.name || "default");
   return dispatchNudge(payload, world, sessionIdOf(payload));
 }
 

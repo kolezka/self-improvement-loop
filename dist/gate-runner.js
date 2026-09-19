@@ -29,11 +29,12 @@ function pluginRoot() {
 
 // packages/nudges/src/gates.ts
 var MAX_MATCH_LEN = 4000;
+var TOOL_MATCHERS = ["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "WebFetch", "WebSearch", "NotebookEdit"];
 var EVENTS = {
   SessionStart: null,
   UserPromptSubmit: null,
-  PreToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"]),
-  PostToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"])
+  PreToolUse: new Set(TOOL_MATCHERS),
+  PostToolUse: new Set(TOOL_MATCHERS)
 };
 var LOW_FREQUENCY_EVENTS = new Set(["SessionStart"]);
 var PREDICATES = new Set([

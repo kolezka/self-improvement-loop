@@ -14158,6 +14158,7 @@ __export(exports_git, {
   currentBranch: () => currentBranch,
   defaultBranch: () => defaultBranch,
   dirtyPaths: () => dirtyPaths,
+  ensureIdentity: () => ensureIdentity,
   ensureRepo: () => ensureRepo,
   git: () => git,
   gitRaw: () => gitRaw,
@@ -14245,13 +14246,24 @@ function defaultBranch(repo) {
   }
   return currentBranch(repo) || "main";
 }
+var LOOP_EMAIL = "loop@self-improvement-loop.local";
+var LOOP_NAME = "self-improvement-loop";
+function ensureIdentity(repo) {
+  if (gitRaw(repo, ["var", "GIT_COMMITTER_IDENT"]).code === 0)
+    return;
+  git(repo, ["config", "user.email", LOOP_EMAIL]);
+  git(repo, ["config", "user.name", LOOP_NAME]);
+  git(repo, ["config", "commit.gpgsign", "false"]);
+}
 function ensureRepo(path) {
   mkdirSync2(path, { recursive: true });
-  if (isRepo(path))
+  if (isRepo(path)) {
+    ensureIdentity(path);
     return path;
+  }
   git(path, ["init", "-q", "-b", "main"]);
-  git(path, ["config", "user.email", "loop@self-improvement-loop.local"]);
-  git(path, ["config", "user.name", "self-improvement-loop"]);
+  git(path, ["config", "user.email", LOOP_EMAIL]);
+  git(path, ["config", "user.name", LOOP_NAME]);
   git(path, ["config", "commit.gpgsign", "false"]);
   git(path, ["commit", "-q", "--allow-empty", "-m", "chore: initialise learned repo"]);
   return path;

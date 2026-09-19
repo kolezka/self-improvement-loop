@@ -82,6 +82,7 @@ queue/done/<session_id>.json
 queue/failed/<session_id>.json
 usage/events.jsonl                  skill / agent / hook usage events
 usage/payloads/<world>.jsonl        PreToolUse samples (tool name, command, file path), rotated; the router's gate corpus
+                                    backfill an empty one from old transcripts with `sil import payloads --days 30`
 usage/nudge-fires.jsonl             nudge emissions (V1 format)
 feedback/human.jsonl                /feedback entries
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions

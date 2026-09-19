@@ -21523,7 +21523,7 @@ function curriculumRun(args) {
 // packages/ops/src/handlers/health.ts
 import { readFileSync as readFileSync4, statSync as statSync10 } from "fs";
 import { join as join21 } from "path";
-var SIL_VERSION = "0.2.6";
+var SIL_VERSION = "0.2.7";
 function buildInfo(_args) {
   const path = join21(pluginRoot(), "dist", ".srchash");
   let build = null;

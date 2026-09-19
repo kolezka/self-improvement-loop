@@ -135,7 +135,18 @@
                       {entry.world}
                       {#if report.dry_run}<span class="chip">dry run</span>{/if}
                     </td>
-                    <td class="num" title={report.staged.join(", ") || "none"}>{report.staged.length}</td>
+                    <td class="num" title={report.staged.join(", ") || "none"}>
+                      {report.staged.length}
+                      {#if report.routed && Object.keys(report.routed).length > 0}
+                        <ul class="list muted">
+                          {#each Object.entries(report.routed) as [pattern, route] (pattern)}
+                            <li title={route.reason}>
+                              {pattern}: {route.drafted === route.type ? route.type : `${route.drafted} -> ${route.type}`}{#if !report.staged.includes(pattern)} (not staged){/if}
+                            </li>
+                          {/each}
+                        </ul>
+                      {/if}
+                    </td>
                     <td class="num">{report.merged.length}</td>
                     <td class="num" title={gatedOutTitle(report)}>{Object.keys(report.gated_out).length}</td>
                     <td class="num" title={droppedTitle(report)}>{droppedTotal(report)}</td>

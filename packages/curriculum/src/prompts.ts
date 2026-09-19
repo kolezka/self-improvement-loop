@@ -27,7 +27,11 @@ import { emptyAnswer, MIN_QUOTE_CHARS, MIN_QUOTE_TERMS, MIN_QUOTE_WORDS, RouteAn
 // omission note stays in the prompt and says which end was dropped: a model that
 // can see it was handed a window can hedge, one silently fed a fifth of the
 // evidence writes with false confidence.
-export const MAX_SOURCE_CHARS = 200_000;
+//
+// Sized for reflection sections, not lesson lines: a live 57-reflection cluster
+// is about 120 KB of drafting text, and a 32k-context local model holds about
+// this much and no more.
+export const MAX_SOURCE_CHARS = 120_000;
 
 const FENCE_RE = /^```[A-Za-z]*\s*\n([\s\S]*?)\n?```\s*$/;
 const THINK_RE = /^\s*<think>[\s\S]*?<\/think>\s*/i;
@@ -170,7 +174,9 @@ const ROUTING_FIELDS =
   "be checked against mechanically on every matching tool call. gate is a " +
   "single-predicate object usable by the nudge dispatcher, or null if no gate " +
   "applies. needs_own_context is true only if acting on this lesson needs its " +
-  "own agent and budget rather than a reminder, and when it is true " +
+  "own agent and budget rather than a reminder: the lessons describe an " +
+  "investigation that reads many files, logs or tool outputs and reports " +
+  "back, or work that would consume the main context's budget. When it is true " +
   "context_evidence MUST be an exact substring copied verbatim from the lessons " +
   `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` +
   `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` +
@@ -179,7 +185,9 @@ const ROUTING_FIELDS =
   "discipline rather than an agent. capability_evidence, if set, MUST be an " +
   "exact substring copied verbatim from the lessons below, never paraphrased, " +
   "under the same length rule, naming a concrete thing the agent can actually " +
-  "do that neither a hook nor a rule can express. no_artifact is true only if no " +
+  "do that neither a hook nor a rule can express: a procedure of several " +
+  "ordered commands or checks that does not fit one 300-character bullet. " +
+  "Quote the passage that names those steps. no_artifact is true only if no " +
   "artifact at all is warranted.";
 
 export const DRAFTER_SYSTEM =

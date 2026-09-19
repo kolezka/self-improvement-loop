@@ -80,24 +80,67 @@ export function cluster(items: Reflection[]): Cluster[] {
   return out;
 }
 
-/** The reusable lesson of each reflection, or its whole body when it has none. */
+/** The reusable lesson of each reflection, or its whole body when it has none.
+ * What the judge reads: the conclusions, which is what it checks an artifact
+ * against. */
 export function lessonTexts(items: Reflection[]): string[] {
   return items.map((r) => (r.lesson || r.body || "").trim());
 }
 
-/** Every source reflection in full, for the deterministic grounding lint.
+// Sections the drafter does not read. "What worked" is narration the artifact
+// does not need. "Not verified" lists the claims the critic refused to stand
+// behind, and nothing in it may buy a skill or an agent.
+const DRAFTING_SKIPPED = ["## What worked", "## Not verified"] as const;
+const EVIDENCE_SKIPPED = ["## Not verified"] as const;
+
+/** `body` with the named sections cut out, heading to next heading. */
+export function withoutSections(body: string, headings: readonly string[]): string {
+  let out = body;
+  for (const heading of headings) {
+    const at = out.startsWith(heading) ? 0 : out.indexOf(`\n${heading}`);
+    if (at === -1) continue;
+    const next = out.indexOf("\n## ", at + heading.length);
+    out = next === -1 ? out.slice(0, at) : out.slice(0, at) + out.slice(next);
+  }
+  return out.trim();
+}
+
+/** What the drafter reads for each reflection: what failed, the lesson and
+ * how it was verified.
  *
- * Deliberately not the prompt's bounded view: an artifact must be grounded in
- * all of its sources, not only the ones that fitted in the drafting context. */
+ * Not the lesson line alone. The critic writes `lesson` as one imperative
+ * under 300 characters, which is a rule by construction; handed only that,
+ * the drafter never had grounds to propose a skill or an agent. Measured on
+ * five real clusters: lesson-only input yielded hook or rule every time, while
+ * the body took a 56-reflection pattern to a skill the router accepted. */
+export function draftingTexts(items: Reflection[]): string[] {
+  return items.map((r) => (r.body ? withoutSections(r.body, DRAFTING_SKIPPED) : r.lesson || "").trim());
+}
+
+/** Every source reflection, for the grounding lint and the router's quote
+ * check. Deliberately not the prompt's bounded view: an artifact must be
+ * grounded in all of its sources, not only the ones that fitted in the
+ * drafting context. "Not verified" is cut so a quote from it is never
+ * verbatim in a source. */
 export function sourcesText(items: Reflection[]): string {
-  return items.map((r) => r.body || "").join("\n\n");
+  return items.map((r) => withoutSections(r.body || "", EVIDENCE_SKIPPED)).join("\n\n");
 }
 
 export function loadLedger(world: World): Ledger {
   return loadLedgerFile(ledgerPath(world));
 }
 
-/** Recorded hook payloads the router executes a proposed gate against.
+/** How many recorded samples the corpus takes, counted from the newest end. */
+export const MAX_SAMPLED_PAYLOADS = 2000;
+
+/** Recorded hook payloads the router executes a proposed gate against: the
+ * checked-in fixtures, plus the samples the hook recorded for this world.
+ *
+ * The samples are there because the fixtures are synthetic. A gate on a real
+ * command (`--no-verify`, `pkill`, `sed -i`) matches no fixture, so the router
+ * reports "matched nothing" and downgrades the hook to a rule; measured today
+ * that was 6 of the 8 hooks the drafter proposed. Only what a session actually
+ * ran can test the claim that a discipline is mechanically detectable.
  *
  * The plugin's own corpus is always included: payloads are recorded shapes of
  * Claude Code's own events, a property of the agent and not of whichever repo is
@@ -107,7 +150,9 @@ export function loadLedger(world: World): Ledger {
  *
  * A world's target repo may add to it. A payload that exists but does not parse
  * is loud: throwing out of a bare map named no file and took down a scheduled
- * run that had nothing else wrong with it. */
+ * run that had nothing else wrong with it. The sample log is the one exception.
+ * It is append-only and the hook may be writing to it right now, so a torn line
+ * costs that line and nothing else. */
 export function loadPayloadCorpus(world?: World | null): Record<string, unknown>[] {
   const roots = [paths.pluginRoot()];
   if (world) roots.push(targetRoot(world));
@@ -134,6 +179,19 @@ export function loadPayloadCorpus(world?: World | null): Record<string, unknown>
         throw new ValidationError(`unreadable hook payload ${path}: not a JSON object`);
       }
       out.push(parsed as Record<string, unknown>);
+    }
+  }
+
+  if (world) {
+    // Deduped by shape: a thousand `git status` calls say the same thing about
+    // a gate, and a corpus of them would make any gate look like a broadcast.
+    const shapes = new Set<string>();
+    for (const record of fsx.readJsonl(paths.payloadSamplesFile(world.name)).slice(-MAX_SAMPLED_PAYLOADS)) {
+      if (typeof record["tool_name"] !== "string") continue;
+      const shape = JSON.stringify({ tool_name: record["tool_name"], tool_input: record["tool_input"] });
+      if (shapes.has(shape)) continue;
+      shapes.add(shape);
+      out.push(record);
     }
   }
   return out;

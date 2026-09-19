@@ -62,6 +62,36 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [ ] decide whether `.ai/` stays in the repo
 - [ ] revisit command texts and `argument-hint` after first real use
 
+## Artifact type coverage (2026-09-20, branch verify-agents-skills-rules-hooks-created)
+
+Question: does curriculum produce skills, hooks, rules and agents, or one of them?
+Measured on the live world before any change: 20 `feat(rule)` and 8 `feat(hook)`
+commits since the V2 migration, 0 skills, 0 agents (every skill and the one agent
+in the ledger are V1 imports). Drafter replay on 5 real clusters, 11 runs: 8 replies
+asked for a hook and the router downgraded 6 to rule because the 20 synthetic
+fixtures never match a narrow gate, 1 more for the `ToolSearch` matcher; no
+lesson-only run asked for a skill or agent because the drafter only saw the
+300-char lesson line. No run drafted an agent; that path is covered by tests only.
+
+- [x] record `routed[pattern] = {drafted, type, reason}` in the run report; print in `sil curriculum run`, show in the web worker status
+- [x] hook records PreToolUse payload samples (allowlisted keys, rotated) into `usage/payloads/<world>.jsonl`; the router corpus includes them
+- [x] drafter and judge read the whole reflection body; prompt names what buys a skill (a procedure that does not fit one bullet) and an agent (an investigation across files, logs, outputs)
+- [x] ToolSearch, WebFetch, WebSearch, NotebookEdit accepted as nudge matchers, plus a ToolSearch fixture
+- [x] agent staging test, route record tests, sample and corpus tests (red on `main` checked out into a temp dir with the new test files copied over: 15 fail, and plan.test.ts does not load there); agent accept-and-relink test is coverage only, it passes on the old code too
+- [x] relinked the migrated `outward-facing-artifacts` agent into `~/.claude/agents` (operator state, not repo)
+- [x] review fixes: `appendLine` rotation bounded by bytes as well as lines; samples keep only `command` and `file_path` with credential values blanked; `Not verified` cut from the drafter's view and the router's quote haystack; judge keeps reading lesson lines; `MAX_SOURCE_CHARS` 120k; broadcast ceiling at half the corpus with hit counts in the route reason
+- [x] `sil import payloads --days 30`: backfill the corpus from `~/.claude/projects` transcripts (same record shape and redaction as the hook, via `@sil/core/samples`); on this machine 34k tool calls, 2162 distinct samples kept, 34 with `--no-verify`
+- [x] end-to-end proof with the real drafter and judge (claude-cli, opus) on copies of the live data, corpus backfilled from real transcripts, six rule promotions forgotten so they re-route, cap 12: drafted 10 hook / 2 rule, routed 9 hook / 3 rule, staged 6 hook + 3 rule (1 judge reject, 2 hook texts over 400 chars). Before the change every one of those clusters had been promoted as a rule.
+- [x] agent path, real data: 3 V1 reflections of `outward-facing-artifacts` (the pattern V1 promoted as an agent) -> drafted agent, routed agent ("own-context need quoted verbatim"), lint and judge pass, `feat(agent)` branch with `agents/outward-facing-artifacts.md`
+- [x] skill path, real data: 3 V1 reflections of `controlled-cohort-comparison` -> drafted skill, routed skill, `feat(skill)` branch with a five-step `SKILL.md`
+- [ ] after the plugin picks up a build with this change: run `sil import payloads --days 30` once, then watch `routed:` in curriculum.log
+
+Review: the corpus test still cannot see prompts (`prompt_matches` gates only have the
+fixture), by design: prompts are free text. The gate runner deadline stays 250 ms;
+measured about 10 ms median with 2020 payloads (52 ms in an earlier run). Routing is
+now corpus-dependent: the same drafter answer can be a hook on a machine with samples
+and a rule on a fresh install; the route reason carries the hit count so that is visible.
+
 ## Logs console polish (branch polish-ui-ux-logs-console-view)
 - [x] `apps/web/src/lib/logs.ts`: pure parse of worker JSON lines and `ISO msg` lines, level detection, filter match, highlight split, size text
 - [x] `apps/web/test/logs.test.ts`: unit tests for the parser, level rules, filter and highlight

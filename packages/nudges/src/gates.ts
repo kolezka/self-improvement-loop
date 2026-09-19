@@ -14,11 +14,17 @@ export const MAX_QUANTIFIED_GROUPS = 3;
 // SubagentStop and SessionEnd are not here, so a nudge targeting them is
 // rejected by splitTrigger/lintNudge instead of firing for a delivery that
 // never happens.
+// hooks.json registers both tool events with matcher "*", so any tool name
+// reaches the dispatcher. The set below is what the drafter may target and
+// what lint accepts. A drafted `PreToolUse:ToolSearch` was refused as
+// unsupported and downgraded to a rule before ToolSearch was listed here.
+const TOOL_MATCHERS = ["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "WebFetch", "WebSearch", "NotebookEdit"] as const;
+
 export const EVENTS: Record<string, ReadonlySet<string> | null> = {
   SessionStart: null,
   UserPromptSubmit: null,
-  PreToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"]),
-  PostToolUse: new Set(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill"]),
+  PreToolUse: new Set(TOOL_MATCHERS),
+  PostToolUse: new Set(TOOL_MATCHERS),
 };
 
 // Events that fire only a handful of times per session. Everything else

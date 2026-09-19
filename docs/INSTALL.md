@@ -58,6 +58,12 @@ point it at a real target. Edit `llm.yaml` and set `models.critic`,
 scripts/sil status
 ```
 
+Then run `sil import payloads --days 30` once, so the curriculum router has a
+corpus of real tool calls to test drafted hook gates against from the start
+instead of waiting for the sampler to fill one. It reads Claude Code's own
+session transcripts under `~/.claude/projects`; the PreToolUse hook keeps the
+file current afterwards, so this is a one-time backfill.
+
 Once a plugin install is active, the same commands work through the installed
 shim:
 

@@ -27,9 +27,11 @@ export { draftMessages, judgeMessages, parseDraft, parseVerdict } from "./prompt
 export {
   type Cluster,
   cluster,
+  draftingTexts,
   lessonTexts,
   loadLedger,
   loadPayloadCorpus,
+  MAX_SAMPLED_PAYLOADS,
   plan,
   type PlanOptions,
   reflections,
@@ -37,6 +39,7 @@ export {
   scorecards,
   sourcesText,
   watermark,
+  withoutSections,
 } from "./plan.ts";
 export { branchName, run, type RunOptions } from "./run.ts";
 export { type GateCorpusResult, type GateRunner, type NudgeAdapter, setNudgeAdapter } from "./deps.ts";

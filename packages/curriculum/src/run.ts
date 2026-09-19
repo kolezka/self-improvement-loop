@@ -36,7 +36,7 @@ import * as artifacts from "./artifacts.ts";
 import type { GateRunner } from "./deps.ts";
 import * as git from "./git.ts";
 import { lint } from "./lint.ts";
-import { cluster, lessonTexts, loadLedger, loadPayloadCorpus, plan, reflections, sourcesText } from "./plan.ts";
+import { cluster, draftingTexts, lessonTexts, loadLedger, loadPayloadCorpus, plan, reflections, sourcesText } from "./plan.ts";
 import * as prompts from "./prompts.ts";
 import { type RouteAnswer, route } from "./router.ts";
 
@@ -127,6 +127,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
     dry_run: !opts.apply,
     staged: [],
     merged: [],
+    routed: {},
     gated_out: {},
     dropped: {},
     started: fsx.nowIso(),
@@ -225,10 +226,14 @@ async function stageOne(
 ): Promise<void> {
   const pattern = action.pattern;
   const sources = sourcesText(items);
+  // The drafter reads what failed and how it was verified; the judge reads the
+  // conclusions it checks the artifact against.
+  const drafting = draftingTexts(items);
   const lessons = lessonTexts(items);
   if (action.action === "refine" && action.reason) {
     // The misfire reasons travel with the evidence, so the redraft is told what
     // was wrong with the artifact it is replacing.
+    drafting.push(`Artifact feedback: ${action.reason}`);
     lessons.push(`Artifact feedback: ${action.reason}`);
   }
 
@@ -265,7 +270,7 @@ async function stageOne(
 
   let raw: string;
   try {
-    raw = await chat("drafter", prompts.draftMessages(pattern, lessons, existing, forcedType), {
+    raw = await chat("drafter", prompts.draftMessages(pattern, drafting, existing, forcedType), {
       world,
       jsonMode: true,
     });
@@ -286,6 +291,13 @@ async function stageOne(
     routedType = result.artifact_type;
     routedReason = result.reason;
   }
+  // Recorded before any later gate can drop the pattern: the decision is the
+  // thing an operator needs to see when every promotion comes out as a rule.
+  report.routed[pattern] = {
+    drafted: forcedType ?? draftedType(answer),
+    type: routedType as ArtifactType,
+    reason: routedReason,
+  };
 
   if (routedType === "none") {
     report.gated_out[pattern] = `router: ${routedReason}`;
@@ -305,7 +317,7 @@ async function stageOne(
   // lint that can only ever fail.
   if (forcedType === null && routedType !== draftedType(answer)) {
     try {
-      raw = await chat("drafter", prompts.draftMessages(pattern, lessons, null, routedType), {
+      raw = await chat("drafter", prompts.draftMessages(pattern, drafting, null, routedType), {
         world,
         jsonMode: true,
       });

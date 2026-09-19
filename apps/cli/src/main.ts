@@ -15,7 +15,7 @@ import { cmdArtifacts } from "./commands/artifacts.ts";
 import { cmdCurriculumPlan, cmdCurriculumRun } from "./commands/curriculum.ts";
 import { cmdFeedbackAdd, cmdFeedbackList } from "./commands/feedback.ts";
 import { cmdHookSnapshot } from "./commands/hookSnapshot.ts";
-import { cmdImportLedger, cmdImportReflections } from "./commands/import.ts";
+import { cmdImportLedger, cmdImportPayloads, cmdImportReflections } from "./commands/import.ts";
 import { cmdInit } from "./commands/init.ts";
 import { cmdLessons } from "./commands/lessons.ts";
 import { cmdLlmList, cmdLlmSetModel, cmdLlmUse } from "./commands/llm.ts";
@@ -278,6 +278,10 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .argument("<file>")
     .requiredOption("--world <name>")
     .action(wire((file: string, opts) => cmdImportLedger(file, opts)));
+  imp
+    .command("payloads")
+    .option("--days <n>", "how far back to read session transcripts (default 30)", intOption)
+    .action(wire((opts) => cmdImportPayloads(opts)));
 
   const sched = program.command("schedule");
   sched

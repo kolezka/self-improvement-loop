@@ -5,7 +5,8 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import * as paths from "@sil/core/paths";
-import { atomicWrite } from "@sil/core/fsx";
+import { appendLine, atomicWrite } from "@sil/core/fsx";
+import { SAMPLES_KEEP_LINES, SAMPLES_ROTATE_AT_BYTES, sampleRecord } from "@sil/core/samples";
 import type { HookEvent } from "@sil/core/consts";
 import { claimMarker, dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
 import { log, nowIso } from "./log.ts";
@@ -42,6 +43,40 @@ export function appendUsageEvent(path: string, event: Record<string, unknown>): 
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// --- payload samples ------------------------------------------------------
+
+// The record shape lives in @sil/core/samples: `sil import payloads` writes the
+// same file from old transcripts and has to agree byte for byte. Re-exported
+// here so importers of the old names keep working.
+export {
+  SAMPLED_INPUT_KEYS,
+  SAMPLE_VALUE_MAX_CHARS,
+  SAMPLES_ROTATE_AT_BYTES,
+  SAMPLES_KEEP_LINES,
+  redactCredentials,
+} from "@sil/core/samples";
+
+// Same reason as usageFailureLogged: one line per process, not one per hook.
+let sampleFailureLogged = false;
+
+/** One line per PreToolUse call, allowlisted keys only, string values truncated. Never throws.
+ *
+ * The curriculum router proves a drafted gate by running it over recorded
+ * payloads. With only the synthetic fixtures to test against, a gate on a real
+ * command (`--no-verify`, `pkill`) can never match, and every hook it proposed
+ * was downgraded to a rule. */
+export function recordPayloadSample(payload: Record<string, unknown>, worldName: string): void {
+  try {
+    const record = sampleRecord(payload, nowIso());
+    if (!record) return;
+    appendLine(paths.payloadSamplesFile(worldName), JSON.stringify(record), SAMPLES_ROTATE_AT_BYTES, SAMPLES_KEEP_LINES);
+  } catch (e) {
+    if (sampleFailureLogged) return;
+    sampleFailureLogged = true;
+    log(`usage.record_payload_sample failed for world ${worldName}: ${(e as Error).message}`);
+  }
 }
 
 // The tag the curriculum writes after a promoted rule line, e.g.
@@ -210,6 +245,7 @@ function handleUserPromptSubmit(payload: Record<string, unknown>, world: HookWor
 }
 
 function handlePreToolUse(payload: Record<string, unknown>, world: HookWorld): string {
+  recordPayloadSample(payload, world.name || "default");
   return dispatchNudge(payload, world, sessionIdOf(payload));
 }
 

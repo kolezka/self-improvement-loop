@@ -31,6 +31,7 @@ import {
 import { parseLedger, saveLedger } from "@sil/store";
 import {
   addReflections,
+  agentBody,
   cleanupEnv,
   commitFile,
   FakeChat,
@@ -219,6 +220,47 @@ describe("the happy path", () => {
     expect(text).toContain(ruleTag(PATTERN));
     // The live tree is untouched: the rules file was created inside the worktree.
     expect(existsSync(join(repo, "RULES.md"))).toBe(false);
+  });
+
+  test("an agent draft is written at the agents path", async () => {
+    // The fourth type. Skill, hook and rule each had a staging test; agent had
+    // none, and the loop had never staged one since the V2 port.
+    const world = worldWith();
+    const repo = initTarget(world);
+    const draft = {
+      trigger_event: "none",
+      gate: null,
+      needs_own_context: true,
+      context_evidence: QUOTE,
+      capability_evidence: null,
+      no_artifact: false,
+      artifact: agentBody(PATTERN, QUOTE),
+    };
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft }).fn }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toMatchObject({ drafted: "agent", type: "agent" });
+    const branch = branchName(world.name, PATTERN);
+    expect(git.commitPaths(repo, "main", branch)).toEqual([`agents/${PATTERN}.md`, "promotions.json"]);
+    const { text } = git.show(repo, branch, "promotions.json");
+    expect(parseLedger(text).entries[PATTERN]!.artifact_type).toBe("agent");
+  });
+
+  test("the report records the route of every pattern that reached the router", async () => {
+    // Staged or gated, the operator sees what the drafter proposed and what
+    // the router settled on. Before this field every promotion that came out
+    // as a rule looked the same in the log, whether or not a hook was asked for.
+    const world = worldWith();
+    initTarget(world);
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: skillDraft(PATTERN, QUOTE) }).fn }));
+
+    expect(report.routed[PATTERN]).toEqual({
+      drafted: "skill",
+      type: "skill",
+      reason: "capability evidence quoted verbatim from a source",
+    });
   });
 
   test("a second run on the same evidence replaces the branch, not the history", async () => {
@@ -454,6 +496,9 @@ describe("gates", () => {
     const report = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: declined }).fn }));
     expect(report.staged).toEqual([]);
     expect(report.gated_out[PATTERN]).toContain("drafter declined");
+    // A decline is on the route record too, not only a staged outcome.
+    expect(report.routed[PATTERN]).toMatchObject({ drafted: "rule", type: "none" });
+    expect(report.routed[PATTERN]!.reason).toContain("declined");
   });
 });
 
@@ -549,6 +594,7 @@ describe("served_by suppression", () => {
     expect(report.staged).toEqual([PATTERN]);
     expect(chat.roles).toEqual(["drafter", "judge"]);
     expect(chat.promptsFor("drafter")[0]).toContain("Its type is already decided");
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
     const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(found).toBe(true);
     expect(text).toContain(ruleTag(PATTERN));
@@ -601,6 +647,10 @@ describe("redraft after a route change", () => {
 
     expect(report.staged).toEqual([PATTERN]);
     expect(chat.roles).toEqual(["drafter", "drafter", "judge"]);
+    // The downgrade is on the record, with the router's reason.
+    expect(report.routed[PATTERN]!.drafted).toBe("skill");
+    expect(report.routed[PATTERN]!.type).toBe("rule");
+    expect(report.routed[PATTERN]!.reason).toContain("not verbatim");
     const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(found).toBe(true);
     expect(text).toContain(ruleTag(PATTERN));
@@ -613,6 +663,10 @@ describe("redraft after a route change", () => {
     const prompt = draftMessages(PATTERN, ["a lesson"], null, null).at(-1)!.content;
     expect(prompt).toContain(`${MIN_QUOTE_WORDS} words`);
     expect(prompt).toContain(`${MIN_QUOTE_CHARS} characters`);
+    // And what buys a skill or an agent, in concrete terms. Without them the
+    // drafter proposed hook or rule on every one of five real clusters.
+    expect(prompt).toContain("does not fit one 300-character bullet");
+    expect(prompt).toContain("reads many files, logs or tool outputs");
   });
 
   test("a rule written to the length the prompt states passes the lint", () => {

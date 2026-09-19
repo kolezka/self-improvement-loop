@@ -10,7 +10,8 @@
     "./config": "./src/config.ts",
     "./consts": "./src/consts.ts",
     "./errors": "./src/errors.ts",
-    "./fsx": "./src/fsx.ts"
+    "./fsx": "./src/fsx.ts",
+    "./samples": "./src/samples.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1",

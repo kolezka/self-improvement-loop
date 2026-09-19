@@ -1451,6 +1451,21 @@ function appendUsageEvent(path, event) {
 function isRecord8(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
+function recordRuleUses(rulesText, worldName, sessionId) {
+  const sessionDir2 = sessionDir(sessionId);
+  for (const match of new Set([...rulesText.matchAll(RULE_TAG_RE)].map((m) => m[1] ?? ""))) {
+    if (!match || !claimMarker(sessionDir2, `rule-use-${match}`))
+      continue;
+    appendUsageEvent(usageEventsFile(), {
+      ts: nowIso(),
+      session_id: sessionId,
+      world: worldName,
+      kind: "rule",
+      ref: artifactRef("rule", match),
+      detail: {}
+    });
+  }
+}
 function isDir(path) {
   try {
     return statSync6(path).isDirectory();
@@ -1500,6 +1515,12 @@ ${rulesText}`);
   const nudgeText = dispatchNudge(payload, world, sessionId);
   if (nudgeText)
     parts.push(nudgeText);
+  try {
+    if (rulesText)
+      recordRuleUses(rulesText, worldName, sessionId);
+  } catch (e) {
+    log(`SessionStart could not record rule uses: ${e.message}`);
+  }
   try {
     writeStartJson(sessionId, { ts: nowIso(), cwd: String(cwd), world: worldName, git_head: gitHead(cwd) });
   } catch (e) {
@@ -1601,7 +1622,7 @@ function getHandler(event) {
     return;
   return HANDLERS[event];
 }
-var usageFailureLogged = false, HANDLERS;
+var usageFailureLogged = false, RULE_TAG_RE, HANDLERS;
 var init_handlers = __esm(async () => {
   init_paths();
   init_fsx();
@@ -1614,6 +1635,7 @@ var init_handlers = __esm(async () => {
     init_queue(),
     init_scan()
   ]);
+  RULE_TAG_RE = /<!--\s*rule:([A-Za-z0-9._-]+)\s*-->/g;
   HANDLERS = {
     SessionStart: handleSessionStart,
     UserPromptSubmit: handleUserPromptSubmit,

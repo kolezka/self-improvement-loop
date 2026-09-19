@@ -134,8 +134,9 @@ export type QueueEntry = z.infer<typeof QueueEntry>;
 
 // --- usage / feedback ---------------------------------------------------
 
-/** One line of usage/events.jsonl. kind: skill | agent | agent_stop | hook_run.
- * ref: `<type>:<name>`, e.g. skill:verify-callsites, agent:explorer, hook:PreToolUse:Bash. */
+/** One line of usage/events.jsonl. kind: skill | agent | rule | agent_stop | hook_run.
+ * ref: `<type>:<name>`, e.g. skill:verify-callsites, agent:explorer, hook:PreToolUse:Bash.
+ * skill, agent and rule count as uses; agent_stop and hook_run are diagnostics. */
 export const UsageEvent = z.object({
   ts: isoTs,
   session_id: z.string(),

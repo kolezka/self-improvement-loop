@@ -18775,7 +18775,7 @@ function scorecards(world, cfg, opts = {}) {
     if (ev["world"] !== world.name)
       continue;
     const kind = ev["kind"];
-    if (kind !== "skill" && kind !== "agent")
+    if (kind !== "skill" && kind !== "agent" && kind !== "rule")
       continue;
     const ref = ev["ref"];
     if (!ref)
@@ -18793,8 +18793,10 @@ function scorecards(world, cfg, opts = {}) {
     const ref = `hook:${String(pattern)}`;
     refs.add(ref);
     noteTs(ref, line["ts"]);
-    if (within(line["ts"], windowStart, now))
+    if (within(line["ts"], windowStart, now)) {
       bump(firesByRef, ref);
+      bump(usesByRef, ref);
+    }
   }
   for (const ev of readJsonl(criticFeedbackFile())) {
     if (ev["world"] !== world.name)

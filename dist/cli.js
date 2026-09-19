@@ -19387,7 +19387,7 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
 import { existsSync as existsSync8 } from "fs";
 import { dirname as dirname6, join as join16, resolve as resolve6 } from "path";
 
@@ -20147,8 +20147,9 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
     if (checkedOut !== snap.branch_sha) {
       throw new ReviewError(`${snap.branch} moved from ${snap.branch_sha.slice(0, 12)} to ${checkedOut.slice(0, 12) || "an unreadable commit"} ` + "while accept was running; reload the review and accept again. Nothing was merged.");
     }
-    if (!isAncestor(repo, snap.base_sha, snap.branch_sha))
-      mergeBaseIntoBranch(tree, snap, rel);
+    if (!isAncestor(repo, snap.base_sha, snap.branch_sha)) {
+      mergeBaseIntoBranch(world, repo, tree, snap, pattern, rel);
+    }
     const merged = ledgerAt(world, repo, snap.base_sha);
     const row = entry ?? merged.entries[pattern] ?? null;
     if (row) {
@@ -20194,7 +20195,8 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
   }
   return out;
 }
-function mergeBaseIntoBranch(tree, snap, rel) {
+function mergeBaseIntoBranch(world, repo, tree, snap, pattern, rel) {
+  const rulesRel = artifactRel(world, "rule", pattern);
   try {
     git(tree, ["merge", "--no-ff", "--no-commit", "-q", snap.base_sha]);
   } catch (e) {
@@ -20205,10 +20207,32 @@ function mergeBaseIntoBranch(tree, snap, rel) {
     if (conflicted.length === 0) {
       throw e;
     }
-    if (conflicted.length !== 1 || conflicted[0] !== rel) {
+    const shared = new Set([rel, rulesRel].filter((p) => p));
+    if (conflicted.some((p) => !shared.has(p))) {
       git(tree, ["merge", "--abort"], { check: false });
       throw new ReviewError(`${snap.branch} conflicts outside the ledger: ${conflicted.join(", ")}`);
     }
+    if (conflicted.includes(rulesRel))
+      resolveRulesConflict(world, repo, tree, snap, pattern, rulesRel);
+  }
+}
+function resolveRulesConflict(world, repo, tree, snap, pattern, rulesRel) {
+  try {
+    const base = show(repo, snap.base_sha, rulesRel);
+    if (base.found)
+      writeFileSync5(join16(tree, rulesRel), base.text, "utf8");
+    else
+      ensureRulesFile(world, tree);
+    const onBranch = show(repo, snap.branch_sha, rulesRel);
+    const bullet = ruleBulletInText(onBranch.text, pattern).replace(ruleTag(pattern), "").trim();
+    if (bullet)
+      writeArtifact(world, "rule", pattern, bullet, tree);
+    else
+      removeArtifact(world, "rule", pattern, tree);
+    git(tree, ["add", "--", rulesRel]);
+  } catch (e) {
+    git(tree, ["merge", "--abort"], { check: false });
+    throw new ReviewError(`${snap.branch} conflicts in ${rulesRel} and it could not be rebuilt from ${snap.base_ref}: ` + `${e.message}. Nothing was merged.`);
   }
 }
 function ledgerAt(world, repo, ref) {
@@ -21000,7 +21024,7 @@ function cmdReviewRetire(pattern, opts, deps = defaultDeps) {
 }
 
 // apps/cli/src/schedule.ts
-import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
+import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync6 } from "fs";
 import { homedir as homedir2 } from "os";
 import { dirname as dirname7, join as join19 } from "path";
 var SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"];
@@ -21127,7 +21151,7 @@ function install(kind, intervalMin = 60, web = false, run = realRunner) {
     const written = [];
     for (const [name, content] of Object.entries(renderSystemd(intervalMin, web))) {
       const p = join19(d, name);
-      writeFileSync5(p, content, "utf8");
+      writeFileSync6(p, content, "utf8");
       written.push(p);
     }
     run(["systemctl", "--user", "daemon-reload"]);
@@ -21142,7 +21166,7 @@ function install(kind, intervalMin = 60, web = false, run = realRunner) {
     const written = [];
     for (const [name, content] of Object.entries(renderLaunchd(intervalMin, web))) {
       const p = join19(d, name);
-      writeFileSync5(p, content, "utf8");
+      writeFileSync6(p, content, "utf8");
       written.push(p);
       run(["launchctl", "load", p]);
     }

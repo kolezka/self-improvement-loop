@@ -22,6 +22,7 @@ import {
   draftMessages,
   git,
   lintRule,
+  MAX_RULE_CHARS,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
   run,
@@ -624,6 +625,10 @@ describe("redraft after a route change", () => {
     const bullet = "- " + "x".repeat(stated - 2);
     expect(bullet.length).toBe(stated);
     expect(lintRule(bullet, PATTERN)).toEqual([]);
+    // The stated number is the maximum, not just some length that fits: one
+    // character more is refused, and the raw cap never reaches the drafter.
+    expect(lintRule(bullet + "x", PATTERN).some((p) => p.includes("cap is"))).toBe(true);
+    expect(prompt).not.toContain(`${MAX_RULE_CHARS} characters`);
   });
 });
 

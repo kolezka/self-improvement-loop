@@ -43,6 +43,7 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [ ] disable the old nudge-dispatch hooks in dotfiles-next so only one dispatcher runs
 
 ## Phase 6: engineering follow-ups
+- [x] `sil web` picks up a plugin update by itself: it polls the install path and dist/.srchash, exits 0, and systemd (Restart=always) or launchd restarts it on the new version; the web token is now stored so open tabs survive the restart
 - [ ] live model run of critic, drafter and judge; prompts are unverified beyond fake chat
 - [ ] exercise `remote: pr` against GitHub and the Outline export against a live server
 - [ ] worker lock is a pid file with a 60 ms reclaim window; consider flock via FFI

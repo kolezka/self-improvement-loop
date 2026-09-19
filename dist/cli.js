@@ -15275,6 +15275,7 @@ var inboxDir = (world) => join(stateDir(), "inbox", safeComponent(world));
 var sessionDir = (sessionId) => join(stateDir(), "sessions", safeComponent(sessionId));
 var workerLockFile = () => join(stateDir(), "worker.lock");
 var hookSnapshotFile = () => join(stateDir(), "hook-config.json");
+var webTokenFile = () => join(stateDir(), "web-token");
 var logFile = (name) => join(stateDir(), "logs", `${safeComponent(name)}.log`);
 var worldDir = (world) => join(dataDir(), "worlds", safeComponent(world));
 var reflectionsDir = (world) => join(worldDir(world), "reflections");
@@ -20921,7 +20922,8 @@ function renderSystemd(intervalMin, web) {
       "[Service]",
       "Type=simple",
       `ExecStart=${shim} web`,
-      "Restart=on-failure",
+      "Restart=always",
+      "RestartSec=2",
       "",
       "[Install]",
       "WantedBy=default.target",
@@ -21143,7 +21145,6 @@ async function cmdStatus(opts, deps = defaultDeps) {
 }
 
 // apps/server/src/main.ts
-import { randomBytes } from "crypto";
 import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
@@ -21739,6 +21740,27 @@ async function serveStatic(pathname) {
   return new Response("not found", { status: 404 });
 }
 
+// apps/server/src/token.ts
+import { randomBytes } from "crypto";
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync8, readFileSync as readFileSync4, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname9 } from "path";
+function newToken() {
+  return randomBytes(32).toString("base64url");
+}
+function loadOrCreateToken(file = webTokenFile()) {
+  try {
+    const stored = readFileSync4(file, "utf8").trim();
+    if (stored)
+      return stored;
+  } catch {}
+  const token = newToken();
+  mkdirSync8(dirname9(file), { recursive: true });
+  writeFileSync6(file, token + `
+`, { mode: 384 });
+  chmodSync2(file, 384);
+  return token;
+}
+
 // apps/server/src/main.ts
 var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
@@ -21781,9 +21803,6 @@ function createServer(opts) {
   });
   return server;
 }
-function newToken() {
-  return randomBytes(32).toString("base64url");
-}
 function urlHost(host) {
   if (WILDCARD_HOSTS.has(host))
     return "127.0.0.1";
@@ -21802,7 +21821,7 @@ function privateAddresses() {
 }
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
-  const token = opts.token ?? !isLoopbackHost(host) ? newToken() : null;
+  const token = opts.token ?? !isLoopbackHost(host) ? loadOrCreateToken() : null;
   const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
   const port = server.port ?? opts.port;
   const fragment = token ? `#${token}` : "";
@@ -21812,6 +21831,59 @@ function serve(opts) {
   return server;
 }
 if (false) {}
+
+// apps/cli/src/webUpdate.ts
+import { readFileSync as readFileSync5 } from "fs";
+import { join as join24, sep as sep2 } from "path";
+var PLUGIN_NAME = "self-improvement-loop";
+function readText2(file) {
+  try {
+    return readFileSync5(file, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+function isInstalledCopy(root, claudeConfig = claudeConfigDir()) {
+  const cache = join24(claudeConfig, "plugins") + sep2;
+  return root.startsWith(cache);
+}
+function installedStamp(claudeConfig = claudeConfigDir()) {
+  const raw = readText2(join24(claudeConfig, "plugins", "installed_plugins.json"));
+  if (!raw)
+    return "";
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return "";
+  }
+  const plugins = data.plugins ?? {};
+  const entries = Object.keys(plugins).filter((key) => key.split("@")[0] === PLUGIN_NAME).flatMap((key) => Array.isArray(plugins[key]) ? plugins[key] : []);
+  if (entries.length === 0)
+    return "";
+  const newest = entries.reduce((a, b) => String(a["lastUpdated"] ?? "") >= String(b["lastUpdated"] ?? "") ? a : b);
+  return `${String(newest["installPath"] ?? "")}@${String(newest["lastUpdated"] ?? "")}`;
+}
+function updateStamp(root = pluginRoot(), claudeConfig = claudeConfigDir()) {
+  const build = readText2(join24(root, "dist", ".srchash"));
+  const installed = isInstalledCopy(root, claudeConfig) ? installedStamp(claudeConfig) : "";
+  return `${build}|${installed}`;
+}
+function watchForUpdates(onUpdate, opts = {}) {
+  const root = opts.root ?? pluginRoot();
+  const claudeConfig = opts.claudeConfig ?? claudeConfigDir();
+  const baseline = updateStamp(root, claudeConfig);
+  let fired = false;
+  const timer = setInterval(() => {
+    if (fired || updateStamp(root, claudeConfig) === baseline)
+      return;
+    fired = true;
+    clearInterval(timer);
+    onUpdate();
+  }, opts.intervalMs ?? 5000);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
 
 // apps/cli/src/commands/web.ts
 function openBrowser(url) {
@@ -21827,6 +21899,12 @@ async function cmdWeb(opts) {
   const server = serve({ host, port, token: opts.token, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
     openBrowser(`http://${urlHost(host)}:${server.port}/`);
+  if (opts.watch ?? true) {
+    watchForUpdates(() => {
+      console.log("plugin updated: stopping the web UI so the supervisor starts the new version");
+      server.stop(false).then(() => process.exit(0));
+    });
+  }
   return new Promise(() => {});
 }
 
@@ -21937,7 +22015,7 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--token", "force a URL token (default: on only for non-loopback binds)").option("--no-token", "force tokenless (loopback only)").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--token", "force a URL token (default: on only for non-loopback binds)").option("--no-token", "force tokenless (loopback only)").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").option("--no-watch", "keep running after a plugin update instead of exiting for the supervisor to restart").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));

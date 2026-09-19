@@ -105,6 +105,13 @@ This installs a worker timer/interval and a web service, both calling a stable
 shim at `~/.local/bin/sil` so a plugin version bump never breaks the schedule.
 See `docs/OPERATIONS.md` for what runs and when.
 
+The web service picks up a plugin update on its own: `sil web` notices that the
+current install path or the built `dist/` changed, stops and exits 0, and the
+supervisor (systemd `Restart=always`, launchd `KeepAlive`) starts it again on
+the new version. The URL stays the same, and so does the token when a bind off
+loopback uses one, so an open tab keeps working after a reload. Run
+`sil web --no-watch` for a foreground server that should survive an update.
+
 ## Uninstall
 
 ```

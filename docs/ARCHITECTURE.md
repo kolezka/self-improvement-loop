@@ -63,7 +63,7 @@ commands/*.md               /reflect /loop /curriculum /feedback
 skills/self-improvement-loop/SKILL.md
 packages/*                  TypeScript engine, one package per concern (@sil/core, @sil/store, ...)
 apps/{cli,hook,server,web}  entry points: the sil CLI, the hook fast path, the web API, the Svelte UI
-dist/{hook,cli,server,gate-runner}.js, dist/web/    committed single-file bundles the plugin actually runs
+dist/{hook,cli,server,gate-runner}.js, dist/web/    built single-file bundles the plugin actually runs (built by the release workflow, not committed on main; see docs/RELEASE.md)
 scripts/sil                 shim: resolves the plugin root, execs `bun dist/cli.js` (or source, in a dev checkout)
 ```
 
@@ -203,6 +203,22 @@ target SessionStart, UserPromptSubmit, PreToolUse or PostToolUse, the four event
 where the hook can deliver text; lint rejects the rest so a fire is always a
 delivery.
 
+## Other hosts (`@sil/openclaw`)
+
+The engine is host neutral below the hook. Everything above reads a queue entry
+and a transcript path, so a second host only has to write those two things.
+
+OpenClaw is the first one. `@sil/transcript` detects the record shape of the
+transcript file and translates OpenClaw records into the Claude Code shape, so
+the worker, the critic and the evidence pack see one format. `@sil/openclaw`
+finds OpenClaw sessions, writes queue entries for them, and delivers rules and
+inbox lessons through a marker-fenced block in a workspace bootstrap file,
+because OpenClaw has no per-session context injection hook. An OpenClaw plugin
+calls the `sil` CLI on `session_start`, `gateway_start` and `session_end`;
+`sil openclaw scan` covers the same ground without the plugin.
+
+Full contract, limits and commands: `docs/OPENCLAW.md`.
+
 ## Worker (`sil worker --once | --loop`)
 
 Under `worker.lock`:
@@ -307,6 +323,7 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 | Signal | Source | Artifact types |
 |---|---|---|
 | invocation | PostToolUse `Skill` / `Agent` | skill, agent |
+| injection | SessionStart rules block, once per session per rule | rule |
 | fire | nudge fire log | hook |
 | hook run | transcript `attachment` records (hookName, exitCode, durationMs) | hook |
 | helpful / misfire | critic answer per session | all |
@@ -315,6 +332,11 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 
 Scorecard fields: `uses_30d`, `fires_30d`, `helpful`, `misfired`, `human_good`,
 `human_bad`, `last_used`, `proposal` (`keep | refine | retire-candidate`).
+
+`uses_30d` counts every way an artifact is served: skill and agent invocations,
+rule injections, and hook fires. `fires_30d` keeps the hook-only count, so a
+hook fire adds to both. Counting only skill and agent invocations left every
+promoted rule and hook at 0 uses, which read as "nothing is running".
 
 ## Non-goals
 

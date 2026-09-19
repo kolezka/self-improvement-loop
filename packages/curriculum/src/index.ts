@@ -8,7 +8,7 @@ export * as git from "./git.ts";
 export * as artifacts from "./artifacts.ts";
 export * as prompts from "./prompts.ts";
 
-export { artifactRel, allowedPaths, artifactPrefixes, ensureRulesFile, foreignRuleTags, HOOK_KEYS, isPlaceholderBody, placeholderBody, readArtifact, removeArtifact, ruleBulletInText, rulesDiffOwnedBy, rulesProblem, writeArtifact } from "./artifacts.ts";
+export { artifactRel, allowedPaths, artifactPrefixes, ensureRulesFile, foreignRuleTags, HOOK_KEYS, isPlaceholderBody, placeholderBody, readArtifact, removeArtifact, ruleBulletInText, rulesDiffOwnedBy, rulesProblem, stripRuleTag, writeArtifact } from "./artifacts.ts";
 export { distinctiveTerms, lint, lintDescriptionCap, lintGrounding, lintHook, lintRule, lintSkill, MAX_DESCRIPTION, MAX_RULE_CHARS, MIN_BODY_CHARS, MIN_SHARED_TERMS, SECRET_RE } from "./lint.ts";
 export {
   emptyAnswer,

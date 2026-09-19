@@ -7,13 +7,13 @@ import { dirname } from "node:path";
 import * as paths from "@sil/core/paths";
 import { appendLine, atomicWrite } from "@sil/core/fsx";
 import type { HookEvent } from "@sil/core/consts";
-import { dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
+import { claimMarker, dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
 import { log, nowIso } from "./log.ts";
 import type { HookSnapshot, HookWorld } from "./snapshot.ts";
 import { gitHead } from "./worlds.ts";
 import { formatLesson, pendingLessons, rulesBlock } from "./lessons.ts";
 import { maybeKickWorker } from "./kick.ts";
-import { markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
+import { hasTranscript, markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
 import { scanTranscript } from "./scan.ts";
 
 // --- usage event log ------------------------------------------------------
@@ -99,6 +99,34 @@ export function recordPayloadSample(payload: Record<string, unknown>, worldName:
     if (sampleFailureLogged) return;
     sampleFailureLogged = true;
     log(`usage.record_payload_sample failed for world ${worldName}: ${(e as Error).message}`);
+  }
+}
+
+// The tag the curriculum writes after a promoted rule line, e.g.
+// `<!--rule:evidence-level-overclaim-->`.
+const RULE_TAG_RE = /<!--\s*rule:([A-Za-z0-9._-]+)\s*-->/g;
+
+/** One usage event per rule the injected block carried.
+ *
+ * A rule is served by putting its text in the context, so the injection is
+ * the use: without this, every rule sits at uses_30d 0 forever and the
+ * scorecard proposes retiring an artifact that ships in every session.
+ *
+ * Claimed once per session because SessionStart runs again on resume and on
+ * compact, and the same rule in one session is still one use. Untagged
+ * lines are hand-written notes, not artifacts, so they are skipped. */
+function recordRuleUses(rulesText: string, worldName: string, sessionId: string): void {
+  const sessionDir = paths.sessionDir(sessionId);
+  for (const match of new Set([...rulesText.matchAll(RULE_TAG_RE)].map((m) => m[1] ?? ""))) {
+    if (!match || !claimMarker(sessionDir, `rule-use-${match}`)) continue;
+    appendUsageEvent(paths.usageEventsFile(), {
+      ts: nowIso(),
+      session_id: sessionId,
+      world: worldName,
+      kind: "rule",
+      ref: artifactRef("rule", match),
+      detail: {},
+    });
   }
 }
 
@@ -206,6 +234,11 @@ function handleSessionStart(payload: Record<string, unknown>, world: HookWorld, 
   // built at this point: neither failure may take it down, and the first
   // must not skip the second.
   try {
+    if (rulesText) recordRuleUses(rulesText, worldName, sessionId);
+  } catch (e) {
+    log(`SessionStart could not record rule uses: ${(e as Error).message}`);
+  }
+  try {
     writeStartJson(sessionId, { ts: nowIso(), cwd: String(cwd), world: worldName, git_head: gitHead(cwd) });
   } catch (e) {
     log(`SessionStart could not write start.json: ${(e as Error).message}`);
@@ -283,6 +316,10 @@ function handleStop(payload: Record<string, unknown>, world: HookWorld): string 
   // it (not in OUTPUT_EVENTS), so a nudge dispatch here would claim its
   // once-per marker and log a fire for a delivery that never happens.
   sessionLock(sessionId, () => {
+    if (!hasTranscript(payload, sessionId)) {
+      log(`Stop not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+      return;
+    }
     upsertStopQueue(payload, worldName, sessionId);
     scanTranscript(payload, sessionId, (kind, ref, detail) => {
       appendUsageEvent(paths.usageEventsFile(), { ts: nowIso(), session_id: sessionId, world: worldName, kind, ref, detail });
@@ -318,6 +355,10 @@ function handleSubagentStop(payload: Record<string, unknown>, world: HookWorld):
 function handleSessionEnd(payload: Record<string, unknown>, world: HookWorld): string {
   const sessionId = sessionIdOf(payload);
   const worldName = world.name || "default";
+  if (!hasTranscript(payload, sessionId)) {
+    log(`SessionEnd not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+    return "";
+  }
   markQueueEnded(payload, worldName, sessionId);
   return "";
 }

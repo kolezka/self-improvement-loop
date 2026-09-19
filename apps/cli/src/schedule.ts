@@ -84,7 +84,10 @@ export function renderSystemd(intervalMin: number, web: boolean): Record<string,
       "[Service]",
       "Type=simple",
       `ExecStart=${shim} web`,
-      "Restart=on-failure",
+      // always, not on-failure: `sil web` exits 0 on a plugin update so the
+      // restart picks up the new version.
+      "Restart=always",
+      "RestartSec=2",
       "",
       "[Install]",
       "WantedBy=default.target",

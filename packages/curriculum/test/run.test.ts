@@ -10,6 +10,7 @@ import {
   ledgerPath,
   type PromotionEntry,
   RULE_END,
+  RULE_START,
   ruleTag,
   targetRoot,
   type World,
@@ -20,6 +21,8 @@ import {
   branchName,
   draftMessages,
   git,
+  lintRule,
+  MAX_RULE_CHARS,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
   run,
@@ -88,6 +91,7 @@ function entry(fields: Partial<PromotionEntry> & { pattern: string }): Promotion
     artifact_type: "none",
     served_by: null,
     last_updated: "2026-09-01T00:00:00Z",
+    promoted_at: null,
     commit: null,
     feedback: null,
     ...fields,
@@ -294,6 +298,40 @@ describe("gates", () => {
     expect(existsSync(join(repo, "RULES.md"))).toBe(false);
   });
 
+  test("a refined rule that carries its own tag is normalised, not gated", async () => {
+    // The refine path shows the drafter the bullet it is replacing. That bullet
+    // lives in the managed block with a `<!--rule:pattern-->` tag, the drafter
+    // copies the tag, and the lint refuses a tagged bullet: the pattern is stuck
+    // on every run with no way out but a hand edit. The tag is the writer's, so
+    // reading drops it and a draft that still carries one is normalised.
+    const world = worldWith();
+    const repo = initTarget(world);
+    const old = `- old wording ${ruleTag(PATTERN)}`;
+    commitFile(repo, "RULES.md", `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+    const chat = new FakeChat({ draft: { artifact: `${ruleBody()} ${ruleTag(PATTERN)}` } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+
+    expect(report.gated_out).toEqual({});
+    expect(report.staged).toEqual([PATTERN]);
+    // The drafter never saw a tag, so it had none to copy.
+    expect(chat.promptsFor("drafter")[0]).toContain("- old wording");
+    expect(chat.promptsFor("drafter")[0]).not.toContain(ruleTag(PATTERN));
+    const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(found).toBe(true);
+    expect(text.split(ruleTag(PATTERN)).length - 1).toBe(1);
+    expect(text).toContain(ruleBody());
+  });
+
   test("a custom target without a marker pair refuses the rule write", async () => {
     const target = join(env.tmp, "someone-elses-repo");
     const world = makeWorld({ target });
@@ -415,6 +453,32 @@ describe("gates", () => {
     const report = await run(world, makeCfg({ per_run_cap: 1 }), opts({ apply: true, chat }));
     expect(report.staged).toEqual(["aaa-pattern"]);
     expect(report.gated_out["bbb-pattern"]).toContain("cap");
+  });
+
+  test("a gated-out pattern frees its cap slot for the next candidate", async () => {
+    // The starvation bug: the cap was spent while planning, so a pattern that
+    // fails a gate still burned a budget slot and a viable later pattern was
+    // stranded at over-cap, staging nothing. Here the alphabetically-first
+    // pattern fails the judge; with a cap of one the second must still get its
+    // turn and stage.
+    const world = makeWorld();
+    addReflections(world, "aaa-pattern", 3);
+    addReflections(world, "bbb-pattern", 3, { startDay: 20 });
+    initTarget(world);
+
+    const chat: ChatFn = async (role, messages) => {
+      const isAaa = messages[messages.length - 1]!.content.includes("aaa-pattern");
+      if (role === "judge") {
+        return JSON.stringify({ verdict: isAaa ? "no" : "yes", reason: isAaa ? "rule 2: vague" : "quoted" });
+      }
+      return JSON.stringify(skillDraft(isAaa ? "aaa-pattern" : "bbb-pattern", QUOTE));
+    };
+
+    const report = await run(world, makeCfg({ per_run_cap: 1 }), opts({ apply: true, chat }));
+
+    expect(report.staged).toEqual(["bbb-pattern"]);
+    expect(report.gated_out["aaa-pattern"]).toContain("judge:");
+    expect(report.gated_out["bbb-pattern"]).toBeUndefined();
   });
 
   test("a declined pattern stages nothing", async () => {
@@ -603,6 +667,22 @@ describe("redraft after a route change", () => {
     // drafter proposed hook or rule on every one of five real clusters.
     expect(prompt).toContain("does not fit one 300-character bullet");
     expect(prompt).toContain("reads many files, logs or tool outputs");
+  });
+
+  test("a rule written to the length the prompt states passes the lint", () => {
+    // The lint measures the line the writer produces, tag included. A prompt
+    // quoting the raw cap asks for a bullet that is then refused for being a
+    // few characters over, on every run, with nothing saying why.
+    const prompt = draftMessages(PATTERN, ["a lesson"], null, "rule").at(-1)!.content;
+    const stated = Number(/(?:at most|under) (\d+) characters/.exec(prompt)?.[1]);
+    expect(stated).toBeGreaterThan(0);
+    const bullet = "- " + "x".repeat(stated - 2);
+    expect(bullet.length).toBe(stated);
+    expect(lintRule(bullet, PATTERN)).toEqual([]);
+    // The stated number is the maximum, not just some length that fits: one
+    // character more is refused, and the raw cap never reaches the drafter.
+    expect(lintRule(bullet + "x", PATTERN).some((p) => p.includes("cap is"))).toBe(true);
+    expect(prompt).not.toContain(`${MAX_RULE_CHARS} characters`);
   });
 });
 

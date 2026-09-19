@@ -3,7 +3,7 @@
 
 import { join } from "node:path";
 import { Config, Endpoint, fsx, LlmConfig, loadConfig, paths, saveConfig, saveLlm, targetRoot, World, writeHookSnapshot } from "@sil/core";
-import { ensureLearnedRepo } from "../common.ts";
+import { git } from "@sil/curriculum";
 
 // The operator's LiteLLM route for every role unless --model says otherwise.
 export const DEFAULT_LITELLM_MODEL = "deepseek/deepseek-flash";
@@ -62,7 +62,7 @@ export function cmdInit(opts: InitOptions): number {
   }
 
   for (const world of cfg.worlds) {
-    if (world.target === null) ensureLearnedRepo(targetRoot(world));
+    if (world.target === null) git.ensureRepo(targetRoot(world));
     fsx.ensureDir(paths.reflectionsDir(world.name));
     fsx.ensureDir(paths.inboxDir(world.name));
   }

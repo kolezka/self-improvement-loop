@@ -32,8 +32,19 @@ export function resolveStaticPath(root: string, pathname: string): string | null
   return full;
 }
 
-function fileResponse(path: string): Response {
-  return new Response(Bun.file(path));
+/** What a browser may reuse after a plugin update rewrites dist/web.
+ *
+ * Everything the UI loads hangs off index.html, and vite gives every asset a
+ * content hash in its name, so the assets are safe to keep forever and the page
+ * that names them must never be. Left unset, the browser applies its own
+ * heuristic to an index.html whose mtime is days old, keeps serving the old
+ * bundle after an update, and the reload button appears to do nothing. */
+export function cacheControl(pathname: string): string {
+  return pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store";
+}
+
+function fileResponse(path: string, pathname: string): Response {
+  return new Response(Bun.file(path), { headers: { "cache-control": cacheControl(pathname) } });
 }
 
 export async function serveStatic(pathname: string): Promise<Response> {
@@ -51,6 +62,6 @@ export async function serveStatic(pathname: string): Promise<Response> {
     st = null;
   }
   // No directory listing: a directory hit is a miss, not an index.
-  if (st && st.isFile()) return fileResponse(target);
+  if (st && st.isFile()) return fileResponse(target, wanted);
   return new Response("not found", { status: 404 });
 }

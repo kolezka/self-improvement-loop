@@ -70,6 +70,19 @@ describe("sampleRecord", () => {
 });
 
 describe("redactCredentials", () => {
+  test("a long run of spaces after the header name is linear, not polynomial", () => {
+    // The first shape, `\s*(?:bearer)?\s*`, let the two whitespace runs trade
+    // characters on every backtrack. 20k spaces is far past the 500-char cap the
+    // hook applies, so a slow answer here would be a bug and not a load.
+    const input = `Authorization:${" ".repeat(20_000)}`;
+    const started = performance.now();
+    expect(redactCredentials(input)).toBe(input);
+    expect(performance.now() - started).toBeLessThan(200);
+    // The scheme word is still optional, with or without a space after the colon.
+    expect(redactCredentials("Authorization:Bearer abc")).toBe("Authorization:Bearer <redacted>");
+    expect(redactCredentials("Authorization: abc")).toBe("Authorization: <redacted>");
+  });
+
   test("is stable across calls despite the global regex flag", () => {
     const text = "export API_KEY=secret1 && export TOKEN=secret2";
     expect(redactCredentials(text)).toBe(redactCredentials(text));

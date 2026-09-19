@@ -18,8 +18,12 @@ export const SAMPLES_ROTATE_AT_BYTES = 2 * 1024 * 1024;
 export const SAMPLES_KEEP_LINES = 2000;
 
 // A gate matches flags and subcommands, never the value after them.
+//
+// The scheme word carries its own trailing whitespace so no two `\s` runs sit
+// next to each other: `\s*(?:bearer)?\s*` backtracks polynomially on a long run
+// of spaces (CodeQL js/polynomial-redos), and this runs on every tool call.
 const CREDENTIAL_RE =
-  /((?:authorization:\s*(?:bearer|basic|token)?\s*|bearer\s+|(?:token|api[_-]?key|password|passwd|secret)=)['"]?)[^\s'"]+/gi;
+  /((?:authorization:\s*(?:(?:bearer|basic|token)\s+)?|bearer\s+|(?:token|api[_-]?key|password|passwd|secret)=)['"]?)[^\s'"]+/gi;
 
 export function redactCredentials(text: string): string {
   return text.replace(CREDENTIAL_RE, "$1<redacted>");

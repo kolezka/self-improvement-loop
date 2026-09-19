@@ -1,7 +1,7 @@
-// Registry self-checks and the full 31-op tier/gate table. Every test that
+// Registry self-checks and the full 33-op tier/gate table. Every test that
 // mutates REGISTRY (self-check tests register throwaway ops) restores the
 // snapshot taken at the start of the test so other test files still see the
-// real 31 ops registered by the side-effecting "../src/index.ts" import.
+// real 33 ops registered by the side-effecting "../src/index.ts" import.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
@@ -50,9 +50,11 @@ describe("register() self-checks", () => {
   });
 });
 
-// Name -> [tier, gate]: the 30 ops of sil/ops.py plus llm.use and aliases.suggest.
+// Name -> [tier, gate]: the 30 ops of sil/ops.py plus llm.use, health.build and
+// aliases.suggest.
 const EXPECTED: Record<string, [Tier, GateKind]> = {
   "health.report": ["read", "none"],
+  "health.build": ["read", "none"],
   "worlds.list": ["read", "none"],
   "config.get": ["read", "none"],
   "config.set": ["local", "none"],
@@ -86,7 +88,7 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "logs.tail": ["read", "none"],
 };
 
-describe("the 31 real ops", () => {
+describe("the 33 real ops", () => {
   test("registry has exactly the expected op names", () => {
     expect(new Set(REGISTRY.keys())).toEqual(new Set(Object.keys(EXPECTED)));
   });

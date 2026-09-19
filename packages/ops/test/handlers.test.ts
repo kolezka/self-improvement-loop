@@ -4,7 +4,7 @@
 // a fake into a later test.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LlmConfig, loadLlm, paths, QueueEntry, saveLlm, type World } from "@sil/core";
@@ -364,5 +364,49 @@ describe("llm.status", () => {
     expect(result.endpoints[1]!.models).toEqual({ drafter: "m-b", judge: "m-b" });
     expect(result.endpoints[0]!.reachable).toBe(false);
     expect(result.endpoints[0]!.error).toContain("base_url");
+  });
+});
+
+// health.build answers two different questions with one call: the browser can
+// fix a new build by reloading, the server process cannot.
+describe("health.build", () => {
+  function writeSrcHash(hash: string, mtimeMs: number): void {
+    const dist = join(paths.pluginRoot(), "dist");
+    mkdirSync(dist, { recursive: true });
+    const file = join(dist, ".srchash");
+    writeFileSync(file, hash + "\n");
+    utimesSync(file, mtimeMs / 1000, mtimeMs / 1000);
+  }
+
+  test("reports the hash on disk, trimmed", async () => {
+    writeSrcHash("deadbeef", Date.now());
+    const info = (await invoke("health.build", {})) as { build: string };
+    expect(info.build).toBe("deadbeef");
+  });
+
+  test("reports a null build when there is no dist/, not an error", async () => {
+    const info = (await invoke("health.build", {})) as { build: string | null; server_stale: boolean };
+    expect(info.build).toBeNull();
+    expect(info.server_stale).toBe(false);
+  });
+
+  test("calls the server stale when dist/ was written after the process started", async () => {
+    writeSrcHash("newbuild", Date.now());
+    const info = (await invoke("health.build", {})) as { server_stale: boolean };
+    expect(info.server_stale).toBe(true);
+  });
+
+  test("does not call the server stale for a build older than the process", async () => {
+    const started = Date.now() - process.uptime() * 1000;
+    writeSrcHash("oldbuild", started - 60_000);
+    const info = (await invoke("health.build", {})) as { server_stale: boolean };
+    expect(info.server_stale).toBe(false);
+  });
+
+  test("reads disk on every call, so an update mid run is seen", async () => {
+    writeSrcHash("first", Date.now());
+    expect(((await invoke("health.build", {})) as { build: string }).build).toBe("first");
+    writeSrcHash("second", Date.now());
+    expect(((await invoke("health.build", {})) as { build: string }).build).toBe("second");
   });
 });

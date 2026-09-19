@@ -144,6 +144,22 @@ four defects in the fixes themselves. All four are fixed here.
       workflow declares `permissions: contents: read`, and the bun version moved into
       `.bun-version` so a contributor builds `dist/` on the version CI verifies it on.
 
+### First CI run (2026-09-19)
+
+The workflow this branch added ran for the first time on PR #18 and went red on
+one e2e test, which turned out to be a real hole rather than a CI quirk.
+
+- [x] `sil init` created the built-in `learned/` repo with no `user.name` and no
+      `user.email` of its own and gave an identity only to the initial empty
+      commit, so every later commit ran as whatever git could resolve globally.
+      On a machine with no global identity (CI, a container, a per-repo identity
+      setup) staging and accept both fail with "Author identity unknown", and the
+      curriculum run folds that into one `gated_out` string nobody prints: the
+      install looks alive and promotes nothing. The CLI helper and
+      `git.ensureRepo` are one path now, and `ensureRepo` fills in a missing
+      identity on a repo an older install already created. An identity git can
+      resolve is never overwritten.
+
 ### Still open, by design not by accident
 - [ ] No cross-artifact consistency check: the judge sees one draft against its own
       sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact

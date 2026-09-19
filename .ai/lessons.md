@@ -52,3 +52,13 @@
   nobody used, and the reason string named the rejection date while claiming it was
   the promotion. When a decision depends on when an event happened, store that
   event's own timestamp.
+- 2026-09-19: `Bun.spawnSync` gives the child the environment this process started
+  with, not one changed since. A test that set `GIT_CONFIG_GLOBAL` through
+  `process.env` and then asserted a git failure ran against the developer's real
+  identity and proved nothing. Pass `env` explicitly to the spawn, and put a
+  positive control in the test so an intact environment cannot pass as a fixed bug.
+- 2026-09-19: Two helpers that create the same repo drifted apart, and the one the
+  install actually calls was the one missing the durable git identity. Everything
+  worked on a machine with a global `user.email` and staged nothing on a machine
+  without one. When two code paths build the same artifact, make them one path; a
+  second implementation is a place for half the invariants to go missing.

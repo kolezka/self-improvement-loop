@@ -422,7 +422,7 @@ describe("the payload corpus", () => {
   });
 
   describe("recorded samples make a narrow gate testable", () => {
-    // The measured failure this fixes: 6 of 7 proposed hooks were downgraded
+    // The measured failure this fixes: 6 of 8 proposed hooks were downgraded
     // with "gate matched nothing", because a gate on a real flag cannot match a
     // synthetic fixture. Nothing about the gate changes here, only the corpus.
     const NARROW_GATE = { command_matches: "--no-verify" };

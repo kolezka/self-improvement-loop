@@ -139,7 +139,7 @@ export const MAX_SAMPLED_PAYLOADS = 2000;
  * The samples are there because the fixtures are synthetic. A gate on a real
  * command (`--no-verify`, `pkill`, `sed -i`) matches no fixture, so the router
  * reports "matched nothing" and downgrades the hook to a rule; measured today
- * that was 6 of the 7 hooks the drafter proposed. Only what a session actually
+ * that was 6 of the 8 hooks the drafter proposed. Only what a session actually
  * ran can test the claim that a discipline is mechanically detectable.
  *
  * The plugin's own corpus is always included: payloads are recorded shapes of

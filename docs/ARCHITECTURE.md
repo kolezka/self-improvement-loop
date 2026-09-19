@@ -289,8 +289,8 @@ failure:
 - The payload corpus is the plugin's fixtures plus the world's recorded
   `usage/payloads/<world>.jsonl` samples (newest 2000, deduplicated). A narrow
   gate on a real command (`--no-verify`, `pkill`) can never match twenty
-  synthetic fixtures; six of seven drafted hooks were downgraded to rules that
-  way before the samples existed. A gate firing on more than half of the corpus
+  synthetic fixtures; six of eight drafted hooks (eleven drafter runs on five
+  live clusters) were downgraded to rules that way before the samples existed. A gate firing on more than half of the corpus
   is refused as a broadcast, and the route reason carries the hit count.
 - The run report records `routed[pattern] = {drafted, type, reason}` for every
   pattern that reached the router, so a downgrade shows in `sil curriculum run`

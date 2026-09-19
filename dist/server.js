@@ -14256,7 +14256,7 @@ function ensureIdentity(repo) {
   git(repo, ["config", "commit.gpgsign", "false"]);
 }
 function ensureRepo(path) {
-  mkdirSync2(path, { recursive: true });
+  mkdirSync3(path, { recursive: true });
   if (isRepo(path)) {
     ensureIdentity(path);
     return path;
@@ -17546,7 +17546,7 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync6, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
 import { existsSync as existsSync8 } from "fs";
 import { dirname as dirname6, join as join16, resolve as resolve6 } from "path";
 
@@ -19034,20 +19034,20 @@ async function serveStatic(pathname) {
 
 // apps/server/src/token.ts
 import { randomBytes } from "crypto";
-import { chmodSync, mkdirSync as mkdirSync6, readFileSync as readFileSync4, writeFileSync as writeFileSync5 } from "fs";
+import { chmodSync, mkdirSync as mkdirSync7, readFileSync as readFileSync5, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname8 } from "path";
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
 function loadOrCreateToken(file = webTokenFile()) {
   try {
-    const stored = readFileSync4(file, "utf8").trim();
+    const stored = readFileSync5(file, "utf8").trim();
     if (stored)
       return stored;
   } catch {}
   const token = newToken();
-  mkdirSync6(dirname8(file), { recursive: true });
-  writeFileSync5(file, token + `
+  mkdirSync7(dirname8(file), { recursive: true });
+  writeFileSync6(file, token + `
 `, { mode: 384 });
   chmodSync(file, 384);
   return token;
@@ -19094,22 +19094,6 @@ function createServer(opts) {
     }
   });
   return server;
-}
-function urlHost(host) {
-  if (WILDCARD_HOSTS.has(host))
-    return "127.0.0.1";
-  return host.includes(":") ? `[${host}]` : host;
-}
-function privateAddresses() {
-  const out = [];
-  for (const addrs of Object.values(networkInterfaces())) {
-    for (const addr of addrs ?? []) {
-      if (addr.internal || !isPrivateAddress(addr.address))
-        continue;
-      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
-    }
-  }
-  return out;
 }
 function urlHost(host) {
   if (WILDCARD_HOSTS.has(host))

@@ -17873,8 +17873,9 @@ function stripNulls(v) {
   return v;
 }
 // packages/store/src/inbox.ts
-import { readdirSync as readdirSync4 } from "fs";
-import { join as join9 } from "path";
+import { mkdirSync as mkdirSync5, readdirSync as readdirSync4, renameSync as renameSync2 } from "fs";
+import { basename as basename2, join as join9 } from "path";
+var LESSON_ARCHIVE_AT_DELIVERIES = 5;
 function putLesson(lesson) {
   const p = join9(inboxDir(lesson.world), `${safeComponent(lesson.id)}.json`);
   writeJson(p, Lesson.parse(lesson));
@@ -17899,7 +17900,7 @@ function listLessons(world) {
   return out;
 }
 function markDelivered(world, id) {
-  const path = join10(inboxDir(world), `${safeComponent(id)}.json`);
+  const path = join9(inboxDir(world), `${safeComponent(id)}.json`);
   const raw = readJsonOr(path, null);
   const parsed = Lesson.safeParse(raw);
   if (!parsed.success)
@@ -17907,9 +17908,9 @@ function markDelivered(world, id) {
   const deliveries = parsed.data.deliveries + 1;
   writeJson(path, { ...parsed.data, deliveries });
   if (deliveries >= LESSON_ARCHIVE_AT_DELIVERIES) {
-    const archiveDir = join10(inboxDir(world), "archive");
+    const archiveDir = join9(inboxDir(world), "archive");
     mkdirSync5(archiveDir, { recursive: true });
-    renameSync2(path, join10(archiveDir, basename2(path)));
+    renameSync2(path, join9(archiveDir, basename2(path)));
   }
   return deliveries;
 }
@@ -18180,6 +18181,98 @@ async function chatClaudeCli(endpoint, model, messages, _opts) {
 
 // packages/transcript/src/index.ts
 import { existsSync as existsSync6, readFileSync as readFileSync3 } from "fs";
+
+// packages/transcript/src/openclaw.ts
+var SKILL_PATH_RE = /(?:^|\/)skills\/([A-Za-z0-9][A-Za-z0-9._-]*)\/SKILL\.md$/;
+var TOOL_NAMES = { exec: "Bash" };
+function asRecord(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+}
+function isOpenclawRecord(rec) {
+  if (rec["type"] === "session" && typeof rec["id"] === "string" && rec["message"] === undefined)
+    return true;
+  if (rec["type"] !== "message")
+    return false;
+  const message = asRecord(rec["message"]);
+  return message !== null && typeof message["role"] === "string" && rec["sessionId"] === undefined;
+}
+function textBlocks(content) {
+  if (typeof content === "string")
+    return content ? [{ type: "text", text: content }] : [];
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (block && block["type"] === "text")
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+  }
+  return out;
+}
+function skillBlock(id, name, args) {
+  if (name !== "read")
+    return null;
+  const path = args["path"];
+  if (typeof path !== "string")
+    return null;
+  const m = SKILL_PATH_RE.exec(path);
+  return m ? { type: "tool_use", id, name: "Skill", input: { skill: m[1] } } : null;
+}
+function assistantBlocks(content) {
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (!block)
+      continue;
+    if (block["type"] === "text") {
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+      continue;
+    }
+    if (block["type"] !== "toolCall")
+      continue;
+    const name = String(block["name"] ?? "");
+    const args = asRecord(block["arguments"]) ?? {};
+    const id = block["id"] != null ? String(block["id"]) : null;
+    out.push(skillBlock(id, name, args) ?? { type: "tool_use", id, name: TOOL_NAMES[name] ?? name, input: args });
+  }
+  return out;
+}
+function toolResultBlock(message) {
+  return {
+    type: "tool_result",
+    tool_use_id: message["toolCallId"] != null ? String(message["toolCallId"]) : "",
+    is_error: message["isError"] === true,
+    content: message["content"]
+  };
+}
+function* adaptOpenclawRecords(records) {
+  let sessionId = "";
+  for (const rec of records) {
+    const type = rec["type"];
+    if (type === "session") {
+      if (typeof rec["id"] === "string")
+        sessionId = rec["id"];
+      continue;
+    }
+    if (type !== "message")
+      continue;
+    const message = asRecord(rec["message"]);
+    if (!message)
+      continue;
+    const role = message["role"];
+    if (role === "user") {
+      yield { type: "user", sessionId, message: { content: textBlocks(message["content"]) } };
+    } else if (role === "assistant") {
+      yield { type: "assistant", sessionId, message: { content: assistantBlocks(message["content"]) } };
+    } else if (role === "toolResult") {
+      yield { type: "user", sessionId, message: { content: [toolResultBlock(message)] } };
+    }
+  }
+}
+
+// packages/transcript/src/index.ts
 var NOISE_TYPES = new Set(["ai-title", "last-prompt", "queue-operation", "atis-latch"]);
 var TEST_LIKE_RE = /pytest|jest|vitest|go test|cargo test|npm test|pnpm test|make test|ruff|eslint|tsc|mypy/;
 var SUMMARY_KEYS = ["command", "file_path", "skill", "subagent_type", "pattern", "path"];
@@ -19423,7 +19516,7 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync6, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
 import { existsSync as existsSync8 } from "fs";
 import { dirname as dirname6, join as join16, resolve as resolve6 } from "path";
 
@@ -19448,7 +19541,7 @@ import { dirname as dirname5, join as join15 } from "path";
 
 // packages/worker/src/outline.ts
 import { readdirSync as readdirSync8 } from "fs";
-import { basename as basename2, join as join14 } from "path";
+import { basename as basename3, join as join14 } from "path";
 async function exportNew(world, _cfg) {
   if (world.outline === null)
     return { skipped: "not configured" };
@@ -20425,7 +20518,7 @@ function relink(world, pattern, artifactType) {
   const rel = artifactRel(world, artifactType, pattern);
   const source = artifactType === "skill" ? dirname6(join16(target, rel)) : join16(target, rel);
   const link = artifactType === "skill" ? join16(claudeConfigDir(), "skills", pattern) : join16(claudeConfigDir(), "agents", `${pattern}.md`);
-  mkdirSync5(dirname6(link), { recursive: true });
+  mkdirSync6(dirname6(link), { recursive: true });
   let isLink = false;
   try {
     isLink = lstatSync2(link).isSymbolicLink();
@@ -20627,7 +20720,7 @@ function cmdHookSnapshot() {
 }
 
 // apps/cli/src/importer.ts
-import { copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync6, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
+import { copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync7, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
 import { join as join17, relative as relative3 } from "path";
 function walkMarkdownFiles(dir) {
   const out = [];
@@ -20673,7 +20766,7 @@ function importReflections(dir, world) {
       skippedDuplicate++;
       continue;
     }
-    mkdirSync6(join17(target, ".."), { recursive: true });
+    mkdirSync7(join17(target, ".."), { recursive: true });
     copyFileSync(p, target);
     copied++;
   }
@@ -20913,19 +21006,19 @@ function cmdLogs(name, opts) {
 }
 
 // apps/cli/src/commands/openclaw.ts
-import { existsSync as existsSync12 } from "fs";
-import { join as join24 } from "path";
+import { existsSync as existsSync11 } from "fs";
+import { join as join23 } from "path";
 
 // packages/openclaw/src/paths.ts
 import { homedir as homedir2 } from "os";
-import { isAbsolute as isAbsolute2, join as join20, resolve as resolve7 } from "path";
+import { isAbsolute as isAbsolute2, join as join19, resolve as resolve7 } from "path";
 var PLUGIN_ID = "self-improvement-loop";
 var SKILL_NAME = "self-improvement-loop";
 function expandHome2(p) {
   if (p === "~")
     return homedir2();
   if (p.startsWith("~/"))
-    return join20(homedir2(), p.slice(2));
+    return join19(homedir2(), p.slice(2));
   return p;
 }
 function openclawDir(env = process.env) {
@@ -20933,19 +21026,19 @@ function openclawDir(env = process.env) {
   if (configured)
     return resolve7(expandHome2(configured));
   const home = env.OPENCLAW_HOME || homedir2();
-  return join20(home, ".openclaw");
+  return join19(home, ".openclaw");
 }
 function configFile2(env = process.env) {
-  return join20(openclawDir(env), "openclaw.json");
+  return join19(openclawDir(env), "openclaw.json");
 }
 function agentsDir(env = process.env) {
-  return join20(openclawDir(env), "agents");
+  return join19(openclawDir(env), "agents");
 }
 function extensionsDir(env = process.env) {
-  return join20(openclawDir(env), "extensions");
+  return join19(openclawDir(env), "extensions");
 }
 function pluginDir(env = process.env) {
-  return join20(extensionsDir(env), PLUGIN_ID);
+  return join19(extensionsDir(env), PLUGIN_ID);
 }
 function workspaceDir(env = process.env) {
   const configured = env.OPENCLAW_WORKSPACE_DIR || env.OPENCLAW_WORKSPACE;
@@ -20959,17 +21052,17 @@ function workspaceDir(env = process.env) {
     const expanded = expandHome2(fromConfig);
     return isAbsolute2(expanded) ? expanded : resolve7(openclawDir(env), expanded);
   }
-  return join20(openclawDir(env), "workspace");
+  return join19(openclawDir(env), "workspace");
 }
 function skillDir(workspace) {
-  return join20(workspace, "skills", SKILL_NAME);
+  return join19(workspace, "skills", SKILL_NAME);
 }
 function installed(env = process.env) {
   return exists(openclawDir(env));
 }
 // packages/openclaw/src/sessions.ts
 import { readdirSync as readdirSync11, statSync as statSync10 } from "fs";
-import { basename as basename4, join as join21 } from "path";
+import { basename as basename4, join as join20 } from "path";
 function readDirOr(dir) {
   try {
     return readdirSync11(dir).sort();
@@ -21004,11 +21097,11 @@ function listSessions(env = process.env) {
   const fallbackCwd = workspaceDir(env);
   const out = [];
   for (const agentId of readDirOr(root)) {
-    const sessionsDir = join21(root, agentId, "sessions");
+    const sessionsDir = join20(root, agentId, "sessions");
     for (const name of readDirOr(sessionsDir)) {
       if (!name.endsWith(".jsonl"))
         continue;
-      const file = join21(sessionsDir, name);
+      const file = join20(sessionsDir, name);
       let mtime;
       try {
         mtime = statSync10(file).mtimeMs;
@@ -21081,7 +21174,7 @@ function scanSessions(cfg, opts = {}) {
   return out;
 }
 // packages/openclaw/src/workspace.ts
-import { join as join22 } from "path";
+import { join as join21 } from "path";
 var BLOCK_START = "<!--sil:start-->";
 var BLOCK_END = "<!--sil:end-->";
 var MAX_BLOCK_CHARS = 4000;
@@ -21090,7 +21183,7 @@ var DEFAULT_LESSON_LIMIT = 5;
 function rulesText(world) {
   if (!world.rules_inject)
     return "";
-  const path = join22(targetRoot(world), world.layout.rules_file);
+  const path = join21(targetRoot(world), world.layout.rules_file);
   const text = readTextOr(path, "");
   const start = text.indexOf(RULE_START);
   const end = text.indexOf(RULE_END);
@@ -21145,7 +21238,7 @@ function syncWorkspace(world, opts) {
   const file = opts.file ?? DEFAULT_BOOTSTRAP_FILE;
   const limit = opts.limit ?? DEFAULT_LESSON_LIMIT;
   const maxChars = opts.maxChars ?? MAX_BLOCK_CHARS;
-  const path = join22(opts.workspace, file);
+  const path = join21(opts.workspace, file);
   const rules = fitRules(world.name, rulesText(world), maxChars);
   const candidates = listLessons(world.name).slice(0, limit);
   const delivered = [];
@@ -21171,25 +21264,25 @@ function syncWorkspace(world, opts) {
 }
 // packages/openclaw/src/install.ts
 import { copyFileSync as copyFileSync2, readdirSync as readdirSync12, statSync as statSync11 } from "fs";
-import { join as join23 } from "path";
+import { join as join22 } from "path";
 var PLUGIN_CONFIG_FILE = "sil-config.json";
 function sourceDir() {
-  return join23(pluginRoot(), "integrations", "openclaw");
+  return join22(pluginRoot(), "integrations", "openclaw");
 }
 function silCommand() {
-  const shim = join23(pluginRoot(), "scripts", "sil");
+  const shim = join22(pluginRoot(), "scripts", "sil");
   return exists(shim) ? shim : "sil";
 }
 function copyDir(from, to) {
   ensureDir(to);
   const written = [];
   for (const name of readdirSync12(from).sort()) {
-    const src = join23(from, name);
+    const src = join22(from, name);
     if (statSync11(src).isDirectory()) {
-      written.push(...copyDir(src, join23(to, name)));
+      written.push(...copyDir(src, join22(to, name)));
       continue;
     }
-    const dest = join23(to, name);
+    const dest = join22(to, name);
     copyFileSync2(src, dest);
     written.push(dest);
   }
@@ -21202,20 +21295,20 @@ function installIntegration(opts) {
     throw new Error(`openclaw integration sources missing: ${src}`);
   }
   const pluginDir2 = pluginDir(env);
-  const files = copyDir(join23(src, "plugin"), pluginDir2);
+  const files = copyDir(join22(src, "plugin"), pluginDir2);
   const config = {
     sil: silCommand(),
     world: opts.world,
     state_dir: stateDir()
   };
-  const configPath = join23(pluginDir2, PLUGIN_CONFIG_FILE);
+  const configPath = join22(pluginDir2, PLUGIN_CONFIG_FILE);
   writeJson(configPath, config);
   files.push(configPath);
   const workspace = opts.workspace ?? workspaceDir(env);
   const skillDir2 = skillDir(workspace);
   ensureDir(skillDir2);
-  const skillFile = join23(skillDir2, "SKILL.md");
-  copyFileSync2(join23(src, "skill", "SKILL.md"), skillFile);
+  const skillFile = join22(skillDir2, "SKILL.md");
+  copyFileSync2(join22(src, "skill", "SKILL.md"), skillFile);
   files.push(skillFile);
   const enabled = opts.enable === true ? enablePlugin(env) : false;
   return { plugin_dir: pluginDir2, skill_file: skillFile, files, enabled, config_file: configFile2(env) };
@@ -21318,9 +21411,9 @@ function cmdOpenclawStatus(opts) {
     installed: installed2,
     workspace,
     plugin_dir: pluginDir(),
-    plugin_installed: existsSync12(join24(pluginDir(), "openclaw.plugin.json")),
+    plugin_installed: existsSync11(join23(pluginDir(), "openclaw.plugin.json")),
     plugin_enabled: installed2 ? pluginEnabled() : false,
-    skill_installed: workspace ? existsSync12(join24(skillDir(workspace), "SKILL.md")) : false,
+    skill_installed: workspace ? existsSync11(join23(skillDir(workspace), "SKILL.md")) : false,
     sessions: sessions.length,
     queued: sessions.filter((s) => loadEntry("pending", s.session_id) !== null).length
   };
@@ -21484,9 +21577,9 @@ function cmdReviewRetire(pattern, opts, deps = defaultDeps) {
 }
 
 // apps/cli/src/schedule.ts
-import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync6 } from "fs";
-import { homedir as homedir2 } from "os";
-import { dirname as dirname7, join as join19 } from "path";
+import { chmodSync, copyFileSync as copyFileSync3, existsSync as existsSync12, mkdirSync as mkdirSync8, readdirSync as readdirSync13, rmSync as rmSync5, writeFileSync as writeFileSync6 } from "fs";
+import { homedir as homedir3 } from "os";
+import { dirname as dirname7, join as join24 } from "path";
 var SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"];
 var SYSTEMD_WEB_UNIT = "sil-web.service";
 var LAUNCHD_WORKER_PLIST = "com.raqz.sil-worker.plist";
@@ -21502,13 +21595,13 @@ function home() {
   return process.env["HOME"] || homedir3();
 }
 function shimPath() {
-  return join19(home(), ".local", "bin", "sil");
+  return join24(home(), ".local", "bin", "sil");
 }
 function systemdDir() {
-  return join19(home(), ".config", "systemd", "user");
+  return join24(home(), ".config", "systemd", "user");
 }
 function launchdDir() {
-  return join19(home(), "Library", "LaunchAgents");
+  return join24(home(), "Library", "LaunchAgents");
 }
 function renderSystemd(intervalMin, web) {
   const shim = shimPath();
@@ -21598,9 +21691,9 @@ function renderLaunchd(intervalMin, web) {
 }
 function installShim() {
   const dest = shimPath();
-  mkdirSync7(dirname7(dest), { recursive: true });
-  const src = join19(pluginRoot(), "scripts", "sil");
-  copyFileSync2(src, dest);
+  mkdirSync8(dirname7(dest), { recursive: true });
+  const src = join24(pluginRoot(), "scripts", "sil");
+  copyFileSync3(src, dest);
   chmodSync(dest, 493);
   return dest;
 }
@@ -21611,7 +21704,7 @@ function install2(kind, intervalMin = 60, web = false, run = realRunner) {
     mkdirSync8(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderSystemd(intervalMin, web))) {
-      const p = join19(d, name);
+      const p = join24(d, name);
       writeFileSync6(p, content, "utf8");
       written.push(p);
     }
@@ -21626,7 +21719,7 @@ function install2(kind, intervalMin = 60, web = false, run = realRunner) {
     mkdirSync8(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderLaunchd(intervalMin, web))) {
-      const p = join19(d, name);
+      const p = join24(d, name);
       writeFileSync6(p, content, "utf8");
       written.push(p);
       run(["launchctl", "load", p]);
@@ -21642,8 +21735,8 @@ function uninstall(kind, run = realRunner) {
     run(["systemctl", "--user", "disable", "--now", SYSTEMD_WEB_UNIT]);
     const removed = [];
     for (const name of [...SYSTEMD_WORKER_UNITS, SYSTEMD_WEB_UNIT]) {
-      const p = join19(d, name);
-      if (existsSync11(p)) {
+      const p = join24(d, name);
+      if (existsSync12(p)) {
         rmSync5(p);
         removed.push(p);
       }
@@ -21655,8 +21748,8 @@ function uninstall(kind, run = realRunner) {
     const d = launchdDir();
     const removed = [];
     for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST, ...LEGACY_LAUNCHD_PLISTS]) {
-      const p = join19(d, name);
-      if (existsSync11(p)) {
+      const p = join24(d, name);
+      if (existsSync12(p)) {
         run(["launchctl", "unload", p]);
         rmSync5(p);
         removed.push(p);
@@ -21668,9 +21761,9 @@ function uninstall(kind, run = realRunner) {
 }
 function show2() {
   const d = systemdDir();
-  const systemd = existsSync11(d) ? readdirSync11(d).filter((n) => n.startsWith("sil-")).sort() : [];
+  const systemd = existsSync12(d) ? readdirSync13(d).filter((n) => n.startsWith("sil-")).sort() : [];
   const ld = launchdDir();
-  const launchd = existsSync11(ld) ? readdirSync11(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
+  const launchd = existsSync12(ld) ? readdirSync13(ld).filter((n) => LAUNCHD_PREFIXES.some((pre) => n.startsWith(pre)) && n.endsWith(".plist")).sort() : [];
   return { systemd, launchd };
 }
 
@@ -21969,14 +22062,14 @@ function lessonsList(args) {
 }
 
 // packages/ops/src/spawn.ts
-import { closeSync as closeSync2, existsSync as existsSync12, openSync as openSync2 } from "fs";
-import { dirname as dirname8, join as join20 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync13, openSync as openSync2 } from "fs";
+import { dirname as dirname8, join as join25 } from "path";
 function cliCommand(args) {
   const root = pluginRoot();
-  const distCli = join20(root, "dist", "cli.js");
-  if (existsSync12(distCli))
+  const distCli = join25(root, "dist", "cli.js");
+  if (existsSync13(distCli))
     return ["bun", distCli, ...args];
-  return ["bun", "run", join20(root, "apps", "cli", "src", "main.ts"), ...args];
+  return ["bun", "run", join25(root, "apps", "cli", "src", "main.ts"), ...args];
 }
 function spawnCli(args, logName) {
   const logPath = logFile(logName);
@@ -22005,16 +22098,16 @@ function curriculumRun(args) {
 }
 
 // packages/ops/src/handlers/health.ts
-import { readFileSync as readFileSync4, statSync as statSync10 } from "fs";
-import { join as join21 } from "path";
+import { readFileSync as readFileSync4, statSync as statSync12 } from "fs";
+import { join as join26 } from "path";
 var SIL_VERSION = "0.2.7";
 function buildInfo(_args) {
-  const path = join21(pluginRoot(), "dist", ".srchash");
+  const path = join26(pluginRoot(), "dist", ".srchash");
   let build = null;
   let builtAt = null;
   try {
     build = readFileSync4(path, "utf8").trim() || null;
-    builtAt = statSync10(path).mtime.toISOString();
+    builtAt = statSync12(path).mtime.toISOString();
   } catch {}
   const startedMs = Date.now() - process.uptime() * 1000;
   return {
@@ -22078,9 +22171,9 @@ async function llmStatus(args) {
 }
 
 // packages/ops/src/handlers/logs.ts
-import { closeSync as closeSync3, existsSync as existsSync13, openSync as openSync3, readSync, statSync as statSync11 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync14, openSync as openSync3, readSync, statSync as statSync13 } from "fs";
 var TAIL_BLOCK_SIZE = 64 * 1024;
-var REAL_TAIL_IO = { existsSync: existsSync13, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync11 };
+var REAL_TAIL_IO = { existsSync: existsSync14, openSync: openSync3, readSync, closeSync: closeSync3, statSync: statSync13 };
 function tailLines(path, n, io = REAL_TAIL_IO, knownSize) {
   if (knownSize === undefined && !io.existsSync(path))
     return [];
@@ -22117,7 +22210,7 @@ function logsTail(args) {
   let size = 0;
   let exists = true;
   try {
-    size = statSync11(path).size;
+    size = statSync13(path).size;
   } catch {
     exists = false;
   }
@@ -22343,8 +22436,8 @@ async function handleOp(request, route, url) {
 }
 
 // apps/server/src/static.ts
-import { existsSync as existsSync14, statSync as statSync12 } from "fs";
-import { join as join23, normalize, sep } from "path";
+import { existsSync as existsSync15, statSync as statSync14 } from "fs";
+import { join as join28, normalize, sep } from "path";
 function staticRoot() {
   return join28(pluginRoot(), "dist", "web");
 }
@@ -22374,7 +22467,7 @@ function fileResponse(path, pathname) {
 }
 async function serveStatic(pathname) {
   const root = staticRoot();
-  if (!existsSync14(root))
+  if (!existsSync15(root))
     return new Response("not found", { status: 404 });
   const wanted = pathname === "/" ? "/index.html" : pathname;
   const target = resolveStaticPath(root, wanted);
@@ -22382,7 +22475,7 @@ async function serveStatic(pathname) {
     return new Response("not found", { status: 404 });
   let st;
   try {
-    st = statSync12(target);
+    st = statSync14(target);
   } catch {
     st = null;
   }
@@ -22393,20 +22486,20 @@ async function serveStatic(pathname) {
 
 // apps/server/src/token.ts
 import { randomBytes } from "crypto";
-import { chmodSync as chmodSync2, mkdirSync as mkdirSync8, readFileSync as readFileSync4, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync9, readFileSync as readFileSync5, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname9 } from "path";
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
 function loadOrCreateToken(file = webTokenFile()) {
   try {
-    const stored = readFileSync4(file, "utf8").trim();
+    const stored = readFileSync5(file, "utf8").trim();
     if (stored)
       return stored;
   } catch {}
   const token = newToken();
-  mkdirSync8(dirname9(file), { recursive: true });
-  writeFileSync6(file, token + `
+  mkdirSync9(dirname9(file), { recursive: true });
+  writeFileSync7(file, token + `
 `, { mode: 384 });
   chmodSync2(file, 384);
   return token;
@@ -22470,22 +22563,6 @@ function privateAddresses() {
   }
   return out;
 }
-function urlHost(host) {
-  if (WILDCARD_HOSTS.has(host))
-    return "127.0.0.1";
-  return host.includes(":") ? `[${host}]` : host;
-}
-function privateAddresses() {
-  const out = [];
-  for (const addrs of Object.values(networkInterfaces())) {
-    for (const addr of addrs ?? []) {
-      if (addr.internal || !isPrivateAddress(addr.address))
-        continue;
-      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
-    }
-  }
-  return out;
-}
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
   const token = opts.token ?? !isLoopbackHost(host) ? loadOrCreateToken() : null;
@@ -22500,22 +22577,22 @@ function serve(opts) {
 if (false) {}
 
 // apps/cli/src/webUpdate.ts
-import { readFileSync as readFileSync5 } from "fs";
-import { join as join24, sep as sep2 } from "path";
+import { readFileSync as readFileSync6 } from "fs";
+import { join as join29, sep as sep2 } from "path";
 var PLUGIN_NAME = "self-improvement-loop";
 function readText2(file) {
   try {
-    return readFileSync5(file, "utf8").trim();
+    return readFileSync6(file, "utf8").trim();
   } catch {
     return "";
   }
 }
 function isInstalledCopy(root, claudeConfig = claudeConfigDir()) {
-  const cache = join24(claudeConfig, "plugins") + sep2;
+  const cache = join29(claudeConfig, "plugins") + sep2;
   return root.startsWith(cache);
 }
 function installedStamp(claudeConfig = claudeConfigDir()) {
-  const raw = readText2(join24(claudeConfig, "plugins", "installed_plugins.json"));
+  const raw = readText2(join29(claudeConfig, "plugins", "installed_plugins.json"));
   if (!raw)
     return "";
   let data;
@@ -22532,7 +22609,7 @@ function installedStamp(claudeConfig = claudeConfigDir()) {
   return `${String(newest["installPath"] ?? "")}@${String(newest["lastUpdated"] ?? "")}`;
 }
 function updateStamp(root = pluginRoot(), claudeConfig = claudeConfigDir()) {
-  const build = readText2(join24(root, "dist", ".srchash"));
+  const build = readText2(join29(root, "dist", ".srchash"));
   const installed = isInstalledCopy(root, claudeConfig) ? installedStamp(claudeConfig) : "";
   return `${build}|${installed}`;
 }

@@ -14010,8 +14010,8 @@ function stripNulls(v) {
   return v;
 }
 // packages/store/src/inbox.ts
-import { readdirSync as readdirSync2 } from "fs";
-import { join as join5 } from "path";
+import { mkdirSync as mkdirSync2, readdirSync as readdirSync2, renameSync as renameSync2 } from "fs";
+import { basename as basename2, join as join5 } from "path";
 function putLesson(lesson) {
   const p = join5(inboxDir(lesson.world), `${safeComponent(lesson.id)}.json`);
   writeJson(p, Lesson.parse(lesson));
@@ -14172,7 +14172,7 @@ __export(exports_git, {
   signalMessage: () => signalMessage,
   withScratchWorktree: () => withScratchWorktree
 });
-import { mkdirSync as mkdirSync2, mkdtempSync, rmSync as rmSync2, statSync as statSync3 } from "fs";
+import { mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync2, statSync as statSync3 } from "fs";
 import { tmpdir } from "os";
 import { join as join7 } from "path";
 var DEFAULT_TIMEOUT_MS = 60000;
@@ -14256,7 +14256,7 @@ function ensureIdentity(repo) {
   git(repo, ["config", "commit.gpgsign", "false"]);
 }
 function ensureRepo(path) {
-  mkdirSync2(path, { recursive: true });
+  mkdirSync3(path, { recursive: true });
   if (isRepo(path)) {
     ensureIdentity(path);
     return path;
@@ -14270,7 +14270,7 @@ function ensureRepo(path) {
 }
 function hooksOff(parent) {
   const empty = join7(parent, "nohooks");
-  mkdirSync2(empty, { recursive: true });
+  mkdirSync3(empty, { recursive: true });
   return ["-c", `core.hooksPath=${empty}`];
 }
 function withScratchWorktree(repo, branch, base, fn) {
@@ -14346,7 +14346,7 @@ __export(exports_artifacts, {
   stripRuleTag: () => stripRuleTag,
   writeArtifact: () => writeArtifact
 });
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync4, rmdirSync, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync4, rmdirSync, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
 import { dirname as dirname3, join as join8, resolve as resolve3 } from "path";
 var TYPES = ["skill", "hook", "rule", "agent"];
 var HOOK_KEYS = ["pattern", "event", "matcher", "gate", "once_per", "text"];
@@ -14412,7 +14412,7 @@ function writeArtifact(world, artifactType, pattern, payload, root) {
     writeRule(path, pattern, String(payload).trim());
     return path;
   }
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname3(path), { recursive: true });
   if (artifactType === "hook") {
     writeFileSync2(path, JSON.stringify(hookPayload(payload), null, 2) + `
 `, "utf8");
@@ -14528,7 +14528,7 @@ function ensureRulesFile(world, root) {
   const path = join8(rootFor(world, root), strip(world.layout.rules_file));
   if (existsSync3(path))
     return path;
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname3(path), { recursive: true });
   writeFileSync2(path, `# Learned rules
 
 Promoted by the loop. Edit outside the markers only.
@@ -14699,7 +14699,7 @@ import { join as join9 } from "path";
 
 // packages/nudges/src/firelog.ts
 import { createHash } from "crypto";
-import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync2, rmSync as rmSync3, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
+import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync2, rmSync as rmSync3, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname4 } from "path";
 var ROTATE_AT_BYTES2 = 10 * 1024 * 1024;
 var ROTATE_KEEP_LINES2 = 5000;
@@ -14737,7 +14737,7 @@ function withDirLock(lockDir, fn, staleMs = DEFAULT_STALE_MS) {
   for (;; ) {
     let held = false;
     try {
-      mkdirSync4(lockDir);
+      mkdirSync5(lockDir);
       held = true;
     } catch (e) {
       if (e.code !== "EEXIST")
@@ -14782,7 +14782,7 @@ function rotateIfNeeded(path, rotateAt, keep) {
 }
 function appendLine2(path, line, rotateAt = ROTATE_AT_BYTES2, keep = ROTATE_KEEP_LINES2) {
   try {
-    mkdirSync4(dirname4(path), { recursive: true });
+    mkdirSync5(dirname4(path), { recursive: true });
     withDirLock(`${path}.lockdir`, () => {
       rotateIfNeeded(path, rotateAt, keep);
       appendFileSync2(path, line.endsWith(`
@@ -14799,7 +14799,7 @@ function markerSlug(raw) {
 function claimMarker(sessionDir, name) {
   try {
     const markers = `${sessionDir}/nudge-markers`;
-    mkdirSync4(markers, { recursive: true });
+    mkdirSync5(markers, { recursive: true });
     const mark = `${markers}/${markerSlug(name)}`;
     if (existsSync4(mark))
       return false;
@@ -16211,10 +16211,102 @@ async function chatClaudeCli(endpoint, model, messages, _opts) {
 
 // packages/transcript/src/index.ts
 import { existsSync as existsSync6, readFileSync as readFileSync3 } from "fs";
+
+// packages/transcript/src/openclaw.ts
+var SKILL_PATH_RE = /(?:^|\/)skills\/([A-Za-z0-9][A-Za-z0-9._-]*)\/SKILL\.md$/;
+var TOOL_NAMES = { exec: "Bash" };
+function asRecord(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+}
+function isOpenclawRecord(rec) {
+  if (rec["type"] === "session" && typeof rec["id"] === "string" && rec["message"] === undefined)
+    return true;
+  if (rec["type"] !== "message")
+    return false;
+  const message = asRecord(rec["message"]);
+  return message !== null && typeof message["role"] === "string" && rec["sessionId"] === undefined;
+}
+function textBlocks(content) {
+  if (typeof content === "string")
+    return content ? [{ type: "text", text: content }] : [];
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (block && block["type"] === "text")
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+  }
+  return out;
+}
+function skillBlock(id, name, args) {
+  if (name !== "read")
+    return null;
+  const path = args["path"];
+  if (typeof path !== "string")
+    return null;
+  const m = SKILL_PATH_RE.exec(path);
+  return m ? { type: "tool_use", id, name: "Skill", input: { skill: m[1] } } : null;
+}
+function assistantBlocks(content) {
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (!block)
+      continue;
+    if (block["type"] === "text") {
+      out.push({ type: "text", text: String(block["text"] ?? "") });
+      continue;
+    }
+    if (block["type"] !== "toolCall")
+      continue;
+    const name = String(block["name"] ?? "");
+    const args = asRecord(block["arguments"]) ?? {};
+    const id = block["id"] != null ? String(block["id"]) : null;
+    out.push(skillBlock(id, name, args) ?? { type: "tool_use", id, name: TOOL_NAMES[name] ?? name, input: args });
+  }
+  return out;
+}
+function toolResultBlock(message) {
+  return {
+    type: "tool_result",
+    tool_use_id: message["toolCallId"] != null ? String(message["toolCallId"]) : "",
+    is_error: message["isError"] === true,
+    content: message["content"]
+  };
+}
+function* adaptOpenclawRecords(records) {
+  let sessionId = "";
+  for (const rec of records) {
+    const type = rec["type"];
+    if (type === "session") {
+      if (typeof rec["id"] === "string")
+        sessionId = rec["id"];
+      continue;
+    }
+    if (type !== "message")
+      continue;
+    const message = asRecord(rec["message"]);
+    if (!message)
+      continue;
+    const role = message["role"];
+    if (role === "user") {
+      yield { type: "user", sessionId, message: { content: textBlocks(message["content"]) } };
+    } else if (role === "assistant") {
+      yield { type: "assistant", sessionId, message: { content: assistantBlocks(message["content"]) } };
+    } else if (role === "toolResult") {
+      yield { type: "user", sessionId, message: { content: [toolResultBlock(message)] } };
+    }
+  }
+}
+
+// packages/transcript/src/index.ts
 var NOISE_TYPES = new Set(["ai-title", "last-prompt", "queue-operation", "atis-latch"]);
 var TEST_LIKE_RE = /pytest|jest|vitest|go test|cargo test|npm test|pnpm test|make test|ruff|eslint|tsc|mypy/;
 var SUMMARY_KEYS = ["command", "file_path", "skill", "subagent_type", "pattern", "path"];
-function asRecord(v) {
+function asRecord2(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : null;
 }
 function asArray(v) {
@@ -16244,18 +16336,35 @@ function* iterRecords(path, maxBytes = 50000000) {
     } catch {
       continue;
     }
-    const obj = asRecord(rec);
+    const obj = asRecord2(rec);
     if (obj)
       yield obj;
   }
 }
+function* iterEvidenceRecords(path, maxBytes = 50000000) {
+  const raw = iterRecords(path, maxBytes);
+  const first = raw.next();
+  if (first.done)
+    return;
+  if (isOpenclawRecord(first.value)) {
+    yield* adaptOpenclawRecords(prepend(first.value, raw));
+    return;
+  }
+  yield first.value;
+  yield* raw;
+}
+function* prepend(head, rest) {
+  yield head;
+  for (let step = rest.next();!step.done; step = rest.next())
+    yield step.value;
+}
 function countToolUses(path) {
   let count = 0;
-  for (const rec of iterRecords(path)) {
+  for (const rec of iterEvidenceRecords(path)) {
     if (rec["type"] !== "assistant")
       continue;
     for (const block of contentBlocks(rec)) {
-      const b = asRecord(block);
+      const b = asRecord2(block);
       if (b && b["type"] === "tool_use")
         count++;
     }
@@ -16263,16 +16372,16 @@ function countToolUses(path) {
   return count;
 }
 function contentBlocks(rec) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   return asArray(message["content"]);
 }
 function recordText(rec) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   const content = message["content"];
   if (typeof content === "string")
     return content;
   if (Array.isArray(content)) {
-    const parts = content.map((b) => asRecord(b)).filter((b) => b !== null && b["type"] === "text").map((b) => String(b["text"] ?? ""));
+    const parts = content.map((b) => asRecord2(b)).filter((b) => b !== null && b["type"] === "text").map((b) => String(b["text"] ?? ""));
     return parts.join(`
 `);
   }
@@ -16284,7 +16393,7 @@ function stringifyToolResultContent(content) {
   if (Array.isArray(content)) {
     const parts = [];
     for (const b of content) {
-      const obj = asRecord(b);
+      const obj = asRecord2(b);
       if (obj && obj["type"] === "text")
         parts.push(String(obj["text"] ?? ""));
       else if (typeof b === "string")
@@ -16306,7 +16415,7 @@ function toolSummary(inp) {
   return Object.keys(inp).length > 0 ? JSON.stringify(inp).slice(0, 160) : "";
 }
 function recordHook(rec, hooks) {
-  const att = asRecord(rec["attachment"]);
+  const att = asRecord2(rec["attachment"]);
   if (!att || !att["hookName"])
     return;
   const name = String(att["hookName"]);
@@ -16318,15 +16427,15 @@ function recordHook(rec, hooks) {
   h.max_ms = Math.max(h.max_ms, Number.isFinite(ms) ? ms : 0);
 }
 function recordUser(rec, prompts, counts, toolResultById, errors) {
-  const message = asRecord(rec["message"]) ?? {};
+  const message = asRecord2(rec["message"]) ?? {};
   const content = message["content"];
   const blocks = asArray(content);
   const hasText = typeof content === "string" || blocks.some((b) => {
-    const obj = asRecord(b);
+    const obj = asRecord2(b);
     return obj !== null && obj["type"] === "text";
   });
   for (const b of blocks) {
-    const obj = asRecord(b);
+    const obj = asRecord2(b);
     if (!obj || obj["type"] !== "tool_result")
       continue;
     const toolUseId = obj["tool_use_id"];
@@ -16358,7 +16467,7 @@ function evidencePack(transcriptPath, cwd, opts = {}) {
   const hooks = {};
   const errors = [];
   const counts = { tool_uses: 0, turns: 0, user_prompts: 0, attachments: 0 };
-  for (const rec of iterRecords(transcriptPath)) {
+  for (const rec of iterEvidenceRecords(transcriptPath)) {
     const rtype = rec["type"];
     if (typeof rtype === "string" && NOISE_TYPES.has(rtype))
       continue;
@@ -16379,12 +16488,12 @@ function evidencePack(transcriptPath, cwd, opts = {}) {
       if (text && text.trim())
         finalAssistantTexts.push(text.trim().slice(0, 800));
       for (const block of contentBlocks(rec)) {
-        const b = asRecord(block);
+        const b = asRecord2(block);
         if (!b || b["type"] !== "tool_use")
           continue;
         counts.tool_uses += 1;
         const name = String(b["name"] ?? "");
-        const inp = asRecord(b["input"]) ?? {};
+        const inp = asRecord2(b["input"]) ?? {};
         const summary = toolSummary(inp);
         toolUseEntries.push({ id: b["id"] != null ? String(b["id"]) : null, name, summary: summary.slice(0, 160) });
         if (name === "Skill" && inp["skill"])
@@ -17437,7 +17546,7 @@ __export(exports_src6, {
   setScratchWorktree: () => setScratchWorktree,
   snapshot: () => snapshot
 });
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync6, readlinkSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "fs";
 import { existsSync as existsSync8 } from "fs";
 import { dirname as dirname6, join as join16, resolve as resolve6 } from "path";
 
@@ -17462,7 +17571,7 @@ import { dirname as dirname5, join as join15 } from "path";
 
 // packages/worker/src/outline.ts
 import { readdirSync as readdirSync8 } from "fs";
-import { basename as basename2, join as join14 } from "path";
+import { basename as basename3, join as join14 } from "path";
 async function exportNew(world, _cfg) {
   if (world.outline === null)
     return { skipped: "not configured" };
@@ -17481,7 +17590,7 @@ async function exportNew(world, _cfg) {
     return { exported, errors };
   }
   for (const name of names) {
-    const rid = basename2(name, ".md");
+    const rid = basename3(name, ".md");
     if (exportedIds.has(rid))
       continue;
     let body;
@@ -18439,7 +18548,7 @@ function relink(world, pattern, artifactType) {
   const rel = artifactRel(world, artifactType, pattern);
   const source = artifactType === "skill" ? dirname6(join16(target, rel)) : join16(target, rel);
   const link = artifactType === "skill" ? join16(claudeConfigDir(), "skills", pattern) : join16(claudeConfigDir(), "agents", `${pattern}.md`);
-  mkdirSync5(dirname6(link), { recursive: true });
+  mkdirSync6(dirname6(link), { recursive: true });
   let isLink = false;
   try {
     isLink = lstatSync2(link).isSymbolicLink();
@@ -18925,20 +19034,20 @@ async function serveStatic(pathname) {
 
 // apps/server/src/token.ts
 import { randomBytes } from "crypto";
-import { chmodSync, mkdirSync as mkdirSync6, readFileSync as readFileSync4, writeFileSync as writeFileSync5 } from "fs";
+import { chmodSync, mkdirSync as mkdirSync7, readFileSync as readFileSync5, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname8 } from "path";
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
 function loadOrCreateToken(file = webTokenFile()) {
   try {
-    const stored = readFileSync4(file, "utf8").trim();
+    const stored = readFileSync5(file, "utf8").trim();
     if (stored)
       return stored;
   } catch {}
   const token = newToken();
-  mkdirSync6(dirname8(file), { recursive: true });
-  writeFileSync5(file, token + `
+  mkdirSync7(dirname8(file), { recursive: true });
+  writeFileSync6(file, token + `
 `, { mode: 384 });
   chmodSync(file, 384);
   return token;

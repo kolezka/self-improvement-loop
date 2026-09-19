@@ -20,6 +20,7 @@ import { cmdInit } from "./commands/init.ts";
 import { cmdLessons } from "./commands/lessons.ts";
 import { cmdLlmList, cmdLlmSetModel, cmdLlmUse } from "./commands/llm.ts";
 import { cmdLogs } from "./commands/logs.ts";
+import { cmdOpenclawEnqueue, cmdOpenclawInstall, cmdOpenclawScan, cmdOpenclawStatus, cmdOpenclawSync } from "./commands/openclaw.ts";
 import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
 import { cmdReviewAccept, cmdReviewList, cmdReviewRehome, cmdReviewReject, cmdReviewRetire, cmdReviewShow } from "./commands/review.ts";
@@ -229,6 +230,42 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .command("import-kb")
     .argument("<path>")
     .action(wire((path: string) => cmdWorldsImportKb(path)));
+
+  const openclaw = program.command("openclaw").description("run the loop against an OpenClaw install");
+  openclaw
+    .command("install")
+    .option("--world <name>")
+    .option("--workspace <path>", "OpenClaw agent workspace; defaults to the one in openclaw.json")
+    .option("--enable", "also set plugins.entries enabled in openclaw.json")
+    .action(wire((opts) => cmdOpenclawInstall(opts)));
+  openclaw
+    .command("sync")
+    .description("write rules and pending lessons into the workspace bootstrap file")
+    .option("--world <name>")
+    .option("--workspace <path>")
+    .option("--file <name>", "bootstrap file inside the workspace", "AGENTS.md")
+    .option("--limit <n>", "", intOption)
+    .option("--dry-run")
+    .action(wire((opts) => cmdOpenclawSync(opts)));
+  openclaw
+    .command("scan")
+    .description("queue OpenClaw session transcripts for reflection")
+    .option("--world <name>", "force a world instead of resolving one per session cwd")
+    .option("--max-age-hours <n>", "", intOption)
+    .option("--json")
+    .action(wire((opts) => cmdOpenclawScan(opts)));
+  openclaw
+    .command("enqueue")
+    .requiredOption("--session <id>")
+    .option("--agent <id>")
+    .option("--ended", "the session is over: do not wait for the idle window")
+    .option("--world <name>")
+    .option("--json")
+    .action(wire((opts) => cmdOpenclawEnqueue(opts)));
+  openclaw
+    .command("status")
+    .option("--json")
+    .action(wire((opts) => cmdOpenclawStatus(opts)));
 
   const imp = program.command("import");
   imp

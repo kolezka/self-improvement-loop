@@ -80,7 +80,11 @@ lesson-only run asked for a skill or agent because the drafter only saw the
 - [x] agent staging test, route record tests, sample and corpus tests (red on `main` checked out into a temp dir with the new test files copied over: 15 fail, and plan.test.ts does not load there); agent accept-and-relink test is coverage only, it passes on the old code too
 - [x] relinked the migrated `outward-facing-artifacts` agent into `~/.claude/agents` (operator state, not repo)
 - [x] review fixes: `appendLine` rotation bounded by bytes as well as lines; samples keep only `command` and `file_path` with credential values blanked; `Not verified` cut from the drafter's view and the router's quote haystack; judge keeps reading lesson lines; `MAX_SOURCE_CHARS` 120k; broadcast ceiling at half the corpus with hit counts in the route reason
-- [ ] after the plugin picks up the new dist: watch `routed:` in curriculum.log for the first hook that survives on recorded samples, and the first skill or agent
+- [x] `sil import payloads --days 30`: backfill the corpus from `~/.claude/projects` transcripts (same record shape and redaction as the hook, via `@sil/core/samples`); on this machine 34k tool calls, 2162 distinct samples kept, 34 with `--no-verify`
+- [x] end-to-end proof with the real drafter and judge (claude-cli, opus) on copies of the live data, corpus backfilled from real transcripts, six rule promotions forgotten so they re-route, cap 12: drafted 10 hook / 2 rule, routed 9 hook / 3 rule, staged 6 hook + 3 rule (1 judge reject, 2 hook texts over 400 chars). Before the change every one of those clusters had been promoted as a rule.
+- [x] agent path, real data: 3 V1 reflections of `outward-facing-artifacts` (the pattern V1 promoted as an agent) -> drafted agent, routed agent ("own-context need quoted verbatim"), lint and judge pass, `feat(agent)` branch with `agents/outward-facing-artifacts.md`
+- [x] skill path, real data: 3 V1 reflections of `controlled-cohort-comparison` -> drafted skill, routed skill, `feat(skill)` branch with a five-step `SKILL.md`
+- [ ] after the plugin picks up a build with this change: run `sil import payloads --days 30` once, then watch `routed:` in curriculum.log
 
 Review: the corpus test still cannot see prompts (`prompt_matches` gates only have the
 fixture), by design: prompts are free text. The gate runner deadline stays 250 ms;

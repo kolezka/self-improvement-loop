@@ -157,7 +157,10 @@
     <div class="brand">
       <p class="brand__name">sil <span>console</span></p>
     </div>
-    <p class="brand__state"><span class={`dot ${workerDot}`}></span>{workerText}</p>
+    <p class="brand__state">
+      <span class={`dot ${workerDot}`}></span>{workerText}
+      <span class="brand__version" title="self-improvement-loop version">v{__SIL_VERSION__}</span>
+    </p>
 
     <nav aria-label="Panes">
       {#each GROUPS as group}

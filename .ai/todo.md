@@ -51,6 +51,11 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [ ] second review by another model family (Codex) before use on employer repos
 - [ ] Codex and OpenCode have no hook equivalent; V1 had a parity build, V2 has none
 
+## Web UI version badge (done 2026-09-19)
+- [x] inject the root package.json version into the Svelte bundle via a vite `define`
+- [x] show it as `v<version>` in the web UI footer next to the worker badge
+- [x] test locks the define to the root package.json version, verified failing without it
+
 ## Small
 - [ ] decide whether `.ai/` stays in the repo
 - [ ] revisit command texts and `argument-hint` after first real use

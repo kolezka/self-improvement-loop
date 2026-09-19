@@ -116,7 +116,7 @@
     },
     "packages/openclaw": {
       "name": "@sil/openclaw",
-      "version": "0.2.1",
+      "version": "0.2.7",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/store": "workspace:*",

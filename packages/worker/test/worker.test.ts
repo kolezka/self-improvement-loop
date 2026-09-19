@@ -140,17 +140,24 @@ describe("runOnce non-idle non-ended entry", () => {
 });
 
 describe("runOnce missing transcript", () => {
-  test("moves the entry to failed", async () => {
+  // A session whose transcript is not on disk carries nothing to reflect on,
+  // and that is not an error of the loop: `claude --print
+  // --no-session-persistence` (what tools like jean use for their helper runs)
+  // never writes one. Such an entry leaves the queue as skipped, so `failed`
+  // keeps meaning "reflection was attempted and broke".
+  test("retires the entry as skipped, not failed", async () => {
     prepareEnv();
     writePending("sess-no-transcript", { ended: true, transcriptOk: false });
 
     const summary = await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
 
-    expect(summary.failed).toEqual(["sess-no-transcript"]);
+    expect(summary.failed).toEqual([]);
+    expect(summary.skipped).toEqual(["sess-no-transcript"]);
     expect(loadEntry("pending", "sess-no-transcript")).toBeNull();
-    const failed = loadEntry("failed", "sess-no-transcript");
-    expect(failed).not.toBeNull();
-    expect(failed!.result).toContain("transcript missing");
+    expect(loadEntry("failed", "sess-no-transcript")).toBeNull();
+    const done = loadEntry("done", "sess-no-transcript");
+    expect(done).not.toBeNull();
+    expect(done!.result).toContain("not persisted");
   });
 });
 

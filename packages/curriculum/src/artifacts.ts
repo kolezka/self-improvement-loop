@@ -95,13 +95,11 @@ function rootFor(world: World, root?: string | null): string {
   return root != null ? root : targetRoot(world);
 }
 
-/** This pattern's artifact text. For "rule", only its own bullet, never the
- * whole shared file, and without the tag `writeArtifact` appends.
+/** This pattern's artifact text. For "rule", only its own bullet and without the
+ * `<!--rule:...-->` tag, never the whole shared file.
  *
- * Read returns what write takes. The only caller hands this to the drafter as
- * the artifact to refine, and a tagged line is the wrong example twice over: the
- * drafter copies a marker lint refuses, and it sizes its draft against a line
- * that has already spent the tag's share of the length cap. */
+ * The one caller hands this to the drafter as the body to refine, and a tag in
+ * that body comes straight back in the redraft. */
 export function readArtifact(
   world: World,
   artifactType: ArtifactType | string,
@@ -229,11 +227,21 @@ export function rulesDiffOwnedBy(diffText: string, pattern: string): boolean {
   return true;
 }
 
-/** `line` without the trailing tag `writeRule` appends on the way back. */
-function stripRuleTag(line: string, pattern: string): string {
+/** A rule bullet without the machine-owned `<!--rule:pattern-->` tag.
+ *
+ * The tag is metadata the writer appends, never part of a body. Handing a
+ * tagged bullet to the drafter as "the existing artifact to refine" taught it to
+ * copy the tag, and the lint then refused the redraft on every single run: the
+ * pattern was stuck with no way out but a hand edit.
+ *
+ * Only a trailing tag for this pattern goes. A tag mid-line, or another
+ * pattern's tag, is still the wedge the lint exists to catch. The loop strips
+ * repeats because a doubled tag already reached a live rules file. */
+export function stripRuleTag(bullet: string, pattern: string): string {
   const tag = ruleTag(pattern);
-  const trimmed = line.replace(/\s+$/, "");
-  return trimmed.endsWith(tag) ? trimmed.slice(0, -tag.length).replace(/\s+$/, "") : trimmed;
+  let out = (bullet ?? "").replace(/\s+$/, "");
+  while (out.endsWith(tag)) out = out.slice(0, -tag.length).replace(/\s+$/, "");
+  return out;
 }
 
 /** This pattern's tagged bullet inside `text`, or "" when it has none. */

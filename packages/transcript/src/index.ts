@@ -2,6 +2,9 @@
 // pack for the critic. Pure apart from the git subprocess calls in evidencePack.
 
 import { existsSync, readFileSync } from "node:fs";
+import { adaptOpenclawRecords, isOpenclawRecord } from "./openclaw.ts";
+
+export { adaptOpenclawRecords, isOpenclawRecord } from "./openclaw.ts";
 
 export interface ToolCall { name: string; summary: string; is_error: boolean }
 export interface BashCall { command: string; is_error: boolean; tail: string }
@@ -57,9 +60,28 @@ export function* iterRecords(path: string, maxBytes = 50_000_000): Generator<Rec
   }
 }
 
+/** Records in Claude Code shape, whatever the host wrote. An OpenClaw
+ * transcript is detected from its first record and translated on the fly. */
+export function* iterEvidenceRecords(path: string, maxBytes = 50_000_000): Generator<Record<string, unknown>> {
+  const raw = iterRecords(path, maxBytes);
+  const first = raw.next();
+  if (first.done) return;
+  if (isOpenclawRecord(first.value)) {
+    yield* adaptOpenclawRecords(prepend(first.value, raw));
+    return;
+  }
+  yield first.value;
+  yield* raw;
+}
+
+function* prepend<T>(head: T, rest: Iterator<T>): Generator<T> {
+  yield head;
+  for (let step = rest.next(); !step.done; step = rest.next()) yield step.value;
+}
+
 export function countToolUses(path: string): number {
   let count = 0;
-  for (const rec of iterRecords(path)) {
+  for (const rec of iterEvidenceRecords(path)) {
     if (rec["type"] !== "assistant") continue;
     for (const block of contentBlocks(rec)) {
       const b = asRecord(block);
@@ -172,7 +194,7 @@ export function evidencePack(transcriptPath: string, cwd: string, opts: Evidence
   const errors: string[] = [];
   const counts = { tool_uses: 0, turns: 0, user_prompts: 0, attachments: 0 };
 
-  for (const rec of iterRecords(transcriptPath)) {
+  for (const rec of iterEvidenceRecords(transcriptPath)) {
     const rtype = rec["type"];
     if (typeof rtype === "string" && NOISE_TYPES.has(rtype)) continue;
     if (sessionId === null && rec["sessionId"]) sessionId = String(rec["sessionId"]);

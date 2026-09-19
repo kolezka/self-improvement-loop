@@ -216,20 +216,27 @@ describe("managed rules block", () => {
     expect(body).not.toContain("theirs");
   });
 
-  test("reading a rule round-trips what writing it takes", () => {
-    // The bullet reaches the drafter as the artifact to refine. Carrying its
-    // tag, it is an example of a line lint refuses and of a length that has
-    // already spent the tag's share of the cap.
+  test("reading a rule drops the machine-owned tag", () => {
     const world = makeWorld();
     const root = join(env.tmp, "target");
     writeRules(root, MARKED);
-    const bullet = "- Run `rg` over every call site before calling the change safe.";
-    artifacts.writeArtifact(world, "rule", PATTERN, bullet, root);
+    artifacts.writeArtifact(world, "rule", PATTERN, "- mine", root);
+    // This is what the drafter is shown as the artifact to refine. A tag in it
+    // comes straight back in the redraft, and the lint refuses a tagged bullet.
+    expect(artifacts.readArtifact(world, "rule", PATTERN, root)).toBe("- mine");
+  });
 
-    const body = artifacts.readArtifact(world, "rule", PATTERN, root);
-    expect(body).toBe(bullet);
-    expect(body).not.toContain(ruleTag(PATTERN));
-    expect(body).not.toContain("<!--");
+  test("stripRuleTag takes this pattern's trailing tag and nothing else", () => {
+    const tag = ruleTag(PATTERN);
+    const foreign = ruleTag("other-pattern");
+    expect(artifacts.stripRuleTag(`- mine ${tag}`, PATTERN)).toBe("- mine");
+    // A doubled tag already reached a live rules file, so one pass is not enough.
+    expect(artifacts.stripRuleTag(`- mine ${tag} ${tag}`, PATTERN)).toBe("- mine");
+    expect(artifacts.stripRuleTag("- mine", PATTERN)).toBe("- mine");
+    // A foreign tag and a mid-line tag are the wedge the lint exists for: keep
+    // them so the gate still sees them.
+    expect(artifacts.stripRuleTag(`- mine ${foreign}`, PATTERN)).toBe(`- mine ${foreign}`);
+    expect(artifacts.stripRuleTag(`- a ${tag} b`, PATTERN)).toBe(`- a ${tag} b`);
   });
 });
 

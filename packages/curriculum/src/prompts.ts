@@ -15,8 +15,8 @@
 import { ruleTag } from "@sil/core";
 import type { ChatMessage } from "@sil/providers";
 import { nudgeEvents } from "./deps.ts";
-// The rule cap, imported rather than restated. A prompt naming a different
-// number than the gate measures is a drafter written out of the loop on length.
+// The rule cap, imported rather than restated: a prompt quoting a number the
+// lint no longer uses is a gate the drafter cannot see.
 import { MAX_RULE_CHARS } from "./lint.ts";
 // The router's own bar for a quote, imported rather than restated. A prompt
 // asking for "an exact substring" while the router demands five words is a
@@ -80,19 +80,17 @@ export function agentShape(pattern: string): string {
   );
 }
 
-/** The rule shape, with the length budget the lint will actually measure.
- *
- * The writer appends " <!--rule:pattern-->" and `lintRule` counts it, so the raw
- * cap is 1 + tag characters more than a drafter may spend. Told the raw cap, the
- * drafter writes to it and the tag alone pushes the line over: two patterns were
- * gated out at 320 and 323 characters against a cap of 300 on one run. */
 export function ruleShape(pattern: string): string {
-  const budget = MAX_RULE_CHARS - 1 - ruleTag(pattern).length;
+  // The lint caps the line the writer produces, tag included, so the budget the
+  // drafter gets has to have the tag taken out of it already. Quoting the raw
+  // cap asks for a bullet that is then refused for being 18 characters over,
+  // which is an honest drafter gated on every run and never told why.
+  const budget = MAX_RULE_CHARS - ruleTag(pattern).length - 1;
   return (
-    `Exactly one line, starting with '- ', at most ${budget} characters in ` +
-    "total, counting that prefix. No heading, no frontmatter, no second line, " +
-    "no HTML comment or tag of any kind: the single imperative the agent must " +
-    "follow, naming the actual command or check the lessons name."
+    `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` +
+    "no frontmatter, no second line: the single imperative the agent must " +
+    "follow, naming the actual command or check the lessons name. No HTML " +
+    "comment and no '<!--rule:...-->' tag: the writer adds the tag itself."
   );
 }
 

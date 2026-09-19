@@ -1,114 +1,80 @@
-PROPRIETARY SOFTWARE LICENSE
+Required Notice: Copyright (c) 2026 Mariusz Rakus (https://raqz.pl)
 
-Copyright (c) 2026 Mariusz Rakus (raqz.pl). All rights reserved.
+Commercial use is NOT permitted under these terms. To obtain a commercial
+license, see COMMERCIAL-LICENSE.md or contact mariusz@raqz.pl.
 
-This repository and everything in it, that is source code, scripts,
-configuration, documentation, diagrams, prompts, skills, hooks, tests, data
-and any other files, in any form and in any medium (together, the
-"Software"), is the exclusive property of Mariusz Rakus (the "Licensor") and is protected by
-copyright law and international treaties.
+---
 
-Access to the Software, by any means, does NOT grant you any rights to it.
-Nothing in this file grants you a license. This file exists to state that no
-license is granted by default and to explain how one may be obtained.
+# PolyForm Noncommercial License 1.0.0
 
-1. NO USE WITHOUT A PURCHASED LICENSE
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-   You may not use the Software, in whole or in part, for any purpose,
-   including running it, installing it, executing it, evaluating it, or
-   deploying it in any environment, unless you have first:
+## Acceptance
 
-   (a) purchased a license from the Licensor, and
-   (b) received the Licensor's express, prior, written consent
+In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
 
-   covering that use. The purchase and the written consent are both required;
-   neither one alone is sufficient.
+## Copyright License
 
-2. NO COPYING, MODIFICATION OR DERIVATIVE WORKS
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose.  However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
 
-   You may not copy, reproduce, modify, adapt, translate, port, or create
-   derivative works of the Software, in whole or in part, without the
-   Licensor's express, prior, written consent and payment of the applicable
-   fee. This includes incorporating any part of the Software into other
-   software, and using the Software or its output to train, fine-tune,
-   evaluate or prompt any machine-learning or artificial-intelligence system.
+## Distribution License
 
-3. NO SHARING, DISTRIBUTION OR RESALE
+The licensor grants you an additional copyright license to distribute copies of the software.  Your license to distribute covers distributing the software with changes and new works permitted by [Changes and New Works License](#changes-and-new-works-license).
 
-   You may not share, distribute, publish, upload, mirror, disclose, transfer,
-   sublicense, sell, resell, rent, lease, lend, offer as a service, or
-   otherwise make the Software or any part of it available to any third
-   party, in any form, whether or not for payment. This prohibition applies
-   even if you hold a purchased license, unless that license expressly
-   provides otherwise in writing.
+## Notices
 
-4. OBTAINING A LICENSE
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software.  For example:
 
-   Licenses are granted only by the Licensor, only in writing, and only
-   against payment of the license fee set by the Licensor. To obtain a
-   license, contact:
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-       Mariusz Rakus
-       mariusz@raqz.pl
+## Changes and New Works License
 
-   The scope of any license (permitted uses, number of users or machines,
-   term, territory, right to modify, right to share) is defined exclusively
-   by the written license agreement issued by the Licensor. Any right not
-   expressly granted in that agreement is reserved by the Licensor. Unless
-   the agreement states otherwise, a license is personal, non-exclusive,
-   non-transferable, non-sublicensable and revocable, and license fees are
-   non-refundable.
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
 
-5. THIRD-PARTY COMPONENTS
+## Patent License
 
-   Third-party libraries, packages and tools that the Software depends on and
-   that are obtained separately (for example through a package manager) are
-   not part of the Software and remain governed by their own licenses.
-   Nothing in this file restricts your rights under those licenses.
+The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
 
-6. RESERVATION OF RIGHTS AND ENFORCEMENT
+## Noncommercial Purposes
 
-   All rights not expressly granted in a written license agreement are
-   reserved by the Licensor. Any use, copying, modification, sharing,
-   distribution or sale of the Software that is not covered by such an
-   agreement is unauthorized, constitutes infringement of the Licensor's
-   copyright, and may result in civil and criminal liability. The Licensor
-   may seek injunctive relief, damages, and recovery of legal costs.
+Any noncommercial purpose is a permitted purpose.
 
-7. TERMINATION
+## Personal Uses
 
-   Any license granted by the Licensor terminates automatically and without
-   notice if you breach any of its terms or any term of this file. Upon
-   termination you must immediately stop all use of the Software and
-   permanently destroy every copy in your possession or control, and confirm
-   in writing that you have done so if the Licensor requests it.
+Personal use for research, experiment, and testing for the benefit of public knowledge, personal study, private entertainment, hobby projects, amateur pursuits, or religious observance, without any anticipated commercial application, is use for a permitted purpose.
 
-8. NO WARRANTY
+## Noncommercial Organizations
 
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+Use by any charitable organization, educational institution, public research organization, public safety or health organization, environmental protection organization, or government institution is use for a permitted purpose regardless of the source of funding or obligations resulting from the funding.
 
-9. LIMITATION OF LIABILITY
+## Fair Use
 
-   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
-   LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
-   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+You may have "fair use" rights for the software under the law. These terms do not limit them.
 
-10. GOVERNING LAW
+## No Other Rights
 
-   This file and any license agreement issued under it are governed by the
-   laws of the Republic of Poland. Any dispute shall be submitted to the
-   courts having jurisdiction over the Licensor's registered seat, unless
-   mandatory provisions of applicable law provide otherwise.
+These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else.  These terms do not imply any other licenses.
 
-11. SEVERABILITY
+## Patent Defense
 
-   If any provision of this file is held to be unenforceable, the remaining
-   provisions remain in full force, and the unenforceable provision shall be
-   enforced to the maximum extent permitted by law.
+If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
 
-If you are reading this without a written license agreement from the
-Licensor, you have no right to use, copy, modify, share or sell this Software.
-Contact mariusz@raqz.pl to purchase one.
+## Violations
+
+The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice.  Otherwise, all your licenses end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these terms, and the **software** is the software the licensor makes available under these terms.
+
+**You** refers to the individual or entity agreeing to these terms.
+
+**Your company** is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization.  **Control** means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the software under these terms.
+
+**Use** means anything you do with the software requiring one of your licenses.

@@ -1,8 +1,8 @@
 {
   "name": "self-improvement-loop",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -24,6 +24,7 @@
     "@sil/curriculum": "workspace:*",
     "@sil/feedback": "workspace:*",
     "@sil/nudges": "workspace:*",
+    "@sil/openclaw": "workspace:*",
     "@sil/ops": "workspace:*",
     "@sil/providers": "workspace:*",
     "@sil/review": "workspace:*",

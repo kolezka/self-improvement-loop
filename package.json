@@ -24,6 +24,7 @@
     "@sil/curriculum": "workspace:*",
     "@sil/feedback": "workspace:*",
     "@sil/nudges": "workspace:*",
+    "@sil/openclaw": "workspace:*",
     "@sil/ops": "workspace:*",
     "@sil/providers": "workspace:*",
     "@sil/review": "workspace:*",

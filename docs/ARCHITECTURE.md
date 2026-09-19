@@ -202,6 +202,22 @@ target SessionStart, UserPromptSubmit, PreToolUse or PostToolUse, the four event
 where the hook can deliver text; lint rejects the rest so a fire is always a
 delivery.
 
+## Other hosts (`@sil/openclaw`)
+
+The engine is host neutral below the hook. Everything above reads a queue entry
+and a transcript path, so a second host only has to write those two things.
+
+OpenClaw is the first one. `@sil/transcript` detects the record shape of the
+transcript file and translates OpenClaw records into the Claude Code shape, so
+the worker, the critic and the evidence pack see one format. `@sil/openclaw`
+finds OpenClaw sessions, writes queue entries for them, and delivers rules and
+inbox lessons through a marker-fenced block in a workspace bootstrap file,
+because OpenClaw has no per-session context injection hook. An OpenClaw plugin
+calls the `sil` CLI on `session_start`, `gateway_start` and `session_end`;
+`sil openclaw scan` covers the same ground without the plugin.
+
+Full contract, limits and commands: `docs/OPENCLAW.md`.
+
 ## Worker (`sil worker --once | --loop`)
 
 Under `worker.lock`:

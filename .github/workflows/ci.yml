@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version lives in .bun-version so a contributor installs the same
+      # bun this job runs. Bun.build output can differ between bun versions,
+      # and a dist/ rebuilt on another one fails the last step with a diff
+      # that reads like a source problem.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      # A plain install, not --frozen-lockfile: bun accepts a lockfile whose
+      # workspace versions are stale, then rewrites it on the next install.
+      # bun.lock is a sourceHash() input, so that rewrite fails the dist drift
+      # test on a checkout nobody touched. The diff below is the real guard.
+      - name: install
+        run: bun install
+
+      - name: lockfile is current
+        run: git diff --exit-code -- bun.lock
+
+      - name: lint dashes
+        run: bun run lint:dashes
+
+      - name: typecheck
+        run: bun run typecheck
+
+      - name: typecheck web
+        run: bun run check:web
+
+      - name: test
+        run: bun test
+
+      # The plugin runs the committed dist/, so a build that changes it means
+      # the bundle on main was stale. tests/dist.test.ts catches the hash
+      # drift; this catches a build whose output differs for any other reason.
+      # status, not diff: a build that adds a file leaves it untracked, and
+      # `git diff` says nothing about untracked files.
+      - name: build is reproducible
+        run: |
+          bun run build
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            echo "dist/ is not what a rebuild produces:"
+            git status --porcelain -- dist
+            git diff -- dist | head -200
+            exit 1
+          fi

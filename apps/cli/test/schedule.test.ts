@@ -59,6 +59,14 @@ describe("renderSystemd", () => {
     expect(Object.keys(units)).toContain(SYSTEMD_WEB_UNIT);
     expect(units[SYSTEMD_WEB_UNIT]).toContain(shimPath());
   });
+
+  test("the web unit restarts on a clean exit, which is how an update lands", () => {
+    // sil web exits 0 when the plugin is updated; Restart=on-failure would
+    // leave the old version stopped and nothing serving.
+    const units = renderSystemd(60, true);
+    expect(units[SYSTEMD_WEB_UNIT]).toContain("Restart=always");
+    expect(units[SYSTEMD_WEB_UNIT]).not.toContain("Restart=on-failure");
+  });
 });
 
 describe("renderLaunchd", () => {

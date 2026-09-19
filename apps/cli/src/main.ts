@@ -10,6 +10,7 @@ import { Command, CommanderError } from "commander";
 import { ValidationError } from "@sil/core";
 import { mapKnownError } from "./common.ts";
 import { defaultDeps, type Deps } from "./deps.ts";
+import { cmdAliasesList, cmdAliasesRm, cmdAliasesSet, cmdAliasesSuggest } from "./commands/aliases.ts";
 import { cmdArtifacts } from "./commands/artifacts.ts";
 import { cmdCurriculumPlan, cmdCurriculumRun } from "./commands/curriculum.ts";
 import { cmdFeedbackAdd, cmdFeedbackList } from "./commands/feedback.ts";
@@ -139,6 +140,27 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .requiredOption("--world <name>")
     .action(wire((id: string, opts) => cmdReflectionsShow(id, opts)));
 
+  const aliases = program.command("aliases");
+  aliases
+    .command("list")
+    .option("--world <name>")
+    .action(wire((opts) => cmdAliasesList(opts)));
+  aliases
+    .command("set")
+    .argument("<alias>")
+    .argument("<canonical>")
+    .option("--world <name>")
+    .action(wire((alias: string, canonical: string, opts) => cmdAliasesSet(alias, canonical, opts)));
+  aliases
+    .command("rm")
+    .argument("<alias>")
+    .option("--world <name>")
+    .action(wire((alias: string, opts) => cmdAliasesRm(alias, opts)));
+  aliases
+    .command("suggest")
+    .option("--world <name>")
+    .action(wire((opts) => cmdAliasesSuggest(opts)));
+
   program
     .command("artifacts")
     .argument("[action]")
@@ -187,9 +209,11 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
   program
     .command("web")
     .option("--port <n>", "", intOption)
-    .option("--no-token")
+    .option("--token", "force a URL token (default: on only for non-loopback binds)")
+    .option("--no-token", "force tokenless (loopback only)")
     .option("--open")
     .option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine")
+    .option("--no-watch", "keep running after a plugin update instead of exiting for the supervisor to restart")
     .action(wire((opts) => cmdWeb(opts)));
 
   const worlds = program.command("worlds");

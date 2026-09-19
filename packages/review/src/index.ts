@@ -11,7 +11,7 @@
 //   skill's pull request because the guard judged commit counts rather than
 //   paths.
 
-import { lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -27,6 +27,7 @@ import {
   type ReviewItem,
   ReviewError,
   type RouterRow,
+  ruleTag,
   targetRoot,
   type World,
 } from "@sil/core";
@@ -341,7 +342,9 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
           "while accept was running; reload the review and accept again. Nothing was merged.",
       );
     }
-    if (!git.isAncestor(repo, snap.base_sha, snap.branch_sha)) mergeBaseIntoBranch(tree, snap, rel);
+    if (!git.isAncestor(repo, snap.base_sha, snap.branch_sha)) {
+      mergeBaseIntoBranch(world, repo, tree, snap, pattern, rel);
+    }
     // The default branch's ledger is the record of what has been accepted; this
     // acceptance adds exactly one row to it. Read from the blob at the base, so
     // a branch written before the one-row rule cannot drag its siblings in and
@@ -354,6 +357,10 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
         status: "promoted",
         commit: snap.branch_sha.slice(0, 12),
         last_updated: fsx.nowIso(),
+        // Accepting a row that is already promoted is a redraft of the same
+        // artifact, so the original promotion date stands. Anything else is
+        // this pattern becoming promoted now.
+        promoted_at: row.status === "promoted" ? (row.promoted_at ?? fsx.nowIso()) : fsx.nowIso(),
       };
     }
     saveLedger(join(tree, rel), merged);
@@ -410,11 +417,27 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
 
 /** Bring the default branch into the staged branch, in the scratch worktree.
  *
- * Two branches that both add the ledger have no common ancestor for it, so git
- * calls the second acceptance an add/add conflict. That is the ordinary shape of
- * accepting a second artifact, not a failure, and it is resolved by the ledger
- * rewrite that follows. Anything else conflicting is a human decision. */
-function mergeBaseIntoBranch(tree: string, snap: Snapshot, rel: string): void {
+ * Two files are shared by every pattern, and a conflict in either is the
+ * ordinary shape of accepting a second artifact rather than a human's decision:
+ *
+ * * The ledger. Two branches that both add it have no common ancestor for it, so
+ *   git calls the second acceptance an add/add conflict. The ledger rewrite that
+ *   follows resolves it.
+ * * The rules file. Every rule appends a bullet to one managed block, so a second
+ *   rule lands on the same lines as the first. Resolved here, because nothing
+ *   later touches that file. Refused, no second rule could ever be accepted
+ *   without a human rebasing the branch by hand.
+ *
+ * Anything else conflicting is a human decision. */
+function mergeBaseIntoBranch(
+  world: World,
+  repo: string,
+  tree: string,
+  snap: Snapshot,
+  pattern: string,
+  rel: string,
+): void {
+  const rulesRel = artifacts.artifactRel(world, "rule", pattern);
   try {
     git.git(tree, ["merge", "--no-ff", "--no-commit", "-q", snap.base_sha]);
   } catch (e) {
@@ -429,10 +452,45 @@ function mergeBaseIntoBranch(tree: string, snap: Snapshot, rel: string): void {
       // "no merge to abort".
       throw e;
     }
-    if (conflicted.length !== 1 || conflicted[0] !== rel) {
+    const shared = new Set([rel, rulesRel].filter((p) => p));
+    if (conflicted.some((p) => !shared.has(p))) {
       git.git(tree, ["merge", "--abort"], { check: false });
       throw new ReviewError(`${snap.branch} conflicts outside the ledger: ${conflicted.join(", ")}`);
     }
+    if (conflicted.includes(rulesRel)) resolveRulesConflict(world, repo, tree, snap, pattern, rulesRel);
+  }
+}
+
+/** Rebuild the rules file as a fresh stage would: the default branch's copy of
+ * it, carrying this pattern's own bullet.
+ *
+ * `foreignProblem` already proved the branch changes nothing in that file but
+ * its own tagged bullet, so taking the base copy cannot drop a sibling's rule.
+ * A branch with no bullet of its own is a pattern migrating off `rule`, and for
+ * it the resolution is the removal the branch was making. */
+function resolveRulesConflict(
+  world: World,
+  repo: string,
+  tree: string,
+  snap: Snapshot,
+  pattern: string,
+  rulesRel: string,
+): void {
+  try {
+    const base = git.show(repo, snap.base_sha, rulesRel);
+    if (base.found) writeFileSync(join(tree, rulesRel), base.text, "utf8");
+    else artifacts.ensureRulesFile(world, tree);
+    const onBranch = git.show(repo, snap.branch_sha, rulesRel);
+    const bullet = artifacts.ruleBulletInText(onBranch.text, pattern).replace(ruleTag(pattern), "").trim();
+    if (bullet) artifacts.writeArtifact(world, "rule", pattern, bullet, tree);
+    else artifacts.removeArtifact(world, "rule", pattern, tree);
+    git.git(tree, ["add", "--", rulesRel]);
+  } catch (e) {
+    git.git(tree, ["merge", "--abort"], { check: false });
+    throw new ReviewError(
+      `${snap.branch} conflicts in ${rulesRel} and it could not be rebuilt from ${snap.base_ref}: ` +
+        `${(e as Error).message}. Nothing was merged.`,
+    );
   }
 }
 
@@ -504,6 +562,7 @@ function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
         artifact_type: entryType(branchRow),
         served_by: null,
         last_updated: fsx.nowIso(),
+        promoted_at: null,
         commit: null,
         feedback: null,
       };

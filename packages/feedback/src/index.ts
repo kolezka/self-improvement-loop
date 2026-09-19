@@ -52,7 +52,9 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.usageEventsFile())) {
     if (ev["world"] !== world.name) continue;
     const kind = ev["kind"];
-    if (kind !== "skill" && kind !== "agent") continue;
+    // agent_stop repeats an agent event already counted, hook_run counts
+    // hook process runs rather than artifact deliveries. Neither is a use.
+    if (kind !== "skill" && kind !== "agent" && kind !== "rule") continue;
     const ref = ev["ref"];
     if (!ref) continue;
     const r = String(ref);
@@ -67,7 +69,13 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
     const ref = `hook:${String(pattern)}`;
     refs.add(ref);
     noteTs(ref, line["ts"]);
-    if (within(line["ts"], windowStart, now)) bump(firesByRef, ref);
+    // A fire is how a hook gets used, so it counts in both columns: uses_30d
+    // is "times served" for every artifact type, fires_30d keeps the
+    // hook-only detail.
+    if (within(line["ts"], windowStart, now)) {
+      bump(firesByRef, ref);
+      bump(usesByRef, ref);
+    }
   }
 
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
@@ -137,19 +145,31 @@ function propose(
   retireCutoff: Date,
   retireDays: number,
 ): [Scorecard["proposal"], string] {
-  if (entry !== undefined) {
-    const updated = parseTs(entry.last_updated);
-    if (updated !== null && updated.getTime() >= now.getTime() - 7 * 86_400_000) {
-      const days = Math.floor((now.getTime() - updated.getTime()) / 86_400_000);
-      return ["new", `promoted ${days}d ago, within the 7 day new window`];
-    }
+  // Both clocks below run from the promotion, not from the last write to the
+  // row: reject, re-home and retire all bump last_updated, and a refused
+  // redraft is neither a new promotion nor evidence of use. Rows written
+  // before promoted_at existed fall back to the old approximation.
+  const promotedTs = entry === undefined ? null : (entry.promoted_at ?? entry.last_updated);
+  const promotedDt = parseTs(promotedTs);
+
+  if (promotedDt !== null && promotedDt.getTime() >= now.getTime() - 7 * 86_400_000) {
+    const days = Math.floor((now.getTime() - promotedDt.getTime()) / 86_400_000);
+    return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
 
   if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
     const lastDt = parseTs(lastUsed);
-    const stale = lastDt === null || lastDt.getTime() < retireCutoff.getTime();
+    const basisDt = lastDt ?? promotedDt;
+    const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
     if (stale) {
-      return ["retire-candidate", `no uses or fires in the last window, last_used=${lastUsed || "never"}, older than ${retireDays}d`];
+      const used = lastUsed === null ? "never used" : `last used ${lastUsed}, which is not a readable date`;
+      const basis =
+        lastDt !== null
+          ? `last used ${lastUsed}, older than ${retireDays}d`
+          : basisDt !== null
+            ? `${used}, promoted ${promotedTs}, older than ${retireDays}d`
+            : "no parsable date to judge staleness from";
+      return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
     }
   }
 

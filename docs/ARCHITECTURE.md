@@ -298,6 +298,7 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 | Signal | Source | Artifact types |
 |---|---|---|
 | invocation | PostToolUse `Skill` / `Agent` | skill, agent |
+| injection | SessionStart rules block, once per session per rule | rule |
 | fire | nudge fire log | hook |
 | hook run | transcript `attachment` records (hookName, exitCode, durationMs) | hook |
 | helpful / misfire | critic answer per session | all |
@@ -306,6 +307,11 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 
 Scorecard fields: `uses_30d`, `fires_30d`, `helpful`, `misfired`, `human_good`,
 `human_bad`, `last_used`, `proposal` (`keep | refine | retire-candidate`).
+
+`uses_30d` counts every way an artifact is served: skill and agent invocations,
+rule injections, and hook fires. `fires_30d` keeps the hook-only count, so a
+hook fire adds to both. Counting only skill and agent invocations left every
+promoted rule and hook at 0 uses, which read as "nothing is running".
 
 ## Non-goals
 

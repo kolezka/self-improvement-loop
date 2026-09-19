@@ -20,6 +20,8 @@ import {
   branchName,
   draftMessages,
   git,
+  lintRule,
+  MAX_RULE_CHARS,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
   run,
@@ -540,6 +542,20 @@ describe("redraft after a route change", () => {
     const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(found).toBe(true);
     expect(text).toContain(ruleTag(PATTERN));
+  });
+
+  test("the drafter prompt states the rule cap the lint will measure", () => {
+    // The writer appends " <!--rule:pattern-->" and lintRule counts it. Handed
+    // the raw cap, the drafter writes to it and the tag alone pushes the line
+    // over, so the pattern is gated out on length on every run.
+    const prompt = draftMessages(PATTERN, ["a lesson"], null, "rule").at(-1)!.content;
+    const budget = MAX_RULE_CHARS - 1 - ruleTag(PATTERN).length;
+    expect(prompt).toContain(`${budget} characters`);
+    expect(prompt).not.toContain(`${MAX_RULE_CHARS} characters`);
+    // The stated budget is the one the gate accepts, to the character.
+    const atBudget = "- " + "x".repeat(budget - 2);
+    expect(lintRule(atBudget, PATTERN)).toEqual([]);
+    expect(lintRule(atBudget + "x", PATTERN).some((p) => p.includes("cap is"))).toBe(true);
   });
 
   test("the drafter prompt states the router's quote bar", () => {

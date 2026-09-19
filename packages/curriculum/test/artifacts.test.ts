@@ -215,6 +215,22 @@ describe("managed rules block", () => {
     expect(body.startsWith("- mine")).toBe(true);
     expect(body).not.toContain("theirs");
   });
+
+  test("reading a rule round-trips what writing it takes", () => {
+    // The bullet reaches the drafter as the artifact to refine. Carrying its
+    // tag, it is an example of a line lint refuses and of a length that has
+    // already spent the tag's share of the cap.
+    const world = makeWorld();
+    const root = join(env.tmp, "target");
+    writeRules(root, MARKED);
+    const bullet = "- Run `rg` over every call site before calling the change safe.";
+    artifacts.writeArtifact(world, "rule", PATTERN, bullet, root);
+
+    const body = artifacts.readArtifact(world, "rule", PATTERN, root);
+    expect(body).toBe(bullet);
+    expect(body).not.toContain(ruleTag(PATTERN));
+    expect(body).not.toContain("<!--");
+  });
 });
 
 describe("rules-file ownership", () => {

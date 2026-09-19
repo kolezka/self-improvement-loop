@@ -95,8 +95,13 @@ function rootFor(world: World, root?: string | null): string {
   return root != null ? root : targetRoot(world);
 }
 
-/** This pattern's artifact text. For "rule", only its own tagged bullet, never
- * the whole shared file. */
+/** This pattern's artifact text. For "rule", only its own bullet, never the
+ * whole shared file, and without the tag `writeArtifact` appends.
+ *
+ * Read returns what write takes. The only caller hands this to the drafter as
+ * the artifact to refine, and a tagged line is the wrong example twice over: the
+ * drafter copies a marker lint refuses, and it sizes its draft against a line
+ * that has already spent the tag's share of the length cap. */
 export function readArtifact(
   world: World,
   artifactType: ArtifactType | string,
@@ -108,7 +113,7 @@ export function readArtifact(
   const path = join(rootFor(world, root), rel);
   if (!existsSync(path)) return "";
   const text = fsx.readText(path);
-  return artifactType === "rule" ? ruleBulletInText(text, pattern) : text;
+  return artifactType === "rule" ? stripRuleTag(ruleBulletInText(text, pattern), pattern) : text;
 }
 
 /** Write one artifact. Returns the path written, or null for type "none".
@@ -222,6 +227,13 @@ export function rulesDiffOwnedBy(diffText: string, pattern: string): boolean {
     if (body !== "" && !body.endsWith(tag)) return false;
   }
   return true;
+}
+
+/** `line` without the trailing tag `writeRule` appends on the way back. */
+function stripRuleTag(line: string, pattern: string): string {
+  const tag = ruleTag(pattern);
+  const trimmed = line.replace(/\s+$/, "");
+  return trimmed.endsWith(tag) ? trimmed.slice(0, -tag.length).replace(/\s+$/, "") : trimmed;
 }
 
 /** This pattern's tagged bullet inside `text`, or "" when it has none. */

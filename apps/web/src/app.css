@@ -147,6 +147,11 @@ code,
   color: var(--muted);
 }
 
+.brand__version {
+  margin-left: auto;
+  padding-left: 0.5rem;
+}
+
 .rail__group {
   display: flex;
   flex-direction: column;

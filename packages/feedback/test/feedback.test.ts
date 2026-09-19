@@ -108,6 +108,35 @@ describe("scorecards proposals", () => {
     expect(card.misfired).toBe(2);
   });
 
+  // uses_30d means "times served", so an artifact that only fires or is only
+  // injected must not read as unused. Counting skill and agent events alone
+  // pinned every rule and hook in the UI at 0.
+  test("a hook fire counts as a use", () => {
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("hook:flaky-thing")!.uses_30d).toBe(1);
+  });
+
+  test("a rule injection counts as a use", () => {
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(2)), session_id: "s5", world: "default", kind: "rule", ref: "rule:steady-thing" });
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(40)), session_id: "s6", world: "default", kind: "rule", ref: "rule:steady-thing" });
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("rule:steady-thing")!.uses_30d).toBe(1);
+  });
+
+  test("agent_stop and hook_run are diagnostics, not uses", () => {
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(2)), session_id: "s7", world: "default", kind: "agent_stop", ref: "agent:dead-thing" });
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(2)), session_id: "s7", world: "default", kind: "hook_run", ref: "hook:PreToolUse" });
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("agent:dead-thing")!.uses_30d).toBe(0);
+    expect(cards.get("hook:PreToolUse")).toBeUndefined();
+  });
+
   test("retire-candidate when never used", () => {
     const { w, c } = buildWorldAndLedger();
     seedSignals();

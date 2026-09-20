@@ -48,6 +48,15 @@ import {
 const PATTERN = "verify-callsites";
 const QUOTE = "run `rg` over every call site of the changed symbol and read the graphify inventory";
 
+/** The pattern a prompt is about, from its own task line.
+ *
+ * Substring matching on the bare slug stopped working when the prompt gained
+ * the world's knowledge map: every drafting prompt now names the other
+ * patterns too, so only the quoted task line identifies the subject. */
+function subjectOf(prompt: string): string {
+  return /recurring lesson '([a-z0-9-]+)'/.exec(prompt)?.[1] ?? "";
+}
+
 let env: TestEnv;
 
 beforeEach(() => {
@@ -159,8 +168,7 @@ describe("the happy path", () => {
     const chat: ChatFn = async (role, messages) => {
       if (role === "judge") return JSON.stringify({ verdict: "yes", reason: "quoted" });
       const prompt = messages[messages.length - 1]!.content;
-      const pattern = prompt.includes("aaa-pattern") ? "aaa-pattern" : "bbb-pattern";
-      return JSON.stringify(skillDraft(pattern, QUOTE));
+      return JSON.stringify(skillDraft(subjectOf(prompt), QUOTE));
     };
 
     const report = await run(world, makeCfg(), opts({ apply: true, chat }));
@@ -273,10 +281,10 @@ describe("gates", () => {
     const chat: ChatFn = async (role, messages) => {
       const prompt = messages[messages.length - 1]!.content;
       if (role === "judge") {
-        const bad = prompt.includes("aaa-pattern");
+        const bad = subjectOf(prompt) === "aaa-pattern";
         return JSON.stringify({ verdict: bad ? "no" : "yes", reason: bad ? "rule 2: vague" : "quoted" });
       }
-      return JSON.stringify(skillDraft(prompt.includes("aaa-pattern") ? "aaa-pattern" : "bbb-pattern", QUOTE));
+      return JSON.stringify(skillDraft(subjectOf(prompt), QUOTE));
     };
 
     const report = await run(world, makeCfg(), opts({ apply: true, chat }));
@@ -295,7 +303,7 @@ describe("gates", () => {
 
     const chat: ChatFn = async (role, messages) => {
       const prompt = messages[messages.length - 1]!.content;
-      if (prompt.includes("aaa-pattern")) throw new Error("the endpoint never answered");
+      if (subjectOf(prompt) === "aaa-pattern") throw new Error("the endpoint never answered");
       if (role === "judge") return JSON.stringify({ verdict: "yes", reason: "quoted" });
       return JSON.stringify(skillDraft("bbb-pattern", QUOTE));
     };

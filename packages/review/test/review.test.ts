@@ -61,11 +61,15 @@ afterEach(() => {
 
 const cfg = () => makeCfg();
 
-/** Put one staged branch in the target repo through the real run path. */
-function stage(world: World, pattern = PATTERN, extraDirs: string[] = []): Promise<unknown> {
+/** Put one staged branch in the target repo through the real run path.
+ *
+ * `quote` varies the drafted body. A refine that reproduces the artifact
+ * already on the default branch is not staged at all, so a test that stages
+ * twice over one accepted artifact has to change something. */
+function stage(world: World, pattern = PATTERN, extraDirs: string[] = [], quote = QUOTE): Promise<unknown> {
   const opts: RunOptions = {
     apply: true,
-    chat: new FakeChat({ draft: skillDraft(pattern, QUOTE) }).fn,
+    chat: new FakeChat({ draft: skillDraft(pattern, quote) }).fn,
     gateRunner: fakeGateRunner,
     extraDirs,
   };
@@ -658,7 +662,7 @@ describe("reject", () => {
     const world = makeWorld();
     const repo = await accepted(world);
     addReflections(world, PATTERN, 3, { startDay: 20 });
-    await stage(world);
+    await stage(world, PATTERN, [], `${QUOTE}, and re-run it after every rebase`);
 
     const out = review.reject(world, cfg(), PATTERN);
 

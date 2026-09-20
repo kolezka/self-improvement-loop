@@ -15039,7 +15039,11 @@ var WorkerConfig = object({
   min_tool_uses: number2().int().min(0).default(6),
   auto_kick: boolean2().default(true)
 });
-var WebConfig = object({ port: number2().int().default(8766) });
+var WebConfig = object({
+  port: number2().int().default(8766),
+  host: string2().default("127.0.0.1"),
+  allowed_hosts: array(string2()).default([])
+});
 var Config = object({
   version: number2().int().default(1),
   worlds: array(World).default(() => [World.parse({ name: "default" })]),
@@ -15715,21 +15719,31 @@ var exports_src4 = {};
 __export(exports_src4, {
   GATE_TIMEOUT_MS: () => GATE_TIMEOUT_MS,
   HOOK_KEYS: () => HOOK_KEYS,
+  KNOWLEDGE_HEADER: () => KNOWLEDGE_HEADER,
   MAX_DESCRIPTION: () => MAX_DESCRIPTION,
+  MAX_KNOWLEDGE_ROWS: () => MAX_KNOWLEDGE_ROWS,
   MAX_RULE_CHARS: () => MAX_RULE_CHARS,
+  MAX_SUMMARY_CHARS: () => MAX_SUMMARY_CHARS,
   MIN_BODY_CHARS: () => MIN_BODY_CHARS,
   MIN_QUOTE_CHARS: () => MIN_QUOTE_CHARS,
   MIN_QUOTE_TERMS: () => MIN_QUOTE_TERMS,
   MIN_QUOTE_WORDS: () => MIN_QUOTE_WORDS,
   MIN_SHARED_TERMS: () => MIN_SHARED_TERMS,
+  RECENT_LESSONS: () => RECENT_LESSONS,
   RouteAnswer: () => RouteAnswer,
   SECRET_RE: () => SECRET_RE,
+  SUMMARY_HEADER: () => SUMMARY_HEADER,
+  SUMMARY_MIN_LESSONS: () => SUMMARY_MIN_LESSONS,
   allowedPaths: () => allowedPaths,
+  artifactGist: () => artifactGist,
   artifactPrefixes: () => artifactPrefixes,
   artifactRel: () => artifactRel,
   artifacts: () => exports_artifacts,
   branchName: () => branchName,
   cluster: () => cluster,
+  clusterSummary: () => clusterSummary,
+  context: () => exports_context,
+  digestPath: () => digestPath,
   distinctiveTerms: () => distinctiveTerms,
   draftMessages: () => draftMessages,
   emptyAnswer: () => emptyAnswer,
@@ -15747,7 +15761,9 @@ __export(exports_src4, {
   lintSkill: () => lintSkill,
   loadLedger: () => loadLedger2,
   loadPayloadCorpus: () => loadPayloadCorpus,
+  loadSummary: () => loadSummary,
   parseDraft: () => parseDraft,
+  parseSummary: () => parseSummary,
   parseVerdict: () => parseVerdict,
   placeholderBody: () => placeholderBody,
   plan: () => plan,
@@ -15755,18 +15771,23 @@ __export(exports_src4, {
   readArtifact: () => readArtifact,
   reflections: () => reflections2,
   removeArtifact: () => removeArtifact,
+  renderKnowledge: () => renderKnowledge,
   route: () => route,
   ruleBulletInText: () => ruleBulletInText,
   rulesDiffOwnedBy: () => rulesDiffOwnedBy,
   rulesProblem: () => rulesProblem,
   run: () => run,
+  saveSummary: () => saveSummary,
   scorecardByPattern: () => scorecardByPattern,
   scorecards: () => scorecards2,
   setNudgeAdapter: () => setNudgeAdapter,
   sourcesText: () => sourcesText,
   splitTrigger: () => splitTrigger2,
   substantiveQuote: () => substantiveQuote,
+  summaryMessages: () => summaryMessages,
+  untaggedRuleBullet: () => untaggedRuleBullet,
   watermark: () => watermark,
+  worldKnowledge: () => worldKnowledge,
   writeArtifact: () => writeArtifact
 });
 
@@ -15951,6 +15972,7 @@ __export(exports_artifacts, {
   ruleTag: () => ruleTag,
   rulesDiffOwnedBy: () => rulesDiffOwnedBy,
   rulesProblem: () => rulesProblem,
+  untaggedRuleBullet: () => untaggedRuleBullet,
   writeArtifact: () => writeArtifact
 });
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readdirSync, rmdirSync, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
@@ -16091,6 +16113,9 @@ function ruleBulletInText(text, pattern) {
       return line;
   }
   return "";
+}
+function untaggedRuleBullet(text, pattern) {
+  return text.split(ruleTag(pattern)).join("").replace(/\s+$/, "");
 }
 function rulesProblem(world, root) {
   const path = join6(rootFor(world, root), strip(world.layout.rules_file));
@@ -16248,17 +16273,24 @@ __export(exports_prompts, {
   FORCED_SUBJECT: () => FORCED_SUBJECT,
   GATE_VOCABULARY: () => GATE_VOCABULARY,
   JUDGE_SYSTEM: () => JUDGE_SYSTEM,
+  KNOWLEDGE_HEADER: () => KNOWLEDGE_HEADER,
   MAX_SOURCE_CHARS: () => MAX_SOURCE_CHARS,
+  MAX_SUMMARY_PROMPT_CHARS: () => MAX_SUMMARY_PROMPT_CHARS,
+  RECENT_LESSONS: () => RECENT_LESSONS,
   SHAPES: () => SHAPES,
+  SUMMARISER_SYSTEM: () => SUMMARISER_SYSTEM,
+  SUMMARY_HEADER: () => SUMMARY_HEADER,
   agentShape: () => agentShape,
   boundedSources: () => boundedSources,
   draftMessages: () => draftMessages,
   hookShape: () => hookShape,
   judgeMessages: () => judgeMessages,
   parseDraft: () => parseDraft,
+  parseSummary: () => parseSummary,
   parseVerdict: () => parseVerdict,
   ruleShape: () => ruleShape,
-  skillShape: () => skillShape
+  skillShape: () => skillShape,
+  summaryMessages: () => summaryMessages
 });
 
 // packages/nudges/src/index.ts
@@ -17016,7 +17048,9 @@ var SCAFFOLD_MARKERS = [
   "lessons to generalise:",
   "decide what kind of claude code artifact",
   "copy the structure, never the wording",
-  "write the first one that applies"
+  "write the first one that applies",
+  "summary of every lesson recorded for this pattern",
+  "artifacts this world already has"
 ];
 var SENTENCE_END = /[.!?](?:\s|$)/g;
 var ABBREVIATION = /\b(?:e\.g|i\.e|etc|vs|cf|al)\./gi;
@@ -17339,6 +17373,9 @@ function whyNotHook(answer, payloads, opts) {
 
 // packages/curriculum/src/prompts.ts
 var MAX_SOURCE_CHARS = 200000;
+var RECENT_LESSONS = 12;
+var SUMMARY_HEADER = "Summary of every lesson recorded for this pattern";
+var KNOWLEDGE_HEADER = "Artifacts this world already has";
 var FENCE_RE = /^```[A-Za-z]*\s*\n([\s\S]*?)\n?```\s*$/;
 var THINK_RE = /^\s*<think>[\s\S]*?<\/think>\s*/i;
 function boundedSources(lessons) {
@@ -17415,13 +17452,65 @@ var FORCED_SUBJECT = {
 };
 var ROUTING_FIELDS = 'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' + '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' + "be checked against mechanically on every matching tool call. gate is a " + "single-predicate object usable by the nudge dispatcher, or null if no gate " + "applies. needs_own_context is true only if acting on this lesson needs its " + "own agent and budget rather than a reminder, and when it is true " + "context_evidence MUST be an exact substring copied verbatim from the lessons " + `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` + `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` + `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` + "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " + "discipline rather than an agent. capability_evidence, if set, MUST be an " + "exact substring copied verbatim from the lessons below, never paraphrased, " + "under the same length rule, naming a concrete thing the agent can actually " + "do that neither a hook nor a rule can express. no_artifact is true only if no " + "artifact at all is warranted.";
 var DRAFTER_SYSTEM = "You write Claude Code artifacts from recurring lessons. You reply with one " + "JSON object and nothing else: no prose, no code fence, no <think> block.";
+var SUMMARISER_SYSTEM = "You keep one standing summary of a recurring engineering lesson, so a later " + "writer can cover every occurrence without reading them all. You reply with " + "one JSON object and nothing else.";
+var MAX_SUMMARY_PROMPT_CHARS = 1500;
 var JUDGE_SYSTEM = "You are the last gate before an artifact is committed and starts changing an " + "agent's behaviour. You reply with one JSON object and nothing else.";
-function draftMessages(pattern, lessons, existing = null, artifactType = null) {
-  const sources = boundedSources(lessons);
+function contextBlock(summary, total, quoted, knowledge) {
+  let out = "";
+  if (summary) {
+    out += `${SUMMARY_HEADER} (${total} in total, oldest to newest):
+
+${summary}
+
+`;
+    if (quoted < total) {
+      out += `The ${quoted} most recent lesson(s) follow in full. The other ${total - quoted} reach you ` + `only through the summary above, and what you write must still cover them.
+
+`;
+    }
+  }
+  if (knowledge && knowledge.trim()) {
+    out += `${KNOWLEDGE_HEADER}, and the other lessons it is tracking. Do not restate ` + "one of these under a new name: if one of them already covers the lessons " + "below, say so by declining (no_artifact) or by writing only the part it " + `does not cover. Never contradict one.
+
+` + `${knowledge.trim()}
+
+`;
+  }
+  return out;
+}
+function summaryMessages(pattern, newLessons, previous, coveredCount) {
+  const prior = (previous ?? "").trim();
+  const user = `Maintain the standing summary of the recurring lesson '${pattern}'. It is ` + "the only form in which older reflections reach the writer of this world's " + `artifact, so everything still true has to survive.
+
+` + 'Reply with one JSON object holding exactly one key, "summary", a plain ' + `text string under ${MAX_SUMMARY_PROMPT_CHARS} characters. It states: the ` + "failure that repeats, the conditions it fires under, and the concrete " + "checks, commands, tools and fields the lessons name, verbatim as they name " + "them. Drop one-off session detail, dates and file names that appear once. " + `Add nothing the lessons do not say.
+
+` + (prior ? `Previous summary (covers ${coveredCount} earlier reflection(s)). Keep what still holds, ` + `rewrite only what the new lessons change:
+${prior}
+
+` : "") + `New lesson(s) to fold in (${newLessons.length}):
+
+` + boundedSources(newLessons);
+  return [
+    { role: "system", content: SUMMARISER_SYSTEM },
+    { role: "user", content: user }
+  ];
+}
+function parseSummary(raw) {
+  const data = loads(raw);
+  if (data === null)
+    return "";
+  const value = data["summary"];
+  return typeof value === "string" ? value.trim() : "";
+}
+function draftMessages(pattern, lessons, existing = null, artifactType = null, ctx = {}) {
+  const summary = (ctx.summary ?? "").trim();
+  const quoted = summary && lessons.length > RECENT_LESSONS ? lessons.slice(-RECENT_LESSONS) : lessons;
+  const head = contextBlock(summary, lessons.length, quoted.length, ctx.knowledge ?? null);
+  const sources = boundedSources(quoted);
   const tail = existing ? `
 
-Existing artifact to refine:
-${existing}` : "";
+Existing artifact to refine. Keep its wording wherever the lessons ` + "still support it and change only what a new lesson requires; a rewrite " + `that says the same thing in different words is not a refinement:
+` + existing : "";
   let user;
   if (artifactType !== null && artifactType in SHAPES) {
     user = `${existing ? "Refine the existing" : "Write a"} ` + `${FORCED_SUBJECT[artifactType]} for the recurring lesson ` + `'${pattern}'. Its type is already decided; do not re-decide it.
@@ -17431,7 +17520,7 @@ ${existing}` : "";
 
 Do not restate this task, do not add commentary, do not leave ` + `angle-bracket fill-ins, do not include secrets or tokens.
 
-` + `Lessons to generalise:
+` + head + `Lessons to generalise:
 
 ` + sources + tail;
   } else {
@@ -17450,7 +17539,7 @@ Do not restate this task, do not add commentary, do not leave ` + `angle-bracket
 
 ` + "The body MUST be in the shape the type you selected requires; a body " + "in the wrong shape is rejected and this lesson is dropped. Do not " + "restate this task, do not add commentary, do not leave angle-bracket " + `fill-ins, do not include secrets or tokens.
 
-` + `Lessons to generalise:
+` + head + `Lessons to generalise:
 
 ` + sources + tail;
   }
@@ -17564,6 +17653,22 @@ function parseVerdict(raw) {
     return [false, reason || "rejected"];
   return [false, `no verdict: judge replied ${JSON.stringify(verdict)}`];
 }
+// packages/curriculum/src/context.ts
+var exports_context = {};
+__export(exports_context, {
+  MAX_KNOWLEDGE_ROWS: () => MAX_KNOWLEDGE_ROWS,
+  MAX_SUMMARY_CHARS: () => MAX_SUMMARY_CHARS,
+  SUMMARY_MIN_LESSONS: () => SUMMARY_MIN_LESSONS,
+  artifactGist: () => artifactGist,
+  clusterSummary: () => clusterSummary,
+  digestPath: () => digestPath,
+  loadSummary: () => loadSummary,
+  renderKnowledge: () => renderKnowledge,
+  saveSummary: () => saveSummary,
+  worldKnowledge: () => worldKnowledge
+});
+import { join as join14 } from "path";
+
 // packages/curriculum/src/plan.ts
 import { readdirSync as readdirSync7, statSync as statSync7 } from "fs";
 import { join as join13 } from "path";
@@ -19016,9 +19121,146 @@ function plan(world, cfg, opts = {}) {
   }
   return { world: world.name, threshold, actions };
 }
+
+// packages/curriculum/src/context.ts
+var SUMMARY_MIN_LESSONS = 8;
+var MAX_SUMMARY_CHARS = 2000;
+var MAX_KNOWLEDGE_ROWS = 40;
+var MAX_GIST_CHARS = 180;
+var SUMMARY_VERSION = 1;
+function digestPath(world, pattern) {
+  if (!isSlug(pattern))
+    throw new ValidationError(`unsafe pattern slug ${JSON.stringify(pattern)}`);
+  return join14(worldDir(world), "digests", `${pattern}.json`);
+}
+function loadSummary(world, pattern) {
+  const raw = readJsonOr(digestPath(world, pattern), null);
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    return null;
+  const obj = raw;
+  if (obj["version"] !== SUMMARY_VERSION)
+    return null;
+  const summary = typeof obj["summary"] === "string" ? obj["summary"] : "";
+  if (!summary.trim())
+    return null;
+  const covered = Array.isArray(obj["covered"]) ? obj["covered"].map(String) : [];
+  return {
+    version: SUMMARY_VERSION,
+    pattern,
+    summary,
+    covered,
+    updated: typeof obj["updated"] === "string" ? obj["updated"] : ""
+  };
+}
+function saveSummary(world, value) {
+  writeJson(digestPath(world, value.pattern), value);
+}
+async function clusterSummary(world, pattern, items, chat) {
+  if (items.length < SUMMARY_MIN_LESSONS)
+    return null;
+  const cached = loadSummary(world.name, pattern);
+  const covered = new Set(cached ? cached.covered : []);
+  const fresh = items.filter((r) => !covered.has(r.id));
+  if (cached && fresh.length === 0)
+    return cached.summary;
+  const lessons = fresh.map((r) => (r.lesson || r.body || "").trim()).filter(Boolean);
+  if (lessons.length === 0)
+    return cached ? cached.summary : null;
+  let raw;
+  try {
+    raw = await chat("drafter", summaryMessages(pattern, lessons, cached ? cached.summary : null, covered.size), {
+      world,
+      jsonMode: true
+    });
+  } catch {
+    return cached ? cached.summary : null;
+  }
+  const text = parseSummary(raw).slice(0, MAX_SUMMARY_CHARS).trim();
+  if (!text)
+    return cached ? cached.summary : null;
+  saveSummary(world.name, {
+    version: SUMMARY_VERSION,
+    pattern,
+    summary: text,
+    covered: items.map((r) => r.id),
+    updated: nowIso()
+  });
+  return text;
+}
+function worldKnowledge(world, items, ledger) {
+  const counts = new Map;
+  for (const item of items)
+    counts.set(item.pattern, (counts.get(item.pattern) ?? 0) + 1);
+  const entries = (ledger ?? loadLedger2(world)).entries;
+  const patterns = new Set([...counts.keys(), ...Object.keys(entries)]);
+  const rows = [];
+  for (const pattern of patterns) {
+    const entry = entries[pattern];
+    const live = entry && (entry.status === "promoted" || entry.status === "staged");
+    const type = live ? entry.served_by ? entry.served_by.type : entry.artifact_type : "none";
+    rows.push({
+      pattern,
+      type,
+      gist: type === "none" ? "" : artifactGist(world, type, pattern),
+      count: counts.get(pattern) ?? 0
+    });
+  }
+  rows.sort((a, b) => a.count === b.count ? a.pattern < b.pattern ? -1 : 1 : b.count - a.count);
+  return rows;
+}
+function renderKnowledge(rows, current, max = MAX_KNOWLEDGE_ROWS) {
+  const others = rows.filter((r) => r.pattern !== current);
+  if (others.length === 0)
+    return null;
+  const kept = others.slice(0, max);
+  const lines = kept.map((r) => {
+    const head = r.type === "none" ? `${r.count} reflection(s), no artifact yet` : `${r.type}, ${r.count} reflection(s)`;
+    return r.gist ? `- ${r.pattern} (${head}): ${r.gist}` : `- ${r.pattern} (${head})`;
+  });
+  if (others.length > kept.length)
+    lines.push(`- [${others.length - kept.length} lighter pattern(s) omitted]`);
+  return lines.join(`
+`);
+}
+function artifactGist(world, artifactType, pattern) {
+  let text;
+  try {
+    text = readArtifact(world, artifactType, pattern);
+  } catch {
+    return "";
+  }
+  if (!text.trim())
+    return "";
+  let gist = "";
+  if (artifactType === "rule") {
+    gist = untaggedRuleBullet(text, pattern).replace(/^-\s*/, "");
+  } else if (artifactType === "hook") {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        gist = String(parsed["text"] ?? "");
+      }
+    } catch {
+      gist = "";
+    }
+  } else {
+    for (const line of text.split(`
+`)) {
+      if (line.toLowerCase().startsWith("description:")) {
+        gist = line.slice(line.indexOf(":") + 1).trim();
+        break;
+      }
+    }
+  }
+  if (!gist)
+    gist = text.split(`
+`).find((l) => l.trim()) ?? "";
+  gist = gist.replace(/\s+/g, " ").trim();
+  return gist.length > MAX_GIST_CHARS ? `${gist.slice(0, MAX_GIST_CHARS - 3)}...` : gist;
+}
 // packages/curriculum/src/run.ts
 import { existsSync as existsSync8 } from "fs";
-import { join as join14, resolve as resolve4 } from "path";
+import { join as join15, resolve as resolve4 } from "path";
 function branchName(world, pattern) {
   return `curriculum/${world.toLowerCase()}/${pattern}`;
 }
@@ -19106,6 +19348,7 @@ async function run(world, cfg, opts) {
   const payloads = loadPayloadCorpus(world);
   const ledger = loadLedger2(world);
   const ledgerRel = world.layout.ledger.replace(/^\/+|\/+$/g, "");
+  const knowledge = worldKnowledge(world, items, ledger);
   for (const action of actionable) {
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat2, {
@@ -19114,6 +19357,7 @@ async function run(world, cfg, opts) {
         payloads,
         ledger,
         ledgerRel,
+        knowledge,
         gateRunner: opts.gateRunner
       });
     } catch (e) {
@@ -19139,6 +19383,8 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     forcedType = null;
   }
   let existing = forcedType ? readArtifact(world, forcedType, pattern) || null : null;
+  if (existing && forcedType === "rule")
+    existing = untaggedRuleBullet(existing, pattern) || null;
   if (existing && isPlaceholderBody(forcedType, existing)) {
     existing = null;
   }
@@ -19149,9 +19395,13 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
       return;
     }
   }
+  const draftCtx = {
+    summary: await clusterSummary(world, pattern, items, chat),
+    knowledge: renderKnowledge(ctx.knowledge, pattern)
+  };
   let raw;
   try {
-    raw = await chat("drafter", draftMessages(pattern, lessons, existing, forcedType), {
+    raw = await chat("drafter", draftMessages(pattern, lessons, existing, forcedType, draftCtx), {
       world,
       jsonMode: true
     });
@@ -19183,7 +19433,7 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
   }
   if (forcedType === null && routedType !== draftedType(answer)) {
     try {
-      raw = await chat("drafter", draftMessages(pattern, lessons, null, routedType), {
+      raw = await chat("drafter", draftMessages(pattern, lessons, null, routedType, draftCtx), {
         world,
         jsonMode: true
       });
@@ -19199,6 +19449,10 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     if (forcedType === null)
       reason += `; router: ${routedReason}`;
     report.gated_out[pattern] = reason;
+    return;
+  }
+  if (existing !== null && sameArtifact(body, existing)) {
+    report.gated_out[pattern] = "no change: the redraft reproduces the artifact already in place";
     return;
   }
   const dirty = dirtyPaths(ctx.target, artifactPrefixes(world));
@@ -19250,9 +19504,9 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
       if (foreign.length > 0)
         throw new Error(`${rel} also changes rule(s) for ${foreign.join(", ")}`);
     }
-    const treeLedger = loadLedger(join14(tree, ctx.ledgerRel));
+    const treeLedger = loadLedger(join15(tree, ctx.ledgerRel));
     treeLedger.entries[pattern] = entry;
-    saveLedger(join14(tree, ctx.ledgerRel), treeLedger);
+    saveLedger(join15(tree, ctx.ledgerRel), treeLedger);
     git(tree, ["add", "--", rel, ctx.ledgerRel]);
     git(tree, ["commit", "-q", "-m", message]);
     return git(tree, ["rev-parse", "HEAD"]);
@@ -19281,7 +19535,7 @@ function autoMergeBranch(report, target, defaultRef, branch, pattern) {
 }
 function ruleProblem(world) {
   try {
-    const rules = join14(targetRoot(world), world.layout.rules_file.replace(/^\/+|\/+$/g, ""));
+    const rules = join15(targetRoot(world), world.layout.rules_file.replace(/^\/+|\/+$/g, ""));
     if (!existsSync8(rules)) {
       if (ownsRulesFile(world))
         return null;
@@ -19291,6 +19545,30 @@ function ruleProblem(world) {
   } catch (e) {
     return `could not check writability: ${describe2(e)}`;
   }
+}
+function sameArtifact(body, existing) {
+  const flat = (text) => text.replace(/\s+/g, " ").trim();
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    let stored;
+    try {
+      stored = JSON.parse(existing);
+    } catch {
+      return false;
+    }
+    return canonical(body) === canonical(stored);
+  }
+  return flat(String(body)) === flat(existing);
+}
+function canonical(value) {
+  return JSON.stringify(value, (_key, v) => {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const out = {};
+      for (const k of Object.keys(v).sort())
+        out[k] = v[k];
+      return out;
+    }
+    return v;
+  });
 }
 function hookText(body) {
   if (body !== null && typeof body === "object" && !Array.isArray(body)) {
@@ -19317,7 +19595,7 @@ __export(exports_src6, {
 });
 import { lstatSync as lstatSync2, mkdirSync as mkdirSync5, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "fs";
 import { existsSync as existsSync9 } from "fs";
-import { dirname as dirname6, join as join17, resolve as resolve6 } from "path";
+import { dirname as dirname6, join as join18, resolve as resolve6 } from "path";
 
 // packages/worker/src/index.ts
 var exports_src5 = {};
@@ -19336,18 +19614,18 @@ __export(exports_src5, {
   withLock: () => withLock
 });
 import { closeSync, openSync, readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync8, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4, writeSync } from "fs";
-import { dirname as dirname5, join as join16 } from "path";
+import { dirname as dirname5, join as join17 } from "path";
 
 // packages/worker/src/outline.ts
 import { readdirSync as readdirSync8 } from "fs";
-import { basename as basename2, join as join15 } from "path";
+import { basename as basename2, join as join16 } from "path";
 async function exportNew(world, _cfg) {
   if (world.outline === null)
     return { skipped: "not configured" };
   const apiKey = process.env[world.outline.api_key_env];
   if (!apiKey)
     return { exported: 0, errors: [`env var ${world.outline.api_key_env} is not set`] };
-  const markerPath = join15(stateDir(), `outline-exported-${world.name}.txt`);
+  const markerPath = join16(stateDir(), `outline-exported-${world.name}.txt`);
   const exportedIds = readMarker(markerPath);
   const errors = [];
   let exported = 0;
@@ -19364,7 +19642,7 @@ async function exportNew(world, _cfg) {
       continue;
     let body;
     try {
-      body = readText(join15(dir, name));
+      body = readText(join16(dir, name));
     } catch (e) {
       errors.push(`${rid}: ${e.message}`);
       continue;
@@ -19505,7 +19783,7 @@ function reapSessionDir(sessionId) {
   log({ action: "reap_session_dir", session_id: sessionId, result: "removed" });
 }
 function reapStaleSessionDirs(now, maxAgeDays = 7, limit = 500) {
-  const root = join16(stateDir(), "sessions");
+  const root = join17(stateDir(), "sessions");
   let names;
   try {
     names = readdirSync9(root).sort();
@@ -19517,7 +19795,7 @@ function reapStaleSessionDirs(now, maxAgeDays = 7, limit = 500) {
   for (const name of names) {
     if (removed >= limit)
       break;
-    const p = join16(root, name);
+    const p = join17(root, name);
     let st;
     try {
       st = statSync8(p);
@@ -19608,7 +19886,7 @@ async function runOnce(cfg, opts = {}) {
         }
       }
       summary.duration_s = Math.round((Date.now() - started) / 1000 * 1000) / 1000;
-      writeJson(join16(stateDir(), "worker-status.json"), { last_run: nowIso(), last_summary: summary });
+      writeJson(join17(stateDir(), "worker-status.json"), { last_run: nowIso(), last_summary: summary });
     });
   } catch (e) {
     if (e instanceof LockHeld)
@@ -19663,7 +19941,7 @@ async function reflectPending(cfg, worldByName, worldName, now, chat, summary) {
   }
 }
 async function runCurriculumIfDue(world, cfg, curriculumEnabled, now, summary) {
-  const marker = join16(stateDir(), `last-curriculum-${world.name}`);
+  const marker = join17(stateDir(), `last-curriculum-${world.name}`);
   if (!curriculumEnabled || !curriculumDue(marker, cfg.worker.curriculum_interval_minutes, now))
     return;
   try {
@@ -19688,7 +19966,7 @@ function log(payload) {
 function status2() {
   let lastRun = null;
   let lastSummary = null;
-  const raw = readJsonOr(join16(stateDir(), "worker-status.json"), null);
+  const raw = readJsonOr(join17(stateDir(), "worker-status.json"), null);
   if (raw) {
     lastRun = raw.last_run ?? null;
     lastSummary = raw.last_summary ?? null;
@@ -19702,7 +19980,7 @@ function status2() {
     if (!name.startsWith("last-curriculum-"))
       continue;
     const world = name.slice("last-curriculum-".length);
-    const mtime = mtimeMs(join16(stateDir(), name));
+    const mtime = mtimeMs(join17(stateDir(), name));
     if (mtime !== null)
       lastCurriculum[world] = new Date(mtime).toISOString();
   }
@@ -20083,7 +20361,7 @@ function acceptInner(world, _cfg, pattern, reviewedState) {
         last_updated: nowIso()
       };
     }
-    saveLedger(join17(tree, rel), merged);
+    saveLedger(join18(tree, rel), merged);
     git(tree, ["add", "--", rel]);
     git(tree, ["commit", "-q", "-m", `feat(${atype}): ${pattern} (reviewed)`]);
     return git(tree, ["rev-parse", "HEAD"]);
@@ -20159,7 +20437,7 @@ function rejectInner(world, _cfg, pattern, opts) {
   const at = reflections2(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   const rel = ledgerRel(world);
   const sha = commitOnDefault(world, repo, defaultRef, `chore(curriculum): reject ${pattern}`, (tree) => {
-    const ledger = loadLedger(join17(tree, rel));
+    const ledger = loadLedger(join18(tree, rel));
     const prior = ledger.entries[pattern];
     if (prior) {
       ledger.entries[pattern] = { ...prior, rejected_at_count: at, last_updated: nowIso() };
@@ -20176,7 +20454,7 @@ function rejectInner(world, _cfg, pattern, opts) {
         feedback: null
       };
     }
-    saveLedger(join17(tree, rel), ledger);
+    saveLedger(join18(tree, rel), ledger);
     return [rel];
   });
   git(repo, ["branch", "-q", "-D", snap.branch], { check: false });
@@ -20227,7 +20505,7 @@ function rehomeInner(world, _cfg, pattern, artifactType) {
   const rel = ledgerRel(world);
   let newRel = "";
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
-    const ledger = loadLedger(join17(tree, rel));
+    const ledger = loadLedger(join18(tree, rel));
     const entry = ledger.entries[pattern];
     if (!entry)
       throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to re-home`);
@@ -20252,7 +20530,7 @@ function rehomeInner(world, _cfg, pattern, artifactType) {
       status: "staged",
       last_updated: nowIso()
     };
-    saveLedger(join17(tree, rel), ledger);
+    saveLedger(join18(tree, rel), ledger);
     touched.push(rel);
     return [touched, `feat(${artifactType}): re-home ${pattern} (auto, gated)`];
   });
@@ -20266,7 +20544,7 @@ function retireInner(world, _cfg, pattern) {
   const rel = ledgerRel(world);
   let removed = "";
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
-    const ledger = loadLedger(join17(tree, rel));
+    const ledger = loadLedger(join18(tree, rel));
     const entry = ledger.entries[pattern];
     if (!entry)
       throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to retire`);
@@ -20275,7 +20553,7 @@ function retireInner(world, _cfg, pattern) {
     const oldType = entryType(entry);
     removed = removeArtifact(world, oldType, pattern, tree);
     ledger.entries[pattern] = { ...entry, status: "retired", served_by: null, last_updated: nowIso() };
-    saveLedger(join17(tree, rel), ledger);
+    saveLedger(join18(tree, rel), ledger);
     return [[...removed ? [removed] : [], rel], `feat(${oldType}): retire ${pattern} (auto, gated)`];
   });
   return { branch, pattern, removed };
@@ -20285,8 +20563,8 @@ function relink(world, pattern, artifactType) {
     return null;
   const target = targetRoot(world);
   const rel = artifactRel(world, artifactType, pattern);
-  const source = artifactType === "skill" ? dirname6(join17(target, rel)) : join17(target, rel);
-  const link = artifactType === "skill" ? join17(claudeConfigDir(), "skills", pattern) : join17(claudeConfigDir(), "agents", `${pattern}.md`);
+  const source = artifactType === "skill" ? dirname6(join18(target, rel)) : join18(target, rel);
+  const link = artifactType === "skill" ? join18(claudeConfigDir(), "skills", pattern) : join18(claudeConfigDir(), "agents", `${pattern}.md`);
   mkdirSync5(dirname6(link), { recursive: true });
   let isLink = false;
   try {
@@ -20420,7 +20698,7 @@ function cmdHookSnapshot() {
 
 // apps/cli/src/importer.ts
 import { copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync6, readdirSync as readdirSync10, statSync as statSync9 } from "fs";
-import { join as join18, relative as relative3 } from "path";
+import { join as join19, relative as relative3 } from "path";
 function walkMarkdownFiles(dir) {
   const out = [];
   const walk = (p) => {
@@ -20431,7 +20709,7 @@ function walkMarkdownFiles(dir) {
       return;
     }
     for (const name of entries) {
-      const full = join18(p, name);
+      const full = join19(p, name);
       let st;
       try {
         st = statSync9(full);
@@ -20460,12 +20738,12 @@ function importReflections(dir, world) {
       skippedNonReflection++;
       continue;
     }
-    const target = join18(dest, relative3(src, p));
+    const target = join19(dest, relative3(src, p));
     if (existsSync10(target)) {
       skippedDuplicate++;
       continue;
     }
-    mkdirSync6(join18(target, ".."), { recursive: true });
+    mkdirSync6(join19(target, ".."), { recursive: true });
     copyFileSync(p, target);
     copied++;
   }
@@ -20520,7 +20798,7 @@ function cmdImportLedger(file, opts) {
 }
 
 // apps/cli/src/commands/init.ts
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 var DEFAULT_LITELLM_MODEL = "deepseek/deepseek-flash";
 function cmdInit(opts) {
   const cfgPath = configFile();
@@ -20571,7 +20849,7 @@ function cmdInit(opts) {
   for (const bucket of ["pending", "done", "failed"])
     ensureDir(queueDir(bucket));
   for (const sub of ["logs", "sessions", "usage", "feedback"])
-    ensureDir(join19(stateDir(), sub));
+    ensureDir(join20(stateDir(), sub));
   const snap = writeHookSnapshot(cfg);
   console.log(`wrote hook snapshot at ${snap}`);
   console.log();
@@ -20854,7 +21132,7 @@ function cmdReviewRetire(pattern, opts, deps = defaultDeps) {
 // apps/cli/src/schedule.ts
 import { chmodSync, copyFileSync as copyFileSync2, existsSync as existsSync12, mkdirSync as mkdirSync7, readdirSync as readdirSync11, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
 import { homedir as homedir2 } from "os";
-import { dirname as dirname7, join as join20 } from "path";
+import { dirname as dirname7, join as join21 } from "path";
 var SYSTEMD_WORKER_UNITS = ["sil-worker.service", "sil-worker.timer"];
 var SYSTEMD_WEB_UNIT = "sil-web.service";
 var LAUNCHD_WORKER_PLIST = "com.raqz.sil-worker.plist";
@@ -20870,13 +21148,13 @@ function home() {
   return process.env["HOME"] || homedir2();
 }
 function shimPath() {
-  return join20(home(), ".local", "bin", "sil");
+  return join21(home(), ".local", "bin", "sil");
 }
 function systemdDir() {
-  return join20(home(), ".config", "systemd", "user");
+  return join21(home(), ".config", "systemd", "user");
 }
 function launchdDir() {
-  return join20(home(), "Library", "LaunchAgents");
+  return join21(home(), "Library", "LaunchAgents");
 }
 function renderSystemd(intervalMin, web) {
   const shim = shimPath();
@@ -20966,7 +21244,7 @@ function renderLaunchd(intervalMin, web) {
 function installShim() {
   const dest = shimPath();
   mkdirSync7(dirname7(dest), { recursive: true });
-  const src = join20(pluginRoot(), "scripts", "sil");
+  const src = join21(pluginRoot(), "scripts", "sil");
   copyFileSync2(src, dest);
   chmodSync(dest, 493);
   return dest;
@@ -20978,7 +21256,7 @@ function install(kind, intervalMin = 60, web = false, run = realRunner) {
     mkdirSync7(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderSystemd(intervalMin, web))) {
-      const p = join20(d, name);
+      const p = join21(d, name);
       writeFileSync5(p, content, "utf8");
       written.push(p);
     }
@@ -20993,7 +21271,7 @@ function install(kind, intervalMin = 60, web = false, run = realRunner) {
     mkdirSync7(d, { recursive: true });
     const written = [];
     for (const [name, content] of Object.entries(renderLaunchd(intervalMin, web))) {
-      const p = join20(d, name);
+      const p = join21(d, name);
       writeFileSync5(p, content, "utf8");
       written.push(p);
       run(["launchctl", "load", p]);
@@ -21009,7 +21287,7 @@ function uninstall(kind, run = realRunner) {
     run(["systemctl", "--user", "disable", "--now", SYSTEMD_WEB_UNIT]);
     const removed = [];
     for (const name of [...SYSTEMD_WORKER_UNITS, SYSTEMD_WEB_UNIT]) {
-      const p = join20(d, name);
+      const p = join21(d, name);
       if (existsSync12(p)) {
         rmSync5(p);
         removed.push(p);
@@ -21022,7 +21300,7 @@ function uninstall(kind, run = realRunner) {
     const d = launchdDir();
     const removed = [];
     for (const name of [LAUNCHD_WORKER_PLIST, LAUNCHD_WEB_PLIST, ...LEGACY_LAUNCHD_PLISTS]) {
-      const p = join20(d, name);
+      const p = join21(d, name);
       if (existsSync12(p)) {
         run(["launchctl", "unload", p]);
         rmSync5(p);
@@ -21136,20 +21414,80 @@ async function cmdStatus(opts, deps = defaultDeps) {
 
 // apps/server/src/main.ts
 import { randomBytes } from "crypto";
+import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
 import { timingSafeEqual } from "crypto";
 var LOCAL_HEADER = "X-SIL-Local";
 var TOKEN_HEADER = "X-SIL-Token";
-function allowedHosts(port) {
-  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const extra = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
-  for (const raw of extra.split(",")) {
+function allowedHosts(port, extra = []) {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const env = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
+  for (const raw of [...env.split(","), ...extra]) {
     const host = raw.trim();
     if (host)
       hosts.add(host);
   }
   return hosts;
+}
+function splitHostPort(value) {
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end === -1)
+      return null;
+    const rest = value.slice(end + 1);
+    if (rest !== "" && !rest.startsWith(":"))
+      return null;
+    return { hostname: value.slice(1, end), port: rest.slice(1) };
+  }
+  const colon = value.indexOf(":");
+  if (colon === -1)
+    return { hostname: value, port: "" };
+  if (value.indexOf(":", colon + 1) !== -1)
+    return null;
+  return { hostname: value.slice(0, colon), port: value.slice(colon + 1) };
+}
+function ipv4Private(hostname) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!m)
+    return null;
+  const parts = m.slice(1).map(Number);
+  if (parts.some((n) => n > 255))
+    return false;
+  const [a, b] = parts;
+  if (a === 127 || a === 10)
+    return true;
+  if (a === 172 && b >= 16 && b <= 31)
+    return true;
+  if (a === 192 && b === 168)
+    return true;
+  if (a === 169 && b === 254)
+    return true;
+  if (a === 100 && b >= 64 && b <= 127)
+    return true;
+  return false;
+}
+function isPrivateAddress(hostname) {
+  const v4 = ipv4Private(hostname);
+  if (v4 !== null)
+    return v4;
+  const v6 = hostname.toLowerCase().split("%")[0];
+  if (!v6.includes(":"))
+    return false;
+  if (!/^[0-9a-f:.]+$/.test(v6))
+    return false;
+  if (v6 === "::1")
+    return true;
+  if (v6.startsWith("::ffff:"))
+    return ipv4Private(v6.slice(7)) === true;
+  const head = Number.parseInt(v6.split(":")[0] || "0", 16);
+  if (Number.isNaN(head))
+    return false;
+  if ((head & 65024) === 64512)
+    return true;
+  if ((head & 65472) === 65152)
+    return true;
+  return false;
 }
 function safeEqual(a, b) {
   const bufA = Buffer.from(a, "utf8");
@@ -21160,12 +21498,20 @@ function safeEqual(a, b) {
   }
   return timingSafeEqual(bufA, bufB);
 }
+function hostAllowed(host, opts) {
+  if (allowedHosts(opts.port, opts.allowedHosts ?? []).has(host))
+    return true;
+  const parts = splitHostPort(host);
+  if (!parts || parts.port !== String(opts.port))
+    return false;
+  return isPrivateAddress(parts.hostname);
+}
 function jsonError(status, detail) {
   return new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } });
 }
 function guard(request, opts) {
   const host = request.headers.get("host") ?? "";
-  if (!allowedHosts(opts.port).has(host)) {
+  if (!hostAllowed(host, opts)) {
     return jsonError(403, "bad Host header");
   }
   if (request.headers.get(LOCAL_HEADER) !== "1") {
@@ -21267,13 +21613,13 @@ function lessonsList(args) {
 
 // packages/ops/src/spawn.ts
 import { closeSync as closeSync2, existsSync as existsSync13, openSync as openSync2 } from "fs";
-import { dirname as dirname8, join as join21 } from "path";
+import { dirname as dirname8, join as join22 } from "path";
 function cliCommand(args) {
   const root = pluginRoot();
-  const distCli = join21(root, "dist", "cli.js");
+  const distCli = join22(root, "dist", "cli.js");
   if (existsSync13(distCli))
     return ["bun", distCli, ...args];
-  return ["bun", "run", join21(root, "apps", "cli", "src", "main.ts"), ...args];
+  return ["bun", "run", join22(root, "apps", "cli", "src", "main.ts"), ...args];
 }
 function spawnCli(args, logName) {
   const logPath = logFile(logName);
@@ -21422,7 +21768,7 @@ function loopRun(args) {
 }
 
 // packages/ops/src/handlers/reflections.ts
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 function reflectionsList(args) {
   let refs = listReflections(args.world);
   if (args.pattern)
@@ -21440,7 +21786,7 @@ function reflectionsList(args) {
   }));
 }
 function reflectionsGet(args) {
-  const path = join22(reflectionsDir(args.world), `${args.id}.md`);
+  const path = join23(reflectionsDir(args.world), `${args.id}.md`);
   const r = parseReflection(path, args.world);
   if (r === null)
     throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
@@ -21619,9 +21965,9 @@ async function handleOp(request, route, url) {
 
 // apps/server/src/static.ts
 import { existsSync as existsSync15, statSync as statSync11 } from "fs";
-import { join as join23, normalize, sep } from "path";
+import { join as join24, normalize, sep } from "path";
 function staticRoot() {
-  return join23(pluginRoot(), "dist", "web");
+  return join24(pluginRoot(), "dist", "web");
 }
 function hasDotSegment(pathname) {
   return pathname.split("/").some((seg) => seg === "." || seg === "..");
@@ -21636,7 +21982,7 @@ function resolveStaticPath(root, pathname) {
   if (hasDotSegment(decoded) || decoded.split("/").some((seg) => seg.startsWith(".")))
     return null;
   const cleaned = decoded.replace(/^\/+/, "");
-  const full = normalize(join23(root, cleaned));
+  const full = normalize(join24(root, cleaned));
   if (full !== root && !full.startsWith(root + sep))
     return null;
   return full;
@@ -21664,12 +22010,15 @@ async function serveStatic(pathname) {
 }
 
 // apps/server/src/main.ts
-var REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+function isLoopbackHost(host) {
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
 function createServer(opts) {
   const host = opts.host ?? "127.0.0.1";
-  if (REFUSED_HOSTS.has(host)) {
-    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)}: loopback only`);
+  if (opts.token === null && !isLoopbackHost(host)) {
+    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)} without a token: drop --no-token or bind 127.0.0.1`);
   }
   const routes = buildRoutes();
   const server = Bun.serve({
@@ -21680,7 +22029,7 @@ function createServer(opts) {
       const url = new URL(request.url);
       const pathname = url.pathname;
       if (pathname === "/api/ops" || routes.has(pathname)) {
-        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token });
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
         if (denied)
           return denied;
         if (pathname === "/api/ops")
@@ -21705,12 +22054,31 @@ function createServer(opts) {
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
+function urlHost(host) {
+  if (WILDCARD_HOSTS.has(host))
+    return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
+}
+function privateAddresses() {
+  const out = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.internal || !isPrivateAddress(addr.address))
+        continue;
+      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
+    }
+  }
+  return out;
+}
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
   const token = opts.token ?? true ? newToken() : null;
-  const server = createServer({ port: opts.port, host, token });
-  const url = `http://${host}:${server.port ?? opts.port}/` + (token ? `#${token}` : "");
-  console.log(url);
+  const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
+  const port = server.port ?? opts.port;
+  const fragment = token ? `#${token}` : "";
+  const hosts = WILDCARD_HOSTS.has(host) ? [urlHost(host), ...privateAddresses()] : [urlHost(host)];
+  for (const h of hosts)
+    console.log(`http://${h}:${port}/${fragment}`);
   return server;
 }
 if (false) {}
@@ -21725,10 +22093,10 @@ function openBrowser(url) {
 async function cmdWeb(opts) {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
-  const host = opts.host ?? "127.0.0.1";
-  const server = serve({ host, port, token: opts.token ?? true });
+  const host = opts.host ?? cfg.web.host;
+  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
-    openBrowser(`http://${host}:${server.port}/`);
+    openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise(() => {});
 }
 
@@ -21839,7 +22207,7 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));

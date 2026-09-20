@@ -7,8 +7,24 @@
 export * as git from "./git.ts";
 export * as artifacts from "./artifacts.ts";
 export * as prompts from "./prompts.ts";
+export * as context from "./context.ts";
 
-export { artifactRel, allowedPaths, artifactPrefixes, ensureRulesFile, foreignRuleTags, HOOK_KEYS, isPlaceholderBody, placeholderBody, readArtifact, removeArtifact, ruleBulletInText, rulesDiffOwnedBy, rulesProblem, writeArtifact } from "./artifacts.ts";
+export {
+  artifactGist,
+  type ClusterSummary,
+  clusterSummary,
+  digestPath,
+  type KnowledgeRow,
+  loadSummary,
+  MAX_KNOWLEDGE_ROWS,
+  MAX_SUMMARY_CHARS,
+  renderKnowledge,
+  saveSummary,
+  SUMMARY_MIN_LESSONS,
+  worldKnowledge,
+} from "./context.ts";
+
+export { artifactRel, allowedPaths, artifactPrefixes, ensureRulesFile, foreignRuleTags, HOOK_KEYS, isPlaceholderBody, placeholderBody, readArtifact, removeArtifact, ruleBulletInText, rulesDiffOwnedBy, rulesProblem, untaggedRuleBullet, writeArtifact } from "./artifacts.ts";
 export { distinctiveTerms, lint, lintDescriptionCap, lintGrounding, lintHook, lintRule, lintSkill, MAX_DESCRIPTION, MAX_RULE_CHARS, MIN_BODY_CHARS, MIN_SHARED_TERMS, SECRET_RE } from "./lint.ts";
 export {
   emptyAnswer,
@@ -23,7 +39,18 @@ export {
   splitTrigger,
   substantiveQuote,
 } from "./router.ts";
-export { draftMessages, judgeMessages, parseDraft, parseVerdict } from "./prompts.ts";
+export {
+  type DraftContext,
+  draftMessages,
+  judgeMessages,
+  KNOWLEDGE_HEADER,
+  parseDraft,
+  parseSummary,
+  parseVerdict,
+  RECENT_LESSONS,
+  summaryMessages,
+  SUMMARY_HEADER,
+} from "./prompts.ts";
 export {
   type Cluster,
   cluster,

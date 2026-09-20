@@ -45,6 +45,8 @@ const SCAFFOLD_MARKERS = [
   "decide what kind of claude code artifact",
   "copy the structure, never the wording",
   "write the first one that applies",
+  "summary of every lesson recorded for this pattern",
+  "artifacts this world already has",
 ] as const;
 
 const SENTENCE_END = /[.!?](?:\s|$)/g;

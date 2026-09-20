@@ -33,6 +33,7 @@ import * as providers from "@sil/providers";
 import type { ChatFn } from "@sil/providers";
 import { loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
 import * as artifacts from "./artifacts.ts";
+import * as context from "./context.ts";
 import type { GateRunner } from "./deps.ts";
 import * as git from "./git.ts";
 import { lint } from "./lint.ts";
@@ -169,6 +170,9 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   const payloads = loadPayloadCorpus(world);
   const ledger = loadLedger(world);
   const ledgerRel = world.layout.ledger.replace(/^\/+|\/+$/g, "");
+  // Read once: the map is a property of the world, not of the cluster being
+  // drafted, and rebuilding it per pattern would re-read every artifact file.
+  const knowledge = context.worldKnowledge(world, items, ledger);
 
   for (const action of actionable) {
     try {
@@ -178,6 +182,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
         payloads,
         ledger,
         ledgerRel,
+        knowledge,
         gateRunner: opts.gateRunner,
       });
     } catch (e) {
@@ -196,6 +201,7 @@ interface StageContext {
   payloads: Record<string, unknown>[];
   ledger: { version: number; entries: Record<string, PromotionEntry> };
   ledgerRel: string;
+  knowledge: context.KnowledgeRow[];
   gateRunner?: GateRunner;
 }
 
@@ -230,6 +236,10 @@ async function stageOne(
   }
 
   let existing: string | null = forcedType ? artifacts.readArtifact(world, forcedType, pattern) || null : null;
+  // The stored bullet ends in the tag the writer appends, and `lintRule`
+  // refuses a draft that carries one. Handed the tagged line, a drafter told to
+  // keep the existing wording copies the tag and is gated out for obeying.
+  if (existing && forcedType === "rule") existing = artifacts.untaggedRuleBullet(existing, pattern) || null;
   if (existing && artifacts.isPlaceholderBody(forcedType!, existing)) {
     // A stub is not a draft to refine. Handed one as `existing`, the prompt
     // flips to "refine" and the drafter keeps the structural keys it was given,
@@ -248,9 +258,18 @@ async function stageOne(
     }
   }
 
+  // Everything this world knows, in two bounded pieces: this cluster's older
+  // lessons compressed into a standing summary, and what the other patterns
+  // already say. Both are prompt material; lint and the judge keep reading the
+  // full source text.
+  const draftCtx: prompts.DraftContext = {
+    summary: await context.clusterSummary(world, pattern, items, chat),
+    knowledge: context.renderKnowledge(ctx.knowledge, pattern),
+  };
+
   let raw: string;
   try {
-    raw = await chat("drafter", prompts.draftMessages(pattern, lessons, existing, forcedType), {
+    raw = await chat("drafter", prompts.draftMessages(pattern, lessons, existing, forcedType, draftCtx), {
       world,
       jsonMode: true,
     });
@@ -290,7 +309,7 @@ async function stageOne(
   // lint that can only ever fail.
   if (forcedType === null && routedType !== draftedType(answer)) {
     try {
-      raw = await chat("drafter", prompts.draftMessages(pattern, lessons, null, routedType), {
+      raw = await chat("drafter", prompts.draftMessages(pattern, lessons, null, routedType, draftCtx), {
         world,
         jsonMode: true,
       });
@@ -308,6 +327,15 @@ async function stageOne(
     let reason = "artifact-lint: " + problems.join("; ");
     if (forcedType === null) reason += `; router: ${routedReason}`;
     report.gated_out[pattern] = reason;
+    return;
+  }
+
+  // A redraft that reproduces the artifact already in place is not a promotion.
+  // Staging it spends a judge call and puts a review item with an empty diff in
+  // front of a human. The watermark stays where it is, so the next tick tries
+  // again once there is something new to say.
+  if (existing !== null && sameArtifact(body, existing)) {
+    report.gated_out[pattern] = "no change: the redraft reproduces the artifact already in place";
     return;
   }
 
@@ -440,6 +468,37 @@ function ruleProblem(world: World): string | null {
     // A broken pre-check gates, never crashes.
     return `could not check writability: ${describe(e)}`;
   }
+}
+
+/** Whether a drafted body says exactly what the stored artifact already says.
+ *
+ * Whitespace-insensitive, and key-order-insensitive for a hook, because neither
+ * changes what the artifact does. Anything beyond that counts as a change and
+ * goes to the judge: this gate exists to stop identical redrafts, not to decide
+ * whether two different wordings mean the same thing. */
+function sameArtifact(body: unknown, existing: string): boolean {
+  const flat = (text: string): string => text.replace(/\s+/g, " ").trim();
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    let stored: unknown;
+    try {
+      stored = JSON.parse(existing);
+    } catch {
+      return false;
+    }
+    return canonical(body) === canonical(stored);
+  }
+  return flat(String(body)) === flat(existing);
+}
+
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(v as object).sort()) out[k] = (v as Record<string, unknown>)[k];
+      return out;
+    }
+    return v;
+  });
 }
 
 function hookText(body: unknown): string {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ConfigError, LocalityViolation, ModelNotConfigured, ProviderError, ProviderTimeout } from "@sil/core";
 import type { Endpoint, LlmConfig, World } from "@sil/core";
-import { chat, spawnSyncImpl, status, type SpawnSyncResult } from "../src/index.ts";
+import { chat, decide, spawnSyncImpl, status, systemOneEndpoint, type NoulQuestion, type SpawnSyncResult } from "../src/index.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -18,7 +18,7 @@ function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
 }
 
 function endpoint(overrides: Partial<Endpoint> = {}): Endpoint {
-  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, models: {}, extra_body: {}, ...overrides };
+  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, models: {}, extra_body: {}, decision_threshold: 0.5, ...overrides };
 }
 
 function fakeResponse(body: unknown, init: { status?: number } = {}): Response {
@@ -390,5 +390,242 @@ describe("status", () => {
     expect(result.endpoint).toBeNull();
     expect(result.error).toContain("no endpoints");
     expect(result.models).toEqual({ critic: null, drafter: null, judge: null });
+  });
+});
+
+// --- system-one kind ---------------------------------------------------------
+
+describe("system-one kind", () => {
+  function systemOneConfig(overrides: Partial<Endpoint> = {}): { ep: Endpoint; llm: LlmConfig } {
+    const ep = endpoint({ name: "jev", kind: "system-one", base_url: "http://localhost:5000", models: { judge: "jev-1" }, ...overrides });
+    return { ep, llm: llmConfig({ endpoints: [ep], active: "jev" }) };
+  }
+
+  function denyNetwork() {
+    globalThis.fetch = (async (_input: unknown, _init?: unknown) => {
+      throw new Error("must not reach the network");
+    }) as unknown as typeof fetch;
+  }
+
+  describe("decide request shape", () => {
+    test("posts model, state and questions with noul type merged in, and the Authorization header", async () => {
+      const calls: { url: string; init: RequestInit }[] = [];
+      globalThis.fetch = (async (url: string, init: RequestInit) => {
+        calls.push({ url: String(url), init });
+        return fakeResponse({ answers: { q1: { type: "noul", noul: 0.7 } } });
+      }) as typeof fetch;
+
+      process.env["TEST_SO_KEY"] = "jev-secret";
+      const { llm } = systemOneConfig({ base_url: "http://localhost:5000/v1", api_key_env: "TEST_SO_KEY" });
+
+      const result = await decide("judge", "state text", { q1: { instructions: "is it done?" } }, { world: world(), llm });
+
+      expect(result).toEqual({ q1: 0.7 });
+      expect(calls.length).toBe(1);
+      expect(calls[0]!.url).toBe("http://localhost:5000/v1/systemone");
+      const headers = new Headers(calls[0]!.init.headers);
+      expect(headers.get("Authorization")).toBe("Bearer jev-secret");
+
+      const body = JSON.parse(String(calls[0]!.init.body));
+      expect(body.model).toBe("jev-1");
+      expect(body.state).toBe("state text");
+      expect(body.questions).toEqual({ q1: { type: "noul", instructions: "is it done?" } });
+      delete process.env["TEST_SO_KEY"];
+    });
+
+    test("appends /v1 when base_url lacks it, and sends no Authorization when api_key_env is null", async () => {
+      const calls: { url: string; init: RequestInit }[] = [];
+      globalThis.fetch = (async (url: string, init: RequestInit) => {
+        calls.push({ url: String(url), init });
+        return fakeResponse({ answers: { q1: { type: "noul", noul: 0.5 } } });
+      }) as typeof fetch;
+
+      const { llm } = systemOneConfig({ base_url: "http://localhost:5000", api_key_env: null });
+
+      await decide("judge", "state text", { q1: { instructions: "is it done?" } }, { world: world(), llm });
+
+      expect(calls[0]!.url).toBe("http://localhost:5000/v1/systemone");
+      const headers = new Headers(calls[0]!.init.headers);
+      expect(headers.get("Authorization")).toBeNull();
+    });
+
+    test("extra_body is merged into the request last", async () => {
+      const calls: { init: RequestInit }[] = [];
+      globalThis.fetch = (async (_url: string, init: RequestInit) => {
+        calls.push({ init });
+        return fakeResponse({ answers: { q1: { type: "noul", noul: 0.5 } } });
+      }) as typeof fetch;
+
+      const { llm } = systemOneConfig({ extra_body: { model: "override-model", trace: true } });
+
+      await decide("judge", "state", { q1: { instructions: "x" } }, { world: world(), llm });
+
+      const body = JSON.parse(String(calls[0]!.init.body));
+      expect(body.model).toBe("override-model");
+      expect(body.trace).toBe(true);
+    });
+  });
+
+  describe("decide happy path", () => {
+    test("returns a probability per requested key", async () => {
+      globalThis.fetch = (async () => fakeResponse({ answers: { x: { type: "noul", noul: 0.91 } } })) as unknown as typeof fetch;
+      const { llm } = systemOneConfig();
+
+      const result = await decide("judge", "state", { x: { instructions: "is it done?" } }, { world: world(), llm });
+
+      expect(result).toEqual({ x: 0.91 });
+    });
+  });
+
+  describe("decide error surface", () => {
+    function runDecide(questions: Record<string, NoulQuestion> = { x: { instructions: "is it done?" } }, llmOverride?: LlmConfig) {
+      const { llm } = systemOneConfig();
+      return decide("judge", "state", questions, { world: world(), llm: llmOverride ?? llm });
+    }
+
+    test("raises when answers is missing", async () => {
+      globalThis.fetch = (async () => fakeResponse({})) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when a requested question id is absent from answers", async () => {
+      globalThis.fetch = (async () => fakeResponse({ answers: { other: { type: "noul", noul: 0.5 } } })) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when noul is not a number", async () => {
+      globalThis.fetch = (async () => fakeResponse({ answers: { x: { type: "noul", noul: "0.5" } } })) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when noul is not finite", async () => {
+      // JSON has no NaN literal; an overflowing exponent parses to Infinity and hits the same isFinite guard.
+      globalThis.fetch = (async () =>
+        new Response('{"answers":{"x":{"type":"noul","noul":1e400}}}', { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when noul is below 0", async () => {
+      globalThis.fetch = (async () => fakeResponse({ answers: { x: { type: "noul", noul: -0.1 } } })) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when noul is above 1", async () => {
+      globalThis.fetch = (async () => fakeResponse({ answers: { x: { type: "noul", noul: 1.1 } } })) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when the response is not JSON", async () => {
+      globalThis.fetch = (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when HTTP is not ok, naming the status and body head", async () => {
+      globalThis.fetch = (async () => fakeResponse("boom", { status: 500 })) as unknown as typeof fetch;
+      try {
+        await runDecide();
+        throw new Error("expected decide to throw");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ProviderError);
+        expect((e as Error).message).toContain("500");
+        expect((e as Error).message).toContain("boom");
+      }
+    });
+
+    test("raises ProviderTimeout on an aborted fetch", async () => {
+      globalThis.fetch = (async (_input: unknown, _init?: unknown) => {
+        const err = new DOMException("The operation timed out.", "TimeoutError");
+        throw err;
+      }) as unknown as typeof fetch;
+      await expect(runDecide()).rejects.toBeInstanceOf(ProviderTimeout);
+    });
+
+    test("raises when the role's endpoint is kind openai", async () => {
+      denyNetwork();
+      const ep = endpoint({ kind: "openai", base_url: "http://localhost:4000", models: { judge: "gpt-judge" } });
+      const llm = llmConfig({ endpoints: [ep], active: "e1" });
+      await expect(runDecide(undefined, llm)).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when the role's endpoint is kind claude-cli", async () => {
+      denyNetwork();
+      const ep = endpoint({ kind: "claude-cli", models: { judge: "sonnet" } });
+      const llm = llmConfig({ endpoints: [ep], active: "e1" });
+      await expect(runDecide(undefined, llm)).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when questions is empty", async () => {
+      denyNetwork();
+      await expect(runDecide({})).rejects.toBeInstanceOf(ProviderError);
+    });
+  });
+
+  describe("chat refuses a system-one endpoint", () => {
+    test("names the role and says only the judge can run on it", async () => {
+      const { llm } = systemOneConfig({ models: { critic: "jev-1" } });
+      try {
+        await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm });
+        throw new Error("expected chat to throw");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ProviderError);
+        expect((e as Error).message).toContain("critic");
+        expect((e as Error).message).toContain("judge");
+      }
+    });
+  });
+
+  describe("status for a system-one endpoint", () => {
+    test("reachable true when the probe answers a valid noul", async () => {
+      globalThis.fetch = (async () => fakeResponse({ answers: { probe: { type: "noul", noul: 0.5 } } })) as unknown as typeof fetch;
+      const { llm } = systemOneConfig();
+
+      const result = await status(world(), llm);
+
+      const jev = result.endpoints.find((e) => e.name === "jev")!;
+      expect(jev.reachable).toBe(true);
+      expect(jev.error).toBeNull();
+    });
+
+    test("reachable false with the reason when the endpoint has no models.judge", async () => {
+      denyNetwork();
+      const { llm } = systemOneConfig({ models: {} });
+
+      const result = await status(world(), llm);
+
+      const jev = result.endpoints.find((e) => e.name === "jev")!;
+      expect(jev.reachable).toBe(false);
+      expect(jev.error).toContain("judge");
+    });
+
+    test("reachable false when the probe request fails", async () => {
+      globalThis.fetch = (async () => {
+        throw new Error("connection refused");
+      }) as unknown as typeof fetch;
+      const { llm } = systemOneConfig();
+
+      const result = await status(world(), llm);
+
+      const jev = result.endpoints.find((e) => e.name === "jev")!;
+      expect(jev.reachable).toBe(false);
+      expect(jev.error).toContain("connection refused");
+    });
+  });
+
+  describe("systemOneEndpoint", () => {
+    test("returns the endpoint when the judge runs on it", () => {
+      const { llm } = systemOneConfig();
+      expect(systemOneEndpoint("judge", world(), llm)?.name).toBe("jev");
+    });
+
+    test("returns null when the judge runs on an openai endpoint", () => {
+      const ep = endpoint({ name: "gpt", kind: "openai", base_url: "http://localhost:4000", models: { judge: "gpt-judge" } });
+      const llm = llmConfig({ endpoints: [ep], active: "gpt" });
+      expect(systemOneEndpoint("judge", world(), llm)).toBeNull();
+    });
+
+    test("returns null, not a throw, when the config cannot resolve an endpoint at all", () => {
+      const llm = llmConfig({ endpoints: [], active: null });
+      expect(systemOneEndpoint("judge", world(), llm)).toBeNull();
+    });
   });
 });

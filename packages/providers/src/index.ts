@@ -1,5 +1,7 @@
-// The single model transport. `chat` is the only way any engine code talks to
-// a model. No base_url fallback, no placeholder key, no default model.
+// The model transports. `chat` is the only way engine code asks a model for
+// text; `decide` is the only way it asks a System One endpoint (TypeSafe Jev,
+// or Laya behind a Jev compatible server) for a typed decision. No base_url
+// fallback, no placeholder key, no default model.
 
 import { activeEndpoint, apiKey, endpointFor, loadLlm, ProviderError, ProviderTimeout, resolveRole, ROLES } from "@sil/core";
 import type { Endpoint, LlmConfig, Role, World } from "@sil/core";
@@ -45,8 +47,140 @@ export const chat: ChatFn = async (role, messages, opts) => {
   const { endpoint, model } = resolveRole(llm, role, opts.world);
   if (endpoint.kind === "openai") return chatOpenai(endpoint, model, messages, { jsonMode: opts.jsonMode ?? false, maxTokens: opts.maxTokens ?? 4000 });
   if (endpoint.kind === "claude-cli") return chatClaudeCli(endpoint, model, messages, { maxTokens: opts.maxTokens ?? 4000 });
+  if (endpoint.kind === "system-one") {
+    throw new ProviderError(
+      `endpoint ${JSON.stringify(endpoint.name)} is kind system-one and cannot serve role ${role}: ` +
+        "it answers typed decisions, not text. Only the judge can run on it.",
+    );
+  }
   throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} has unknown kind ${JSON.stringify(endpoint.kind)}`);
 };
+
+// --- typed decisions (System One) --------------------------------------------
+
+/** One yes/no proposition. `criteria` is optional and describes each outcome.
+ *
+ * Only the noul primitive is wired up: the judge gate is the loop's single
+ * typed decision, and choice and score have no caller here yet. */
+export interface NoulQuestion {
+  instructions: string;
+  criteria?: { true: string; false: string };
+}
+
+export type DecideFn = (
+  role: Role,
+  state: string,
+  questions: Record<string, NoulQuestion>,
+  opts: ChatOptions,
+) => Promise<Record<string, number>>;
+
+/** The System One endpoint serving a role, or null when that role runs on a
+ * text model. Also null when llm.yaml cannot be read: the caller's chat path
+ * raises the real config error, so this must not raise a second one. */
+export function systemOneEndpoint(role: Role, world: World, llm?: LlmConfig): Endpoint | null {
+  let endpoint: Endpoint;
+  try {
+    endpoint = endpointFor(llm ?? loadLlm(world), role);
+  } catch {
+    return null;
+  }
+  return endpoint.kind === "system-one" ? endpoint : null;
+}
+
+/** P(true) per question, in one call. Questions share the state and are
+ * answered independently, so a question that depends on another's answer needs
+ * a second call. Every requested key is present in the reply or this raises. */
+export const decide: DecideFn = async (role, state, questions, opts) => {
+  const llm = opts.llm ?? loadLlm(opts.world);
+  const { endpoint, model } = resolveRole(llm, role, opts.world);
+  if (endpoint.kind !== "system-one") {
+    throw new ProviderError(
+      `endpoint ${JSON.stringify(endpoint.name)} is kind ${JSON.stringify(endpoint.kind)}: ` +
+        "a typed decision needs a system-one endpoint",
+    );
+  }
+  if (Object.keys(questions).length === 0) throw new ProviderError("decide called with no questions");
+  const data = await postSystemOne(endpoint, model, state, questions);
+  return readNouls(endpoint, model, questions, data);
+};
+
+function systemOneUrl(endpoint: Endpoint): string {
+  const base = (endpoint.base_url ?? "").replace(/\/+$/, "");
+  if (!base) throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} has no base_url configured`);
+  return v1Url(base) + "/systemone";
+}
+
+async function postSystemOne(
+  endpoint: Endpoint,
+  model: string,
+  state: string,
+  questions: Record<string, NoulQuestion>,
+  timeoutMs?: number,
+): Promise<unknown> {
+  const url = systemOneUrl(endpoint);
+  const body: Record<string, unknown> = {
+    model,
+    state,
+    questions: Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, { type: "noul", ...q }])),
+  };
+  // Same operator override as the chat path.
+  Object.assign(body, endpoint.extra_body ?? {});
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // Laya behind a local server needs none; Jev needs a bearer token.
+  const key = apiKey(endpoint);
+  if (key) headers["Authorization"] = `Bearer ${key}`;
+
+  const ms = timeoutMs ?? endpoint.timeout_s * 1000;
+  let resp: Response;
+  try {
+    resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    const err = e as Error;
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new ProviderTimeout(`provider ${JSON.stringify(endpoint.name)} at ${url} timed out after ${ms / 1000}s`);
+    }
+    throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} unreachable: ${err.message}`);
+  }
+  if (!resp.ok) {
+    const detail = (await resp.text().catch(() => "")).slice(0, 300);
+    throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} answered HTTP ${resp.status}: ${detail}`);
+  }
+  const raw = await resp.text();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ProviderError(
+      `provider ${JSON.stringify(endpoint.name)} at ${url} returned non-JSON (${raw.length} bytes): ${JSON.stringify(raw.slice(0, 300))}`,
+    );
+  }
+}
+
+/** The probability per question id. A missing or out of range answer raises:
+ * the judge reads these as a gate, and a defaulted 0 is an approval. */
+function readNouls(
+  endpoint: Endpoint,
+  model: string,
+  questions: Record<string, NoulQuestion>,
+  data: unknown,
+): Record<string, number> {
+  const where = `provider ${JSON.stringify(endpoint.name)} model ${JSON.stringify(model)}`;
+  const answers = data && typeof data === "object" ? (data as Record<string, unknown>)["answers"] : undefined;
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+    throw new ProviderError(`${where} reply has no answers object`);
+  }
+  const out: Record<string, number> = {};
+  for (const id of Object.keys(questions)) {
+    const answer = (answers as Record<string, unknown>)[id];
+    if (!answer || typeof answer !== "object") throw new ProviderError(`${where} answered nothing for question ${JSON.stringify(id)}`);
+    const value = (answer as Record<string, unknown>)["noul"];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new ProviderError(`${where} answered question ${JSON.stringify(id)} with a noul of ${JSON.stringify(value)}, not a probability`);
+    }
+    out[id] = value;
+  }
+  return out;
+}
 
 /** Reachability and routing for every endpoint. Reports, never raises: a
  * broken llm.yaml or a dead proxy is a field in the answer, not an exception,
@@ -120,6 +254,7 @@ interface Probe { reachable: boolean | null; error: string | null }
 
 async function probeEndpoint(endpoint: Endpoint): Promise<Probe> {
   if (endpoint.kind === "claude-cli") return probeClaudeCli();
+  if (endpoint.kind === "system-one") return probeSystemOne(endpoint);
   if (endpoint.kind !== "openai") return { reachable: null, error: `unknown endpoint kind ${JSON.stringify(endpoint.kind)}` };
 
   const base = (endpoint.base_url ?? "").replace(/\/+$/, "");
@@ -139,6 +274,22 @@ async function probeEndpoint(endpoint: Endpoint): Promise<Probe> {
   } catch (e) {
     const err = e as Error;
     return { reachable: false, error: `${err.name}: ${err.message}` };
+  }
+}
+
+/** A System One endpoint has no models listing to GET, so the probe is one
+ * real question against the configured judge model. It costs a few input
+ * tokens and proves the whole path: URL, key, model name, answer shape. */
+async function probeSystemOne(endpoint: Endpoint): Promise<Probe> {
+  const model = endpoint.models["judge"];
+  if (!model) return { reachable: false, error: "no model for role judge configured on this endpoint" };
+  const questions = { probe: { instructions: "This is a reachability probe." } };
+  try {
+    const data = await postSystemOne(endpoint, model, "probe", questions, 3000);
+    readNouls(endpoint, model, questions, data);
+    return { reachable: true, error: null };
+  } catch (e) {
+    return { reachable: false, error: (e as Error).message };
   }
 }
 

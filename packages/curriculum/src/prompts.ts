@@ -12,8 +12,12 @@
 // risks only a malformed delimiter, which lint catches reliably. Prefer the
 // failure mode the gates catch.
 
-import type { ChatMessage } from "@sil/providers";
+import type { ChatMessage, NoulQuestion } from "@sil/providers";
 import { nudgeEvents } from "./deps.ts";
+// The rule budget, computed by the lint's own arithmetic rather than restated:
+// a prompt quoting a number the lint no longer uses is a gate the drafter
+// cannot see.
+import { ruleBudget } from "./lint.ts";
 // The router's own bar for a quote, imported rather than restated. A prompt
 // asking for "an exact substring" while the router demands five words is a
 // drafter answering honestly and being downgraded for it on every run.
@@ -23,7 +27,11 @@ import { emptyAnswer, MIN_QUOTE_CHARS, MIN_QUOTE_TERMS, MIN_QUOTE_WORDS, RouteAn
 // omission note stays in the prompt and says which end was dropped: a model that
 // can see it was handed a window can hedge, one silently fed a fifth of the
 // evidence writes with false confidence.
-export const MAX_SOURCE_CHARS = 200_000;
+//
+// Sized for reflection sections, not lesson lines: a live 57-reflection cluster
+// is about 120 KB of drafting text, and a 32k-context local model holds about
+// this much and no more.
+export const MAX_SOURCE_CHARS = 120_000;
 
 // Raw lessons quoted beside a rolling summary, newest end of the cluster. The
 // rest of the evidence reaches the drafter through the summary, which changes
@@ -87,11 +95,28 @@ export function agentShape(pattern: string): string {
   );
 }
 
-export function ruleShape(_pattern: string): string {
+export interface DraftOptions {
+  /** `promotion.max_rule_chars`; the rule shape states the budget net of its tag. */
+  maxRuleChars?: number;
+  /** Rolling summary of every lesson in this cluster, built by `context.ts`.
+   * Absent for a small cluster, which is quoted in full instead. */
+  summary?: string | null;
+  /** The world's other patterns and the artifacts already serving them.
+   * Absent in a young world with nothing else to compare against. */
+  knowledge?: string | null;
+}
+
+export function ruleShape(pattern: string, opts: DraftOptions = {}): string {
+  // The lint caps the line the writer produces, tag included, so the budget the
+  // drafter gets has to have the tag taken out of it already. Quoting the raw
+  // cap asks for a bullet that is then refused for being 18 characters over,
+  // which is an honest drafter gated on every run and never told why.
+  const budget = ruleBudget(pattern, opts.maxRuleChars);
   return (
-    "Exactly one line, starting with '- ', under 300 characters. No heading, " +
+    `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` +
     "no frontmatter, no second line: the single imperative the agent must " +
-    "follow, naming the actual command or check the lessons name."
+    "follow, naming the actual command or check the lessons name. No HTML " +
+    "comment and no '<!--rule:...-->' tag: the writer adds the tag itself."
   );
 }
 
@@ -151,7 +176,7 @@ export function hookShape(pattern: string): string {
   );
 }
 
-export const SHAPES: Record<string, (pattern: string) => string> = {
+export const SHAPES: Record<string, (pattern: string, opts?: DraftOptions) => string> = {
   skill: skillShape,
   agent: agentShape,
   rule: ruleShape,
@@ -165,23 +190,32 @@ export const FORCED_SUBJECT: Record<string, string> = {
   hook: "Claude Code hook nudge (a JSON object)",
 };
 
-const ROUTING_FIELDS =
-  'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' +
-  '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' +
-  "be checked against mechanically on every matching tool call. gate is a " +
-  "single-predicate object usable by the nudge dispatcher, or null if no gate " +
-  "applies. needs_own_context is true only if acting on this lesson needs its " +
-  "own agent and budget rather than a reminder, and when it is true " +
-  "context_evidence MUST be an exact substring copied verbatim from the lessons " +
-  `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` +
-  `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` +
-  `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` +
-  "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " +
-  "discipline rather than an agent. capability_evidence, if set, MUST be an " +
-  "exact substring copied verbatim from the lessons below, never paraphrased, " +
-  "under the same length rule, naming a concrete thing the agent can actually " +
-  "do that neither a hook nor a rule can express. no_artifact is true only if no " +
-  "artifact at all is warranted.";
+/** The routing contract. `ruleChars` is the rule bullet's budget net of its
+ * tag, so "does not fit one bullet" names the number the rule shape states. */
+function routingFields(ruleChars: number): string {
+  return (
+    'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' +
+    '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' +
+    "be checked against mechanically on every matching tool call. gate is a " +
+    "single-predicate object usable by the nudge dispatcher, or null if no gate " +
+    "applies. needs_own_context is true only if acting on this lesson needs its " +
+    "own agent and budget rather than a reminder: the lessons describe an " +
+    "investigation that reads many files, logs or tool outputs and reports " +
+    "back, or work that would consume the main context's budget. When it is true " +
+    "context_evidence MUST be an exact substring copied verbatim from the lessons " +
+    `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` +
+    `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` +
+    `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` +
+    "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " +
+    "discipline rather than an agent. capability_evidence, if set, MUST be an " +
+    "exact substring copied verbatim from the lessons below, never paraphrased, " +
+    "under the same length rule, naming a concrete thing the agent can actually " +
+    "do that neither a hook nor a rule can express: a procedure of several " +
+    `ordered commands or checks that does not fit one ${ruleChars}-character bullet. ` +
+    "Quote the passage that names those steps. no_artifact is true only if no " +
+    "artifact at all is warranted."
+  );
+}
 
 export const DRAFTER_SYSTEM =
   "You write Claude Code artifacts from recurring lessons. You reply with one " +
@@ -199,15 +233,6 @@ export const MAX_SUMMARY_PROMPT_CHARS = 1500;
 export const JUDGE_SYSTEM =
   "You are the last gate before an artifact is committed and starts changing an " +
   "agent's behaviour. You reply with one JSON object and nothing else.";
-
-/** Cross-reflection context, built by `context.ts`. Both halves are optional:
- * a small cluster has no summary, and a young world has no knowledge map. */
-export interface DraftContext {
-  /** Rolling summary of every lesson in this cluster. */
-  summary?: string | null;
-  /** The world's other patterns and the artifacts already serving them. */
-  knowledge?: string | null;
-}
 
 /** The evidence the drafter sees before the quoted lessons.
  *
@@ -291,9 +316,9 @@ export function draftMessages(
   lessons: string[],
   existing: string | null = null,
   artifactType: string | null = null,
-  ctx: DraftContext = {},
+  opts: DraftOptions = {},
 ): ChatMessage[] {
-  const summary = (ctx.summary ?? "").trim();
+  const summary = (opts.summary ?? "").trim();
   // With a summary in front of it the prompt quotes only the newest lessons:
   // the older ones are in the summary, and re-quoting them is what made every
   // run redraft from scratch.
@@ -314,7 +339,7 @@ export function draftMessages(
       `'${pattern}'. Its type is already decided; do not re-decide it.\n\n` +
       'Reply with a JSON object holding exactly one key, "artifact". Its ' +
       `value is ${artifactType === "hook" ? "an object" : "a string"} in this shape:\n` +
-      SHAPES[artifactType]!(pattern) +
+      SHAPES[artifactType]!(pattern, opts) +
       "\n\nDo not restate this task, do not add commentary, do not leave " +
       "angle-bracket fill-ins, do not include secrets or tokens.\n\n" +
       head +
@@ -328,7 +353,7 @@ export function draftMessages(
       "Reply with one JSON object with these keys: trigger_event, gate, " +
       "needs_own_context, context_evidence, capability_evidence, no_artifact, " +
       "artifact.\n\n" +
-      ROUTING_FIELDS +
+      routingFields(ruleBudget(pattern, opts.maxRuleChars)) +
       "\n\n" +
       '"artifact" is the body, and WHICH body is decided by the routing ' +
       "fields you just wrote. Work through these in order and write the " +
@@ -344,7 +369,7 @@ export function draftMessages(
       skillShape(pattern) +
       "\n" +
       "5. otherwise: write a RULE, as a string. " +
-      ruleShape(pattern) +
+      ruleShape(pattern, opts) +
       "\n\n" +
       "The body MUST be in the shape the type you selected requires; a body " +
       "in the wrong shape is rejected and this lesson is dropped. Do not " +
@@ -399,6 +424,66 @@ export function judgeMessages(pattern: string, artifactType: string, body: strin
     { role: "system", content: JUDGE_SYSTEM },
     { role: "user", content: user },
   ];
+}
+
+// --- the judge as typed decisions --------------------------------------------
+
+/** The same five reject rules, one proposition each.
+ *
+ * A System One model answers a probability per question in one pass, and the
+ * questions are independent: it never reads rule 2 as context for rule 3. So
+ * the prose list becomes five nouls worded so that true means reject, and the
+ * chat judge's "quote your evidence" method has no equivalent here. That is
+ * the trade: a calibrated number per rule, and no reason in the model's own
+ * words. */
+export const JUDGE_RULES: ReadonlyArray<readonly [string, string]> = [
+  ["contradicts", "The artifact advises the opposite of what a source concluded."],
+  [
+    "vague",
+    "The artifact is generic advice such as 'be careful' or 'verify things'. It names no specific command or check, so it would not change what someone does.",
+  ],
+  ["unsupported", "The artifact instructs something that no source supports."],
+  [
+    "unsafe",
+    "The artifact advises skipping a verification a source demands, or acting on unverified claims to save time.",
+  ],
+  ["unrelated", "The artifact's topic is not the sources' topic."],
+];
+
+/** State and questions for the typed judge. One state, five nouls. */
+export function judgeQuestions(
+  pattern: string,
+  artifactType: string,
+  body: string,
+  lessons: string[],
+): { state: string; questions: Record<string, NoulQuestion> } {
+  const state =
+    `The candidate ${artifactType} below was drafted for the recurring lesson ` +
+    `'${pattern}', from the sources below.\n\n` +
+    `ARTIFACT:\n${body}\n\nSOURCES:\n${boundedSources(lessons)}`;
+  const questions: Record<string, NoulQuestion> = {};
+  for (const [id, instructions] of JUDGE_RULES) questions[id] = { instructions };
+  return { state, questions };
+}
+
+/** [passed, reason] from the probabilities. Rejects on the first rule at or
+ * above the threshold, and names the worst rule either way, so an accept line
+ * still says how close the gate was. A rule with no answer is a reject: the
+ * loop cannot tell an unanswered rule from a rule that does not hold. */
+export function verdictFromNouls(answers: Record<string, number>, threshold: number): [boolean, string] {
+  const missing = JUDGE_RULES.filter(([id]) => typeof answers[id] !== "number").map(([id]) => id);
+  if (missing.length > 0) return [false, `no verdict: judge answered no probability for ${missing.join(", ")}`];
+
+  let worstId = JUDGE_RULES[0]![0];
+  let worst = answers[worstId]!;
+  for (const [id] of JUDGE_RULES) {
+    if (answers[id]! > worst) {
+      worst = answers[id]!;
+      worstId = id;
+    }
+  }
+  const at = `${worstId} p=${worst.toFixed(2)}, threshold ${threshold.toFixed(2)}`;
+  return worst >= threshold ? [false, at] : [true, `accepted (worst ${at})`];
 }
 
 // --- reply parsing -----------------------------------------------------------

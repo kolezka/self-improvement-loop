@@ -95,8 +95,11 @@ function rootFor(world: World, root?: string | null): string {
   return root != null ? root : targetRoot(world);
 }
 
-/** This pattern's artifact text. For "rule", only its own tagged bullet, never
- * the whole shared file. */
+/** This pattern's artifact text. For "rule", only its own bullet and without the
+ * `<!--rule:...-->` tag, never the whole shared file.
+ *
+ * The one caller hands this to the drafter as the body to refine, and a tag in
+ * that body comes straight back in the redraft. */
 export function readArtifact(
   world: World,
   artifactType: ArtifactType | string,
@@ -108,7 +111,7 @@ export function readArtifact(
   const path = join(rootFor(world, root), rel);
   if (!existsSync(path)) return "";
   const text = fsx.readText(path);
-  return artifactType === "rule" ? ruleBulletInText(text, pattern) : text;
+  return artifactType === "rule" ? stripRuleTag(ruleBulletInText(text, pattern), pattern) : text;
 }
 
 /** Write one artifact. Returns the path written, or null for type "none".
@@ -222,6 +225,23 @@ export function rulesDiffOwnedBy(diffText: string, pattern: string): boolean {
     if (body !== "" && !body.endsWith(tag)) return false;
   }
   return true;
+}
+
+/** A rule bullet without the machine-owned `<!--rule:pattern-->` tag.
+ *
+ * The tag is metadata the writer appends, never part of a body. Handing a
+ * tagged bullet to the drafter as "the existing artifact to refine" taught it to
+ * copy the tag, and the lint then refused the redraft on every single run: the
+ * pattern was stuck with no way out but a hand edit.
+ *
+ * Only a trailing tag for this pattern goes. A tag mid-line, or another
+ * pattern's tag, is still the wedge the lint exists to catch. The loop strips
+ * repeats because a doubled tag already reached a live rules file. */
+export function stripRuleTag(bullet: string, pattern: string): string {
+  const tag = ruleTag(pattern);
+  let out = (bullet ?? "").replace(/\s+$/, "");
+  while (out.endsWith(tag)) out = out.slice(0, -tag.length).replace(/\s+$/, "");
+  return out;
 }
 
 /** This pattern's tagged bullet inside `text`, or "" when it has none. */

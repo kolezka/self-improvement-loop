@@ -77,18 +77,35 @@ export function appendJsonl(path: string, record: unknown): void {
 export const ROTATE_AT_BYTES = 10 * 1024 * 1024;
 export const ROTATE_KEEP_LINES = 5000;
 
-/** Append one line; when the file passes `rotateAt` keep only the last `keep` lines. */
+/** Append one line; when the file passes `rotateAt` keep only the last `keep`
+ * lines, cut further until they fit in half of `rotateAt`. */
 export function appendLine(path: string, line: string, rotateAt = ROTATE_AT_BYTES, keep = ROTATE_KEEP_LINES): void {
   ensureDir(dirname(path));
   try {
     if (statSync(path).size >= rotateAt) {
       const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.length > 0);
-      atomicWrite(path, lines.slice(-keep).join("\n") + "\n");
+      atomicWrite(path, rotated(lines, rotateAt, keep));
     }
   } catch {
     // no file yet
   }
   appendFileSync(path, line.endsWith("\n") ? line : line + "\n", "utf8");
+}
+
+/** The newest `keep` lines, dropped from the front until under `rotateAt / 2`.
+ *
+ * A line-only bound never shrinks a file whose lines average more than
+ * `rotateAt / keep` bytes: the kept tail is still over the threshold, so every
+ * later append reads and rewrites the whole file. */
+function rotated(lines: string[], rotateAt: number, keep: number): string {
+  const kept = lines.slice(-keep);
+  let size = kept.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0);
+  let start = 0;
+  while (start < kept.length - 1 && size > rotateAt / 2) {
+    size -= Buffer.byteLength(kept[start]!, "utf8") + 1;
+    start += 1;
+  }
+  return kept.slice(start).join("\n") + "\n";
 }
 
 export function mtimeMs(path: string): number | null {

@@ -5,6 +5,8 @@ background, and promotes recurring lessons into skills, hooks, rules and agents.
 It tracks whether those artifacts actually get used, and feeds that back into the
 next promotion decision. Nothing reaches a shared remote without a human.
 
+OpenClaw sessions feed the same loop. See `docs/OPENCLAW.md`.
+
 ## The loop, in words
 
 Hooks record what happened in a session (fast, one bundled script, never blocks, never
@@ -100,14 +102,33 @@ sil worlds import-kb ~/.config/kb/worlds.yaml
 
 ## Model providers
 
-Two endpoint kinds in `llm.yaml`: `openai` (any OpenAI-compatible endpoint,
-including a local LiteLLM proxy or Ollama) and `claude-cli` (shells out to
-`claude -p --model <model>`, no proxy needed). A role picks its endpoint from
+Three endpoint kinds in `llm.yaml`: `openai` (any OpenAI-compatible endpoint,
+including a local LiteLLM proxy or Ollama), `claude-cli` (shells out to
+`claude -p --model <model>`, no proxy needed), and `system-one` (a typed-decision
+API such as Jev or Laya; only the judge role can run on it, see
+`docs/OPERATIONS.md`). A role picks its endpoint from
 `role_endpoints`, else `active`, so the critic can run on `claude -p` while the
-drafter and judge stay on the proxy. Every drafter/judge/critic call
+drafter and judge stay on the proxy. Every chat call
 runs at temperature 0 for reproducibility. A world set to `llm: local` may only
 use models in `llm.yaml`'s `local_models` allowlist; the loop refuses rather than
 silently falling back to a cloud model.
+
+## Patterns and aliases
+
+Reflections cluster by their `Pattern:` slug, and the match is exact. Two
+reflections about the same mechanism under different slugs never reach the
+promotion threshold together. The alias map folds one into the other, one hop
+only:
+
+```
+sil aliases suggest          # near-duplicate slugs, by token overlap
+sil aliases set stale-env stale-cached-env
+sil aliases list
+```
+
+`suggest` is deterministic and calls no model. It proposes; you apply. `set`
+re-points any alias that pointed at the slug you just aliased, so a two hop chain
+(which would resolve to nothing) can never form.
 
 ## Privacy
 
@@ -123,8 +144,19 @@ that.
 - `docs/ARCHITECTURE.md`: design rules, runtime layout, full loop mechanics.
 - `docs/INSTALL.md`: marketplace install, local dev install, scheduling.
 - `docs/OPERATIONS.md`: daily loop, reviewing, key rotation, troubleshooting.
+- `docs/OPENCLAW.md`: running the loop on OpenClaw sessions.
+- `docs/RELEASE.md`: how a version is cut and where the installed `dist/` comes from.
 - `docs/V1-PARITY.md`: what carried over from V1 and what changed.
 
 ## License
 
-Proprietary. All rights reserved. See `LICENSE`; contact mariusz@raqz.pl for a license.
+Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE)
+(SPDX: `PolyForm-Noncommercial-1.0.0`). Any noncommercial use is free: run it,
+study it, change it, share it. That covers personal and hobby use, research, and
+use by schools, charities, public research bodies and government institutions.
+
+Commercial use is not granted by that license. See
+[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) or contact mariusz@raqz.pl.
+
+This license is not OSI-approved, because it restricts a field of endeavour. Call
+it source-available, not open source.

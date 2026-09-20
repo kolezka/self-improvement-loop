@@ -1,8 +1,8 @@
 {
   "name": "self-improvement-loop",
-  "version": "0.2.1",
+  "version": "0.3.2",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -11,6 +11,7 @@
   "scripts": {
     "build": "bun run scripts/build.ts",
     "bench": "bun run scripts/bench.ts",
+    "bench:hooks": "bun run scripts/bench-hooks.ts",
     "test": "bun test",
     "typecheck": "bun x tsc -p tsconfig.json --noEmit",
     "check:web": "bun run --cwd apps/web check",
@@ -24,6 +25,7 @@
     "@sil/curriculum": "workspace:*",
     "@sil/feedback": "workspace:*",
     "@sil/nudges": "workspace:*",
+    "@sil/openclaw": "workspace:*",
     "@sil/ops": "workspace:*",
     "@sil/providers": "workspace:*",
     "@sil/review": "workspace:*",

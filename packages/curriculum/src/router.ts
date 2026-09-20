@@ -167,10 +167,14 @@ export function route(
     return { artifact_type: "none", reason: "drafter declined: no artifact warranted" };
   }
 
-  const hookReason = whyNotHook(reply, corpus, opts);
-  if (hookReason === null) {
-    return { artifact_type: "hook", reason: `gate fires on the payload corpus at ${reply.trigger_event}` };
+  const verdict = hookVerdict(reply, corpus, opts);
+  if (typeof verdict !== "string") {
+    return {
+      artifact_type: "hook",
+      reason: `gate fires on ${verdict.hits} of ${verdict.total} recorded payload(s) at ${reply.trigger_event}`,
+    };
   }
+  const hookReason = verdict;
 
   // `agent` is earned, not asserted, at the same bar `skill` clears below.
   if (reply.needs_own_context) {
@@ -213,12 +217,22 @@ export function route(
   };
 }
 
-/** null when the answer is a workable hook, otherwise why it is not.
+// A gate firing on more than this share of recorded tool calls is a broadcast.
+// "Fires on every payload" was the whole check when the corpus was twenty
+// fixtures; against two thousand recorded calls nothing but `always` ever
+// matches every one, and a gate on half of them would pass as narrow.
+export const MAX_GATE_MATCH_RATE = 0.5;
+
+/** The hit count when the answer is a workable hook, otherwise why it is not.
  *
  * The gate is executed against the recorded payload corpus rather than read.
  * "This is mechanically detectable" is a claim the drafter makes, and the point
  * of this module is that such claims get tested. */
-function whyNotHook(answer: RouteAnswer, payloads: Record<string, unknown>[], opts: RouteOptions): string | null {
+function hookVerdict(
+  answer: RouteAnswer,
+  payloads: Record<string, unknown>[],
+  opts: RouteOptions,
+): string | { hits: number; total: number } {
   const gate = answer.gate;
   if (answer.trigger_event === "none" || gate == null || Object.keys(gate).length === 0) {
     return "no trigger event proposed";
@@ -246,11 +260,11 @@ function whyNotHook(answer: RouteAnswer, payloads: Record<string, unknown>[], op
     return `gate runner answered for ${results.length} of ${payloads.length} payload(s)`;
   }
 
-  if (!results.some(Boolean)) return "gate matched nothing in the payload corpus";
-  if (results.every(Boolean) && payloads.length > 1) {
-    // A gate that fires on every recorded payload is a broadcast, not a nudge:
-    // it would inject on every matching tool call of every session.
-    return "gate fires on every payload in the corpus; that is a broadcast";
+  const hits = results.filter(Boolean).length;
+  if (hits === 0) return "gate matched nothing in the payload corpus";
+  if (payloads.length > 1 && hits / payloads.length > MAX_GATE_MATCH_RATE) {
+    // It would inject on a large share of the tool calls of every session.
+    return `gate fires on ${hits} of ${payloads.length} recorded payloads; that is a broadcast, not a nudge`;
   }
-  return null;
+  return { hits, total: payloads.length };
 }

@@ -98,7 +98,7 @@ function cfg(opts: { idleMinutes?: number; minToolUses?: number } = {}): Config 
   return {
     version: 1,
     worlds: [world()],
-    promotion: { threshold: 3, per_run_cap: 3, auto_merge: false, retire_after_days: 45 },
+    promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 },
     worker: { idle_minutes: opts.idleMinutes ?? 10, curriculum_interval_minutes: 60, min_tool_uses: opts.minToolUses ?? 1, auto_kick: true },
     web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] },
   };
@@ -140,17 +140,24 @@ describe("runOnce non-idle non-ended entry", () => {
 });
 
 describe("runOnce missing transcript", () => {
-  test("moves the entry to failed", async () => {
+  // A session whose transcript is not on disk carries nothing to reflect on,
+  // and that is not an error of the loop: `claude --print
+  // --no-session-persistence` (what tools like jean use for their helper runs)
+  // never writes one. Such an entry leaves the queue as skipped, so `failed`
+  // keeps meaning "reflection was attempted and broke".
+  test("retires the entry as skipped, not failed", async () => {
     prepareEnv();
     writePending("sess-no-transcript", { ended: true, transcriptOk: false });
 
     const summary = await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
 
-    expect(summary.failed).toEqual(["sess-no-transcript"]);
+    expect(summary.failed).toEqual([]);
+    expect(summary.skipped).toEqual(["sess-no-transcript"]);
     expect(loadEntry("pending", "sess-no-transcript")).toBeNull();
-    const failed = loadEntry("failed", "sess-no-transcript");
-    expect(failed).not.toBeNull();
-    expect(failed!.result).toContain("transcript missing");
+    expect(loadEntry("failed", "sess-no-transcript")).toBeNull();
+    const done = loadEntry("done", "sess-no-transcript");
+    expect(done).not.toBeNull();
+    expect(done!.result).toContain("not persisted");
   });
 });
 
@@ -249,6 +256,63 @@ describe("Lock", () => {
     }
     expect(() => new Lock().acquire()).not.toThrow();
     new Lock().release();
+  });
+
+  /** Write a crashed worker's lock file and return its path. */
+  function writeCrashedLock(): string {
+    const lockPath = paths.workerLockFile();
+    fsx.ensureDir(join(lockPath, ".."));
+    writeFileSync(lockPath, "999999999", "utf8"); // a pid that cannot exist
+    return lockPath;
+  }
+
+  // The invariant the reclaim path rests on: removing a crashed lock is done by
+  // one process at a time. Deciding the winner by timing let two of them hold.
+  test("a reclaimer that loses the reclaim mutex does not take the lock", () => {
+    prepareEnv();
+    const lockPath = writeCrashedLock();
+    writeFileSync(`${lockPath}.reclaim`, "4194303", "utf8"); // another process is mid-reclaim
+
+    expect(() => new Lock().acquire()).toThrow(LockHeld);
+    expect(readFileSync(lockPath, "utf8")).toBe("999999999");
+    expect(existsSync(`${lockPath}.reclaim`)).toBe(true); // the loser does not clear it
+  });
+
+  test("an abandoned reclaim mutex does not block the reclaim forever", () => {
+    prepareEnv();
+    const lockPath = writeCrashedLock();
+    const mutex = `${lockPath}.reclaim`;
+    writeFileSync(mutex, "4194303", "utf8");
+    const longAgo = (Date.now() - 600_000) / 1000;
+    utimesSync(mutex, longAgo, longAgo);
+
+    const lock = new Lock();
+    expect(() => lock.acquire()).not.toThrow();
+    expect(Lock.held()).toBe(true);
+    expect(existsSync(mutex)).toBe(false);
+    lock.release();
+  });
+
+  test("a live lock is never unlinked by a reclaimer", () => {
+    prepareEnv();
+    const first = new Lock();
+    first.acquire();
+    try {
+      expect(() => new Lock().acquire()).toThrow(LockHeld);
+      expect(readFileSync(paths.workerLockFile(), "utf8")).toBe(String(process.pid));
+    } finally {
+      first.release();
+    }
+  });
+
+  test("a successful reclaim leaves no mutex behind", () => {
+    prepareEnv();
+    const lockPath = writeCrashedLock();
+
+    const lock = new Lock();
+    lock.acquire();
+    expect(existsSync(`${lockPath}.reclaim`)).toBe(false);
+    lock.release();
   });
 
   test("release leaves nothing that reads as held", () => {

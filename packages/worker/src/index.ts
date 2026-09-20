@@ -53,10 +53,32 @@ function pidAlive(pid: number): boolean {
 // leftover; a crash between the two writes costs this long, once.
 const PID_SETTLE_TRIES = 5;
 const PID_SETTLE_MS = 10;
-// How long a reclaim waits before believing it won. Two processes can decide the
-// same crashed lock is theirs; the last write is the one that counts, and the
-// others find a pid that is not theirs.
-const RECLAIM_SETTLE_MS = 60;
+// A reclaim mutex is held across a read, an unlink and a create, so a file older
+// than this is a leftover from a process that died inside that section. Set far
+// above any plausible stall: taking a mutex that is still live is what produces
+// two holders, and the only cost of waiting too long is one skipped worker run.
+const RECLAIM_MUTEX_STALE_MS = 60_000;
+
+/** Create `path` holding `text`, or return false when it already exists.
+ *
+ * The exclusive create is the only way ownership is ever taken: it is one
+ * atomic operation, so two processes racing for the same free path cannot both
+ * win. Reading and then writing left a window in which both read "free". */
+function createExclusive(path: string, text: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "wx");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  }
+  try {
+    writeSync(fd, text);
+  } finally {
+    closeSync(fd);
+  }
+  return true;
+}
 
 /** The pid in the lock file once it has stopped being empty, or null.
  *
@@ -73,6 +95,27 @@ function settledPid(path: string): number | null {
   return readPid(path);
 }
 
+/** Take the right to reclaim a crashed lock, or return false.
+ *
+ * A reclaimer that loses this does not get the lock. Losing is the correct
+ * answer: the winner is about to become the holder. */
+function takeReclaimMutex(mutex: string): boolean {
+  if (createExclusive(mutex, String(process.pid))) return true;
+  let ageMs: number;
+  try {
+    ageMs = Date.now() - statSync(mutex).mtimeMs;
+  } catch {
+    return createExclusive(mutex, String(process.pid)); // vanished between the two calls
+  }
+  if (ageMs < RECLAIM_MUTEX_STALE_MS) return false;
+  try {
+    unlinkSync(mutex);
+  } catch {
+    // another reclaimer cleared it first
+  }
+  return createExclusive(mutex, String(process.pid));
+}
+
 /** Single-instance guard on `paths.workerLockFile()`. A lock file whose
  * recorded pid is no longer alive, missing, or empty is reclaimed. */
 export class Lock {
@@ -84,26 +127,50 @@ export class Lock {
 
   /** Take the lock, or throw LockHeld.
    *
-   * The exclusive create is the whole guard: it is one atomic operation, so two
-   * processes racing for a free lock cannot both win. Reading the pid and then
-   * writing left a window in which both read "free" and both wrote, and the
-   * second write silently replaced the first holder. */
+   * Ownership is only ever taken by the exclusive create, on both the fast path
+   * and the reclaim path, so it is never decided by timing. */
   acquire(): void {
     fsx.ensureDir(dirname(this.path));
-    if (this.create()) return;
+    if (createExclusive(this.path, String(process.pid))) return;
     const pid = settledPid(this.path);
     if (pid !== null && pidAlive(pid)) throw new LockHeld(`worker lock held: ${this.path}`);
 
-    // A crashed worker's file: no pid, an unparsable one, or a dead one. It is
-    // overwritten in place, never unlinked and recreated: measured with five
-    // processes racing, unlink-then-create gave two holders, because each
-    // reclaimer removed the file another had just made. A rename leaves no
-    // moment in which the lock is absent, so nothing on the fast path above can
-    // slip through, and only genuine reclaimers compete. The last write wins and
-    // the rest read a pid that is not theirs.
-    fsx.atomicWrite(this.path, String(process.pid));
-    Bun.sleepSync(RECLAIM_SETTLE_MS);
-    if (readPid(this.path) !== process.pid) throw new LockHeld(`worker lock held: ${this.path}`);
+    // A crashed worker's file: no pid, an unparsable one, or a dead one.
+    // Removing it is the one step that must never run twice at once, so the
+    // reclaim runs behind a second exclusive create. Before this, every
+    // reclaimer wrote its own pid and slept a fixed 60ms to see whose write
+    // came last; a process descheduled for longer than that sleep wrote after
+    // the earlier winner had already checked, and both held the lock. Measured
+    // on CI, 8 racing processes, 2 holders.
+    const mutex = `${this.path}.reclaim`;
+    if (!takeReclaimMutex(mutex)) throw new LockHeld(`worker lock held: ${this.path}`);
+    try {
+      // Re-read under the mutex: the holder may have changed since the check
+      // above, and a live lock must never be unlinked.
+      const current = settledPid(this.path);
+      if (current !== null && pidAlive(current)) throw new LockHeld(`worker lock held: ${this.path}`);
+      // A mutex old enough to look abandoned can be taken from under us. Check
+      // it here so a stalled reclaimer cannot unlink the new holder's lock.
+      if (readPid(mutex) !== process.pid) throw new LockHeld(`worker lock held: ${this.path}`);
+      try {
+        unlinkSync(this.path);
+      } catch {
+        // already gone
+      }
+      // A process on the fast path can create the lock in the moment between
+      // the unlink and this create. It then owns it and this one does not.
+      if (!createExclusive(this.path, String(process.pid))) throw new LockHeld(`worker lock held: ${this.path}`);
+    } finally {
+      // Only ours. Clearing a mutex another process now holds would let a third
+      // one into the reclaim alongside it.
+      if (readPid(mutex) === process.pid) {
+        try {
+          unlinkSync(mutex);
+        } catch {
+          // already gone
+        }
+      }
+    }
   }
 
   release(): void {
@@ -123,23 +190,6 @@ export class Lock {
   static held(): boolean {
     const pid = readPid(paths.workerLockFile());
     return pid !== null && pidAlive(pid);
-  }
-
-  /** True when this call created the file, false when it already existed. */
-  private create(): boolean {
-    let fd: number;
-    try {
-      fd = openSync(this.path, "wx");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw e;
-    }
-    try {
-      writeSync(fd, String(process.pid));
-    } finally {
-      closeSync(fd);
-    }
-    return true;
   }
 }
 
@@ -225,13 +275,20 @@ export function skipSession(sessionId: string): boolean {
   return true;
 }
 
+// A transcript that is not on disk is not a broken reflection: Claude Code
+// writes none for `claude --print --no-session-persistence`, and an old one
+// can be cleaned up before the worker gets to it. Either way there is nothing
+// to read, so the entry retires as skipped and `failed` keeps meaning
+// "reflection ran and broke".
+const NO_TRANSCRIPT = "skipped: transcript not persisted";
+
 export function eligible(entry: QueueEntry, cfg: Config, now: Date): [boolean, string] {
-  if (!fsx.exists(entry.transcript_path)) return [false, "failed: transcript missing"];
+  if (!fsx.exists(entry.transcript_path)) return [false, NO_TRANSCRIPT];
 
   let idleOk = entry.ended;
   if (!idleOk) {
     const mtime = fsx.mtimeMs(entry.transcript_path);
-    if (mtime === null) return [false, "failed: transcript missing"];
+    if (mtime === null) return [false, NO_TRANSCRIPT];
     idleOk = (now.getTime() - mtime) / 60_000 >= cfg.worker.idle_minutes;
   }
   if (!idleOk) return [false, "not idle"];
@@ -317,6 +374,11 @@ async function reflectPending(
       if (reason.startsWith("failed")) {
         moveToTerminal(entry, "failed", reason);
         summary.failed.push(entry.session_id);
+      } else if (reason.startsWith("skipped")) {
+        // Nothing here will ever become reflectable, so the entry leaves the
+        // queue instead of being re-read on every run.
+        moveToTerminal(entry, "done", reason);
+        summary.skipped.push(entry.session_id);
       } else {
         summary.skipped.push(entry.session_id);
       }

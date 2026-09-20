@@ -14,11 +14,23 @@ export interface OpMeta {
 
 let opsMeta: Map<string, OpMeta> | null = null;
 
+/** The token in a URL fragment, or "" when the fragment is a route.
+ *
+ * The same fragment carries both: the server prints `#<token>` once, and the
+ * UI then writes `#/review` into it on every navigation. Reading a route as a
+ * token overwrote the stored one with "/review" on any reload, every call after
+ * that was refused by the guard, and a deep link to a pane was swallowed as if
+ * it were a token. A token is base64url and never starts with "/". */
+export function tokenFromFragment(fragment: string): string {
+  const raw = fragment.replace(/^#/, "");
+  return raw.startsWith("/") ? "" : raw;
+}
+
 /** Reads the token from the URL fragment on first load, or from
  * sessionStorage on a reload. Strips the fragment from the visible URL so
  * the token never lingers in browser history. */
 export function captureToken(): string {
-  const fromHash = window.location.hash.replace(/^#/, "");
+  const fromHash = tokenFromFragment(window.location.hash);
   if (fromHash) {
     token = fromHash;
     try {
@@ -35,6 +47,29 @@ export function captureToken(): string {
     token = "";
   }
   return token;
+}
+
+const RELOAD_PARAM = "r";
+
+/** Reload the page so a new plugin build is the one that runs.
+ *
+ * The param is what defeats a browser holding an index.html it cached before
+ * the server started sending `cache-control: no-store`. The fragment is kept,
+ * so the reload lands on the same pane, and the token rides along in
+ * sessionStorage. */
+export function reloadForBuild(build: string | null): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set(RELOAD_PARAM, build ?? String(Date.now()));
+  window.location.replace(url.toString());
+}
+
+/** Take the cache-busting param back out of the visible URL, so a copied link
+ * is the plain one again. */
+export function dropReloadParam(): void {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has(RELOAD_PARAM)) return;
+  url.searchParams.delete(RELOAD_PARAM);
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
 }
 
 async function loadOpsMeta(): Promise<Map<string, OpMeta>> {

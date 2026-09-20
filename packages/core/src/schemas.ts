@@ -1,7 +1,7 @@
 // Domain schemas. zod is the single source of truth; types are inferred.
 
 import { z } from "zod";
-import { ROLES, SLUG_RE, WORLD_NAME_RE } from "./consts.ts";
+import { DEFAULT_MAX_RULE_CHARS, ROLES, SLUG_RE, WORLD_NAME_RE } from "./consts.ts";
 
 export const slug = z.string().regex(SLUG_RE).max(64);
 export const isoTs = z.string();
@@ -52,6 +52,8 @@ export type World = z.infer<typeof World>;
 export const Promotion = z.object({
   threshold: z.number().int().min(1).default(3),
   per_run_cap: z.number().int().min(1).default(3),
+  // Longest rule bullet the lint accepts, its <!--rule:...--> tag included.
+  max_rule_chars: z.number().int().min(100).default(DEFAULT_MAX_RULE_CHARS),
   auto_merge: z.boolean().default(false),
   retire_after_days: z.number().int().min(1).default(45),
 });
@@ -88,7 +90,10 @@ export type Config = z.infer<typeof Config>;
 
 export const Endpoint = z.object({
   name: z.string().min(1),
-  kind: z.enum(["openai", "claude-cli"]).default("openai"),
+  // `system-one` is the typed-decision API that TypeSafe Jev and the open Laya
+  // servers both speak (`POST /v1/systemone`). It answers probabilities, not
+  // text, so it can only serve the judge.
+  kind: z.enum(["openai", "claude-cli", "system-one"]).default("openai"),
   base_url: z.string().nullable().default(null),
   api_key_env: z.string().nullable().default(null),
   timeout_s: z.number().int().min(1).default(240),
@@ -98,6 +103,9 @@ export const Endpoint = z.object({
   // Merged into every chat request body last, so it can override max_tokens or
   // add provider knobs such as reasoning_effort or thinking.
   extra_body: z.record(z.string(), z.unknown()).default({}),
+  // `system-one` only. A noul answer is a probability, so the judge needs a bar
+  // at which it reads as yes. Raise it to make the gate harder to trip.
+  decision_threshold: z.number().min(0).max(1).default(0.5),
 });
 export type Endpoint = z.infer<typeof Endpoint>;
 
@@ -134,8 +142,9 @@ export type QueueEntry = z.infer<typeof QueueEntry>;
 
 // --- usage / feedback ---------------------------------------------------
 
-/** One line of usage/events.jsonl. kind: skill | agent | agent_stop | hook_run.
- * ref: `<type>:<name>`, e.g. skill:verify-callsites, agent:explorer, hook:PreToolUse:Bash. */
+/** One line of usage/events.jsonl. kind: skill | agent | rule | agent_stop | hook_run.
+ * ref: `<type>:<name>`, e.g. skill:verify-callsites, agent:explorer, hook:PreToolUse:Bash.
+ * skill, agent and rule count as uses; agent_stop and hook_run are diagnostics. */
 export const UsageEvent = z.object({
   ts: isoTs,
   session_id: z.string(),
@@ -231,6 +240,11 @@ export const PromotionEntry = z.object({
   // V1 rows predate this field. Dated now rather than rejected: one old row
   // without it used to make the whole ledger unreadable.
   last_updated: isoTs.default(() => new Date().toISOString()),
+  // When this row last became promoted. `last_updated` is not that: reject,
+  // re-home and retire all bump it, so judging staleness from it restarts the
+  // retire clock every time a human refuses a redraft. Null on rows written
+  // before this field existed, and on rows that were never promoted.
+  promoted_at: isoTs.nullable().default(null),
   commit: z.string().nullable().default(null),
   feedback: Scorecard.nullable().default(null),
 });
@@ -260,11 +274,23 @@ export type PlanAction = z.infer<typeof PlanAction>;
 export const PlanReport = z.object({ world: z.string(), threshold: z.number().int(), actions: z.array(PlanAction).default([]) });
 export type PlanReport = z.infer<typeof PlanReport>;
 
+// The type decision for one pattern: what the drafter committed to, what the
+// router (or the served_by row) settled on, and why. Recorded for every
+// pattern that reached the router, staged or not. Without it a downgrade from
+// hook to rule is invisible: the log shows a staged rule and nothing else.
+export const RouteRecord = z.object({
+  drafted: z.string(),
+  type: ArtifactType,
+  reason: z.string(),
+});
+export type RouteRecord = z.infer<typeof RouteRecord>;
+
 export const RunReport = z.object({
   world: z.string(),
   dry_run: z.boolean().default(true),
   staged: z.array(z.string()).default([]),
   merged: z.array(z.string()).default([]),
+  routed: z.record(z.string(), RouteRecord).default({}),
   gated_out: z.record(z.string(), z.string()).default({}),
   dropped: z.record(z.string(), z.number().int()).default({}),
   started: isoTs,

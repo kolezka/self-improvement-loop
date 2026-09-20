@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
-  import MarkdownBody from "../components/MarkdownBody.svelte";
+  import { formatTime } from "../lib/format.ts";
   import DiffView from "../components/DiffView.svelte";
 
   const ARTIFACT_TYPES = ["skill", "hook", "rule", "agent", "none"] as const;
@@ -16,6 +16,7 @@
   interface Detail {
     pattern: string;
     artifact_type: string;
+    artifact_path?: string | null;
     reviewed_state: string;
     accept_blocked?: string | null;
     sources?: string[];
@@ -91,6 +92,7 @@
     selectedPattern = null;
     detail = null;
     await loadQueue();
+    appState.statusSeq += 1;
   }
 
   function accept() {
@@ -113,55 +115,161 @@
 
   const canAccept = $derived(reviewedState !== null && !detail?.accept_blocked);
 
+  // Display-only summary of where the proposal stands, derived from the same
+  // signals canAccept already uses. Never consulted by act()/accept().
+  const stateInfo = $derived.by((): { cls: string; label: string } => {
+    if (!detail) return { cls: "", label: "" };
+    if (detail.accept_blocked) return { cls: "err", label: "Accept blocked" };
+    if (statesMismatch) return { cls: "warn", label: "Out of sync" };
+    if (canAccept) return { cls: "ok", label: "Ready to accept" };
+    return { cls: "warn", label: "Loading" };
+  });
+
+  // Explains a disabled Accept button. Display only, never read by accept().
+  const acceptDisabledReason = $derived.by((): string => {
+    if (canAccept) return "";
+    if (detail?.accept_blocked) return `Accept is blocked: ${detail.accept_blocked}`;
+    if (statesMismatch) return "This proposal changed after it was opened. Press Refresh, then open it again.";
+    return "Loading the proposal, one moment.";
+  });
+
   onMount(loadQueue);
 </script>
 
-<h2>Review</h2>
-<div class="actions"><button onclick={loadQueue}>Refresh</button></div>
+<div class="toolbar">
+  <button onclick={loadQueue}>Refresh</button>
+</div>
 
 <div class="split">
-  <ul class="list">
-    {#if items.length === 0}
-      <li class="muted">nothing staged</li>
-    {/if}
-    {#each items as item}
-      <li>
-        <button class="row {item.pattern === selectedPattern ? 'selected' : ''}" onclick={() => openPattern(item.pattern)}>
-          <strong>{item.pattern}</strong> <span class="badge">{item.artifact_type}</span>
-          <span class="muted">{item.staged_at ?? ""}</span>
-        </button>
-      </li>
-    {/each}
-  </ul>
-
-  <div class="card">
-    {#if detail}
-      <h3>{detail.pattern} <span class="badge">{detail.artifact_type}</span></h3>
-      {#if detail.accept_blocked}
-        <p class="error-text">accept blocked: {detail.accept_blocked}</p>
-      {/if}
-      {#if statesMismatch}
-        <p class="error-text">detail and diff disagree on reviewed_state; reload before acting</p>
-      {/if}
-      {#if detail.sources?.length}
-        <p class="muted">sources: {detail.sources.join(", ")}</p>
-      {/if}
-      <MarkdownBody text={detail.body} />
-      <h4>Diff</h4>
-      <DiffView text={diffText} />
-
-      <div class="actions">
-        <button class="primary" disabled={!canAccept} onclick={accept}>Accept</button>
-        <button class="danger" onclick={reject}>Reject</button>
-        <select bind:value={rehomeType}>
-          {#each ARTIFACT_TYPES as t}
-            <option value={t}>{t}</option>
+  <div class="panel">
+    <div class="panel__head">
+      <h3>Staged proposals</h3>
+      <span class="badge accent">{items.length}</span>
+    </div>
+    <div class="panel__body">
+      {#if items.length === 0}
+        <div class="empty">
+          <strong>Nothing is staged</strong>
+          Run curriculum from the Loop pane to look for patterns that reached the threshold.
+        </div>
+      {:else}
+        <ul class="list scroll-list">
+          {#each items as item (item.pattern)}
+            <li>
+              <button class="row" class:selected={item.pattern === selectedPattern} onclick={() => openPattern(item.pattern)}>
+                <div class="row__title"><span class="grow">{item.pattern}</span></div>
+                <div class="meta">
+                  <span class="badge">{item.artifact_type}</span>
+                  <span>{formatTime(item.staged_at ?? null)}</span>
+                </div>
+              </button>
+            </li>
           {/each}
-        </select>
-        <button onclick={rehome}>Rehome</button>
+        </ul>
+      {/if}
+    </div>
+  </div>
+
+  <div class="detail">
+    {#if detail}
+      <div class="panel">
+        <div class="panel__head">
+          <h3>{detail.pattern}</h3>
+          <span class="badge">{detail.artifact_type}</span>
+          {#if detail.artifact_path}
+            <span class="badge">{detail.artifact_path}</span>
+          {/if}
+          <span class="spacer"></span>
+          <span class="chip {stateInfo.cls}">{stateInfo.label}</span>
+        </div>
+        <div class="panel__body">
+          {#if detail.accept_blocked}
+            <div class="notice error">Accept is blocked: {detail.accept_blocked}</div>
+          {/if}
+          {#if statesMismatch}
+            <div class="notice error">
+              This proposal changed after it was opened. Press Refresh, then open it again before acting.
+            </div>
+          {/if}
+          {#if detail.sources?.length}
+            <div class="meta">Sources: {detail.sources.join(", ")}</div>
+          {/if}
+          <!-- Shown verbatim, not as rendered markdown: this is the file that
+               gets committed, and frontmatter and line breaks are part of what
+               the reviewer has to judge. -->
+          <pre class="file">{detail.body}</pre>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <h3>Diff</h3>
+        </div>
+        <div class="panel__body">
+          <DiffView text={diffText} />
+        </div>
+      </div>
+
+      <div class="action-bar">
+        <button class="primary" disabled={!canAccept} title={canAccept ? undefined : acceptDisabledReason} onclick={accept}>
+          Accept proposal
+        </button>
+        <button class="danger" onclick={reject}>Reject proposal</button>
+        <span class="toolbar__spacer"></span>
+        <label class="control">
+          <span>Move to</span>
+          <select bind:value={rehomeType}>
+            {#each ARTIFACT_TYPES as t}
+              <option value={t}>{t}</option>
+            {/each}
+          </select>
+        </label>
+        <button onclick={rehome}>Apply</button>
       </div>
     {:else}
-      <p class="muted">Select a staged proposal.</p>
+      <div class="panel">
+        <div class="panel__body">
+          <div class="empty">
+            <strong>No proposal selected</strong>
+            Pick a staged proposal from the list to review its diff and decide.
+          </div>
+        </div>
+      </div>
     {/if}
   </div>
 </div>
+
+<style>
+  .file {
+    max-height: 26rem;
+    margin: 0;
+    overflow: auto;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--panel);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .detail {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+
+  .action-bar {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    padding: 0.75rem 0.9rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+</style>

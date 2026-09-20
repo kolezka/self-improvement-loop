@@ -10,6 +10,7 @@ import {
   lintSkill,
   MAX_DESCRIPTION,
   MAX_RULE_CHARS,
+  ruleBudget,
 } from "@sil/curriculum";
 import { hookBody, installFakeNudge, reflectionBody, uninstallFakeNudge } from "./fixtures.ts";
 
@@ -193,6 +194,17 @@ describe("rules", () => {
     // The bullet alone is under the cap; only the appended tag pushes it over.
     expect(over.length).toBeLessThanOrEqual(MAX_RULE_CHARS);
     expect(lint("rule", over, pattern, SOURCES).some((p) => p.includes(String(MAX_RULE_CHARS)))).toBe(true);
+  });
+
+  test("the cap is configurable and the budget is the cap net of the tag", () => {
+    const pattern = "verify-callsites";
+    const cap = 120;
+    const fits = "- " + "x".repeat(ruleBudget(pattern, cap) - 2);
+    expect(fits.length + 1 + ruleTag(pattern).length).toBe(cap);
+    expect(lintRule(fits, pattern, cap)).toEqual([]);
+    expect(lintRule(fits + "x", pattern, cap).some((p) => p.includes(`the cap is ${cap}`))).toBe(true);
+    // The same bullet passes once the configured cap has room for it.
+    expect(lint("rule", fits + "x", pattern, SOURCES, { maxRuleChars: cap + 1 }).some((p) => p.includes("cap is"))).toBe(false);
   });
 
   test("a rule bullet carrying a block marker is refused", () => {

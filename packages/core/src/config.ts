@@ -160,15 +160,30 @@ export function modelFor(llm: LlmConfig, role: Role, world?: World | null): stri
   return resolveRole(llm, role, world).model;
 }
 
+/** A `system-one` endpoint answers typed decisions, never text, so the critic
+ * and the drafter cannot run on one. Refused here rather than at the first
+ * curriculum run, where the cost is a whole pattern gated out. */
+function assertServes(endpoint: Endpoint, role: Role | undefined): void {
+  if (endpoint.kind !== "system-one" || role === "judge") return;
+  const what = role === undefined ? "every role" : `role ${role}`;
+  throw new ConfigError(
+    `endpoint ${JSON.stringify(endpoint.name)} is kind system-one and cannot serve ${what}; ` +
+      `it answers a typed decision, not text. Route the judge to it instead: ` +
+      `sil llm use ${endpoint.name} --role judge`,
+  );
+}
+
 /** Point `active` at an endpoint, or route a single role to it. Switching
  * every role clears the per role overrides: a full switch, not a half one. */
 export function useEndpoint(llm: LlmConfig, name: string, role?: Role): LlmConfig {
-  if (!llm.endpoints.some((e) => e.name === name)) {
+  const endpoint = llm.endpoints.find((e) => e.name === name);
+  if (!endpoint) {
     const known = llm.endpoints.map((e) => e.name).join(", ") || "none";
     throw new ConfigError(`unknown endpoint ${JSON.stringify(name)}; llm.yaml defines ${known}`);
   }
+  if (role !== undefined) requireRole(role);
+  assertServes(endpoint, role);
   if (role === undefined) return { ...llm, active: name, role_endpoints: {} };
-  requireRole(role);
   return { ...llm, role_endpoints: { ...llm.role_endpoints, [role]: name } };
 }
 

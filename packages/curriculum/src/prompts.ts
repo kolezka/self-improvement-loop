@@ -12,7 +12,7 @@
 // risks only a malformed delimiter, which lint catches reliably. Prefer the
 // failure mode the gates catch.
 
-import type { ChatMessage } from "@sil/providers";
+import type { ChatMessage, NoulQuestion } from "@sil/providers";
 import { nudgeEvents } from "./deps.ts";
 // The router's own bar for a quote, imported rather than restated. A prompt
 // asking for "an exact substring" while the router demands five words is a
@@ -285,6 +285,66 @@ export function judgeMessages(pattern: string, artifactType: string, body: strin
     { role: "system", content: JUDGE_SYSTEM },
     { role: "user", content: user },
   ];
+}
+
+// --- the judge as typed decisions --------------------------------------------
+
+/** The same five reject rules, one proposition each.
+ *
+ * A System One model answers a probability per question in one pass, and the
+ * questions are independent: it never reads rule 2 as context for rule 3. So
+ * the prose list becomes five nouls worded so that true means reject, and the
+ * chat judge's "quote your evidence" method has no equivalent here. That is
+ * the trade: a calibrated number per rule, and no reason in the model's own
+ * words. */
+export const JUDGE_RULES: ReadonlyArray<readonly [string, string]> = [
+  ["contradicts", "The artifact advises the opposite of what a source concluded."],
+  [
+    "vague",
+    "The artifact is generic advice such as 'be careful' or 'verify things'. It names no specific command or check, so it would not change what someone does.",
+  ],
+  ["unsupported", "The artifact instructs something that no source supports."],
+  [
+    "unsafe",
+    "The artifact advises skipping a verification a source demands, or acting on unverified claims to save time.",
+  ],
+  ["unrelated", "The artifact's topic is not the sources' topic."],
+];
+
+/** State and questions for the typed judge. One state, five nouls. */
+export function judgeQuestions(
+  pattern: string,
+  artifactType: string,
+  body: string,
+  lessons: string[],
+): { state: string; questions: Record<string, NoulQuestion> } {
+  const state =
+    `The candidate ${artifactType} below was drafted for the recurring lesson ` +
+    `'${pattern}', from the sources below.\n\n` +
+    `ARTIFACT:\n${body}\n\nSOURCES:\n${boundedSources(lessons)}`;
+  const questions: Record<string, NoulQuestion> = {};
+  for (const [id, instructions] of JUDGE_RULES) questions[id] = { instructions };
+  return { state, questions };
+}
+
+/** [passed, reason] from the probabilities. Rejects on the first rule at or
+ * above the threshold, and names the worst rule either way, so an accept line
+ * still says how close the gate was. A rule with no answer is a reject: the
+ * loop cannot tell an unanswered rule from a rule that does not hold. */
+export function verdictFromNouls(answers: Record<string, number>, threshold: number): [boolean, string] {
+  const missing = JUDGE_RULES.filter(([id]) => typeof answers[id] !== "number").map(([id]) => id);
+  if (missing.length > 0) return [false, `no verdict: judge answered no probability for ${missing.join(", ")}`];
+
+  let worstId = JUDGE_RULES[0]![0];
+  let worst = answers[worstId]!;
+  for (const [id] of JUDGE_RULES) {
+    if (answers[id]! > worst) {
+      worst = answers[id]!;
+      worstId = id;
+    }
+  }
+  const at = `${worstId} p=${worst.toFixed(2)}, threshold ${threshold.toFixed(2)}`;
+  return worst >= threshold ? [false, at] : [true, `accepted (worst ${at})`];
 }
 
 // --- reply parsing -----------------------------------------------------------

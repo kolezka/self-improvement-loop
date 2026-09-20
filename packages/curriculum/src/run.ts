@@ -30,7 +30,7 @@ import {
   type World,
 } from "@sil/core";
 import * as providers from "@sil/providers";
-import type { ChatFn } from "@sil/providers";
+import type { ChatFn, DecideFn } from "@sil/providers";
 import { loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
 import * as artifacts from "./artifacts.ts";
 import type { GateRunner } from "./deps.ts";
@@ -43,6 +43,8 @@ import { type RouteAnswer, route } from "./router.ts";
 export interface RunOptions {
   apply: boolean;
   chat?: ChatFn;
+  /** Typed-decision transport for a judge on a System One endpoint. */
+  decide?: DecideFn;
   extraDirs?: string[];
   cards?: Scorecard[];
   /** Injected corpus runner for the router's hook gate. */
@@ -165,6 +167,11 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   }
 
   const chat: ChatFn = opts.chat ?? providers.chat;
+  const decide: DecideFn = opts.decide ?? providers.decide;
+  // Read once per run, not per pattern. Null means the judge runs on a text
+  // model, which is also what an unreadable llm.yaml looks like here; the chat
+  // path then raises the real config error.
+  const judgeEndpoint = providers.systemOneEndpoint("judge", world);
   const defaultRef = git.defaultBranch(target);
   const payloads = loadPayloadCorpus(world);
   const ledger = loadLedger(world);
@@ -179,6 +186,9 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
         ledger,
         ledgerRel,
         gateRunner: opts.gateRunner,
+        decide,
+        typedJudge: judgeEndpoint !== null,
+        judgeThreshold: judgeEndpoint?.decision_threshold ?? 0.5,
       });
     } catch (e) {
       // One pattern's failure is not the run's.
@@ -197,6 +207,11 @@ interface StageContext {
   ledger: { version: number; entries: Record<string, PromotionEntry> };
   ledgerRel: string;
   gateRunner?: GateRunner;
+  /** Set when the judge runs on a System One endpoint: the gate then asks for
+   * a probability per reject rule instead of a JSON verdict. */
+  decide: DecideFn;
+  typedJudge: boolean;
+  judgeThreshold: number;
 }
 
 async function stageOne(
@@ -319,18 +334,33 @@ async function stageOne(
   }
 
   const judgeBody = typeof body === "string" ? body : hookText(body);
-  let verdictRaw: string;
-  try {
-    verdictRaw = await chat("judge", prompts.judgeMessages(pattern, routedType, judgeBody, lessons), {
-      world,
-      jsonMode: true,
-    });
-  } catch (e) {
-    // A provider failure is not an approval.
-    report.gated_out[pattern] = `judge failed: ${describe(e)}`;
-    return;
+  let passed: boolean;
+  let why: string;
+  if (ctx.typedJudge) {
+    const { state, questions } = prompts.judgeQuestions(pattern, routedType, judgeBody, lessons);
+    let answers: Record<string, number>;
+    try {
+      answers = await ctx.decide("judge", state, questions, { world });
+    } catch (e) {
+      // A provider failure is not an approval.
+      report.gated_out[pattern] = `judge failed: ${describe(e)}`;
+      return;
+    }
+    [passed, why] = prompts.verdictFromNouls(answers, ctx.judgeThreshold);
+  } else {
+    let verdictRaw: string;
+    try {
+      verdictRaw = await chat("judge", prompts.judgeMessages(pattern, routedType, judgeBody, lessons), {
+        world,
+        jsonMode: true,
+      });
+    } catch (e) {
+      // A provider failure is not an approval.
+      report.gated_out[pattern] = `judge failed: ${describe(e)}`;
+      return;
+    }
+    [passed, why] = prompts.parseVerdict(verdictRaw);
   }
-  const [passed, why] = prompts.parseVerdict(verdictRaw);
   if (!passed) {
     report.gated_out[pattern] = `judge: ${why}`;
     return;

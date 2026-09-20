@@ -57,6 +57,51 @@ sil llm use claude --role critic
 The same switch is available in the web UI under Models, per endpoint ("Use for all
 roles") and per role (the Roles block).
 
+### Running the judge on Jev or Laya
+
+Add a `system-one` endpoint to `llm.yaml` the same way you would add a second
+`openai` one (there is no CLI for it), then route the judge to it:
+
+```yaml
+endpoints:
+  - name: laya
+    kind: system-one
+    base_url: http://127.0.0.1:8010
+    models:
+      judge: laya-typed-decisions
+    decision_threshold: 0.5
+```
+
+```
+sil llm use laya --role judge
+```
+
+Only `judge` can run on a `system-one` endpoint: it takes a state and a map of
+typed questions and returns a calibrated answer per question in one pass, never
+text. `sil llm use <ep>` without `--role judge` (or with `--role critic`/`--role
+drafter`) is refused by `useEndpoint` with a `ConfigError`. `chat()` refuses too.
+
+The judge gate asks one noul per reject rule (`contradicts`, `vague`,
+`unsupported`, `unsafe`, `unrelated`) against one state holding the artifact and
+the sources, and all five come back in one call. The pattern is gated out when
+any probability is at or above `decision_threshold` (default 0.5); the reason
+line names the worst rule and its probability. What is lost against the chat
+judge: it quotes its evidence and writes a sentence of reasoning, the typed
+judge gives a number per rule and no reasoning.
+
+`sil status` and the web Models pane probe a `system-one` endpoint by sending
+one real noul question with the configured judge model, so a probe costs a few
+input tokens and reports "no model for role judge configured on this endpoint"
+when the model name is missing.
+
+Jev (TypeSafe AI, hosted, paid, needs `TYPESAFE_API_KEY`) is still unmeasured in
+this loop. Laya (Convai Innovations, Apache-2.0, usually local with no key) is
+free to try, but its own model card calls it "a fast base to specialise, not a
+zero-shot decision engine": zero-shot accuracy on the typed-decisions set is
+0.362 against a guessing baseline of 0.318, and its calibration only reaches the
+advertised error after temperature refitting. Treat a zero-shot Laya judge as an
+experiment, keep `auto_merge` off, and read the staged branches yourself.
+
 ## Rotating API keys
 
 Edit the env var named by `llm.yaml`'s `api_key_env` (or your shell profile), then

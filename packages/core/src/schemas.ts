@@ -88,7 +88,10 @@ export type Config = z.infer<typeof Config>;
 
 export const Endpoint = z.object({
   name: z.string().min(1),
-  kind: z.enum(["openai", "claude-cli"]).default("openai"),
+  // `system-one` is the typed-decision API that TypeSafe Jev and the open Laya
+  // servers both speak (`POST /v1/systemone`). It answers probabilities, not
+  // text, so it can only serve the judge.
+  kind: z.enum(["openai", "claude-cli", "system-one"]).default("openai"),
   base_url: z.string().nullable().default(null),
   api_key_env: z.string().nullable().default(null),
   timeout_s: z.number().int().min(1).default(240),
@@ -98,6 +101,9 @@ export const Endpoint = z.object({
   // Merged into every chat request body last, so it can override max_tokens or
   // add provider knobs such as reasoning_effort or thinking.
   extra_body: z.record(z.string(), z.unknown()).default({}),
+  // `system-one` only. A noul answer is a probability, so the judge needs a bar
+  // at which it reads as yes. Raise it to make the gate harder to trip.
+  decision_threshold: z.number().min(0).max(1).default(0.5),
 });
 export type Endpoint = z.infer<typeof Endpoint>;
 

@@ -15039,7 +15039,11 @@ var WorkerConfig = object({
   min_tool_uses: number2().int().min(0).default(6),
   auto_kick: boolean2().default(true)
 });
-var WebConfig = object({ port: number2().int().default(8766) });
+var WebConfig = object({
+  port: number2().int().default(8766),
+  host: string2().default("127.0.0.1"),
+  allowed_hosts: array(string2()).default([])
+});
 var Config = object({
   version: number2().int().default(1),
   worlds: array(World).default(() => [World.parse({ name: "default" })]),
@@ -15049,12 +15053,13 @@ var Config = object({
 });
 var Endpoint = object({
   name: string2().min(1),
-  kind: _enum(["openai", "claude-cli"]).default("openai"),
+  kind: _enum(["openai", "claude-cli", "system-one"]).default("openai"),
   base_url: string2().nullable().default(null),
   api_key_env: string2().nullable().default(null),
   timeout_s: number2().int().min(1).default(240),
   models: partialRecord(_enum(ROLES), string2()).default({}),
-  extra_body: record(string2(), unknown()).default({})
+  extra_body: record(string2(), unknown()).default({}),
+  decision_threshold: number2().min(0).max(1).default(0.5)
 });
 var LlmConfig = object({
   endpoints: array(Endpoint).default([]),
@@ -15610,14 +15615,23 @@ function resolveRole(llm, role, world) {
 function modelFor(llm, role, world) {
   return resolveRole(llm, role, world).model;
 }
+function assertServes(endpoint, role) {
+  if (endpoint.kind !== "system-one" || role === "judge")
+    return;
+  const what = role === undefined ? "every role" : `role ${role}`;
+  throw new ConfigError(`endpoint ${JSON.stringify(endpoint.name)} is kind system-one and cannot serve ${what}; ` + `it answers a typed decision, not text. Route the judge to it instead: ` + `sil llm use ${endpoint.name} --role judge`);
+}
 function useEndpoint(llm, name, role) {
-  if (!llm.endpoints.some((e) => e.name === name)) {
+  const endpoint = llm.endpoints.find((e) => e.name === name);
+  if (!endpoint) {
     const known = llm.endpoints.map((e) => e.name).join(", ") || "none";
     throw new ConfigError(`unknown endpoint ${JSON.stringify(name)}; llm.yaml defines ${known}`);
   }
+  if (role !== undefined)
+    requireRole(role);
+  assertServes(endpoint, role);
   if (role === undefined)
     return { ...llm, active: name, role_endpoints: {} };
-  requireRole(role);
   return { ...llm, role_endpoints: { ...llm.role_endpoints, [role]: name } };
 }
 function apiKey(endpoint) {
@@ -15715,6 +15729,7 @@ var exports_src4 = {};
 __export(exports_src4, {
   GATE_TIMEOUT_MS: () => GATE_TIMEOUT_MS,
   HOOK_KEYS: () => HOOK_KEYS,
+  JUDGE_RULES: () => JUDGE_RULES,
   MAX_DESCRIPTION: () => MAX_DESCRIPTION,
   MAX_RULE_CHARS: () => MAX_RULE_CHARS,
   MIN_BODY_CHARS: () => MIN_BODY_CHARS,
@@ -15738,6 +15753,7 @@ __export(exports_src4, {
   git: () => exports_git,
   isPlaceholderBody: () => isPlaceholderBody,
   judgeMessages: () => judgeMessages,
+  judgeQuestions: () => judgeQuestions,
   lessonTexts: () => lessonTexts,
   lint: () => lint,
   lintDescriptionCap: () => lintDescriptionCap,
@@ -15766,6 +15782,7 @@ __export(exports_src4, {
   sourcesText: () => sourcesText,
   splitTrigger: () => splitTrigger2,
   substantiveQuote: () => substantiveQuote,
+  verdictFromNouls: () => verdictFromNouls,
   watermark: () => watermark,
   writeArtifact: () => writeArtifact
 });
@@ -16247,6 +16264,7 @@ __export(exports_prompts, {
   DRAFTER_SYSTEM: () => DRAFTER_SYSTEM,
   FORCED_SUBJECT: () => FORCED_SUBJECT,
   GATE_VOCABULARY: () => GATE_VOCABULARY,
+  JUDGE_RULES: () => JUDGE_RULES,
   JUDGE_SYSTEM: () => JUDGE_SYSTEM,
   MAX_SOURCE_CHARS: () => MAX_SOURCE_CHARS,
   SHAPES: () => SHAPES,
@@ -16255,10 +16273,12 @@ __export(exports_prompts, {
   draftMessages: () => draftMessages,
   hookShape: () => hookShape,
   judgeMessages: () => judgeMessages,
+  judgeQuestions: () => judgeQuestions,
   parseDraft: () => parseDraft,
   parseVerdict: () => parseVerdict,
   ruleShape: () => ruleShape,
-  skillShape: () => skillShape
+  skillShape: () => skillShape,
+  verdictFromNouls: () => verdictFromNouls
 });
 
 // packages/nudges/src/index.ts
@@ -17483,6 +17503,47 @@ ${boundedSources(lessons)}`;
     { role: "user", content: user }
   ];
 }
+var JUDGE_RULES = [
+  ["contradicts", "The artifact advises the opposite of what a source concluded."],
+  [
+    "vague",
+    "The artifact is generic advice such as 'be careful' or 'verify things'. It names no specific command or check, so it would not change what someone does."
+  ],
+  ["unsupported", "The artifact instructs something that no source supports."],
+  [
+    "unsafe",
+    "The artifact advises skipping a verification a source demands, or acting on unverified claims to save time."
+  ],
+  ["unrelated", "The artifact's topic is not the sources' topic."]
+];
+function judgeQuestions(pattern, artifactType, body, lessons) {
+  const state = `The candidate ${artifactType} below was drafted for the recurring lesson ` + `'${pattern}', from the sources below.
+
+` + `ARTIFACT:
+${body}
+
+SOURCES:
+${boundedSources(lessons)}`;
+  const questions = {};
+  for (const [id, instructions] of JUDGE_RULES)
+    questions[id] = { instructions };
+  return { state, questions };
+}
+function verdictFromNouls(answers, threshold) {
+  const missing = JUDGE_RULES.filter(([id]) => typeof answers[id] !== "number").map(([id]) => id);
+  if (missing.length > 0)
+    return [false, `no verdict: judge answered no probability for ${missing.join(", ")}`];
+  let worstId = JUDGE_RULES[0][0];
+  let worst = answers[worstId];
+  for (const [id] of JUDGE_RULES) {
+    if (answers[id] > worst) {
+      worst = answers[id];
+      worstId = id;
+    }
+  }
+  const at = `${worstId} p=${worst.toFixed(2)}, threshold ${threshold.toFixed(2)}`;
+  return worst >= threshold ? [false, at] : [true, `accepted (worst ${at})`];
+}
 function loads(raw) {
   let cleaned = (raw ?? "").replace(THINK_RE, "").trim();
   const fenced = FENCE_RE.exec(cleaned);
@@ -17880,8 +17941,10 @@ import { join as join12 } from "path";
 var exports_src2 = {};
 __export(exports_src2, {
   chat: () => chat,
+  decide: () => decide,
   spawnSyncImpl: () => spawnSyncImpl,
-  status: () => status
+  status: () => status,
+  systemOneEndpoint: () => systemOneEndpoint
 });
 var spawnSyncImpl = {
   run: (cmd, opts) => Bun.spawnSync(cmd, { ...opts, stdout: "pipe", stderr: "pipe" })
@@ -17893,8 +17956,90 @@ var chat = async (role, messages, opts) => {
     return chatOpenai(endpoint, model, messages, { jsonMode: opts.jsonMode ?? false, maxTokens: opts.maxTokens ?? 4000 });
   if (endpoint.kind === "claude-cli")
     return chatClaudeCli(endpoint, model, messages, { maxTokens: opts.maxTokens ?? 4000 });
+  if (endpoint.kind === "system-one") {
+    throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} is kind system-one and cannot serve role ${role}: ` + "it answers typed decisions, not text. Only the judge can run on it.");
+  }
   throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} has unknown kind ${JSON.stringify(endpoint.kind)}`);
 };
+function systemOneEndpoint(role, world, llm) {
+  let endpoint;
+  try {
+    endpoint = endpointFor(llm ?? loadLlm(world), role);
+  } catch {
+    return null;
+  }
+  return endpoint.kind === "system-one" ? endpoint : null;
+}
+var decide = async (role, state, questions, opts) => {
+  const llm = opts.llm ?? loadLlm(opts.world);
+  const { endpoint, model } = resolveRole(llm, role, opts.world);
+  if (endpoint.kind !== "system-one") {
+    throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} is kind ${JSON.stringify(endpoint.kind)}: ` + "a typed decision needs a system-one endpoint");
+  }
+  if (Object.keys(questions).length === 0)
+    throw new ProviderError("decide called with no questions");
+  const data = await postSystemOne(endpoint, model, state, questions);
+  return readNouls(endpoint, model, questions, data);
+};
+function systemOneUrl(endpoint) {
+  const base = (endpoint.base_url ?? "").replace(/\/+$/, "");
+  if (!base)
+    throw new ProviderError(`endpoint ${JSON.stringify(endpoint.name)} has no base_url configured`);
+  return v1Url(base) + "/systemone";
+}
+async function postSystemOne(endpoint, model, state, questions, timeoutMs) {
+  const url = systemOneUrl(endpoint);
+  const body = {
+    model,
+    state,
+    questions: Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, { type: "noul", ...q }]))
+  };
+  Object.assign(body, endpoint.extra_body ?? {});
+  const headers = { "Content-Type": "application/json" };
+  const key = apiKey(endpoint);
+  if (key)
+    headers["Authorization"] = `Bearer ${key}`;
+  const ms = timeoutMs ?? endpoint.timeout_s * 1000;
+  let resp;
+  try {
+    resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    const err = e;
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new ProviderTimeout(`provider ${JSON.stringify(endpoint.name)} at ${url} timed out after ${ms / 1000}s`);
+    }
+    throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} unreachable: ${err.message}`);
+  }
+  if (!resp.ok) {
+    const detail = (await resp.text().catch(() => "")).slice(0, 300);
+    throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} answered HTTP ${resp.status}: ${detail}`);
+  }
+  const raw = await resp.text();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} returned non-JSON (${raw.length} bytes): ${JSON.stringify(raw.slice(0, 300))}`);
+  }
+}
+function readNouls(endpoint, model, questions, data) {
+  const where = `provider ${JSON.stringify(endpoint.name)} model ${JSON.stringify(model)}`;
+  const answers = data && typeof data === "object" ? data["answers"] : undefined;
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+    throw new ProviderError(`${where} reply has no answers object`);
+  }
+  const out = {};
+  for (const id of Object.keys(questions)) {
+    const answer = answers[id];
+    if (!answer || typeof answer !== "object")
+      throw new ProviderError(`${where} answered nothing for question ${JSON.stringify(id)}`);
+    const value = answer["noul"];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new ProviderError(`${where} answered question ${JSON.stringify(id)} with a noul of ${JSON.stringify(value)}, not a probability`);
+    }
+    out[id] = value;
+  }
+  return out;
+}
 async function status(world, llm) {
   const result = { endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: null, endpoints: [] };
   let llmCfg;
@@ -17951,6 +18096,8 @@ async function status(world, llm) {
 async function probeEndpoint(endpoint) {
   if (endpoint.kind === "claude-cli")
     return probeClaudeCli();
+  if (endpoint.kind === "system-one")
+    return probeSystemOne(endpoint);
   if (endpoint.kind !== "openai")
     return { reachable: null, error: `unknown endpoint kind ${JSON.stringify(endpoint.kind)}` };
   const base = (endpoint.base_url ?? "").replace(/\/+$/, "");
@@ -17972,6 +18119,19 @@ async function probeEndpoint(endpoint) {
   } catch (e) {
     const err = e;
     return { reachable: false, error: `${err.name}: ${err.message}` };
+  }
+}
+async function probeSystemOne(endpoint) {
+  const model = endpoint.models["judge"];
+  if (!model)
+    return { reachable: false, error: "no model for role judge configured on this endpoint" };
+  const questions = { probe: { instructions: "This is a reachability probe." } };
+  try {
+    const data = await postSystemOne(endpoint, model, "probe", questions, 3000);
+    readNouls(endpoint, model, questions, data);
+    return { reachable: true, error: null };
+  } catch (e) {
+    return { reachable: false, error: e.message };
   }
 }
 function probeClaudeCli() {
@@ -19102,6 +19262,8 @@ async function run(world, cfg, opts) {
     }
   }
   const chat2 = opts.chat ?? chat;
+  const decide2 = opts.decide ?? decide;
+  const judgeEndpoint = systemOneEndpoint("judge", world);
   const defaultRef = defaultBranch(target);
   const payloads = loadPayloadCorpus(world);
   const ledger = loadLedger2(world);
@@ -19114,7 +19276,10 @@ async function run(world, cfg, opts) {
         payloads,
         ledger,
         ledgerRel,
-        gateRunner: opts.gateRunner
+        gateRunner: opts.gateRunner,
+        decide: decide2,
+        typedJudge: judgeEndpoint !== null,
+        judgeThreshold: judgeEndpoint?.decision_threshold ?? 0.5
       });
     } catch (e) {
       report.gated_out[action.pattern] = `staging failed: ${describe2(e)}`;
@@ -19207,17 +19372,31 @@ async function stageOne(world, cfg, report, action, items, chat, ctx) {
     return;
   }
   const judgeBody = typeof body === "string" ? body : hookText(body);
-  let verdictRaw;
-  try {
-    verdictRaw = await chat("judge", judgeMessages(pattern, routedType, judgeBody, lessons), {
-      world,
-      jsonMode: true
-    });
-  } catch (e) {
-    report.gated_out[pattern] = `judge failed: ${describe2(e)}`;
-    return;
+  let passed;
+  let why;
+  if (ctx.typedJudge) {
+    const { state, questions } = judgeQuestions(pattern, routedType, judgeBody, lessons);
+    let answers;
+    try {
+      answers = await ctx.decide("judge", state, questions, { world });
+    } catch (e) {
+      report.gated_out[pattern] = `judge failed: ${describe2(e)}`;
+      return;
+    }
+    [passed, why] = verdictFromNouls(answers, ctx.judgeThreshold);
+  } else {
+    let verdictRaw;
+    try {
+      verdictRaw = await chat("judge", judgeMessages(pattern, routedType, judgeBody, lessons), {
+        world,
+        jsonMode: true
+      });
+    } catch (e) {
+      report.gated_out[pattern] = `judge failed: ${describe2(e)}`;
+      return;
+    }
+    [passed, why] = parseVerdict(verdictRaw);
   }
-  const [passed, why] = parseVerdict(verdictRaw);
   if (!passed) {
     report.gated_out[pattern] = `judge: ${why}`;
     return;
@@ -21136,20 +21315,80 @@ async function cmdStatus(opts, deps = defaultDeps) {
 
 // apps/server/src/main.ts
 import { randomBytes } from "crypto";
+import { networkInterfaces } from "os";
 
 // apps/server/src/guard.ts
 import { timingSafeEqual } from "crypto";
 var LOCAL_HEADER = "X-SIL-Local";
 var TOKEN_HEADER = "X-SIL-Token";
-function allowedHosts(port) {
-  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const extra = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
-  for (const raw of extra.split(",")) {
+function allowedHosts(port, extra = []) {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const env = process.env["SIL_WEB_ALLOWED_HOSTS"] ?? "";
+  for (const raw of [...env.split(","), ...extra]) {
     const host = raw.trim();
     if (host)
       hosts.add(host);
   }
   return hosts;
+}
+function splitHostPort(value) {
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end === -1)
+      return null;
+    const rest = value.slice(end + 1);
+    if (rest !== "" && !rest.startsWith(":"))
+      return null;
+    return { hostname: value.slice(1, end), port: rest.slice(1) };
+  }
+  const colon = value.indexOf(":");
+  if (colon === -1)
+    return { hostname: value, port: "" };
+  if (value.indexOf(":", colon + 1) !== -1)
+    return null;
+  return { hostname: value.slice(0, colon), port: value.slice(colon + 1) };
+}
+function ipv4Private(hostname) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!m)
+    return null;
+  const parts = m.slice(1).map(Number);
+  if (parts.some((n) => n > 255))
+    return false;
+  const [a, b] = parts;
+  if (a === 127 || a === 10)
+    return true;
+  if (a === 172 && b >= 16 && b <= 31)
+    return true;
+  if (a === 192 && b === 168)
+    return true;
+  if (a === 169 && b === 254)
+    return true;
+  if (a === 100 && b >= 64 && b <= 127)
+    return true;
+  return false;
+}
+function isPrivateAddress(hostname) {
+  const v4 = ipv4Private(hostname);
+  if (v4 !== null)
+    return v4;
+  const v6 = hostname.toLowerCase().split("%")[0];
+  if (!v6.includes(":"))
+    return false;
+  if (!/^[0-9a-f:.]+$/.test(v6))
+    return false;
+  if (v6 === "::1")
+    return true;
+  if (v6.startsWith("::ffff:"))
+    return ipv4Private(v6.slice(7)) === true;
+  const head = Number.parseInt(v6.split(":")[0] || "0", 16);
+  if (Number.isNaN(head))
+    return false;
+  if ((head & 65024) === 64512)
+    return true;
+  if ((head & 65472) === 65152)
+    return true;
+  return false;
 }
 function safeEqual(a, b) {
   const bufA = Buffer.from(a, "utf8");
@@ -21160,12 +21399,20 @@ function safeEqual(a, b) {
   }
   return timingSafeEqual(bufA, bufB);
 }
+function hostAllowed(host, opts) {
+  if (allowedHosts(opts.port, opts.allowedHosts ?? []).has(host))
+    return true;
+  const parts = splitHostPort(host);
+  if (!parts || parts.port !== String(opts.port))
+    return false;
+  return isPrivateAddress(parts.hostname);
+}
 function jsonError(status, detail) {
   return new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } });
 }
 function guard(request, opts) {
   const host = request.headers.get("host") ?? "";
-  if (!allowedHosts(opts.port).has(host)) {
+  if (!hostAllowed(host, opts)) {
     return jsonError(403, "bad Host header");
   }
   if (request.headers.get(LOCAL_HEADER) !== "1") {
@@ -21664,12 +21911,15 @@ async function serveStatic(pathname) {
 }
 
 // apps/server/src/main.ts
-var REFUSED_HOSTS = new Set(["0.0.0.0", "::", "*"]);
+var WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
 var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+function isLoopbackHost(host) {
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
 function createServer(opts) {
   const host = opts.host ?? "127.0.0.1";
-  if (REFUSED_HOSTS.has(host)) {
-    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)}: loopback only`);
+  if (opts.token === null && !isLoopbackHost(host)) {
+    throw new Error(`refusing to bind the web UI to ${JSON.stringify(host)} without a token: drop --no-token or bind 127.0.0.1`);
   }
   const routes = buildRoutes();
   const server = Bun.serve({
@@ -21680,7 +21930,7 @@ function createServer(opts) {
       const url = new URL(request.url);
       const pathname = url.pathname;
       if (pathname === "/api/ops" || routes.has(pathname)) {
-        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token });
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
         if (denied)
           return denied;
         if (pathname === "/api/ops")
@@ -21705,12 +21955,31 @@ function createServer(opts) {
 function newToken() {
   return randomBytes(32).toString("base64url");
 }
+function urlHost(host) {
+  if (WILDCARD_HOSTS.has(host))
+    return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
+}
+function privateAddresses() {
+  const out = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.internal || !isPrivateAddress(addr.address))
+        continue;
+      out.push(addr.address.includes(":") ? `[${addr.address}]` : addr.address);
+    }
+  }
+  return out;
+}
 function serve(opts) {
   const host = opts.host ?? "127.0.0.1";
   const token = opts.token ?? true ? newToken() : null;
-  const server = createServer({ port: opts.port, host, token });
-  const url = `http://${host}:${server.port ?? opts.port}/` + (token ? `#${token}` : "");
-  console.log(url);
+  const server = createServer({ port: opts.port, host, token, allowedHosts: opts.allowedHosts });
+  const port = server.port ?? opts.port;
+  const fragment = token ? `#${token}` : "";
+  const hosts = WILDCARD_HOSTS.has(host) ? [urlHost(host), ...privateAddresses()] : [urlHost(host)];
+  for (const h of hosts)
+    console.log(`http://${h}:${port}/${fragment}`);
   return server;
 }
 if (false) {}
@@ -21725,10 +21994,10 @@ function openBrowser(url) {
 async function cmdWeb(opts) {
   const cfg = loadConfig();
   const port = opts.port ?? cfg.web.port;
-  const host = opts.host ?? "127.0.0.1";
-  const server = serve({ host, port, token: opts.token ?? true });
+  const host = opts.host ?? cfg.web.host;
+  const server = serve({ host, port, token: opts.token ?? true, allowedHosts: cfg.web.allowed_hosts });
   if (opts.open)
-    openBrowser(`http://${host}:${server.port}/`);
+    openBrowser(`http://${urlHost(host)}:${server.port}/`);
   return new Promise(() => {});
 }
 
@@ -21839,7 +22108,7 @@ function buildProgram(deps, onExit, onRun) {
   llm.command("list").option("--json").option("--world <name>").action(wire((opts) => cmdLlmList(opts, deps)));
   llm.command("use").argument("<endpoint>").option("--role <role>", "critic, drafter or judge; omit to switch every role").action(wire((endpoint, opts) => cmdLlmUse(endpoint, opts)));
   llm.command("set-model").argument("<role>").argument("<model>").option("--endpoint <name>", "defaults to the endpoint that currently serves the role").action(wire((role, model, opts) => cmdLlmSetModel(role, model, opts)));
-  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>").action(wire((opts) => cmdWeb(opts)));
+  program.command("web").option("--port <n>", "", intOption).option("--no-token").option("--open").option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine").action(wire((opts) => cmdWeb(opts)));
   const worlds = program.command("worlds");
   worlds.command("list").action(wire(() => cmdWorldsList()));
   worlds.command("add").argument("<name>").option("--repos <repos...>").option("--target <path>").option("--llm <llm>").option("--layout <layout>", "", "default").action(wire((name, opts) => cmdWorldsAdd(name, opts)));

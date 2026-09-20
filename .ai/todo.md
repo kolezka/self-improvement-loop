@@ -51,6 +51,24 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [ ] second review by another model family (Codex) before use on employer repos
 - [ ] Codex and OpenCode have no hook equivalent; V1 had a parity build, V2 has none
 
+## Phase 7: System One endpoints (Jev / Laya)
+
+Jev (TypeSafe AI) and Laya (Convai, Apache-2.0 open weights) answer typed
+decisions, not text: one `POST /v1/systemone` call returns a calibrated
+probability per question. Laya servers (arbiter, lajev, laya-rs) speak the same
+API, so one endpoint kind covers both. `judge` is the only role in this loop
+whose answer is a decision, so it is the only role a System One endpoint serves.
+
+- [x] `Endpoint.kind` gains `system-one`; `decision_threshold` field (default 0.5)
+- [x] `useEndpoint` refuses a System One endpoint for critic, drafter or `active`
+- [x] `@sil/providers`: `decide()` transport, `chat()` refusal, `systemOneEndpoint()`, reachability probe
+- [x] curriculum: `judgeQuestions()` (five reject rules as nouls) + `verdictFromNouls()`
+- [x] `run.ts` judge gate takes the typed path when the judge endpoint is System One
+- [x] tests: providers transport, config guard, curriculum verdict mapping (845 pass, 0 fail)
+- [x] docs: README, ARCHITECTURE, OPERATIONS, including the Laya zero-shot warning
+- [x] smoke run against a stand-in `/v1/systemone` server: probe, `sil llm use` guards, five nouls in one call
+- [ ] run the judge against a real Laya server or a Jev key and measure it against the chat judge
+
 ## Small
 - [ ] decide whether `.ai/` stays in the repo
 - [ ] revisit command texts and `argument-hint` after first real use

@@ -78,7 +78,7 @@ function cfg(w: World): Config {
 
 function llm(): LlmConfig {
   return {
-    endpoints: [{ name: "test", kind: "openai", base_url: "http://test", api_key_env: null, timeout_s: 240, models: {}, extra_body: {} }],
+    endpoints: [{ name: "test", kind: "openai", base_url: "http://test", api_key_env: null, timeout_s: 240, models: {}, extra_body: {}, decision_threshold: 0.5 }],
     active: "test",
     role_endpoints: {},
     local_models: [],

@@ -8,14 +8,16 @@ import { join } from "node:path";
 import {
   type Ledger,
   ledgerPath,
+  LlmConfig,
   type PromotionEntry,
   RULE_END,
   RULE_START,
   ruleTag,
+  saveLlm,
   targetRoot,
   type World,
 } from "@sil/core";
-import type { ChatFn } from "@sil/providers";
+import type { ChatFn, DecideFn } from "@sil/providers";
 import {
   artifacts,
   branchName,
@@ -97,6 +99,13 @@ function entry(fields: Partial<PromotionEntry> & { pattern: string }): Promotion
     feedback: null,
     ...fields,
   };
+}
+
+/** Points the judge role at a `system-one` endpoint, so
+ * `providers.systemOneEndpoint("judge", world)` returns it and `run()` takes
+ * the typed-decision path instead of the chat judge. */
+function useTypedJudge(threshold = 0.5): void {
+  saveLlm(LlmConfig.parse({ endpoints: [{ name: "s1", kind: "system-one", decision_threshold: threshold }], active: "s1" }));
 }
 
 const ruleDraftFor = (artifact: string) => ({
@@ -523,6 +532,64 @@ describe("gates", () => {
     // A decline is on the route record too, not only a staged outcome.
     expect(report.routed[PATTERN]).toMatchObject({ drafted: "rule", type: "none" });
     expect(report.routed[PATTERN]!.reason).toContain("declined");
+  });
+});
+
+describe("typed judge (System One)", () => {
+  test("a typed judge answering low probabilities stages the artifact and never calls chat for the judge role", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    useTypedJudge();
+    const chat = new FakeChat({ draft: skillDraft(PATTERN, QUOTE) });
+    const decideRoles: string[] = [];
+    const decide: DecideFn = async (role, _state, questions) => {
+      decideRoles.push(role);
+      return Object.fromEntries(Object.keys(questions).map((id) => [id, 0.05]));
+    };
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, decide }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(chat.roles).toEqual(["drafter"]);
+    expect(decideRoles).toEqual(["judge"]);
+    expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(true);
+  });
+
+  test("a typed judge answering a high probability gates the pattern out with the rule name", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    useTypedJudge();
+    const chat = new FakeChat({ draft: skillDraft(PATTERN, QUOTE) });
+    const decide: DecideFn = async (_role, _state, questions) => {
+      const answers = Object.fromEntries(Object.keys(questions).map((id) => [id, 0.05]));
+      answers["unsafe"] = 0.9;
+      return answers;
+    };
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, decide }));
+
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("judge:");
+    expect(report.gated_out[PATTERN]).toContain("unsafe");
+    expect(chat.roles).toEqual(["drafter"]);
+    expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(false);
+  });
+
+  test("a decide that throws gates out with 'judge failed' and stages nothing", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    useTypedJudge();
+    const chat = new FakeChat({ draft: skillDraft(PATTERN, QUOTE) });
+    const decide: DecideFn = async () => {
+      throw new Error("the endpoint never answered");
+    };
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, decide }));
+
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("judge failed");
+    expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(false);
+    expect(existsSync(join(repo, "skills", PATTERN))).toBe(false);
   });
 });
 

@@ -7,6 +7,7 @@ import {
   apiKey,
   Config,
   ConfigError,
+  Endpoint,
   endpointFor,
   LlmConfig,
   loadConfig,
@@ -18,6 +19,7 @@ import {
   resolveRole,
   saveConfig,
   saveLlm,
+  useEndpoint,
   World,
   worldForCwd,
   writeHookSnapshot,
@@ -102,8 +104,8 @@ describe("llm", () => {
 
   test("apiKey refuses a placeholder", () => {
     delete process.env["SIL_TEST_KEY_X"];
-    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1, models: {}, extra_body: {} })).toThrow(ModelNotConfigured);
-    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1, models: {}, extra_body: {} })).toBeNull();
+    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1, models: {}, extra_body: {}, decision_threshold: 0.5 })).toThrow(ModelNotConfigured);
+    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1, models: {}, extra_body: {}, decision_threshold: 0.5 })).toBeNull();
   });
 });
 
@@ -221,5 +223,51 @@ describe("endpoint routing", () => {
     expect(resolveRole(back, "critic").endpoint.name).toBe("litellm");
     expect(resolveRole(back, "critic").model).toBe("m-critic");
     expect(modelFor(back, "judge")).toBe("m-judge");
+  });
+});
+
+describe("useEndpoint guards system-one routing", () => {
+  const withJev = () =>
+    LlmConfig.parse({
+      endpoints: [
+        { name: "jev", kind: "system-one", base_url: "http://localhost:5000", models: { judge: "jev-1" } },
+        { name: "litellm", kind: "openai", base_url: "http://100.64.0.3:4000", models: { critic: "m", drafter: "m", judge: "m" } },
+      ],
+      active: "litellm",
+    });
+
+  test("routes a system-one endpoint to --role judge", () => {
+    const llm = withJev();
+    const next = useEndpoint(llm, "jev", "judge");
+    expect(next.role_endpoints.judge).toBe("jev");
+    expect(next.active).toBe("litellm"); // a per-role route leaves active alone
+  });
+
+  test("routing a system-one endpoint to critic or drafter throws ConfigError", () => {
+    const llm = withJev();
+    expect(() => useEndpoint(llm, "jev", "critic")).toThrow(ConfigError);
+    expect(() => useEndpoint(llm, "jev", "drafter")).toThrow(ConfigError);
+  });
+
+  test("making a system-one endpoint active with no role throws ConfigError", () => {
+    const llm = withJev();
+    expect(() => useEndpoint(llm, "jev")).toThrow(ConfigError);
+  });
+
+  test("an openai endpoint is unaffected by the guard", () => {
+    const llm = withJev();
+    expect(useEndpoint(llm, "litellm").active).toBe("litellm");
+    expect(useEndpoint(llm, "litellm", "critic").role_endpoints.critic).toBe("litellm");
+  });
+});
+
+describe("Endpoint decision_threshold", () => {
+  test("defaults to 0.5", () => {
+    expect(Endpoint.parse({ name: "x" }).decision_threshold).toBe(0.5);
+  });
+
+  test("rejects a threshold outside 0..1", () => {
+    expect(() => Endpoint.parse({ name: "x", decision_threshold: 1.5 })).toThrow();
+    expect(() => Endpoint.parse({ name: "x", decision_threshold: -0.1 })).toThrow();
   });
 });

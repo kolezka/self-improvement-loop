@@ -145,7 +145,7 @@ layout (`claude/skills`, `claude/hooks/nudges`, `claude/agents`, `global.CLAUDE.
 # llm.yaml
 endpoints:
   - name: litellm
-    kind: openai                   # openai | claude-cli
+    kind: openai                   # openai | claude-cli | system-one
     base_url: http://100.64.0.3:4000
     api_key_env: LITELLM_API_KEY
     models:                        # model names are per endpoint
@@ -159,6 +159,19 @@ endpoints:
       critic: sonnet
       drafter: sonnet
       judge: sonnet
+  - name: jev
+    kind: system-one                # POST /v1/systemone; typed decisions, so only judge can run here
+    base_url: https://api.typesafe.ai
+    api_key_env: TYPESAFE_API_KEY
+    models:
+      judge: jev-latest
+    decision_threshold: 0.5         # reject when any judge rule's probability is at or above this
+  - name: laya
+    kind: system-one                # local server (arbiter, lajev, laya-rs); usually no key
+    base_url: http://127.0.0.1:8010
+    models:
+      judge: laya-typed-decisions
+    decision_threshold: 0.5
 active: litellm                    # the default endpoint for every role
 role_endpoints:                    # per role override of `active`
   critic: claude

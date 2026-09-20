@@ -102,11 +102,13 @@ sil worlds import-kb ~/.config/kb/worlds.yaml
 
 ## Model providers
 
-Two endpoint kinds in `llm.yaml`: `openai` (any OpenAI-compatible endpoint,
-including a local LiteLLM proxy or Ollama) and `claude-cli` (shells out to
-`claude -p --model <model>`, no proxy needed). A role picks its endpoint from
+Three endpoint kinds in `llm.yaml`: `openai` (any OpenAI-compatible endpoint,
+including a local LiteLLM proxy or Ollama), `claude-cli` (shells out to
+`claude -p --model <model>`, no proxy needed), and `system-one` (a typed-decision
+API such as Jev or Laya; only the judge role can run on it, see
+`docs/OPERATIONS.md`). A role picks its endpoint from
 `role_endpoints`, else `active`, so the critic can run on `claude -p` while the
-drafter and judge stay on the proxy. Every drafter/judge/critic call
+drafter and judge stay on the proxy. Every chat call
 runs at temperature 0 for reproducibility. A world set to `llm: local` may only
 use models in `llm.yaml`'s `local_models` allowlist; the loop refuses rather than
 silently falling back to a cloud model.

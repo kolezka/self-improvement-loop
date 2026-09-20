@@ -63,7 +63,7 @@ commands/*.md               /reflect /loop /curriculum /feedback
 skills/self-improvement-loop/SKILL.md
 packages/*                  TypeScript engine, one package per concern (@sil/core, @sil/store, ...)
 apps/{cli,hook,server,web}  entry points: the sil CLI, the hook fast path, the web API, the Svelte UI
-dist/{hook,cli,server,gate-runner}.js, dist/web/    committed single-file bundles the plugin actually runs
+dist/{hook,cli,server,gate-runner}.js, dist/web/    built single-file bundles the plugin actually runs (built by the release workflow, not committed on main; see docs/RELEASE.md)
 scripts/sil                 shim: resolves the plugin root, execs `bun dist/cli.js` (or source, in a dev checkout)
 ```
 
@@ -81,6 +81,8 @@ queue/pending/<session_id>.json     written by the Stop/SessionEnd hook
 queue/done/<session_id>.json
 queue/failed/<session_id>.json
 usage/events.jsonl                  skill / agent / hook usage events
+usage/payloads/<world>.jsonl        PreToolUse samples (tool name, command, file path), rotated; the router's gate corpus
+                                    backfill an empty one from old transcripts with `sil import payloads --days 30`
 usage/nudge-fires.jsonl             nudge emissions (V1 format)
 feedback/human.jsonl                /feedback entries
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions
@@ -118,7 +120,8 @@ worlds:
     rules_inject: true             # SessionStart injects the managed rules block
 promotion:
   threshold: 3
-  per_run_cap: 3
+  per_run_cap: 3                   # stagings per run; a gated-out pattern frees its slot
+  max_rule_chars: 500              # one rule bullet, its <!--rule:...--> tag included
   auto_merge: false                # never honoured for llm: local worlds
 worker:
   idle_minutes: 10                 # a session is reflected once idle this long
@@ -202,7 +205,7 @@ budget 250 ms shared by nudge gates. Everything is wrapped so a failure is a sil
 |---|---|
 | SessionStart | Inject: managed rules block of the world (if `rules_inject`), up to 3 undelivered inbox lessons for the world, one-line loop status. Kick the worker (detached) only when `sil init` has written the hook snapshot, no live worker holds the lock, the last kick is older than 15 minutes, and there is queued work or the curriculum interval elapsed. Record session start. |
 | UserPromptSubmit | Deliver inbox lessons that arrived since session start (once each). Nudge dispatch. |
-| PreToolUse | Nudge dispatch. |
+| PreToolUse | Record one payload sample for the world: tool name plus `tool_input.command` (credential values blanked) and `tool_input.file_path`, the two keys a gate can read; never `description`, `old_string`, `content` or a prompt. Nudge dispatch. |
 | PostToolUse | Record usage for `Skill` (skill name) and `Agent` (subagent_type, model). Nudge dispatch. |
 | Stop | Under a per-session lock: upsert the queue entry (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count) and scan the transcript from the stored byte offset for `attachment` hook records, appending hook usage events. No nudge dispatch: Claude Code does not deliver `additionalContext` on Stop. |
 | SubagentStop | Record `agent_stop` usage event. |
@@ -214,6 +217,22 @@ once-per-session markers, fire log, breadcrumbs, never blocks. A nudge may only
 target SessionStart, UserPromptSubmit, PreToolUse or PostToolUse, the four events
 where the hook can deliver text; lint rejects the rest so a fire is always a
 delivery.
+
+## Other hosts (`@sil/openclaw`)
+
+The engine is host neutral below the hook. Everything above reads a queue entry
+and a transcript path, so a second host only has to write those two things.
+
+OpenClaw is the first one. `@sil/transcript` detects the record shape of the
+transcript file and translates OpenClaw records into the Claude Code shape, so
+the worker, the critic and the evidence pack see one format. `@sil/openclaw`
+finds OpenClaw sessions, writes queue entries for them, and delivers rules and
+inbox lessons through a marker-fenced block in a workspace bootstrap file,
+because OpenClaw has no per-session context injection hook. An OpenClaw plugin
+calls the `sil` CLI on `session_start`, `gateway_start` and `session_end`;
+`sil openclaw scan` covers the same ground without the plugin.
+
+Full contract, limits and commands: `docs/OPENCLAW.md`.
 
 ## Worker (`sil worker --once | --loop`)
 
@@ -268,7 +287,31 @@ Ported from V1 with the same semantics: cluster by resolved pattern, threshold a
 watermarks (`promoted_at_count`, `rejected_at_count`), deterministic router with
 the hook gate executed against the payload corpus, artifact lint plus grounding
 lint, judge, one commit carrying artifact and ledger, scratch worktree, branch
-`curriculum/<world>/<pattern>`. New: the planner reads scorecards and adds
+`curriculum/<world>/<pattern>`.
+
+Three things keep all four artifact types reachable, each added after a measured
+failure:
+
+- The drafter reads each reflection's `What failed & why`, `Reusable lesson`
+  and `Verification` sections, not the lesson line alone. The critic writes
+  that line as one imperative under 300 characters, which fits one rule bullet
+  at the default cap; on lesson-only input the drafter proposed hook or rule on every
+  one of five real clusters, and with the fuller text it took a 56-reflection
+  pattern to a skill the router accepted. The judge still reads the lesson
+  lines, which are the conclusions it checks an artifact against. `Not
+  verified` is cut from the router's quote haystack as well, so a claim the
+  critic refused to stand behind can never buy a skill or an agent.
+- The payload corpus is the plugin's fixtures plus the world's recorded
+  `usage/payloads/<world>.jsonl` samples (newest 2000, deduplicated). A narrow
+  gate on a real command (`--no-verify`, `pkill`) can never match twenty
+  synthetic fixtures; six of eight drafted hooks (eleven drafter runs on five
+  live clusters) were downgraded to rules that way before the samples existed. A gate firing on more than half of the corpus
+  is refused as a broadcast, and the route reason carries the hit count.
+- The run report records `routed[pattern] = {drafted, type, reason}` for every
+  pattern that reached the router, so a downgrade shows in `sil curriculum run`
+  and the web worker status instead of looking like a rule that was asked for.
+
+New: the planner reads scorecards and adds
 `refine` (misfires outnumber helpful votes) and `retire-candidate` (no use in
 `retire_after_days`) proposals. Both are surfaced, never executed automatically.
 
@@ -295,6 +338,7 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 | Signal | Source | Artifact types |
 |---|---|---|
 | invocation | PostToolUse `Skill` / `Agent` | skill, agent |
+| injection | SessionStart rules block, once per session per rule | rule |
 | fire | nudge fire log | hook |
 | hook run | transcript `attachment` records (hookName, exitCode, durationMs) | hook |
 | helpful / misfire | critic answer per session | all |
@@ -303,6 +347,11 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 
 Scorecard fields: `uses_30d`, `fires_30d`, `helpful`, `misfired`, `human_good`,
 `human_bad`, `last_used`, `proposal` (`keep | refine | retire-candidate`).
+
+`uses_30d` counts every way an artifact is served: skill and agent invocations,
+rule injections, and hook fires. `fires_30d` keeps the hook-only count, so a
+hook fire adds to both. Counting only skill and agent invocations left every
+promoted rule and hook at 0 uses, which read as "nothing is running".
 
 ## Non-goals
 

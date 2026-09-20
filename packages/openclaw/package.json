@@ -1,0 +1,14 @@
+{
+  "name": "@sil/openclaw",
+  "version": "0.3.2",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@sil/core": "workspace:*",
+    "@sil/store": "workspace:*",
+    "@sil/transcript": "workspace:*"
+  }
+}

@@ -43,13 +43,20 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [ ] disable the old nudge-dispatch hooks in dotfiles-next so only one dispatcher runs
 
 ## Phase 6: engineering follow-ups
+- [x] `sil web` picks up a plugin update by itself: it polls the install path and dist/.srchash, exits 0, and systemd (Restart=always) or launchd restarts it on the new version; the web token is now stored so open tabs survive the restart
 - [ ] live model run of critic, drafter and judge; prompts are unverified beyond fake chat
 - [ ] exercise `remote: pr` against GitHub and the Outline export against a live server
 - [ ] worker lock is a pid file with a 60 ms reclaim window; consider flock via FFI
 - [ ] a lint-clean regex gate is bounded only by JavaScriptCore's backtracking cap inside one hook call
-- [ ] CI workflow: bun install, typecheck, bun test, bun run build, dist drift test
+- [x] release workflow: manual bump, build, tag + `release` branch + zip asset (`.github/workflows/release.yml`)
+- [x] CI workflow on push/PR: `.github/workflows/ci.yml`. It now builds before the tests, because `dist/` is untracked and the drift test skips without a build.
 - [ ] second review by another model family (Codex) before use on employer repos
 - [ ] Codex and OpenCode have no hook equivalent; V1 had a parity build, V2 has none
+
+## Web UI version badge (done 2026-09-19)
+- [x] inject the root package.json version into the Svelte bundle via a vite `define`
+- [x] show it as `v<version>` in the web UI footer next to the worker badge
+- [x] test locks the define to the root package.json version, verified failing without it
 
 ## Phase 7: System One endpoints (Jev / Laya)
 
@@ -72,3 +79,159 @@ whose answer is a decision, so it is the only role a System One endpoint serves.
 ## Small
 - [ ] decide whether `.ai/` stays in the repo
 - [ ] revisit command texts and `argument-hint` after first real use
+
+## Artifact type coverage (2026-09-20, branch verify-agents-skills-rules-hooks-created)
+
+Question: does curriculum produce skills, hooks, rules and agents, or one of them?
+Measured on the live world before any change: 20 `feat(rule)` and 8 `feat(hook)`
+commits since the V2 migration, 0 skills, 0 agents (every skill and the one agent
+in the ledger are V1 imports). Drafter replay on 5 real clusters, 11 runs: 8 replies
+asked for a hook and the router downgraded 6 to rule because the 20 synthetic
+fixtures never match a narrow gate, 1 more for the `ToolSearch` matcher; no
+lesson-only run asked for a skill or agent because the drafter only saw the
+300-char lesson line. No run drafted an agent; that path is covered by tests only.
+
+- [x] record `routed[pattern] = {drafted, type, reason}` in the run report; print in `sil curriculum run`, show in the web worker status
+- [x] hook records PreToolUse payload samples (allowlisted keys, rotated) into `usage/payloads/<world>.jsonl`; the router corpus includes them
+- [x] drafter and judge read the whole reflection body; prompt names what buys a skill (a procedure that does not fit one bullet) and an agent (an investigation across files, logs, outputs)
+- [x] ToolSearch, WebFetch, WebSearch, NotebookEdit accepted as nudge matchers, plus a ToolSearch fixture
+- [x] agent staging test, route record tests, sample and corpus tests (red on `main` checked out into a temp dir with the new test files copied over: 15 fail, and plan.test.ts does not load there); agent accept-and-relink test is coverage only, it passes on the old code too
+- [x] relinked the migrated `outward-facing-artifacts` agent into `~/.claude/agents` (operator state, not repo)
+- [x] review fixes: `appendLine` rotation bounded by bytes as well as lines; samples keep only `command` and `file_path` with credential values blanked; `Not verified` cut from the drafter's view and the router's quote haystack; judge keeps reading lesson lines; `MAX_SOURCE_CHARS` 120k; broadcast ceiling at half the corpus with hit counts in the route reason
+- [x] `sil import payloads --days 30`: backfill the corpus from `~/.claude/projects` transcripts (same record shape and redaction as the hook, via `@sil/core/samples`); on this machine 34k tool calls, 2162 distinct samples kept, 34 with `--no-verify`
+- [x] end-to-end proof with the real drafter and judge (claude-cli, opus) on copies of the live data, corpus backfilled from real transcripts, six rule promotions forgotten so they re-route, cap 12: drafted 10 hook / 2 rule, routed 9 hook / 3 rule, staged 6 hook + 3 rule (1 judge reject, 2 hook texts over 400 chars). Before the change every one of those clusters had been promoted as a rule.
+- [x] agent path, real data: 3 V1 reflections of `outward-facing-artifacts` (the pattern V1 promoted as an agent) -> drafted agent, routed agent ("own-context need quoted verbatim"), lint and judge pass, `feat(agent)` branch with `agents/outward-facing-artifacts.md`
+- [x] skill path, real data: 3 V1 reflections of `controlled-cohort-comparison` -> drafted skill, routed skill, `feat(skill)` branch with a five-step `SKILL.md`
+- [ ] after the plugin picks up a build with this change: run `sil import payloads --days 30` once, then watch `routed:` in curriculum.log
+
+## Rule cap as config (2026-09-20, branch curriculum-artifact-lint-cap-300)
+Trigger: a live run gated `evidence-level-overclaim` at "316 chars; the cap is 300" and
+six patterns "over the per-run cap of 2". Two of the three causes were already on main
+(prompt states the cap net of the tag, b802fe3; a gated-out pattern frees its slot,
+c39d937). The third, the 300 itself, was a constant.
+- [x] `promotion.max_rule_chars` (default 500) replaces the hardcoded 300; `ruleBudget()`
+      in lint.ts is the one arithmetic both the drafter prompt and the lint use
+- [x] tests: configurable lint cap, prompt budget for a custom cap, config cap through
+      `run()` to both the drafter and the lint, core default
+- [ ] operator: raise `promotion.per_run_cap` in config.yaml if two slots a tick is too few;
+      staged-but-unreviewed patterns re-spend a slot every tick until accepted or rejected
+
+Review: the corpus test still cannot see prompts (`prompt_matches` gates only have the
+fixture), by design: prompts are free text. The gate runner deadline stays 250 ms;
+measured about 10 ms median with 2020 payloads (52 ms in an earlier run). Routing is
+now corpus-dependent: the same drafter answer can be a hook on a machine with samples
+and a rule on a fresh install; the route reason carries the hit count so that is visible.
+
+## Logs console polish (branch polish-ui-ux-logs-console-view)
+- [x] `apps/web/src/lib/logs.ts`: pure parse of worker JSON lines and `ISO msg` lines, level detection, filter match, highlight split, size text
+- [x] `apps/web/test/logs.test.ts`: unit tests for the parser, level rules, filter and highlight
+- [x] `apps/web/src/panes/Logs.svelte`: console view (toolbar, line meta, level colours, filter, wrap toggle, copy, download, smart autoscroll with jump-to-latest)
+- [x] verify: bun test, typecheck, check:web, lint:dashes, bun run build (dist drift), browser smoke on the running web UI
+
+### Review pass
+An independent reviewer found and this branch fixed: filter matched the raw JSON
+while the console showed `key=value`, a late tail response could overwrite the
+pane after a log switch, `highlight` built a node per segment with no cap,
+`levelOf` painted `errors=0` red, wrap toggling stranded a pinned view, and a
+failed first load left the pane on "loading" for ever.
+
+## UI and UX overhaul (branch polish-ui-ux-logs-console-view)
+- [x] `.ai/design-plan.md`: palette, type scale, layout wireframes and principles written before any code
+- [x] `apps/web/src/app.css`: rewritten as a single design system (tokens, panels, tables, chips, dots, empty states, notices, toasts, responsive rail, reduced motion)
+- [x] `apps/web/src/App.svelte`: rail plus topbar shell, panes grouped Watch / Decide / Configure, pane title and blurb centralised, live worker light and staged count in the rail
+- [x] `apps/web/src/panes/Overview.svelte`: loop band with the five stages and the return path, worker, provider and install panels
+- [x] Queue, Reflections, Review, Artifacts, Loop, Models, Worlds, Logs: rebuilt on the shared classes, every empty state says what to do next, every button names its effect
+- [x] `apps/web/src/lib/api.ts`: a deep link such as `#/logs` is no longer swallowed as if the fragment were a token
+- [x] `apps/web/src/panes/Review.svelte`: the proposal is shown verbatim as the file it is, with its repo path, instead of being rendered as prose markdown
+- [x] `apps/web/src/lib/format.ts`: `plural()` so counts read "1 stop", not "1 stops"
+- [x] rail counts refresh the moment a proposal is accepted, through `appState.statusSeq`
+- [x] verify: bun test (842 pass), typecheck, check:web (0 errors), lint:dashes, bun run build, browser smoke of all nine panes against a seeded temp state dir
+
+### Review pass
+Browser smoke on http://127.0.0.1:7788 with a seeded fixture found three defects,
+all fixed here: the worker badge in the rail kept a stale count after an accept,
+"1 worlds" and "1 stops" printed the plural form for a single item, and the
+staged proposal was rendered as markdown, which dropped the frontmatter and the
+line breaks a reviewer needs to judge the file. Dark mode was checked by
+injecting the built stylesheet's own dark block, and the narrow layout by
+rendering the app in a 420 px frame.
+
+## Phase 7: system holes (2026-09-19)
+
+Each item was checked against `origin/main`, not against a local worktree.
+
+- [x] No CI at all: `.github` was absent on `origin/main`. Added
+      `.github/workflows/ci.yml`: install, lint:dashes, typecheck, check:web, `bun
+      test`, and a build that must leave `dist/` byte-identical.
+- [x] `propose()` in `@sil/feedback` judged a never-used artifact stale from a null
+      `last_used`, so `retire_after_days` never applied to it: it flipped to
+      `retire-candidate` on day 8 and the reason string claimed an age it had not
+      checked. Now measured from `entry.last_updated`, reason names its basis.
+- [x] Pattern fragmentation had no terminal path and no detector. Added `sil aliases
+      list|set|rm|suggest`, a deterministic token-overlap suggester in `@sil/store`,
+      and the `aliases.suggest` read op. A human applies every merge.
+
+### Checked and NOT a hole
+- `dist/` drift: `git archive origin/main` plus `tests/dist.test.ts` gives 6 pass, 0
+  fail. Main is in sync. The drift was local to a stale worktree.
+- Untimed nudge gate regex in the hook: `packages/nudges/src/gates.ts:58-79` caps
+  every subject at `MAX_MATCH_LEN = 4000` and rejects the exponential shapes at load.
+- Worker lock reclaim window: `packages/worker/src/index.ts:91-107` uses an atomic
+  exclusive create; the 60 ms settle only covers reclaiming after a crash and
+  resolves last-write-wins.
+
+### Review pass
+An independent reviewer (Fable) read the branch against `origin/main` and found
+four defects in the fixes themselves. All four are fixed here.
+
+- [x] The two-hop guard in `sil aliases set` covered one direction only: it rejected
+      a canonical that was already an alias key, but accepted an alias key that was
+      already another entry's canonical, which formed the chain and split the cluster
+      the command exists to merge. The invariant now lives in `saveAliases`, so the
+      ops handler and the web pane get it too, and `set` re-points the dependent
+      entries instead of refusing. Smoke: 3 + 5 reflections merge to one count of 8,
+      where the old code left 6 + 2.
+- [x] `propose()` measured "never used" staleness from `last_updated`, which reject,
+      re-home and retire all bump. A refused redraft restarted the retire clock and
+      the reason string printed the rejection date as the promotion date. Added
+      `promoted_at` to the ledger row, set by accept and by an auto-merge only, with
+      a fallback to `last_updated` for rows written before the field existed.
+- [x] `x in obj` in `aliases set` and `rm`: `constructor` is a valid slug, so `rm`
+      reported a removal it never made. Now `Object.hasOwn`. This trap is already in
+      `.ai/lessons.md` from 2026-09-14.
+- [x] Smaller: `set foo foo` is refused, the subset rule in the suggester no longer
+      fires on single-token slugs, `tests/lockfile.test.ts` no longer claims to prove
+      the lockfile is current (only that a version bump did not leave it behind), the
+      CI dist check uses `git status` so a new untracked file cannot pass, the
+      workflow declares `permissions: contents: read`, and the bun version moved into
+      `.bun-version` so a contributor builds `dist/` on the version CI verifies it on.
+
+### First CI run (2026-09-19)
+
+The workflow this branch added ran for the first time on PR #18 and went red on
+one e2e test, which turned out to be a real hole rather than a CI quirk.
+
+- [x] `sil init` created the built-in `learned/` repo with no `user.name` and no
+      `user.email` of its own and gave an identity only to the initial empty
+      commit, so every later commit ran as whatever git could resolve globally.
+      On a machine with no global identity (CI, a container, a per-repo identity
+      setup) staging and accept both fail with "Author identity unknown", and the
+      curriculum run folds that into one `gated_out` string nobody prints: the
+      install looks alive and promotes nothing. The CLI helper and
+      `git.ensureRepo` are one path now, and `ensureRepo` fills in a missing
+      identity on a repo an older install already created. An identity git can
+      resolve is never overwritten.
+
+### Still open, by design not by accident
+- [ ] No cross-artifact consistency check: the judge sees one draft against its own
+      sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact
+      can contradict an accepted rule and nothing notices.
+- [ ] No offline evaluation: every critic/drafter/judge test uses a fake chat, so a
+      prompt regression ships unseen. This is the "replay" half of the dreaming design.
+- [x] `bun.lock` carried the workspace versions from before the 0.2.3 to 0.2.6 bumps,
+      so a plain `bun install` on untouched `origin/main` rewrote it, and because
+      `bun.lock` is a `sourceHash()` input (`scripts/build.ts:23`) that rewrite failed
+      `tests/dist.test.ts`. Reproduced on a `git archive origin/main` tree: 5 pass, 1
+      fail. `bun install --frozen-lockfile` does not catch it, it exits 0. Fixed at the
+      root in `scripts/bump-version.sh`, guarded by `tests/lockfile.test.ts` and by a
+      `git diff --exit-code -- bun.lock` step in CI.

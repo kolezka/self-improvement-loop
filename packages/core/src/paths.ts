@@ -70,6 +70,7 @@ export const llmFile = (): string => join(configDir(), "llm.yaml");
 export type QueueBucket = "pending" | "done" | "failed";
 export const queueDir = (bucket: QueueBucket): string => join(stateDir(), "queue", bucket);
 export const usageEventsFile = (): string => join(stateDir(), "usage", "events.jsonl");
+export const payloadSamplesFile = (world: string): string => join(stateDir(), "usage", "payloads", `${safeComponent(world)}.jsonl`);
 export const nudgeFiresFile = (): string => join(stateDir(), "usage", "nudge-fires.jsonl");
 export const humanFeedbackFile = (): string => join(stateDir(), "feedback", "human.jsonl");
 export const criticFeedbackFile = (): string => join(stateDir(), "feedback", "critic.jsonl");
@@ -77,6 +78,9 @@ export const inboxDir = (world: string): string => join(stateDir(), "inbox", saf
 export const sessionDir = (sessionId: string): string => join(stateDir(), "sessions", safeComponent(sessionId));
 export const workerLockFile = (): string => join(stateDir(), "worker.lock");
 export const hookSnapshotFile = (): string => join(stateDir(), "hook-config.json");
+// Stable across restarts on purpose: sil web restarts itself after a plugin
+// update, and a fresh token there would 401 every tab that is already open.
+export const webTokenFile = (): string => join(stateDir(), "web-token");
 export const logFile = (name: string): string => join(stateDir(), "logs", `${safeComponent(name)}.log`);
 
 // --- data ---------------------------------------------------------------

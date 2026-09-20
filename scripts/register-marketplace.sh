@@ -9,6 +9,8 @@ MARKETPLACE_REPO="git@github.com:kolezka/marketplace.git"
 BRANCH="feat/add-self-improvement-loop"
 PLUGIN_NAME="self-improvement-loop"
 PLUGIN_DESCRIPTION="Background reflection, lesson promotion and usage feedback for Claude Code sessions"
+# The entry tracks the `release` branch, not `main`: only release commits carry
+# the prebuilt dist/ the plugin runs. See docs/RELEASE.md.
 
 scratch="$(mktemp -d)"
 # No cleanup-on-exit trap: a successful commit must survive past this script so
@@ -44,7 +46,7 @@ entry = {
     "source": {
         "source": "github",
         "repo": "kolezka/self-improvement-loop",
-        "ref": "main",
+        "ref": "release",
     },
     "category": "productivity",
 }

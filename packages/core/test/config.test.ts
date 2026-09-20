@@ -49,6 +49,7 @@ describe("config", () => {
     const cfg = Config.parse({});
     expect(cfg.worlds.map((w) => w.name)).toEqual(["default"]);
     expect(cfg.promotion.threshold).toBe(3);
+    expect(cfg.promotion.max_rule_chars).toBe(500);
     expect(cfg.worker.min_tool_uses).toBe(6);
   });
 

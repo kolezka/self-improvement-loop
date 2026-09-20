@@ -2,11 +2,19 @@
 // WorkerStatus.svelte, Loop.svelte, Overview.svelte and Queue.svelte; one
 // copy here means a server-side field rename needs updating in one place.
 
+export interface RouteRecord {
+  drafted: string;
+  type: string;
+  reason: string;
+}
+
 export interface RunReport {
   world: string;
   dry_run: boolean;
   staged: string[];
   merged: string[];
+  // Absent on reports written before the field existed.
+  routed?: Record<string, RouteRecord>;
   gated_out: Record<string, string>;
   dropped: Record<string, number>;
   started: string;

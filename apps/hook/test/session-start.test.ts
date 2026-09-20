@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
+import { readJsonl } from "@sil/core/fsx";
 import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
@@ -73,6 +74,36 @@ describe("SessionStart", () => {
     if (secondOut) {
       expect(JSON.parse(secondOut).hookSpecificOutput.additionalContext).not.toContain("a useful lesson");
     }
+  });
+
+  test("records one usage event per tagged rule, once per session", () => {
+    writeSnapshot();
+    writeFileSync(
+      `${hookEnv.root}/RULES.md`,
+      "before\n<!--loop-rules:start-->\n" +
+        "- Rule one. <!--rule:alpha-rule-->\n" +
+        "- Rule two. <!--rule:beta-rule-->\n" +
+        "- A hand-written note with no tag.\n" +
+        "<!--loop-rules:end-->\nafter\n",
+    );
+    const payload = { session_id: "sess-start-4", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
+
+    runHook(MAIN_TS, hookEnv, payload);
+    const first = readJsonl(paths.usageEventsFile()).filter((e) => e["kind"] === "rule");
+    expect(first.map((e) => e["ref"]).sort()).toEqual(["rule:alpha-rule", "rule:beta-rule"]);
+    expect(first[0]!["world"]).toBe("default");
+
+    // Resume and compact fire SessionStart again; the rule is still one use.
+    runHook(MAIN_TS, hookEnv, payload);
+    const second = readJsonl(paths.usageEventsFile()).filter((e) => e["kind"] === "rule");
+    expect(second.length).toBe(2);
+  });
+
+  test("records no rule usage when injection is off", () => {
+    writeSnapshot({ rules_inject: false });
+    writeFileSync(`${hookEnv.root}/RULES.md`, "<!--loop-rules:start-->\n- Rule one. <!--rule:alpha-rule-->\n<!--loop-rules:end-->\n");
+    runHook(MAIN_TS, hookEnv, { session_id: "sess-start-5", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root });
+    expect(readJsonl(paths.usageEventsFile()).filter((e) => e["kind"] === "rule").length).toBe(0);
   });
 
   test("writes start.json with cwd, world, and git_head", () => {

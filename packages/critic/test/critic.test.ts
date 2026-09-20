@@ -73,7 +73,7 @@ function world(name = "default"): World {
 }
 
 function cfg(w: World): Config {
-  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] } };
+  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] } };
 }
 
 function llm(): LlmConfig {
@@ -244,8 +244,8 @@ describe("installedArtifacts", () => {
     const ledger = {
       version: 1,
       entries: {
-        "good-skill": { pattern: "good-skill", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", commit: null, feedback: null },
-        "staged-thing": { pattern: "staged-thing", promoted_at_count: 1, rejected_at_count: 0, status: "staged" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", commit: null, feedback: null },
+        "good-skill": { pattern: "good-skill", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
+        "staged-thing": { pattern: "staged-thing", promoted_at_count: 1, rejected_at_count: 0, status: "staged" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);

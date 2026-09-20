@@ -225,13 +225,20 @@ export function skipSession(sessionId: string): boolean {
   return true;
 }
 
+// A transcript that is not on disk is not a broken reflection: Claude Code
+// writes none for `claude --print --no-session-persistence`, and an old one
+// can be cleaned up before the worker gets to it. Either way there is nothing
+// to read, so the entry retires as skipped and `failed` keeps meaning
+// "reflection ran and broke".
+const NO_TRANSCRIPT = "skipped: transcript not persisted";
+
 export function eligible(entry: QueueEntry, cfg: Config, now: Date): [boolean, string] {
-  if (!fsx.exists(entry.transcript_path)) return [false, "failed: transcript missing"];
+  if (!fsx.exists(entry.transcript_path)) return [false, NO_TRANSCRIPT];
 
   let idleOk = entry.ended;
   if (!idleOk) {
     const mtime = fsx.mtimeMs(entry.transcript_path);
-    if (mtime === null) return [false, "failed: transcript missing"];
+    if (mtime === null) return [false, NO_TRANSCRIPT];
     idleOk = (now.getTime() - mtime) / 60_000 >= cfg.worker.idle_minutes;
   }
   if (!idleOk) return [false, "not idle"];
@@ -317,6 +324,11 @@ async function reflectPending(
       if (reason.startsWith("failed")) {
         moveToTerminal(entry, "failed", reason);
         summary.failed.push(entry.session_id);
+      } else if (reason.startsWith("skipped")) {
+        // Nothing here will ever become reflectable, so the entry leaves the
+        // queue instead of being re-read on every run.
+        moveToTerminal(entry, "done", reason);
+        summary.skipped.push(entry.session_id);
       } else {
         summary.skipped.push(entry.session_id);
       }

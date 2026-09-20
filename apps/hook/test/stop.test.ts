@@ -8,7 +8,7 @@
 // test_concurrent_stop_processes_serialize_queue_and_scan_updates.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
 import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
@@ -68,6 +68,38 @@ describe("Stop", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("");
     expect(() => queueEntry("sess-stop-2")).toThrow();
+  });
+
+  // `claude --print --no-session-persistence` (jean and other tools use it for
+  // helper runs: commit messages, summaries) reports a transcript_path Claude
+  // Code never writes. Queuing those sessions buries the operator's failed
+  // list under entries no reflection can ever read.
+  test("does not queue a session whose transcript_path is not on disk", () => {
+    writeSnapshot();
+    const payload = {
+      session_id: "sess-stop-ephemeral",
+      hook_event_name: "Stop",
+      stop_hook_active: false,
+      transcript_path: `${hookEnv.root}/never-written.jsonl`,
+      cwd: hookEnv.root,
+    };
+    const result = runHook(MAIN_TS, hookEnv, payload);
+    expect(result.exitCode).toBe(0);
+    expect(() => queueEntry("sess-stop-ephemeral")).toThrow();
+  });
+
+  test("keeps updating an entry whose transcript disappears after the first Stop", () => {
+    writeSnapshot();
+    const transcript = `${hookEnv.root}/vanishing-transcript.jsonl`;
+    writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } })}\n`);
+    const payload = { session_id: "sess-stop-vanish", hook_event_name: "Stop", stop_hook_active: false, transcript_path: transcript, cwd: hookEnv.root };
+
+    runHook(MAIN_TS, hookEnv, payload);
+    expect(queueEntry("sess-stop-vanish")["stops"]).toBe(1);
+
+    rmSync(transcript);
+    runHook(MAIN_TS, hookEnv, payload);
+    expect(queueEntry("sess-stop-vanish")["stops"]).toBe(2);
   });
 
   test("Stop is not an OUTPUT_EVENT: no envelope printed even though nudges could match", () => {
@@ -164,6 +196,19 @@ describe("SessionEnd", () => {
     const entry = queueEntry("sess-end-1");
     expect(entry["ended"]).toBe(true);
     expect(entry["stops"]).toBe(0);
+  });
+
+  test("does not create a placeholder for a session whose transcript_path is not on disk", () => {
+    writeSnapshot();
+    const payload = {
+      session_id: "sess-end-ephemeral",
+      hook_event_name: "SessionEnd",
+      transcript_path: `${hookEnv.root}/never-written.jsonl`,
+      cwd: hookEnv.root,
+    };
+    const result = runHook(MAIN_TS, hookEnv, payload);
+    expect(result.exitCode).toBe(0);
+    expect(() => queueEntry("sess-end-ephemeral")).toThrow();
   });
 
   test("marks an existing queue entry ended without clobbering its stops count", () => {

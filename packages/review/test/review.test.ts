@@ -25,6 +25,7 @@ import * as review from "../src/index.ts";
 import { foreignChanges } from "../src/snapshot.ts";
 import {
   addReflections,
+  agentBody,
   cleanupEnv,
   commitFile,
   fakeGateRunner,
@@ -85,6 +86,7 @@ function seed(world: World, opts: { sibling?: boolean } = {}): string {
       artifact_type: "hook",
       served_by: null,
       last_updated: "2026-09-01T00:00:00Z",
+      promoted_at: null,
       commit: null,
       feedback: null,
     };
@@ -177,6 +179,7 @@ describe("read side", () => {
             status: "promoted",
             artifact_type: "skill",
             last_updated: "2026-09-01T00:00:00Z",
+            promoted_at: null,
           },
           { pattern: SIBLING, promoted_at_count: 7, status: "rejected", artifact_type: "rule" },
         ],
@@ -273,6 +276,9 @@ describe("accept", () => {
     const ledger = loadLedger(ledgerPath(world));
     expect(ledger.entries[PATTERN]!.status).toBe("promoted");
     expect(ledger.entries[PATTERN]!.commit).toBeTruthy();
+    // Scorecards judge a never-used artifact from this date, so accept is the
+    // one place that may set it.
+    expect(ledger.entries[PATTERN]!.promoted_at).toBeTruthy();
     // The sibling a human refused keeps its watermark and its status.
     expect(ledger.entries[SIBLING]!.status).toBe("rejected");
     expect(ledger.entries[SIBLING]!.rejected_at_count).toBe(7);
@@ -449,6 +455,39 @@ describe("accept", () => {
     const ledger = loadLedger(ledgerPath(world));
     expect(Object.keys(ledger.entries).sort()).toEqual(["bbb-pattern", PATTERN].sort());
     expect(Object.values(ledger.entries).every((e) => e.status === "promoted")).toBe(true);
+  });
+
+  test("accepting a second rule resolves the shared rules-file conflict", async () => {
+    // Every rule appends a bullet to one managed block, so the second acceptance
+    // lands on the same lines as the first. Refused as a foreign conflict, no
+    // second rule could be accepted at all without a hand rebase: measured on a
+    // live target, where the first rule merged and the next branch answered
+    // "conflicts outside the ledger: RULES.md" forever.
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    addReflections(world, "bbb-pattern", 3, { startDay: 20 });
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: ruleDraft() }).fn,
+      gateRunner: fakeGateRunner,
+    });
+
+    for (const pattern of [PATTERN, "bbb-pattern"]) {
+      const detail = review.detail(world, cfg(), pattern);
+      expect(detail.artifact_type).toBe("rule");
+      review.accept(world, cfg(), pattern, detail.reviewed_state);
+    }
+
+    // The sibling's bullet is the one nobody accepted in this test: it must
+    // survive both acceptances, or the resolution is overwriting the file.
+    const text = readFileSync(join(repo, RULES), "utf8");
+    for (const tag of [ruleTag(SIBLING), ruleTag(PATTERN), ruleTag("bbb-pattern")]) {
+      expect(text).toContain(tag);
+    }
+    const entries = loadLedger(ledgerPath(world)).entries;
+    expect(entries[PATTERN]!.status).toBe("promoted");
+    expect(entries["bbb-pattern"]!.status).toBe("promoted");
   });
 
   test("a branch may never record a sibling's promotion", async () => {
@@ -657,6 +696,8 @@ describe("reject", () => {
     // pending forever.
     const world = makeWorld();
     const repo = await accepted(world);
+    const promotedAt = loadLedger(ledgerPath(world)).entries[PATTERN]!.promoted_at;
+    expect(promotedAt).toBeTruthy();
     addReflections(world, PATTERN, 3, { startDay: 20 });
     await stage(world);
 
@@ -664,6 +705,9 @@ describe("reject", () => {
 
     expect(out.rejected_at_count).toBe(6);
     const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    // The refusal of a redraft is not a new promotion. Moving this date would
+    // restart the retire clock on an artifact nobody is using.
+    expect(entry.promoted_at).toBe(promotedAt);
     expect(entry.rejected_at_count).toBe(6);
     expect(entry.promoted_at_count).toBe(3);
     expect(entry.status).toBe("promoted");
@@ -770,6 +814,32 @@ describe("relink", () => {
     expect(realpathSync(link)).toBe(realpathSync(join(repo, "skills", PATTERN)));
     expect(out.link).toBe(link);
     expect(out.link_error).toBeUndefined();
+  });
+
+  test("accept links an agent into the Claude config", async () => {
+    // The one migrated V1 agent was promoted in the ledger and linked nowhere,
+    // so Claude Code never listed it. The accept path has to do for an agent
+    // what it does for a skill.
+    const world = makeWorld();
+    const repo = seed(world);
+    const draft = {
+      trigger_event: "none",
+      gate: null,
+      needs_own_context: true,
+      context_evidence: QUOTE,
+      capability_evidence: null,
+      no_artifact: false,
+      artifact: agentBody(PATTERN, QUOTE),
+    };
+    await run(world, makeCfg(), { apply: true, chat: new FakeChat({ draft }).fn, gateRunner: fakeGateRunner });
+    const detail = review.detail(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+
+    expect(out.artifact_type).toBe("agent");
+    const link = join(paths.claudeConfigDir(), "agents", `${PATTERN}.md`);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(realpathSync(link)).toBe(realpathSync(join(repo, "agents", `${PATTERN}.md`)));
+    expect(out.link).toBe(link);
   });
 
   test("it refuses to replace a real directory", () => {

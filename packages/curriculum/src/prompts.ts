@@ -14,6 +14,10 @@
 
 import type { ChatMessage, NoulQuestion } from "@sil/providers";
 import { nudgeEvents } from "./deps.ts";
+// The rule budget, computed by the lint's own arithmetic rather than restated:
+// a prompt quoting a number the lint no longer uses is a gate the drafter
+// cannot see.
+import { ruleBudget } from "./lint.ts";
 // The router's own bar for a quote, imported rather than restated. A prompt
 // asking for "an exact substring" while the router demands five words is a
 // drafter answering honestly and being downgraded for it on every run.
@@ -23,7 +27,11 @@ import { emptyAnswer, MIN_QUOTE_CHARS, MIN_QUOTE_TERMS, MIN_QUOTE_WORDS, RouteAn
 // omission note stays in the prompt and says which end was dropped: a model that
 // can see it was handed a window can hedge, one silently fed a fifth of the
 // evidence writes with false confidence.
-export const MAX_SOURCE_CHARS = 200_000;
+//
+// Sized for reflection sections, not lesson lines: a live 57-reflection cluster
+// is about 120 KB of drafting text, and a 32k-context local model holds about
+// this much and no more.
+export const MAX_SOURCE_CHARS = 120_000;
 
 const FENCE_RE = /^```[A-Za-z]*\s*\n([\s\S]*?)\n?```\s*$/;
 const THINK_RE = /^\s*<think>[\s\S]*?<\/think>\s*/i;
@@ -76,11 +84,22 @@ export function agentShape(pattern: string): string {
   );
 }
 
-export function ruleShape(_pattern: string): string {
+export interface DraftOptions {
+  /** `promotion.max_rule_chars`; the rule shape states the budget net of its tag. */
+  maxRuleChars?: number;
+}
+
+export function ruleShape(pattern: string, opts: DraftOptions = {}): string {
+  // The lint caps the line the writer produces, tag included, so the budget the
+  // drafter gets has to have the tag taken out of it already. Quoting the raw
+  // cap asks for a bullet that is then refused for being 18 characters over,
+  // which is an honest drafter gated on every run and never told why.
+  const budget = ruleBudget(pattern, opts.maxRuleChars);
   return (
-    "Exactly one line, starting with '- ', under 300 characters. No heading, " +
+    `Exactly one line, starting with '- ', at most ${budget} characters. No heading, ` +
     "no frontmatter, no second line: the single imperative the agent must " +
-    "follow, naming the actual command or check the lessons name."
+    "follow, naming the actual command or check the lessons name. No HTML " +
+    "comment and no '<!--rule:...-->' tag: the writer adds the tag itself."
   );
 }
 
@@ -140,7 +159,7 @@ export function hookShape(pattern: string): string {
   );
 }
 
-export const SHAPES: Record<string, (pattern: string) => string> = {
+export const SHAPES: Record<string, (pattern: string, opts?: DraftOptions) => string> = {
   skill: skillShape,
   agent: agentShape,
   rule: ruleShape,
@@ -154,23 +173,32 @@ export const FORCED_SUBJECT: Record<string, string> = {
   hook: "Claude Code hook nudge (a JSON object)",
 };
 
-const ROUTING_FIELDS =
-  'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' +
-  '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' +
-  "be checked against mechanically on every matching tool call. gate is a " +
-  "single-predicate object usable by the nudge dispatcher, or null if no gate " +
-  "applies. needs_own_context is true only if acting on this lesson needs its " +
-  "own agent and budget rather than a reminder, and when it is true " +
-  "context_evidence MUST be an exact substring copied verbatim from the lessons " +
-  `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` +
-  `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` +
-  `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` +
-  "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " +
-  "discipline rather than an agent. capability_evidence, if set, MUST be an " +
-  "exact substring copied verbatim from the lessons below, never paraphrased, " +
-  "under the same length rule, naming a concrete thing the agent can actually " +
-  "do that neither a hook nor a rule can express. no_artifact is true only if no " +
-  "artifact at all is warranted.";
+/** The routing contract. `ruleChars` is the rule bullet's budget net of its
+ * tag, so "does not fit one bullet" names the number the rule shape states. */
+function routingFields(ruleChars: number): string {
+  return (
+    'trigger_event is "none", or "<HookEventName>:<Matcher>" (for example ' +
+    '"PreToolUse:Bash") naming a real Claude Code hook event this lesson could ' +
+    "be checked against mechanically on every matching tool call. gate is a " +
+    "single-predicate object usable by the nudge dispatcher, or null if no gate " +
+    "applies. needs_own_context is true only if acting on this lesson needs its " +
+    "own agent and budget rather than a reminder: the lessons describe an " +
+    "investigation that reads many files, logs or tool outputs and reports " +
+    "back, or work that would consume the main context's budget. When it is true " +
+    "context_evidence MUST be an exact substring copied verbatim from the lessons " +
+    `below that shows that need, at least ${MIN_QUOTE_WORDS} words and ` +
+    `${MIN_QUOTE_CHARS} characters long, starting and ending at a word boundary. ` +
+    `It must carry at least ${MIN_QUOTE_TERMS} words specific to this lesson: a date, a ` +
+    "Pattern line or a section heading is not a quote. Without that quote the lesson is treated as a " +
+    "discipline rather than an agent. capability_evidence, if set, MUST be an " +
+    "exact substring copied verbatim from the lessons below, never paraphrased, " +
+    "under the same length rule, naming a concrete thing the agent can actually " +
+    "do that neither a hook nor a rule can express: a procedure of several " +
+    `ordered commands or checks that does not fit one ${ruleChars}-character bullet. ` +
+    "Quote the passage that names those steps. no_artifact is true only if no " +
+    "artifact at all is warranted."
+  );
+}
 
 export const DRAFTER_SYSTEM =
   "You write Claude Code artifacts from recurring lessons. You reply with one " +
@@ -191,6 +219,7 @@ export function draftMessages(
   lessons: string[],
   existing: string | null = null,
   artifactType: string | null = null,
+  opts: DraftOptions = {},
 ): ChatMessage[] {
   const sources = boundedSources(lessons);
   const tail = existing ? `\n\nExisting artifact to refine:\n${existing}` : "";
@@ -202,7 +231,7 @@ export function draftMessages(
       `'${pattern}'. Its type is already decided; do not re-decide it.\n\n` +
       'Reply with a JSON object holding exactly one key, "artifact". Its ' +
       `value is ${artifactType === "hook" ? "an object" : "a string"} in this shape:\n` +
-      SHAPES[artifactType]!(pattern) +
+      SHAPES[artifactType]!(pattern, opts) +
       "\n\nDo not restate this task, do not add commentary, do not leave " +
       "angle-bracket fill-ins, do not include secrets or tokens.\n\n" +
       "Lessons to generalise:\n\n" +
@@ -215,7 +244,7 @@ export function draftMessages(
       "Reply with one JSON object with these keys: trigger_event, gate, " +
       "needs_own_context, context_evidence, capability_evidence, no_artifact, " +
       "artifact.\n\n" +
-      ROUTING_FIELDS +
+      routingFields(ruleBudget(pattern, opts.maxRuleChars)) +
       "\n\n" +
       '"artifact" is the body, and WHICH body is decided by the routing ' +
       "fields you just wrote. Work through these in order and write the " +
@@ -231,7 +260,7 @@ export function draftMessages(
       skillShape(pattern) +
       "\n" +
       "5. otherwise: write a RULE, as a string. " +
-      ruleShape(pattern) +
+      ruleShape(pattern, opts) +
       "\n\n" +
       "The body MUST be in the shape the type you selected requires; a body " +
       "in the wrong shape is rejected and this lesson is dropped. Do not " +

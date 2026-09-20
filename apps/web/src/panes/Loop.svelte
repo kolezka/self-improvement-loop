@@ -41,6 +41,12 @@
     return ACTION_ORDER.filter((kind) => byKind.has(kind)).map((kind) => ({ kind, actions: byKind.get(kind)! }));
   });
 
+  // "retire-candidate" -> "Retire candidate": sentence case, no raw hyphenated kind in the UI.
+  function actionLabel(kind: string): string {
+    const words = kind.replace(/-/g, " ");
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
   async function refresh() {
     try {
       status = (await call("worker.status", {})) as WorkerStatusData;
@@ -79,39 +85,52 @@
   onMount(refresh);
 </script>
 
-<h2>Loop</h2>
-<div class="card">
-  <h3>Worker status</h3>
-  <WorkerStatus {status} />
-</div>
-
-<div class="card">
-  <h3>Curriculum plan (dry run)</h3>
-  {#if plan}
-    <p class="muted">threshold: {plan.threshold}</p>
-    {#if plan.actions.length === 0}
-      <p class="muted">nothing to plan</p>
-    {/if}
-    {#each grouped as group}
-      <h4>{group.kind} ({group.actions.length})</h4>
-      <ul class="list">
-        {#each group.actions as a}
-          <li>
-            <strong>{a.pattern}</strong>
-            <span class="muted">count {a.count}, watermark {a.watermark}</span>
-            {#if a.reason}<div class="muted">{a.reason}</div>{/if}
-          </li>
-        {/each}
-      </ul>
-    {/each}
-  {:else}
-    <p class="muted">not loaded yet</p>
-  {/if}
-</div>
-
-<div class="actions">
-  <button onclick={refresh}>Refresh</button>
-  <button class="primary" onclick={runWorker}>Run worker now</button>
+<div class="toolbar">
+  <button class="primary" onclick={runWorker}>Run worker</button>
   <button onclick={runCurriculum}>Run curriculum</button>
   <button onclick={showPlan}>Show plan</button>
+  <button onclick={refresh}>Refresh</button>
+</div>
+
+<WorkerStatus {status} />
+
+<div class="panel">
+  <div class="panel__head">
+    <h3>Curriculum plan</h3>
+    {#if plan}
+      <span class="chip">threshold <strong>{plan.threshold}</strong></span>
+    {/if}
+  </div>
+  <div class="panel__body">
+    {#if !plan}
+      <div class="empty">
+        <strong>Plan not loaded.</strong>
+        The curriculum plan is a dry run: it shows what would be promoted, refined or retired without changing anything.
+        Press "Show plan" to load it.
+      </div>
+    {:else if plan.actions.length === 0}
+      <div class="empty">
+        <strong>Nothing to plan.</strong>
+        No pattern crossed a curriculum threshold this pass.
+      </div>
+    {:else}
+      {#each grouped as group}
+        <div class="section-title">
+          {actionLabel(group.kind)} <span class="chip"><strong>{group.actions.length}</strong></span>
+        </div>
+        <ul class="list">
+          {#each group.actions as a}
+            <li>
+              <div class="row__title">
+                <span class="mono grow">{a.pattern}</span>
+                <span class="chip">count <strong>{a.count}</strong></span>
+                <span class="chip">watermark <strong>{a.watermark}</strong></span>
+              </div>
+              {#if a.reason}<div class="muted">{a.reason}</div>{/if}
+            </li>
+          {/each}
+        </ul>
+      {/each}
+    {/if}
+  </div>
 </div>

@@ -112,6 +112,30 @@ process: restart it (`sil schedule uninstall && sil schedule install --systemd
 --web`, or just `systemctl --user restart sil-web.service`) after a rotation if it
 is the one making model calls.
 
+## Updating the plugin
+
+```
+claude plugin marketplace update kolezka
+claude plugin install self-improvement-loop@kolezka
+```
+
+An install writes a new versioned directory and repoints
+`~/.claude/plugins/installed_plugins.json`. Hooks, the CLI and every scheduled
+worker pass read that at call time, so they are on the new version at once.
+`sil web` is the one long lived process: it polls the install path and the built
+`dist/.srchash` every 5 seconds, and on a change it stops and exits 0 so the
+supervisor starts it on the new version. Nothing to do by hand.
+
+Two consequences worth knowing:
+
+- The systemd unit needs `Restart=always` for this (a clean exit is not a
+  failure). `sil schedule install --systemd --web` writes that; a unit written by
+  0.2.7 or earlier says `Restart=on-failure` and has to be rewritten once.
+- A bind that uses a token (any non-loopback one) no longer gets a fresh token
+  per start. It lives in `~/.local/state/self-improvement-loop/web-token`, mode
+  600, so a restart keeps every open tab working. Rotate it by deleting that
+  file and restarting the service. A loopback bind is tokenless and unaffected.
+
 ## Logs
 
 ```

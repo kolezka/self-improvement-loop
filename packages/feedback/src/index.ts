@@ -180,6 +180,70 @@ function propose(
   return ["keep", "no signal strong enough to change"];
 }
 
+// Keep events for longer than the longest window a scorecard reads: `uses_30d`
+// looks back 30 days, the retire clock looks back `retire_after_days`.
+const COMPACT_SLACK_DAYS = 30;
+
+// The rewrite reads the file and renames a new one over it, so a hook that
+// appends in between loses its line. Wait until enough dead lines are there
+// for the rewrite to be worth that risk.
+export const COMPACT_MIN_DROP = 500;
+
+function parseEvent(line: string): Record<string, unknown> | null {
+  try {
+    const ev: unknown = JSON.parse(line);
+    return typeof ev === "object" && ev !== null && !Array.isArray(ev) ? (ev as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function refKey(ev: Record<string, unknown>): string {
+  return `${String(ev["world"])}\u0000${String(ev["ref"])}`;
+}
+
+/** Drop usage events no scorecard can use any more and return how many went,
+ * 0 when the file was left alone. events.jsonl is append only; here it reached
+ * 15 MB, and every rebuild parsed all of it. Three classes go: hook_run
+ * diagnostics, which have their own rotated file now, unreadable lines, and
+ * events past the retire clock.
+ *
+ * The newest event per ref stays whatever its age: `scorecards` reads it as
+ * `last_used`, and that is what the retire proposal runs on.
+ *
+ * Call this from the worker, inside the worker lock. */
+export function compactUsageEvents(cfg: Config, now: Date = new Date(), minDrop: number = COMPACT_MIN_DROP): number {
+  const path = paths.usageEventsFile();
+  const text = fsx.readTextOr(path, "");
+  if (!text) return 0;
+
+  const keepDays = cfg.promotion.retire_after_days + COMPACT_SLACK_DAYS;
+  const cutoff = new Date(now.getTime() - keepDays * 86_400_000).toISOString();
+  const lines = text.split("\n").filter((l) => l.length > 0);
+  const events = lines.map(parseEvent);
+
+  const newestByRef = new Map<string, string>();
+  for (const ev of events) {
+    if (ev === null || ev["kind"] === "hook_run") continue;
+    const ts = ev["ts"];
+    if (typeof ts !== "string") continue;
+    const cur = newestByRef.get(refKey(ev));
+    if (cur === undefined || ts > cur) newestByRef.set(refKey(ev), ts);
+  }
+
+  const kept: string[] = [];
+  events.forEach((ev, i) => {
+    if (ev === null || ev["kind"] === "hook_run") return;
+    const ts = ev["ts"];
+    if (typeof ts !== "string" || ts >= cutoff || newestByRef.get(refKey(ev)) === ts) kept.push(lines[i]!);
+  });
+
+  const dropped = lines.length - kept.length;
+  if (dropped < Math.max(1, minDrop)) return 0;
+  fsx.atomicWrite(path, kept.length === 0 ? "" : kept.join("\n") + "\n");
+  return dropped;
+}
+
 export function rebuild(world: World, cfg: Config): string {
   const cards = scorecards(world, cfg);
   const path = paths.scorecardsFile(world.name);

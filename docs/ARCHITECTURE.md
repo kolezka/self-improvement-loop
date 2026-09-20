@@ -80,7 +80,8 @@ State dir (`$SIL_STATE_DIR`, default `~/.local/state/self-improvement-loop/`):
 queue/pending/<session_id>.json     written by the Stop/SessionEnd hook
 queue/done/<session_id>.json
 queue/failed/<session_id>.json
-usage/events.jsonl                  skill / agent / hook usage events
+usage/events.jsonl                  skill / agent / rule usage events, compacted by the worker
+usage/hook-runs.jsonl               hook run diagnostics (exit code, duration), rotated
 usage/payloads/<world>.jsonl        PreToolUse samples (tool name, command, file path), rotated; the router's gate corpus
                                     backfill an empty one from old transcripts with `sil import payloads --days 30`
 usage/nudge-fires.jsonl             nudge emissions (V1 format)
@@ -209,7 +210,7 @@ budget 250 ms shared by nudge gates. Everything is wrapped so a failure is a sil
 | UserPromptSubmit | Deliver inbox lessons that arrived since session start (once each). Nudge dispatch. |
 | PreToolUse | Record one payload sample for the world: tool name plus `tool_input.command` (credential values blanked) and `tool_input.file_path`, the two keys a gate can read; never `description`, `old_string`, `content` or a prompt. Nudge dispatch. |
 | PostToolUse | Record usage for `Skill` (skill name) and `Agent` (subagent_type, model). Nudge dispatch. |
-| Stop | Under a per-session lock: upsert the queue entry (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count) and scan the transcript from the stored byte offset for `attachment` hook records, appending hook usage events. No nudge dispatch: Claude Code does not deliver `additionalContext` on Stop. |
+| Stop | Under a per-session lock: upsert the queue entry (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count) and scan the transcript from the stored byte offset for `attachment` hook records, appending hook run diagnostics to `usage/hook-runs.jsonl`. No nudge dispatch: Claude Code does not deliver `additionalContext` on Stop. |
 | SubagentStop | Record `agent_stop` usage event. |
 | SessionEnd | Mark queue entry `ended: true`. |
 
@@ -248,8 +249,14 @@ Under `worker.lock`:
    in the world inbox when `lesson_short` is present. Move the entry to `done`, or
    to `failed` with a reason. A provider or configuration error keeps the entry
    queued for up to three attempts, so a proxy outage does not lose the session.
+   An entry that stays below `min_tool_uses` after the session is over (`ended`,
+   or the transcript untouched for 7 days) retires to `done` as
+   `skipped: below min_tool_uses`, so the pending queue drains instead of
+   re-parsing the same transcripts on every run.
 2. **Scorecards.** `scorecards(world, cfg)` in `@sil/feedback` folds usage events, nudge
-   fires, critic votes and human feedback into one record per artifact.
+   fires, critic votes and human feedback into one record per artifact. The same
+   step compacts `usage/events.jsonl`: hook_run diagnostics and events past the
+   retire clock go, the newest event per artifact stays whatever its age.
 3. **Curriculum.** If the interval elapsed: `run(world, cfg, { apply: true })` in `@sil/curriculum`, the V1
    gate stack (route, rule-writability, lint, integrity, judge) against a scratch
    worktree; stages branches, never pushes.

@@ -10,6 +10,7 @@ import {
   LockHeld,
   paths,
   ProviderError,
+  SKIPPED_BELOW_MIN_TOOL_USES,
   writeHookSnapshot,
   type Config,
   type QueueEntry,
@@ -17,13 +18,16 @@ import {
 } from "@sil/core";
 import type { ChatFn } from "@sil/providers";
 import { reflectSession } from "@sil/critic";
-import { rebuild as rebuildScorecards } from "@sil/feedback";
+import { compactUsageEvents, rebuild as rebuildScorecards } from "@sil/feedback";
 import { entryPath, listQueue, loadEntry, moveEntry, writeEntry, type Bucket } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import { run as curriculumRun } from "@sil/curriculum";
 import { exportNew } from "./outline.ts";
 
-export interface RunSummary { reflected: string[]; failed: string[]; skipped: string[]; curriculum: Record<string, unknown>; duration_s: number; locked?: boolean }
+export interface RunCounts { reflected: number; failed: number; skipped: number }
+// `counts` holds the full totals when the id lists are a sample; it is absent
+// on the in-process summary, where every list is complete.
+export interface RunSummary { reflected: string[]; failed: string[]; skipped: string[]; curriculum: Record<string, unknown>; duration_s: number; locked?: boolean; counts?: RunCounts }
 export interface WorkerStatus { lock_held: boolean; lock_pid: number | null; pending: number; done: number; failed: number; last_run: string | null; last_summary: RunSummary | null; last_curriculum: Record<string, string> }
 export interface RunOnceOptions { worldName?: string; reflect?: boolean; curriculum?: boolean; chat?: ChatFn }
 
@@ -221,7 +225,7 @@ export function reapSessionDir(sessionId: string): void {
 
 /** Catch session dirs whose queue entry never closed (crash, manual
  * deletion). Bounded per run so a huge backlog cannot stall a worker pass. */
-export function reapStaleSessionDirs(now: Date, maxAgeDays = 7, limit = 500): number {
+export function reapStaleSessionDirs(now: Date, maxAgeDays = ABANDONED_AFTER_DAYS, limit = 500): number {
   const root = join(paths.stateDir(), "sessions");
   let names: string[];
   try {
@@ -282,19 +286,31 @@ export function skipSession(sessionId: string): boolean {
 // "reflection ran and broke".
 const NO_TRANSCRIPT = "skipped: transcript not persisted";
 
+// A transcript untouched this long belongs to a session that is over, so a
+// count below the threshold is final for it. Without that cutoff a short
+// session that never set `ended` stayed pending for ever and every worker run
+// re-read its transcript: 482 of 487 pending entries, 155 MB re-parsed per run.
+// Same window as reapStaleSessionDirs, which drops the session dir anyway.
+export const ABANDONED_AFTER_DAYS = 7;
+
 export function eligible(entry: QueueEntry, cfg: Config, now: Date): [boolean, string] {
   if (!fsx.exists(entry.transcript_path)) return [false, NO_TRANSCRIPT];
+  const mtime = fsx.mtimeMs(entry.transcript_path);
+  if (mtime === null) return [false, NO_TRANSCRIPT];
 
-  let idleOk = entry.ended;
-  if (!idleOk) {
-    const mtime = fsx.mtimeMs(entry.transcript_path);
-    if (mtime === null) return [false, NO_TRANSCRIPT];
-    idleOk = (now.getTime() - mtime) / 60_000 >= cfg.worker.idle_minutes;
-  }
+  const idleOk = entry.ended || (now.getTime() - mtime) / 60_000 >= cfg.worker.idle_minutes;
   if (!idleOk) return [false, "not idle"];
 
-  const toolUses = entry.tool_uses || countToolUses(entry.transcript_path);
-  if (toolUses < cfg.worker.min_tool_uses) return [false, "below min_tool_uses"];
+  if ((entry.tool_uses || countToolUses(entry.transcript_path)) < cfg.worker.min_tool_uses) {
+    // "skipped:" makes the verdict terminal in reflectPending. Keep the soft
+    // verdict while the session can still come back and pass the bar.
+    const closed = entry.ended || now.getTime() - mtime >= ABANDONED_AFTER_DAYS * 86_400_000;
+    if (!closed) return [false, "below min_tool_uses"];
+    // The stored count can lag the transcript: SessionEnd marks a session
+    // ended without scanning, and an oversized line defers the rest of the
+    // file. Retiring is final, so count the file itself once before it.
+    if (countToolUses(entry.transcript_path) < cfg.worker.min_tool_uses) return [false, SKIPPED_BELOW_MIN_TOOL_USES];
+  }
   return [true, "eligible"];
 }
 
@@ -302,6 +318,21 @@ export function eligible(entry: QueueEntry, cfg: Config, now: Date): [boolean, s
 
 function isTransient(e: unknown): boolean {
   return e instanceof ProviderError || e instanceof ConfigError;
+}
+
+// The web UI polls worker.status every 5 seconds, so the file it reads keeps
+// counts plus a sample of session ids. A full backlog pass wrote one id per
+// entry and pushed the payload to 19 KB.
+export const STATUS_SUMMARY_IDS = 25;
+
+export function sampleSummary(summary: RunSummary): RunSummary {
+  return {
+    ...summary,
+    reflected: summary.reflected.slice(0, STATUS_SUMMARY_IDS),
+    failed: summary.failed.slice(0, STATUS_SUMMARY_IDS),
+    skipped: summary.skipped.slice(0, STATUS_SUMMARY_IDS),
+    counts: { reflected: summary.reflected.length, failed: summary.failed.length, skipped: summary.skipped.length },
+  };
 }
 
 export async function runOnce(cfg?: Config, opts: RunOnceOptions = {}): Promise<RunSummary> {
@@ -323,6 +354,8 @@ export async function runOnce(cfg?: Config, opts: RunOnceOptions = {}): Promise<
       reapStaleSessionDirs(now);
       pruneQueueBucket("done");
       pruneQueueBucket("failed");
+      const droppedEvents = compactUsageEvents(config, now);
+      if (droppedEvents) log({ action: "compact_usage_events", result: `dropped ${droppedEvents}` });
 
       for (const world of worlds) {
         await runCurriculumIfDue(world, config, opts.curriculum ?? true, now, summary);
@@ -341,7 +374,7 @@ export async function runOnce(cfg?: Config, opts: RunOnceOptions = {}): Promise<
       }
 
       summary.duration_s = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
-      fsx.writeJson(join(paths.stateDir(), "worker-status.json"), { last_run: fsx.nowIso(), last_summary: summary });
+      fsx.writeJson(join(paths.stateDir(), "worker-status.json"), { last_run: fsx.nowIso(), last_summary: sampleSummary(summary) });
     });
   } catch (e) {
     if (e instanceof LockHeld) return { reflected: [], failed: [], skipped: [], curriculum: {}, duration_s: 0, locked: true };

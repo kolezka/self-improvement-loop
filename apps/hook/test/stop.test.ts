@@ -124,15 +124,18 @@ describe("Stop", () => {
     const payload = { session_id: "sess-stop-4", hook_event_name: "Stop", stop_hook_active: false, transcript_path: transcript, cwd: hookEnv.root };
     runHook(MAIN_TS, hookEnv, payload);
 
-    let events = readJsonl(paths.usageEventsFile());
+    let events = readJsonl(paths.hookRunsFile());
     const hookRunEvents = events.filter((e) => e["kind"] === "hook_run");
     expect(hookRunEvents.length).toBe(3);
+    // hook_run is diagnostics: it must stay out of the scorecard event log,
+    // which every scorecard rebuild parses end to end.
+    expect(readJsonl(paths.usageEventsFile()).some((e) => e["kind"] === "hook_run")).toBe(false);
     let entry = queueEntry("sess-stop-4");
     expect(entry["tool_uses"]).toBe(2);
 
     // A second identical Stop must not re-scan the same bytes.
     runHook(MAIN_TS, hookEnv, payload);
-    events = readJsonl(paths.usageEventsFile());
+    events = readJsonl(paths.hookRunsFile());
     expect(events.filter((e) => e["kind"] === "hook_run").length).toBe(3);
     entry = queueEntry("sess-stop-4");
     expect(entry["stops"]).toBe(2);
@@ -149,11 +152,11 @@ describe("Stop", () => {
     const payload = { session_id: "sess-stop-5", hook_event_name: "Stop", stop_hook_active: false, transcript_path: transcript, cwd: hookEnv.root };
 
     runHook(MAIN_TS, hookEnv, payload);
-    let events = readJsonl(paths.usageEventsFile());
+    let events = readJsonl(paths.hookRunsFile());
     expect(events.some((e) => e["kind"] === "hook_run")).toBe(false);
 
     runHook(MAIN_TS, hookEnv, payload);
-    events = readJsonl(paths.usageEventsFile());
+    events = readJsonl(paths.hookRunsFile());
     const hookRunEvents = events.filter((e) => e["kind"] === "hook_run");
     expect(hookRunEvents.length).toBe(1);
     expect(hookRunEvents[0]?.["ref"]).toBe("hook:hook-after");
@@ -181,7 +184,7 @@ describe("Stop", () => {
     expect(entry["stops"]).toBe(4);
     expect(entry["tool_uses"]).toBe(1);
 
-    const events = readJsonl(paths.usageEventsFile());
+    const events = readJsonl(paths.hookRunsFile());
     expect(events.filter((e) => e["kind"] === "hook_run").length).toBe(3);
   }, 30000);
 });

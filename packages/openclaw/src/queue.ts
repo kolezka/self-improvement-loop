@@ -2,7 +2,7 @@
 // use. The worker reads one queue and does not care which host wrote it: the
 // transcript parser detects the format from the file.
 
-import { fsx, worldForCwd, type Config, type QueueEntry } from "@sil/core";
+import { fsx, SKIPPED_BELOW_MIN_TOOL_USES, worldForCwd, type Config, type QueueEntry } from "@sil/core";
 import { loadEntry, writeEntry } from "@sil/store";
 import type { OpenclawSession } from "./sessions.ts";
 import { listSessions } from "./sessions.ts";
@@ -29,9 +29,14 @@ export function enqueueSession(cfg: Config, session: OpenclawSession, opts: Enqu
   const world = opts.world ?? worldForCwd(cfg, session.cwd).name;
 
   for (const bucket of ["done", "failed"] as const) {
-    if (loadEntry(bucket, session.session_id)) {
-      return { session_id: session.session_id, status: "skipped", world, reason: `already ${bucket}` };
-    }
+    const prior = loadEntry(bucket, session.session_id);
+    if (prior === null) continue;
+    // One exception: the worker retires a session that is still below
+    // min_tool_uses. An OpenClaw session keeps writing to the same transcript
+    // and has no Stop hook to re-queue it, so the next scan must be able to,
+    // or a session that grows past the bar is never reflected on.
+    if (bucket === "done" && prior.result === SKIPPED_BELOW_MIN_TOOL_USES) continue;
+    return { session_id: session.session_id, status: "skipped", world, reason: `already ${bucket}` };
   }
 
   const now = fsx.nowIso();

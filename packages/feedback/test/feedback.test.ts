@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fsx, ledgerPath, paths, type Config, type Ledger, type World } from "@sil/core";
 import { saveLedger } from "@sil/store";
-import { load, rebuild, recordHuman, scorecards } from "../src/index.ts";
+import { compactUsageEvents, load, rebuild, recordHuman, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -291,6 +291,55 @@ describe("rebuild and load", () => {
     const loaded = new Map(load(w).map((s) => [s.ref, s]));
     expect(loaded.has("agent:dead-thing")).toBe(true);
     expect(loaded.get("agent:dead-thing")!.proposal).toBe("retire-candidate");
+  });
+});
+
+describe("compactUsageEvents", () => {
+  // events.jsonl is append only and reached 15 MB in production, 89% of it
+  // hook_run lines that no scorecard reads, and every rebuild parsed all of it.
+  test("drops hook_run, unreadable and stale lines, keeps what scorecards read", () => {
+    const { c } = buildWorldAndLedger();
+    const events = paths.usageEventsFile();
+    fsx.appendJsonl(events, { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "skill", ref: "skill:steady-thing" });
+    fsx.appendJsonl(events, { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "hook_run", ref: "hook:PreToolUse" });
+    fsx.appendJsonl(events, { ts: iso(daysAgo(60)), session_id: "s2", world: "default", kind: "skill", ref: "skill:steady-thing" });
+    fsx.appendJsonl(events, { ts: iso(daysAgo(200)), session_id: "s3", world: "default", kind: "skill", ref: "skill:steady-thing" });
+    fsx.appendLine(events, "{not json");
+
+    const dropped = compactUsageEvents(c, NOW, 1);
+
+    expect(dropped).toBe(3);
+    const kept = fsx.readJsonl<Record<string, unknown>>(events);
+    expect(kept.some((e) => e["kind"] === "hook_run")).toBe(false);
+    // retire_after_days is 45, so the cutoff is 75 days: a 60 day old event
+    // still feeds the retire clock and stays, 200 days does not.
+    expect(kept.map((e) => e["session_id"])).toEqual(["s1", "s2"]);
+  });
+
+  // `scorecards` reads the newest event per ref whatever its age, as
+  // `last_used`, and `propose` retires on that date. Compaction must not turn
+  // "last used 100 days ago" into "never used".
+  test("keeps the newest event of a ref even past the cutoff", () => {
+    const { w, c } = buildWorldAndLedger();
+    const events = paths.usageEventsFile();
+    fsx.appendJsonl(events, { ts: iso(daysAgo(100)), session_id: "s1", world: "default", kind: "skill", ref: "skill:steady-thing" });
+    fsx.appendJsonl(events, { ts: iso(daysAgo(120)), session_id: "s2", world: "default", kind: "skill", ref: "skill:steady-thing" });
+
+    expect(compactUsageEvents(c, NOW, 1)).toBe(1);
+
+    const card = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(card.last_used).toBe(iso(daysAgo(100)));
+    expect(card.reason).toContain(iso(daysAgo(100)));
+  });
+
+  test("leaves the file alone until enough lines are dead", () => {
+    const { c } = buildWorldAndLedger();
+    const events = paths.usageEventsFile();
+    fsx.appendJsonl(events, { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "skill", ref: "skill:steady-thing" });
+    fsx.appendJsonl(events, { ts: iso(daysAgo(1)), session_id: "s2", world: "default", kind: "hook_run", ref: "hook:PreToolUse" });
+
+    expect(compactUsageEvents(c, NOW)).toBe(0);
+    expect(fsx.readJsonl(events)).toHaveLength(2);
   });
 });
 

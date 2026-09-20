@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import { fsx, LlmConfig, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
 import { listQueue, loadEntry, writeEntry } from "@sil/store";
+import { countToolUses } from "@sil/transcript";
 import {
+  ABANDONED_AFTER_DAYS,
   eligible,
   Lock,
   MAX_ATTEMPTS,
@@ -13,6 +15,7 @@ import {
   pruneQueueBucket,
   reapStaleSessionDirs,
   runOnce,
+  STATUS_SUMMARY_IDS,
 } from "../src/index.ts";
 import { setSilDirs, restoreEnv, writeSampleTranscript } from "../../transcript/test/fixture.ts";
 
@@ -161,6 +164,66 @@ describe("runOnce missing transcript", () => {
   });
 });
 
+describe("runOnce entry below min_tool_uses", () => {
+  // The entry used to stay pending for ever: `eligible` returned a soft
+  // "below min_tool_uses", so every run re-read the transcript and the queue
+  // never drained (482 of 487 pending entries were in this state).
+  test("retires an ended entry to done and reaps its session dir", async () => {
+    prepareEnv();
+    writePending("sess-tiny", { ended: true, toolUses: 0 });
+    const sessionDir = paths.sessionDir("sess-tiny");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "start.json"), "{}", "utf8");
+
+    const summary = await runOnce(cfg({ minToolUses: 99 }), { reflect: true, curriculum: false, chat: goodChat });
+
+    expect(summary.skipped).toEqual(["sess-tiny"]);
+    expect(loadEntry("pending", "sess-tiny")).toBeNull();
+    const done = loadEntry("done", "sess-tiny");
+    expect(done).not.toBeNull();
+    expect(done!.result).toBe("skipped: below min_tool_uses");
+    expect(existsSync(sessionDir)).toBe(false);
+  });
+});
+
+describe("runOnce status file", () => {
+  // worker.status is polled every 5 s by the web UI. A backlog pass wrote one
+  // session id per entry, which grew the file to 19 KB.
+  test("keeps a sample of session ids plus the full counts", async () => {
+    prepareEnv();
+    const total = STATUS_SUMMARY_IDS + 5;
+    for (let i = 0; i < total; i++) writePending(`sess-many-${i}`, { ended: true, toolUses: 0 });
+
+    const summary = await runOnce(cfg({ minToolUses: 99 }), { reflect: true, curriculum: false, chat: goodChat });
+    expect(summary.skipped).toHaveLength(total);
+
+    const raw = JSON.parse(readFileSync(join(paths.stateDir(), "worker-status.json"), "utf8")) as {
+      last_summary: { skipped: string[]; counts: { skipped: number } };
+    };
+    expect(raw.last_summary.skipped).toHaveLength(STATUS_SUMMARY_IDS);
+    expect(raw.last_summary.counts.skipped).toBe(total);
+  });
+});
+
+describe("runOnce usage events", () => {
+  // The legacy file here held 15.4 MB, 89% of it hook_run lines that no
+  // scorecard reads, and every rebuild parsed all of it.
+  test("compacts the event log once enough lines are dead", async () => {
+    prepareEnv();
+    const events = paths.usageEventsFile();
+    for (let i = 0; i < 600; i++) {
+      fsx.appendJsonl(events, { ts: fsx.nowIso(), session_id: `s${i}`, world: "default", kind: "hook_run", ref: "hook:PreToolUse" });
+    }
+    fsx.appendJsonl(events, { ts: fsx.nowIso(), session_id: "s-keep", world: "default", kind: "skill", ref: "skill:kept-thing" });
+
+    await runOnce(cfg(), { reflect: false, curriculum: false, chat: goodChat });
+
+    const kept = fsx.readJsonl<Record<string, unknown>>(events);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!["ref"]).toBe("skill:kept-thing");
+  });
+});
+
 describe("runOnce lock held", () => {
   test("returns a locked summary and leaves the entry untouched", async () => {
     prepareEnv();
@@ -214,12 +277,47 @@ describe("eligible", () => {
     expect(reason).toBe("eligible");
   });
 
-  test("false below min_tool_uses", () => {
+  // An ended session cannot gain tool uses, so the verdict is terminal
+  // ("skipped:"). Before this, such an entry stayed pending and every worker
+  // run re-read its transcript.
+  test("terminal skip below min_tool_uses for an ended entry", () => {
     prepareEnv();
     const entry = writePending("sess-e2", { ended: true, toolUses: 0 });
     const [ok, reason] = eligible(entry, cfg({ minToolUses: 99 }), new Date());
     expect(ok).toBe(false);
+    expect(reason).toBe("skipped: below min_tool_uses");
+  });
+
+  test("soft skip below min_tool_uses while the session can still come back", () => {
+    prepareEnv();
+    const entry = writePending("sess-e2b", { ended: false, toolUses: 0 });
+    // Idle past idle_minutes but young enough to resume and pass the bar.
+    const later = new Date(Date.now() + 20 * 60_000);
+    const [ok, reason] = eligible(entry, cfg({ idleMinutes: 10, minToolUses: 99 }), later);
+    expect(ok).toBe(false);
     expect(reason).toBe("below min_tool_uses");
+  });
+
+  test("terminal skip below min_tool_uses once the transcript is abandoned", () => {
+    prepareEnv();
+    const entry = writePending("sess-e2c", { ended: false, toolUses: 0 });
+    const muchLater = new Date(Date.now() + (ABANDONED_AFTER_DAYS * 86_400_000 + 3_600_000));
+    const [ok, reason] = eligible(entry, cfg({ idleMinutes: 10, minToolUses: 99 }), muchLater);
+    expect(ok).toBe(false);
+    expect(reason).toBe("skipped: below min_tool_uses");
+  });
+
+  // The hook count lags the transcript: SessionEnd marks a session ended
+  // without scanning it. Retiring is final, so the file decides, not the
+  // stored number.
+  test("counts the transcript before retiring an entry whose stored count is stale", () => {
+    prepareEnv();
+    const entry = writePending("sess-e2d", { ended: true, toolUses: 1 });
+    const real = countToolUses(entry.transcript_path);
+    expect(real).toBeGreaterThan(1);
+    const [ok, reason] = eligible(entry, cfg({ minToolUses: real }), new Date());
+    expect(ok).toBe(true);
+    expect(reason).toBe("eligible");
   });
 
   test("true when the transcript has been idle long enough", () => {

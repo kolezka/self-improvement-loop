@@ -70,6 +70,9 @@ export const llmFile = (): string => join(configDir(), "llm.yaml");
 export type QueueBucket = "pending" | "done" | "failed";
 export const queueDir = (bucket: QueueBucket): string => join(stateDir(), "queue", bucket);
 export const usageEventsFile = (): string => join(stateDir(), "usage", "events.jsonl");
+// hook_run lines live apart from the artifact uses: they are about 90% of the
+// volume and no scorecard reads them, so every rebuild parsed and dropped them.
+export const hookRunsFile = (): string => join(stateDir(), "usage", "hook-runs.jsonl");
 export const payloadSamplesFile = (world: string): string => join(stateDir(), "usage", "payloads", `${safeComponent(world)}.jsonl`);
 export const nudgeFiresFile = (): string => join(stateDir(), "usage", "nudge-fires.jsonl");
 export const humanFeedbackFile = (): string => join(stateDir(), "feedback", "human.jsonl");

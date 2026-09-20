@@ -323,7 +323,7 @@ export function draftMessages(
   // the older ones are in the summary, and re-quoting them is what made every
   // run redraft from scratch.
   const quoted = summary && lessons.length > RECENT_LESSONS ? lessons.slice(-RECENT_LESSONS) : lessons;
-  const head = contextBlock(summary, lessons.length, quoted.length, ctx.knowledge ?? null);
+  const head = contextBlock(summary, lessons.length, quoted.length, opts.knowledge ?? null);
   const sources = boundedSources(quoted);
   const tail = existing
     ? "\n\nExisting artifact to refine. Keep its wording wherever the lessons " +

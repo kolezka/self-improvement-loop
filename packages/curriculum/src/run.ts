@@ -272,11 +272,9 @@ async function stageOne(
     forcedType = null;
   }
 
+  // `readArtifact` already strips the tag the writer appends, so a refine told
+  // to keep the existing wording is not handed a line `lintRule` refuses.
   let existing: string | null = forcedType ? artifacts.readArtifact(world, forcedType, pattern) || null : null;
-  // The stored bullet ends in the tag the writer appends, and `lintRule`
-  // refuses a draft that carries one. Handed the tagged line, a drafter told to
-  // keep the existing wording copies the tag and is gated out for obeying.
-  if (existing && forcedType === "rule") existing = artifacts.untaggedRuleBullet(existing, pattern) || null;
   if (existing && artifacts.isPlaceholderBody(forcedType!, existing)) {
     // A stub is not a draft to refine. Handed one as `existing`, the prompt
     // flips to "refine" and the drafter keeps the structural keys it was given,
@@ -299,18 +297,15 @@ async function stageOne(
   // lessons compressed into a standing summary, and what the other patterns
   // already say. Both are prompt material; lint and the judge keep reading the
   // full source text.
-  const draftCtx: prompts.DraftContext = {
+  const draftOpts: prompts.DraftOptions = {
+    ...caps,
     summary: await context.clusterSummary(world, pattern, items, chat),
     knowledge: context.renderKnowledge(ctx.knowledge, pattern),
   };
 
   let raw: string;
   try {
-<<<<<<< HEAD
-    raw = await chat("drafter", prompts.draftMessages(pattern, lessons, existing, forcedType, draftCtx), {
-=======
-    raw = await chat("drafter", prompts.draftMessages(pattern, drafting, existing, forcedType, caps), {
->>>>>>> origin/main
+    raw = await chat("drafter", prompts.draftMessages(pattern, drafting, existing, forcedType, draftOpts), {
       world,
       jsonMode: true,
     });
@@ -357,11 +352,7 @@ async function stageOne(
   // lint that can only ever fail.
   if (forcedType === null && routedType !== draftedType(answer)) {
     try {
-<<<<<<< HEAD
-      raw = await chat("drafter", prompts.draftMessages(pattern, lessons, null, routedType, draftCtx), {
-=======
-      raw = await chat("drafter", prompts.draftMessages(pattern, drafting, null, routedType, caps), {
->>>>>>> origin/main
+      raw = await chat("drafter", prompts.draftMessages(pattern, drafting, null, routedType, draftOpts), {
         world,
         jsonMode: true,
       });

@@ -508,7 +508,7 @@ describe("gates", () => {
     initTarget(world);
 
     const chat: ChatFn = async (role, messages) => {
-      const isAaa = messages[messages.length - 1]!.content.includes("aaa-pattern");
+      const isAaa = subjectOf(messages[messages.length - 1]!.content) === "aaa-pattern";
       if (role === "judge") {
         return JSON.stringify({ verdict: isAaa ? "no" : "yes", reason: isAaa ? "rule 2: vague" : "quoted" });
       }

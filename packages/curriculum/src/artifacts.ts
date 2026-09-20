@@ -253,16 +253,6 @@ export function ruleBulletInText(text: string, pattern: string): string {
   return "";
 }
 
-/** The bullet without its `<!--rule:...-->` tag.
- *
- * The writer appends the tag, and `lintRule` refuses any draft that carries
- * one. So a refine handed the raw stored line was being told to keep wording it
- * is not allowed to reproduce: the drafter copied the tag and lint gated the
- * pattern out. Strip it before the text reaches a prompt or a comparison. */
-export function untaggedRuleBullet(text: string, pattern: string): string {
-  return text.split(ruleTag(pattern)).join("").replace(/\s+$/, "");
-}
-
 /** Why a rule write into this world would refuse, checked read-only.
  *
  * Mirrors `writeRule`'s three guards exactly. Running the writer itself to find

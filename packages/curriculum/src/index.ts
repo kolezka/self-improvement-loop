@@ -9,7 +9,6 @@ export * as artifacts from "./artifacts.ts";
 export * as prompts from "./prompts.ts";
 export * as context from "./context.ts";
 
-<<<<<<< HEAD
 export {
   artifactGist,
   type ClusterSummary,
@@ -25,12 +24,8 @@ export {
   worldKnowledge,
 } from "./context.ts";
 
-export { artifactRel, allowedPaths, artifactPrefixes, ensureRulesFile, foreignRuleTags, HOOK_KEYS, isPlaceholderBody, placeholderBody, readArtifact, removeArtifact, ruleBulletInText, rulesDiffOwnedBy, rulesProblem, untaggedRuleBullet, writeArtifact } from "./artifacts.ts";
-export { distinctiveTerms, lint, lintDescriptionCap, lintGrounding, lintHook, lintRule, lintSkill, MAX_DESCRIPTION, MAX_RULE_CHARS, MIN_BODY_CHARS, MIN_SHARED_TERMS, SECRET_RE } from "./lint.ts";
-=======
 export { artifactRel, allowedPaths, artifactPrefixes, ensureRulesFile, foreignRuleTags, HOOK_KEYS, isPlaceholderBody, placeholderBody, readArtifact, removeArtifact, ruleBulletInText, rulesDiffOwnedBy, rulesProblem, stripRuleTag, writeArtifact } from "./artifacts.ts";
 export { distinctiveTerms, lint, lintDescriptionCap, lintGrounding, lintHook, type LintOptions, lintRule, lintSkill, MAX_DESCRIPTION, MAX_RULE_CHARS, MIN_BODY_CHARS, MIN_SHARED_TERMS, ruleBudget, SECRET_RE } from "./lint.ts";
->>>>>>> origin/main
 export {
   emptyAnswer,
   GATE_TIMEOUT_MS,
@@ -44,11 +39,12 @@ export {
   splitTrigger,
   substantiveQuote,
 } from "./router.ts";
-<<<<<<< HEAD
 export {
-  type DraftContext,
+  type DraftOptions,
   draftMessages,
+  JUDGE_RULES,
   judgeMessages,
+  judgeQuestions,
   KNOWLEDGE_HEADER,
   parseDraft,
   parseSummary,
@@ -56,10 +52,8 @@ export {
   RECENT_LESSONS,
   summaryMessages,
   SUMMARY_HEADER,
+  verdictFromNouls,
 } from "./prompts.ts";
-=======
-export { type DraftOptions, draftMessages, JUDGE_RULES, judgeMessages, judgeQuestions, parseDraft, parseVerdict, verdictFromNouls } from "./prompts.ts";
->>>>>>> origin/main
 export {
   type Cluster,
   cluster,

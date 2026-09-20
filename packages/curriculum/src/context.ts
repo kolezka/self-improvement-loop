@@ -182,7 +182,8 @@ export function artifactGist(world: World, artifactType: string, pattern: string
 
   let gist = "";
   if (artifactType === "rule") {
-    gist = artifacts.untaggedRuleBullet(text, pattern).replace(/^-\s*/, "");
+    // `readArtifact` already drops the tag; only the bullet marker is left.
+    gist = text.replace(/^-\s*/, "");
   } else if (artifactType === "hook") {
     try {
       const parsed: unknown = JSON.parse(text);

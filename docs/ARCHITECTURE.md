@@ -357,6 +357,11 @@ branch, relink skills into the world's Claude config dir, optionally `push` or
 open a PR (`remote`, with the PR head re-checked before merge). Reject:
 delete the branch and record the rejected watermark. Rehome and retire as in V1.
 
+Rehome and retire stage a branch and change nothing live. Accepting a retirement
+records `retired`, not `promoted`: the branch deleted the artifact, so the row it
+merges must say the pattern is out of rotation, or the inventory keeps listing it
+as serving and the next plan can refine it back into existence.
+
 ## Web UI (`sil web`)
 
 FastAPI + uvicorn bound to `web.host` (loopback by default), token in the URL

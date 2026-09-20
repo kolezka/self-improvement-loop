@@ -26,6 +26,10 @@ sil review retire old-pattern --world default --yes
 sil feedback add skill:verify-callsites good --note "caught a real bug"
 ```
 
+`rehome` and `retire` only stage a branch. The artifact keeps serving until you
+accept that branch, so a retirement is two steps: `sil review retire <pattern>
+--yes`, then `sil review accept <pattern> --reviewed-state <hash>`.
+
 `accept` always needs `--reviewed-state`: paste the hash `sil review show` prints.
 This binds the accept to exactly what you looked at; if the branch changed
 underneath you, accept fails and asks you to reload.

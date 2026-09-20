@@ -56,8 +56,9 @@ export interface ReviewAcceptOptions {
 export function cmdReviewAccept(pattern: string, opts: ReviewAcceptOptions, deps: Deps = defaultDeps): number {
   const cfg = loadConfig();
   const world = worldNamed(cfg, opts.world);
-  deps.review.accept(world, cfg, pattern, opts.reviewedState);
-  console.log(`accepted ${pattern} in world ${world.name}`);
+  const out = deps.review.accept(world, cfg, pattern, opts.reviewedState);
+  const what = out.status === "retired" ? "retired" : "accepted";
+  console.log(`${what} ${pattern} in world ${world.name}`);
   return 0;
 }
 
@@ -98,7 +99,10 @@ export function cmdReviewRetire(pattern: string, opts: ReviewRetireOptions, deps
   }
   const cfg = loadConfig();
   const world = worldNamed(cfg, opts.world);
-  deps.review.retire(world, cfg, pattern);
-  console.log(`retired ${pattern} in world ${world.name}`);
+  // Retire only stages a branch. Saying "retired" here read as done, so the
+  // artifact stayed live until somebody accepted the branch as well.
+  const out = deps.review.retire(world, cfg, pattern);
+  console.log(`staged the retirement of ${pattern} on ${out.branch} in world ${world.name}`);
+  console.log(`accept it to remove the artifact: sil review show ${pattern} --world ${world.name}`);
   return 0;
 }

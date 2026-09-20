@@ -91,7 +91,8 @@ function withWorkerLock<T>(fn: () => T): T {
 
 export type AcceptResult = {
   merged: boolean;
-  status: "promoted";
+  /** "retired" when the accepted branch was a retirement, "promoted" otherwise. */
+  status: "promoted" | "retired";
   pattern: string;
   branch: string;
   artifact_type: ArtifactType;
@@ -319,6 +320,10 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
 
   const entry = branchEntry(world, repo, snap.branch_sha, pattern);
   const atype = entryType(entry);
+  // A retirement is an accept too: the branch deletes the artifact and the row
+  // it carries already says "retired". What the merge records is that decision,
+  // not a promotion.
+  const retiring = entry?.status === "retired";
   const { body } = artifactBody(world, repo, snap.branch_sha, atype, pattern);
   if (artifacts.isPlaceholderBody(atype, body)) {
     throw new ReviewError(
@@ -354,18 +359,28 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
     if (row) {
       merged.entries[pattern] = {
         ...row,
-        status: "promoted",
+        status: retiring ? "retired" : "promoted",
+        // A retirement deleted the artifact, so nothing serves the pattern any
+        // more. Stamping "promoted" here is what kept a retired skill listed as
+        // serving and let the next plan refine it back into existence.
+        served_by: retiring ? null : row.served_by,
         commit: snap.branch_sha.slice(0, 12),
         last_updated: fsx.nowIso(),
         // Accepting a row that is already promoted is a redraft of the same
         // artifact, so the original promotion date stands. Anything else is
-        // this pattern becoming promoted now.
-        promoted_at: row.status === "promoted" ? (row.promoted_at ?? fsx.nowIso()) : fsx.nowIso(),
+        // this pattern becoming promoted now. A retirement promotes nothing, so
+        // it leaves the date exactly as it was, null included.
+        promoted_at: retiring
+          ? row.promoted_at
+          : row.status === "promoted"
+            ? (row.promoted_at ?? fsx.nowIso())
+            : fsx.nowIso(),
       };
     }
     saveLedger(join(tree, rel), merged);
     git.git(tree, ["add", "--", rel]);
-    git.git(tree, ["commit", "-q", "-m", `feat(${atype}): ${pattern} (reviewed)`]);
+    const subject = retiring ? `feat(${atype}): retire ${pattern} (reviewed)` : `feat(${atype}): ${pattern} (reviewed)`;
+    git.git(tree, ["commit", "-q", "-m", subject]);
     return git.git(tree, ["rev-parse", "HEAD"]);
   });
 
@@ -387,7 +402,7 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
   // carries it. Every remaining step records its own problem instead.
   const out: AcceptResult = {
     merged: true,
-    status: "promoted",
+    status: retiring ? "retired" : "promoted",
     pattern,
     branch: snap.branch,
     artifact_type: atype,

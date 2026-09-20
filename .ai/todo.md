@@ -222,6 +222,22 @@ one e2e test, which turned out to be a real hole rather than a CI quirk.
       identity on a repo an older install already created. An identity git can
       resolve is never overwritten.
 
+### Retire then accept left the artifact serving (2026-09-21)
+
+- [x] `acceptInner` stamped `status: "promoted"` on every row it merged, so an
+      accepted retirement landed in the ledger as a promotion. The file was
+      deleted and the symlink reaped, but the inventory still counted the pattern
+      as serving and `plan()` read `status === "promoted"` plus the scorecard that
+      caused the retirement and proposed `refine`, which drafts the artifact back
+      into existence. Accept now carries the branch row's `retired` status and
+      `served_by: null` through the merge, `AcceptResult.status` is
+      `"promoted" | "retired"`, and the commit subject says `retire`. Regression
+      tests cover skill, rule and hook retirements plus the "never refined back"
+      invariant (`packages/review/test/review.test.ts`).
+- [x] `sil review retire` printed "retired <pattern>" for an action that only
+      stages a branch, and the web UI toast said the same. Both now say the
+      retirement is staged and needs an accept.
+
 ### Still open, by design not by accident
 - [ ] No cross-artifact consistency check: the judge sees one draft against its own
       sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact

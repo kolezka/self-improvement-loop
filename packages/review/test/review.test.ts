@@ -15,6 +15,7 @@ import {
   RULE_END,
   RULE_START,
   ruleTag,
+  Scorecard,
   targetRoot,
   type World,
 } from "@sil/core";
@@ -29,6 +30,7 @@ import {
   cleanupEnv,
   commitFile,
   fakeGateRunner,
+  hookDraft,
   initTarget,
   installFakeNudge,
   makeCfg,
@@ -800,6 +802,99 @@ describe("rehome and retire", () => {
     await accepted(world);
     review.retire(world, cfg(), PATTERN);
     expect(() => review.retire(world, cfg(), PATTERN)).toThrow(/already retired/);
+  });
+
+  test("accepting a retirement leaves the row retired, not promoted", async () => {
+    // Accept used to stamp "promoted" on every row it merged, so a retirement
+    // landed as a promotion: the inventory kept serving the pattern and the next
+    // plan could refine the artifact back into existence.
+    const world = makeWorld();
+    const repo = await accepted(world);
+
+    review.retire(world, cfg(), PATTERN);
+    const detail = review.detail(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+
+    expect(out.merged).toBe(true);
+    expect(out.status).toBe("retired");
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(false);
+    const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(entry.status).toBe("retired");
+    expect(entry.served_by).toBeNull();
+    // A retirement promotes nothing, so the promotion date it removes stands.
+    expect(entry.promoted_at).not.toBeNull();
+  });
+
+  test("retiring a staged pattern never stamps a promotion date", async () => {
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+
+    review.retire(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(entry.status).toBe("retired");
+    expect(entry.promoted_at).toBeNull();
+  });
+
+  test("a retired pattern is never refined back into existence", async () => {
+    const world = makeWorld();
+    const repo = await accepted(world);
+    review.retire(world, cfg(), PATTERN);
+    const detail = review.detail(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+
+    const card = Scorecard.parse({
+      ref: `skill:${PATTERN}`,
+      type: "skill",
+      name: PATTERN,
+      misfired: 4,
+      human_bad: 3,
+      proposal: "refine",
+      reason: "misfires",
+    });
+    const actions = plan(world, cfg(), { cards: [card] }).actions;
+    expect(actions.find((a) => a.pattern === PATTERN)!.action).toBe("done");
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(false);
+  });
+
+  test("accepting a retired rule drops its bullet and keeps the sibling's", async () => {
+    // The rules file is shared, so a retirement there is a merge into a file
+    // every other pattern also lives in, not a delete.
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    await run(world, cfg(), { apply: true, chat: new FakeChat({ draft: ruleDraft() }).fn, gateRunner: fakeGateRunner });
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    review.retire(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(out.status).toBe("retired");
+    const text = readFileSync(join(repo, RULES), "utf8");
+    expect(text).not.toContain(ruleTag(PATTERN));
+    expect(text).toContain(ruleTag(SIBLING));
+    expect(loadLedger(ledgerPath(world)).entries[PATTERN]!.status).toBe("retired");
+  });
+
+  test("accepting a retired hook removes the nudge the dispatcher reads", async () => {
+    const world = makeWorld();
+    const repo = seed(world);
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: hookDraft(PATTERN) }).fn,
+      gateRunner: fakeGateRunner,
+    });
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(existsSync(join(repo, "nudges", `${PATTERN}.json`))).toBe(true);
+
+    review.retire(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(out.status).toBe("retired");
+    expect(existsSync(join(repo, "nudges", `${PATTERN}.json`))).toBe(false);
+    expect(loadLedger(ledgerPath(world)).entries[PATTERN]!.status).toBe("retired");
   });
 });
 

@@ -8,7 +8,7 @@
 // Run: bun run scripts/bench-hooks.ts            (n=10 per hook)
 //      bun run scripts/bench-hooks.ts --n 25
 //      bun run scripts/bench-hooks.ts --json
-//      bun run scripts/bench-hooks.ts --only claude-mem
+//      bun run scripts/bench-hooks.ts --only claude-mem   (substring, not regex)
 //      bun run scripts/bench-hooks.ts --tool-calls 300
 //
 // The hooks run for real, so they can write their own state. Every payload
@@ -222,9 +222,15 @@ function table(rows: HookRow[]): string {
 }
 
 function main(): void {
+  // Plain substring match, not a regex: --only/--skip come from the command
+  // line, and building a RegExp from an argument is a regex-injection sink
+  // (CodeQL js/regex-injection). A filter for a hook name never needed more.
+  const matches = (entry: HookEntry, needle: string): boolean =>
+    `${entry.source} ${entry.command}`.toLowerCase().includes(needle.toLowerCase());
+
   const entries = discover()
-    .filter((e) => (ONLY ? new RegExp(ONLY).test(`${e.source} ${e.command}`) : true))
-    .filter((e) => (SKIP ? !new RegExp(SKIP).test(`${e.source} ${e.command}`) : true));
+    .filter((e) => (ONLY ? matches(e, ONLY) : true))
+    .filter((e) => (SKIP ? !matches(e, SKIP) : true));
 
   const tmp = mkdtempSync(join(tmpdir(), "bench-hooks-"));
   const dirs = { transcript: join(tmp, "transcript.jsonl"), file: join(tmp, "fixture.txt") };

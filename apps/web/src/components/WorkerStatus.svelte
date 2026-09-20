@@ -24,6 +24,12 @@
     return entries.length === 0 ? "none" : entries.map(([reason, n]) => `${reason}: ${n}`).join(", ");
   }
 
+  // The status file keeps a sample of session ids plus the totals, so a run
+  // over a big backlog shows "+N more" instead of thousands of list rows.
+  function moreCount(shown: string[], total: number | undefined): number {
+    return total === undefined ? 0 : Math.max(0, total - shown.length);
+  }
+
   function gatedOutTitle(report: RunReport): string {
     const entries = Object.entries(report.gated_out);
     return entries.length === 0 ? "none" : entries.map(([pattern, reason]) => `${pattern}: ${reason}`).join(", ");
@@ -76,6 +82,9 @@
               <ul class="list">
                 {#each summary.reflected as id (id)}<li class="mono">{id}</li>{/each}
               </ul>
+              {#if moreCount(summary.reflected, summary.counts?.reflected) > 0}
+                <p class="muted">+{moreCount(summary.reflected, summary.counts?.reflected)} more</p>
+              {/if}
             {/if}
           </div>
           <div>
@@ -86,6 +95,9 @@
               <ul class="list">
                 {#each summary.failed as id (id)}<li class="mono">{id}</li>{/each}
               </ul>
+              {#if moreCount(summary.failed, summary.counts?.failed) > 0}
+                <p class="muted">+{moreCount(summary.failed, summary.counts?.failed)} more</p>
+              {/if}
             {/if}
           </div>
           <div>
@@ -96,6 +108,9 @@
               <ul class="list">
                 {#each summary.skipped as id (id)}<li class="mono">{id}</li>{/each}
               </ul>
+              {#if moreCount(summary.skipped, summary.counts?.skipped) > 0}
+                <p class="muted">+{moreCount(summary.skipped, summary.counts?.skipped)} more</p>
+              {/if}
             {/if}
           </div>
         </div>

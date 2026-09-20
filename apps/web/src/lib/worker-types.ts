@@ -22,10 +22,19 @@ export interface RunReport {
   error: string | null;
 }
 
+export interface RunCounts {
+  reflected: number;
+  failed: number;
+  skipped: number;
+}
+
 export interface RunSummary {
+  // Samples, not full lists: the worker caps each one at STATUS_SUMMARY_IDS
+  // and puts the totals in `counts`. Absent on statuses written before that.
   reflected: string[];
   failed: string[];
   skipped: string[];
+  counts?: RunCounts;
   // packages/worker/src/index.ts types this Record<string, unknown>: a
   // curriculum run that throws is recorded as {error}, not a RunReport, so
   // the client cannot trust every value to be a full report either.

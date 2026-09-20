@@ -166,7 +166,10 @@ describe("session to lesson to next session", () => {
     const refs = new Set(events.map((e) => e.ref));
     expect(refs.has(`skill:${PATTERN}`)).toBe(true);
     expect(refs.has("agent:explorer")).toBe(true);
-    expect(refs.has("hook:PreToolUse:Bash")).toBe(true);
+    // hook_run diagnostics have their own rotated file and stay out of the
+    // scorecard event log.
+    const hookRuns = readFileSync(paths.hookRunsFile(), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ref: string });
+    expect(new Set(hookRuns.map((e) => e.ref)).has("hook:PreToolUse:Bash")).toBe(true);
 
     const summary = await worker.runOnce(loadConfig(), { curriculum: false, chat: fakeChat });
     expect(summary.reflected).toEqual([sid]);

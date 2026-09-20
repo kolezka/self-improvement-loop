@@ -11,6 +11,11 @@ export const DEFAULT_MAX_RULE_CHARS = 500;
 // Hook config snapshot written by the engine, read by the hook.
 export const HOOK_SNAPSHOT = "hook-config.json";
 
+// The worker retires a session with too few tool uses under this result. It is
+// the one terminal result that was never reflected on and can still change, so
+// a host that re-scans its own sessions (OpenClaw) may queue it again.
+export const SKIPPED_BELOW_MIN_TOOL_USES = "skipped: below min_tool_uses";
+
 // Hook events the plugin registers.
 export const HOOK_EVENTS = [
   "SessionStart",

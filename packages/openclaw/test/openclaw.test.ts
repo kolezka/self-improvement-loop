@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { Config, fsx, paths, RULE_END, RULE_START, World } from "@sil/core";
+import { Config, fsx, paths, RULE_END, RULE_START, SKIPPED_BELOW_MIN_TOOL_USES, World } from "@sil/core";
 import { listLessons, loadEntry, putLesson, writeEntry } from "@sil/store";
 import {
   applyBlock,
@@ -147,6 +147,32 @@ describe("enqueueSession", () => {
     expect(first.status).toBe("queued");
     expect(again.status).toBe("skipped");
     expect(again.reason).toBe("already done");
+    expect(loadEntry("pending", "s1")).toBeNull();
+  });
+
+  // An OpenClaw session has no Stop hook to re-queue it, and it keeps writing
+  // to the same transcript. A session the worker retired below min_tool_uses
+  // was never reflected on, so a later scan must queue it again.
+  test("a session retired below min_tool_uses is queued again", () => {
+    writeSession("main", "s1", tmp);
+    enqueueSession(cfg(), findSession("s1")!);
+    const entry = loadEntry("pending", "s1")!;
+    writeEntry("done", { ...entry, result: SKIPPED_BELOW_MIN_TOOL_USES });
+    rmSync(join(paths.queueDir("pending"), "s1.json"), { force: true });
+
+    const again = enqueueSession(cfg(), findSession("s1")!);
+    expect(again.status).toBe("queued");
+    expect(loadEntry("pending", "s1")).not.toBeNull();
+  });
+
+  test("a session skipped for a missing transcript stays done", () => {
+    writeSession("main", "s1", tmp);
+    enqueueSession(cfg(), findSession("s1")!);
+    const entry = loadEntry("pending", "s1")!;
+    writeEntry("done", { ...entry, result: "skipped: transcript not persisted" });
+    rmSync(join(paths.queueDir("pending"), "s1.json"), { force: true });
+
+    expect(enqueueSession(cfg(), findSession("s1")!).status).toBe("skipped");
     expect(loadEntry("pending", "s1")).toBeNull();
   });
 

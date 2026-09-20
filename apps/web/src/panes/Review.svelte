@@ -10,12 +10,16 @@
   interface QueueItem {
     pattern: string;
     artifact_type: string;
+    // What the branch proposes. "retired" means accepting it deletes the
+    // artifact, which otherwise looks like a promotion with an empty body.
+    status?: string;
     staged_at?: string | null;
   }
 
   interface Detail {
     pattern: string;
     artifact_type: string;
+    status?: string;
     artifact_path?: string | null;
     reviewed_state: string;
     accept_blocked?: string | null;
@@ -80,12 +84,14 @@
   // Captures the reviewed_state digest before clearing it, so the accept
   // call always carries the value that matched what was shown, never a
   // value read after the state has already been nulled out.
+  // `fn` may return the verb to report, for a call whose outcome is only known
+  // from its result (an accepted retirement is not an accepted promotion).
   async function act(fn: (digest: string | null) => Promise<unknown>, verb: string) {
     const digest = reviewedState;
     reviewedState = null;
     try {
-      await fn(digest);
-      toast(`${selectedPattern} ${verb}`, "ok");
+      const said = await fn(digest);
+      toast(`${selectedPattern} ${typeof said === "string" ? said : verb}`, "ok");
     } catch (e) {
       toast(`could not act on ${selectedPattern}: ${(e as Error).message}`);
     }
@@ -98,7 +104,14 @@
   function accept() {
     const pattern = selectedPattern;
     if (!pattern) return;
-    void act((digest) => call("skill.accept", { world: appState.world, pattern, reviewed_state: digest }), "accepted");
+    // Accepting a retirement is an accept as well, and saying "accepted" for it
+    // read as "the artifact is live now", which is the opposite of what landed.
+    void act(async (digest) => {
+      const res = (await call("skill.accept", { world: appState.world, pattern, reviewed_state: digest })) as {
+        status?: string;
+      };
+      return res?.status === "retired" ? "retired" : "accepted";
+    }, "accepted");
   }
 
   function reject() {
@@ -110,7 +123,10 @@
   function rehome() {
     const pattern = selectedPattern;
     if (!pattern) return;
-    void act(() => call("router.rehome", { world: appState.world, pattern, artifact_type: rehomeType }), "rehomed");
+    // Staged only, exactly like retire: the old artifact keeps serving until
+    // the branch is accepted.
+    const verb = rehomeType === "none" ? "retirement staged. Accept it to remove the artifact." : `re-home to ${rehomeType} staged. Accept it to apply the move.`;
+    void act(() => call("router.rehome", { world: appState.world, pattern, artifact_type: rehomeType }), verb);
   }
 
   const canAccept = $derived(reviewedState !== null && !detail?.accept_blocked);
@@ -160,6 +176,9 @@
                 <div class="row__title"><span class="grow">{item.pattern}</span></div>
                 <div class="meta">
                   <span class="badge">{item.artifact_type}</span>
+                  {#if item.status === "retired"}
+                    <span class="badge">retirement</span>
+                  {/if}
                   <span>{formatTime(item.staged_at ?? null)}</span>
                 </div>
               </button>
@@ -183,6 +202,12 @@
           <span class="chip {stateInfo.cls}">{stateInfo.label}</span>
         </div>
         <div class="panel__body">
+          {#if detail.status === "retired"}
+            <div class="notice">
+              This branch retires {detail.pattern}. Accepting it deletes the {detail.artifact_type} and records the pattern as
+              retired, so the body below is empty on purpose. Read the diff.
+            </div>
+          {/if}
           {#if detail.accept_blocked}
             <div class="notice error">Accept is blocked: {detail.accept_blocked}</div>
           {/if}
@@ -212,7 +237,7 @@
 
       <div class="action-bar">
         <button class="primary" disabled={!canAccept} title={canAccept ? undefined : acceptDisabledReason} onclick={accept}>
-          Accept proposal
+          {detail.status === "retired" ? "Accept retirement" : "Accept proposal"}
         </button>
         <button class="danger" onclick={reject}>Reject proposal</button>
         <span class="toolbar__spacer"></span>

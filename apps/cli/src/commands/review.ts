@@ -82,8 +82,11 @@ export interface ReviewRehomeOptions {
 export function cmdReviewRehome(pattern: string, opts: ReviewRehomeOptions, deps: Deps = defaultDeps): number {
   const cfg = loadConfig();
   const world = worldNamed(cfg, opts.world);
-  deps.review.rehome(world, cfg, pattern, opts.type);
-  console.log(`rehomed ${pattern} to ${opts.type} in world ${world.name}`);
+  // Re-home stages a branch too. "rehomed" read as done, so the old artifact
+  // stayed live and the branch sat in the queue with nobody expecting it.
+  const out = deps.review.rehome(world, cfg, pattern, opts.type);
+  console.log(`staged the re-home of ${pattern} to ${opts.type} on ${out.branch} in world ${world.name}`);
+  console.log(`accept it to apply the move: sil review show ${pattern} --world ${world.name}`);
   return 0;
 }
 

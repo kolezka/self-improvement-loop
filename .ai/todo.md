@@ -238,6 +238,67 @@ one e2e test, which turned out to be a real hole rather than a CI quirk.
       stages a branch, and the web UI toast said the same. Both now say the
       retirement is staged and needs an accept.
 
+### End-to-end audit of the same path (2026-09-21)
+
+Fixed here:
+
+- [x] A curriculum tick destroyed a retirement waiting for review.
+      `stageOne` force-resets the pattern's branch onto the default branch
+      (`packages/curriculum/src/run.ts`) unless `migrating()` says a type change
+      is in flight, and `migrating()` cannot see a retirement: `served_by` is
+      null, so `rowType()` falls back to `artifact_type` and both sides read the
+      same type. `servedBy()` then recovers the old `served_by` from the default
+      branch and redrafts the artifact in its old shape. A single tick between
+      retire and accept was enough, and a tick is as cheap as opening a session.
+      `stageOne` now gates the pattern out while its branch row says `retired`.
+- [x] Retiring left the watermark where the promotion put it, so the reflections
+      already on disk counted as new evidence and the next tick staged the
+      artifact again. Retire now stamps `rejected_at_count`, exactly as reject
+      does; the pattern needs `threshold` new reflections to come back.
+- [x] Accept relinked only the type being accepted, and a hook or rule links
+      nowhere, so a skill re-homed to either kept a dangling
+      `~/.claude/skills/<pattern>`. Accept now passes every linkable type through
+      `relink`.
+- [x] `relink` read liveness off the skill directory. Retiring deletes SKILL.md
+      and reaps the directory only when it is empty, so one other committed file
+      kept the link alive. Liveness is now the artifact file itself.
+- [x] `rehome --type none` wrote no file, so the placeholder guard had nothing to
+      refuse and accept stamped a promotion of an artifact that does not exist.
+      It is now run as a retirement.
+- [x] A retirement's pull request announced a promotion (`remote.ts`), and
+      `io.hasGh()` sat outside the try that keeps every post-merge step from
+      hard-failing.
+- [x] `sil review rehome` and the web rehome button said "rehomed" for an action
+      that only stages a branch.
+
+Found and not fixed, ranked (all read from the source, none reproduced by me
+beyond a reading of the code unless noted):
+
+- [ ] MEDIUM `ReviewItem` / `ReviewDetail` carry no status, so a staged
+      retirement renders in the queue and the detail pane exactly like a
+      promotion, with an empty body and nothing saying the artifact is being
+      removed (`packages/review/src/index.ts`, `apps/web/src/panes/Review.svelte`).
+- [ ] MEDIUM A re-home placeholder is only redrafted when the pattern earns
+      `threshold` new reflections (`plan()` returns `done` otherwise), so the
+      staged re-home cannot be accepted until then and the old artifact keeps
+      serving. Needs a plan action for "staged placeholder awaiting a draft".
+- [ ] MEDIUM `handleSessionEnd` writes the session file without `sessionLock`
+      (`apps/hook/src/handlers.ts`), so a concurrent Stop write can lose the
+      `stops` counter or the `ended` flag.
+- [ ] MEDIUM The worker writes a reflection and then moves the queue entry to a
+      terminal state with no idempotency key between the two
+      (`packages/worker/src/index.ts`), so a crash in between duplicates the
+      reflection and inflates the count `plan()` compares to the watermark.
+- [ ] LOW `AliasArgs.world` and `FeedbackArgs.world` skip `WORLD_NAME_RE`, and
+      `aliases.*`, `reflections.*` and `lessons.list` skip `cfgWorld()`
+      (`packages/ops/src/args.ts`), so an unknown world writes or returns empty
+      instead of a 503.
+- [ ] LOW A reflection id collision throws a plain `Error`
+      (`packages/store/src/reflections.ts`), which `isTransient` does not match,
+      so computed work is moved to `failed` instead of retried.
+- [ ] LOW `router.rehome` has no confirm gate while `router.retire` does, so
+      re-homing to `none` (now a retirement) stages a deletion without one.
+
 ### Still open, by design not by accident
 - [ ] No cross-artifact consistency check: the judge sees one draft against its own
       sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact

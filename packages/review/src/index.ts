@@ -162,6 +162,7 @@ export function queue(world: World, _cfg: Config): ReviewItem[] {
       pattern,
       branch,
       artifact_type: atype,
+      status: entry ? entry.status : "staged",
       artifact_path: artifacts.artifactRel(world, atype, pattern) || null,
       count: entry ? entry.promoted_at_count : 0,
       staged_at: entry ? entry.last_updated : null,
@@ -228,6 +229,7 @@ export function detail(world: World, _cfg: Config, pattern: string, opts: Review
     pattern,
     branch: snap.branch,
     artifact_type: atype,
+    status: entry ? entry.status : "staged",
     artifact_path: artifacts.artifactRel(world, atype, pattern) || null,
     count: entry ? entry.promoted_at_count : 0,
     staged_at: entry ? entry.last_updated : null,
@@ -411,14 +413,14 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
     branch_deleted: false,
   };
   try {
-    out.link = relink(world, pattern, atype);
+    out.link = relinkAll(world, pattern, atype);
   } catch (e) {
     // Merged already; a link problem is a warning.
     out.link = null;
     out.link_error = (e as Error).message;
   }
 
-  Object.assign(out, publish(world, repo, defaultRef, snap.branch, pattern, atype));
+  Object.assign(out, publish(world, repo, defaultRef, snap.branch, pattern, atype, retiring));
 
   git.git(repo, ["branch", "-q", "-D", snap.branch], { check: false });
   out.branch_deleted = !git.refExists(repo, `refs/heads/${snap.branch}`);
@@ -667,8 +669,24 @@ function stageOnBranch(
  * No drafter runs here. What lands is a schema-valid stub, and the ledger's
  * `served_by` flip is what makes the next run redraft into the chosen type
  * through the same pipeline every other promotion uses. */
-export function rehome(world: World, cfg: Config, pattern: string, artifactType: ArtifactType): RehomeResult {
-  return withWorkerLock(() => rehomeInner(world, cfg, pattern, artifactType));
+export function rehome(
+  world: World,
+  cfg: Config,
+  pattern: string,
+  artifactType: ArtifactType,
+  opts: ReviewOptions = {},
+): RehomeResult {
+  return withWorkerLock(() => {
+    // Re-homing to "none" says nothing should serve this pattern any more,
+    // which is a retirement with another name. Run as one: "none" writes no
+    // file, so the placeholder guard had nothing to refuse and accept stamped a
+    // promotion of an artifact that does not exist.
+    if (artifactType === "none") {
+      const out = retireInner(world, cfg, pattern, opts);
+      return { branch: out.branch, pattern, artifact_type: "none", path: "" };
+    }
+    return rehomeInner(world, cfg, pattern, artifactType);
+  });
 }
 
 function rehomeInner(world: World, _cfg: Config, pattern: string, artifactType: ArtifactType): RehomeResult {
@@ -711,13 +729,18 @@ function rehomeInner(world: World, _cfg: Config, pattern: string, artifactType: 
  * Deletes rather than flags. An artifact left on disk with only a ledger flag
  * still appears in the available-skills list and still costs attention on every
  * session, which is the entire cost being removed. Git is the trail. */
-export function retire(world: World, cfg: Config, pattern: string): RetireResult {
-  return withWorkerLock(() => retireInner(world, cfg, pattern));
+export function retire(world: World, cfg: Config, pattern: string, opts: ReviewOptions = {}): RetireResult {
+  return withWorkerLock(() => retireInner(world, cfg, pattern, opts));
 }
 
-function retireInner(world: World, _cfg: Config, pattern: string): RetireResult {
+function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOptions = {}): RetireResult {
   const repo = targetRoot(world);
   const rel = ledgerRel(world);
+  // A retirement costs a watermark, exactly as a rejection does. The promotion
+  // mark stands where the artifact was first staged, so without this the very
+  // next tick reads the reflections already on disk as new evidence and stages
+  // the retired artifact again.
+  const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   let removed = "";
 
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
@@ -727,7 +750,13 @@ function retireInner(world: World, _cfg: Config, pattern: string): RetireResult 
     if (entry.status === "retired") throw new ReviewError(`${JSON.stringify(pattern)} is already retired`);
     const oldType = entryType(entry);
     removed = artifacts.removeArtifact(world, oldType, pattern, tree);
-    ledger.entries[pattern] = { ...entry, status: "retired", served_by: null, last_updated: fsx.nowIso() };
+    ledger.entries[pattern] = {
+      ...entry,
+      status: "retired",
+      served_by: null,
+      rejected_at_count: Math.max(entry.rejected_at_count, at),
+      last_updated: fsx.nowIso(),
+    };
     saveLedger(join(tree, rel), ledger);
     return [[...(removed ? [removed] : []), rel], `feat(${oldType}): retire ${pattern} (auto, gated)`];
   });
@@ -753,7 +782,12 @@ export function relink(world: World, pattern: string, artifactType: ArtifactType
   if (artifactType !== "skill" && artifactType !== "agent") return null;
   const target = targetRoot(world);
   const rel = artifacts.artifactRel(world, artifactType, pattern);
-  const source = artifactType === "skill" ? dirname(join(target, rel)) : join(target, rel);
+  const full = join(target, rel);
+  const source = artifactType === "skill" ? dirname(full) : full;
+  // Liveness is the artifact file, never its directory. Retiring a skill deletes
+  // SKILL.md and reaps the directory only when it is empty, so one other
+  // committed file next to it kept the link pointing at a skill with no body.
+  const live = existsSync(full);
   const link =
     artifactType === "skill"
       ? join(paths.claudeConfigDir(), "skills", pattern)
@@ -768,7 +802,7 @@ export function relink(world: World, pattern: string, artifactType: ArtifactType
   }
   if (isLink) {
     const current = readlinkSync(link);
-    if (!existsSync(source)) {
+    if (!live) {
       // The artifact was retired; reap the dead link.
       unlinkSync(link);
       return null;
@@ -778,7 +812,28 @@ export function relink(world: World, pattern: string, artifactType: ArtifactType
   } else if (existsSync(link)) {
     throw new ReviewError(`${link} already exists and is not a symlink; refusing to replace it. Move it aside and relink.`);
   }
-  if (!existsSync(source)) return null;
+  if (!live) return null;
   symlinkSync(source, link, artifactType === "skill" ? "dir" : "file");
+  return link;
+}
+
+/** Make the config directory match the repo for every linkable type.
+ *
+ * `relink` only ever looks at the type being accepted, and a hook or a rule
+ * links nowhere, so a skill re-homed to either kept its symlink with nothing
+ * behind it and stayed in the skills list. Each of the other types is passed
+ * through the same call, which reaps a link whose artifact is gone and leaves a
+ * live one alone. */
+function relinkAll(world: World, pattern: string, artifactType: ArtifactType): string | null {
+  const link = relink(world, pattern, artifactType);
+  for (const other of ["skill", "agent"] as const) {
+    if (other === artifactType) continue;
+    try {
+      relink(world, pattern, other);
+    } catch {
+      // A hand-written directory at the other type's link path is not this
+      // pattern's link and is never replaced. Nothing to reap, nothing to say.
+    }
+  }
   return link;
 }

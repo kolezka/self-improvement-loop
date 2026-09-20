@@ -263,6 +263,14 @@ async function stageOne(
   const branch = branchName(world.name, pattern);
   const prior = ctx.ledger.entries[pattern] ?? null;
   const stagedEntry = branchEntry(world, ctx.target, branch, pattern);
+  // A retirement owns this branch until a human answers it. Redrafting here has
+  // no good outcome: the reset below throws the deletion away, and landing on
+  // top writes the artifact back into the commit that removed it. Either way
+  // the operator accepts a promotion of the thing they asked to retire.
+  if (stagedEntry && stagedEntry.status === "retired") {
+    report.gated_out[pattern] = `a retirement is staged on ${branch} and waits for review`;
+    return;
+  }
   const served = servedBy(stagedEntry, prior);
   let forcedType: string | null = served ? served.type : null;
   if (forcedType === "none") {

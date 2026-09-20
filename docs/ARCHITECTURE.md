@@ -362,6 +362,19 @@ records `retired`, not `promoted`: the branch deleted the artifact, so the row i
 merges must say the pattern is out of rotation, or the inventory keeps listing it
 as serving and the next plan can refine it back into existence.
 
+Three more things hold along that path, each of which kept a retired artifact
+alive on its own:
+
+- A tick skips any pattern whose branch row says `retired`. Otherwise the branch
+  reset that keeps a redraft at one commit throws the staged deletion away, and
+  the accept that follows records a promotion of the artifact just removed.
+- Retiring stamps the rejected watermark, so the reflections already on disk are
+  not read as new evidence on the next tick.
+- Accept reaps the link of every linkable type, not only the accepted one, and
+  reads liveness from the artifact file rather than its directory. A re-home off
+  `skill` links nowhere, and a retired skill can leave a non-empty directory
+  behind; both used to keep `~/.claude/skills/<pattern>` in place.
+
 ## Web UI (`sil web`)
 
 FastAPI + uvicorn bound to `web.host` (loopback by default), token in the URL

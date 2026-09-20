@@ -258,6 +258,63 @@ describe("Lock", () => {
     new Lock().release();
   });
 
+  /** Write a crashed worker's lock file and return its path. */
+  function writeCrashedLock(): string {
+    const lockPath = paths.workerLockFile();
+    fsx.ensureDir(join(lockPath, ".."));
+    writeFileSync(lockPath, "999999999", "utf8"); // a pid that cannot exist
+    return lockPath;
+  }
+
+  // The invariant the reclaim path rests on: removing a crashed lock is done by
+  // one process at a time. Deciding the winner by timing let two of them hold.
+  test("a reclaimer that loses the reclaim mutex does not take the lock", () => {
+    prepareEnv();
+    const lockPath = writeCrashedLock();
+    writeFileSync(`${lockPath}.reclaim`, "4194303", "utf8"); // another process is mid-reclaim
+
+    expect(() => new Lock().acquire()).toThrow(LockHeld);
+    expect(readFileSync(lockPath, "utf8")).toBe("999999999");
+    expect(existsSync(`${lockPath}.reclaim`)).toBe(true); // the loser does not clear it
+  });
+
+  test("an abandoned reclaim mutex does not block the reclaim forever", () => {
+    prepareEnv();
+    const lockPath = writeCrashedLock();
+    const mutex = `${lockPath}.reclaim`;
+    writeFileSync(mutex, "4194303", "utf8");
+    const longAgo = (Date.now() - 600_000) / 1000;
+    utimesSync(mutex, longAgo, longAgo);
+
+    const lock = new Lock();
+    expect(() => lock.acquire()).not.toThrow();
+    expect(Lock.held()).toBe(true);
+    expect(existsSync(mutex)).toBe(false);
+    lock.release();
+  });
+
+  test("a live lock is never unlinked by a reclaimer", () => {
+    prepareEnv();
+    const first = new Lock();
+    first.acquire();
+    try {
+      expect(() => new Lock().acquire()).toThrow(LockHeld);
+      expect(readFileSync(paths.workerLockFile(), "utf8")).toBe(String(process.pid));
+    } finally {
+      first.release();
+    }
+  });
+
+  test("a successful reclaim leaves no mutex behind", () => {
+    prepareEnv();
+    const lockPath = writeCrashedLock();
+
+    const lock = new Lock();
+    lock.acquire();
+    expect(existsSync(`${lockPath}.reclaim`)).toBe(false);
+    lock.release();
+  });
+
   test("release leaves nothing that reads as held", () => {
     prepareEnv();
     const lock = new Lock();

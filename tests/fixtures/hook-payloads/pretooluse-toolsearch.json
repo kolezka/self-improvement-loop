@@ -1,0 +1,1 @@
+{"session_id": "fixture-21", "hook_event_name": "PreToolUse", "tool_name": "ToolSearch", "tool_input": {"query": "select:mcp__outline__fetch", "max_results": 5}}

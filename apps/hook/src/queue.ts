@@ -3,7 +3,7 @@
 // sil/hook.py's _queue_path, _start_git_head, _upsert_stop_queue,
 // _bump_tool_uses, _session_lock.
 
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { atomicWrite } from "@sil/core/fsx";
 import { withDirLock } from "@sil/nudges";
@@ -54,6 +54,21 @@ function str(v: unknown): string | null {
  * chains transcript_path/git_head/first_stop fallbacks. */
 function truthyStr(v: unknown): string | null {
   return typeof v === "string" && v !== "" ? v : null;
+}
+
+/** True when the session's transcript is a file the worker can read later.
+ *
+ * `claude --print --no-session-persistence` still runs every hook and still
+ * names a transcript_path, but Claude Code never writes that file: jean uses
+ * this mode for its helper runs (commit messages, conversation summaries), and
+ * each one used to land in the queue only to be retired as "transcript
+ * missing". A session that already has a queue entry keeps it, so a transcript
+ * deleted mid-session does not strand the entry that was built from it. */
+export function hasTranscript(payload: Record<string, unknown>, sessionId: string): boolean {
+  const claimed = truthyStr(payload["transcript_path"]);
+  if (claimed === null) return true; // nothing claimed: nothing to disprove
+  if (existsSync(claimed)) return true;
+  return Object.keys(readQueueEntry(queuePath(sessionId))).length > 0;
 }
 
 export function startGitHead(sessionId: string): string | null {

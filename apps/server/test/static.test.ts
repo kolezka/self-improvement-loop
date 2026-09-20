@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveStaticPath, serveStatic, staticRoot } from "../src/static.ts";
+import { cacheControl, resolveStaticPath, serveStatic, staticRoot } from "../src/static.ts";
 
 let tmp: string;
 let root: string;
@@ -21,6 +21,8 @@ beforeEach(() => {
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, "index.html"), "<!doctype html><title>t</title>SIL_WEB_INDEX_MARKER");
   writeFileSync(join(root, "app.js"), "console.log('hi')");
+  mkdirSync(join(root, "assets"), { recursive: true });
+  writeFileSync(join(root, "assets", "index-a1b2c3.js"), "export const x = 1");
   mkdirSync(join(root, "sub"), { recursive: true });
   writeFileSync(join(root, "sub", "file.txt"), "nested");
   writeFileSync(join(tmp, "package.json"), '{"name":"should-not-be-served"}');
@@ -82,5 +84,37 @@ describe("serveStatic", () => {
   test("404s a missing file", async () => {
     const res = await serveStatic("/nope.js");
     expect(res.status).toBe(404);
+  });
+});
+
+// A plugin update rewrites dist/web under a browser that already holds the old
+// page. Without these headers the browser keeps its cached index.html and the
+// reload button in the UI looks broken.
+describe("cacheControl", () => {
+  test("never lets the browser reuse index.html", () => {
+    expect(cacheControl("/index.html")).toBe("no-store");
+    expect(cacheControl("/")).toBe("no-store");
+  });
+
+  test("lets the browser keep a content hashed asset forever", () => {
+    expect(cacheControl("/assets/index-a1b2c3.js")).toContain("immutable");
+  });
+});
+
+describe("serveStatic cache headers", () => {
+  test("sends no-store with index.html", async () => {
+    const res = await serveStatic("/");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("sends the immutable header with a hashed asset", async () => {
+    const res = await serveStatic("/assets/index-a1b2c3.js");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toContain("immutable");
+  });
+
+  test("sends no-store with a top level file, which vite does not hash", async () => {
+    const res = await serveStatic("/app.js");
+    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 });

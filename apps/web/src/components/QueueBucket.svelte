@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { formatTime, plural } from "../lib/format.ts";
+
   interface QueueEntry {
     session_id: string;
     world: string;
@@ -20,24 +22,82 @@
     skippable?: boolean;
     onSkip?: (sessionId: string) => void;
   } = $props();
+
+  const label = $derived(name.charAt(0).toUpperCase() + name.slice(1));
+
+  const EMPTY_COPY: Record<string, { title: string; body: string }> = {
+    pending: {
+      title: "No sessions waiting.",
+      body: "The hook queues a session when it ends or goes idle.",
+    },
+    done: {
+      title: "No sessions reflected yet.",
+      body: "Sessions land here once the worker finishes reflecting on them.",
+    },
+    failed: {
+      title: "No failed sessions.",
+      body: "A session lands here if reflection errors out.",
+    },
+  };
+
+  const empty = $derived(EMPTY_COPY[name] ?? { title: "Nothing here.", body: "" });
 </script>
 
-<div class="card">
-  <h3>{name} ({entries.length})</h3>
-  <ul class="list">
+<div class="panel">
+  <div class="panel__head">
+    <h3>{label}</h3>
+    <span class={name === "failed" && entries.length > 0 ? "chip err" : "chip"}>
+      <strong>{entries.length}</strong>
+    </span>
+  </div>
+  <div class="panel__body">
     {#if entries.length === 0}
-      <li class="muted">empty</li>
+      <div class="empty">
+        <strong>{empty.title}</strong>
+        {empty.body}
+      </div>
+    {:else}
+      <ul class="list scroll-list">
+        {#each entries as e (e.session_id)}
+          <li>
+            <div class="entry-head">
+              <span class="mono">{e.session_id}</span>
+              <span class="chip">{e.world}</span>
+              {#if skippable}
+                <button class="small" onclick={() => onSkip?.(e.session_id)}>Skip session</button>
+              {/if}
+            </div>
+            <div class="entry-cwd muted">{e.cwd}</div>
+            <div class="meta">
+              <span>{plural(e.stops, "stop")}</span>
+              <span>{plural(e.tool_uses, "tool use")}</span>
+              <span>last stop {formatTime(e.last_stop)}</span>
+            </div>
+            {#if e.result}
+              <div class="error-text">{e.result}</div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     {/if}
-    {#each entries as e}
-      <li>
-        <div>{e.session_id}, {e.world}, {e.cwd}</div>
-        <div class="muted">
-          stops: {e.stops} tool_uses: {e.tool_uses} last_stop: {e.last_stop}{e.result ? `  result: ${e.result}` : ""}
-        </div>
-        {#if skippable}
-          <button onclick={() => onSkip?.(e.session_id)}>Skip</button>
-        {/if}
-      </li>
-    {/each}
-  </ul>
+  </div>
 </div>
+
+<style>
+  .entry-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .entry-head button {
+    margin-left: auto;
+  }
+
+  .entry-cwd {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin: 0.15rem 0;
+  }
+</style>

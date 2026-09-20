@@ -36,3 +36,8 @@ export function formatDuration(seconds: number): string {
   const sec = total % 60;
   return `${min} min ${sec} s`;
 }
+
+/** "1 stop", "2 stops". Only for words that pluralise with a plain s. */
+export function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}

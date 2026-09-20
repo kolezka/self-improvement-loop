@@ -10,15 +10,17 @@ import { Command, CommanderError } from "commander";
 import { ValidationError } from "@sil/core";
 import { mapKnownError } from "./common.ts";
 import { defaultDeps, type Deps } from "./deps.ts";
+import { cmdAliasesList, cmdAliasesRm, cmdAliasesSet, cmdAliasesSuggest } from "./commands/aliases.ts";
 import { cmdArtifacts } from "./commands/artifacts.ts";
 import { cmdCurriculumPlan, cmdCurriculumRun } from "./commands/curriculum.ts";
 import { cmdFeedbackAdd, cmdFeedbackList } from "./commands/feedback.ts";
 import { cmdHookSnapshot } from "./commands/hookSnapshot.ts";
-import { cmdImportLedger, cmdImportReflections } from "./commands/import.ts";
+import { cmdImportLedger, cmdImportPayloads, cmdImportReflections } from "./commands/import.ts";
 import { cmdInit } from "./commands/init.ts";
 import { cmdLessons } from "./commands/lessons.ts";
 import { cmdLlmList, cmdLlmSetModel, cmdLlmUse } from "./commands/llm.ts";
 import { cmdLogs } from "./commands/logs.ts";
+import { cmdOpenclawEnqueue, cmdOpenclawInstall, cmdOpenclawScan, cmdOpenclawStatus, cmdOpenclawSync } from "./commands/openclaw.ts";
 import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
 import { cmdReviewAccept, cmdReviewList, cmdReviewRehome, cmdReviewReject, cmdReviewRetire, cmdReviewShow } from "./commands/review.ts";
@@ -138,6 +140,27 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .requiredOption("--world <name>")
     .action(wire((id: string, opts) => cmdReflectionsShow(id, opts)));
 
+  const aliases = program.command("aliases");
+  aliases
+    .command("list")
+    .option("--world <name>")
+    .action(wire((opts) => cmdAliasesList(opts)));
+  aliases
+    .command("set")
+    .argument("<alias>")
+    .argument("<canonical>")
+    .option("--world <name>")
+    .action(wire((alias: string, canonical: string, opts) => cmdAliasesSet(alias, canonical, opts)));
+  aliases
+    .command("rm")
+    .argument("<alias>")
+    .option("--world <name>")
+    .action(wire((alias: string, opts) => cmdAliasesRm(alias, opts)));
+  aliases
+    .command("suggest")
+    .option("--world <name>")
+    .action(wire((opts) => cmdAliasesSuggest(opts)));
+
   program
     .command("artifacts")
     .argument("[action]")
@@ -186,9 +209,11 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
   program
     .command("web")
     .option("--port <n>", "", intOption)
-    .option("--no-token")
+    .option("--token", "force a URL token (default: on only for non-loopback binds)")
+    .option("--no-token", "force tokenless (loopback only)")
     .option("--open")
     .option("--host <host>", "bind address; defaults to config web.host (127.0.0.1). Use a LAN or tailscale address, or 0.0.0.0, to reach it from another machine")
+    .option("--no-watch", "keep running after a plugin update instead of exiting for the supervisor to restart")
     .action(wire((opts) => cmdWeb(opts)));
 
   const worlds = program.command("worlds");
@@ -206,6 +231,42 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .argument("<path>")
     .action(wire((path: string) => cmdWorldsImportKb(path)));
 
+  const openclaw = program.command("openclaw").description("run the loop against an OpenClaw install");
+  openclaw
+    .command("install")
+    .option("--world <name>")
+    .option("--workspace <path>", "OpenClaw agent workspace; defaults to the one in openclaw.json")
+    .option("--enable", "also set plugins.entries enabled in openclaw.json")
+    .action(wire((opts) => cmdOpenclawInstall(opts)));
+  openclaw
+    .command("sync")
+    .description("write rules and pending lessons into the workspace bootstrap file")
+    .option("--world <name>")
+    .option("--workspace <path>")
+    .option("--file <name>", "bootstrap file inside the workspace", "AGENTS.md")
+    .option("--limit <n>", "", intOption)
+    .option("--dry-run")
+    .action(wire((opts) => cmdOpenclawSync(opts)));
+  openclaw
+    .command("scan")
+    .description("queue OpenClaw session transcripts for reflection")
+    .option("--world <name>", "force a world instead of resolving one per session cwd")
+    .option("--max-age-hours <n>", "", intOption)
+    .option("--json")
+    .action(wire((opts) => cmdOpenclawScan(opts)));
+  openclaw
+    .command("enqueue")
+    .requiredOption("--session <id>")
+    .option("--agent <id>")
+    .option("--ended", "the session is over: do not wait for the idle window")
+    .option("--world <name>")
+    .option("--json")
+    .action(wire((opts) => cmdOpenclawEnqueue(opts)));
+  openclaw
+    .command("status")
+    .option("--json")
+    .action(wire((opts) => cmdOpenclawStatus(opts)));
+
   const imp = program.command("import");
   imp
     .command("reflections")
@@ -217,6 +278,10 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .argument("<file>")
     .requiredOption("--world <name>")
     .action(wire((file: string, opts) => cmdImportLedger(file, opts)));
+  imp
+    .command("payloads")
+    .option("--days <n>", "how far back to read session transcripts (default 30)", intOption)
+    .action(wire((opts) => cmdImportPayloads(opts)));
 
   const sched = program.command("schedule");
   sched

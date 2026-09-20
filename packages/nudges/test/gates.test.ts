@@ -10,6 +10,16 @@ describe("splitTrigger", () => {
     expect(splitTrigger("PreToolUse:Bash")).toEqual(["PreToolUse", "Bash"]);
   });
 
+  test("every tool hooks.json delivers is a matcher", () => {
+    // hooks.json registers PreToolUse and PostToolUse with matcher "*". A
+    // drafted `PreToolUse:ToolSearch` was refused as unsupported and the
+    // pattern downgraded to a rule while the tool call reached the hook fine.
+    for (const tool of ["ToolSearch", "WebFetch", "WebSearch", "NotebookEdit"]) {
+      expect(splitTrigger(`PreToolUse:${tool}`)).toEqual(["PreToolUse", tool]);
+      expect(splitTrigger(`PostToolUse:${tool}`)).toEqual(["PostToolUse", tool]);
+    }
+  });
+
   test("unknown event", () => {
     expect(splitTrigger("NotAnEvent")).toBeNull();
   });

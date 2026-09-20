@@ -5,3 +5,4 @@ apps/web/.vite/
 .pytest_cache/
 __pycache__/
 .venv/
+dist/

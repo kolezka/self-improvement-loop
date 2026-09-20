@@ -1,0 +1,132 @@
+name: release
+
+# Manual release. Bumps the version, builds dist/, then publishes it two ways:
+#   tag v<version> and the moving `release` branch carry a commit with dist/ in
+#   it (git installs), and a zip of that same tree is attached to the GitHub
+#   release (archive installs). main never carries dist/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "major, minor, patch or an explicit x.y.z version"
+        required: true
+        default: patch
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same bun as ci.yml and as a contributor's checkout. Bun.build output
+      # differs between bun versions, and a release is the worst place to find
+      # that out.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: install
+        run: bun install
+
+      - name: Resolve the new version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          current="$(jq -r .version package.json)"
+          IFS=. read -r major minor patch <<< "$current"
+          case "$BUMP" in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="$major.$((minor + 1)).0" ;;
+            patch) version="$major.$minor.$((patch + 1))" ;;
+            # Anything else is taken as an explicit version. bump-version.sh
+            # rejects it if it is not semver.
+            *) version="$BUMP" ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # Rewrites every manifest, SIL_VERSION in the health handler and
+      # bun.lock, then rebuilds dist/ from the bumped tree.
+      - name: Bump and build
+        run: scripts/bump-version.sh "$VERSION"
+
+      - name: Check
+        run: |
+          bun run lint:dashes
+          bun run typecheck
+          bun run check:web
+          bun test
+
+      - name: Commit the bump on the branch this ran from
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json .claude-plugin/plugin.json packages/*/package.json apps/*/package.json \
+            packages/ops/src/handlers/health.ts bun.lock
+          git commit -m "chore: bump version to $VERSION"
+          git push origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Tag a release commit that carries dist/
+        run: |
+          git add --force dist
+          git commit -m "chore(release): build dist for v$VERSION"
+          git tag "v$VERSION"
+          git push origin "refs/tags/v$VERSION"
+          # `release` is generated output, not a development branch: every run
+          # replaces it with the commit the new tag points at.
+          git push --force origin "HEAD:refs/heads/release"
+
+      - name: Pack the install archive
+        id: archive
+        run: |
+          staging="$RUNNER_TEMP/pack"
+          mkdir -p "$staging/self-improvement-loop"
+          # Same tree as the tag, so a zip install and a git install match.
+          git archive --format=tar "v$VERSION" | tar -x -C "$staging/self-improvement-loop"
+          asset="$RUNNER_TEMP/self-improvement-loop-$VERSION.zip"
+          (cd "$staging" && zip -qr "$asset" self-improvement-loop)
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$asset" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA256: ${{ steps.archive.outputs.sha256 }}
+          ASSET: ${{ steps.archive.outputs.asset }}
+          REPO: ${{ github.repository }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "Install from the marketplace:"
+            echo
+            echo '```'
+            echo "claude plugin marketplace add kolezka/marketplace"
+            echo "claude plugin install self-improvement-loop@kolezka"
+            echo '```'
+            echo
+            echo "The marketplace entry tracks the \`release\` branch, which now points at \`v$VERSION\`."
+            echo "Pin this exact version with \`\"ref\": \"v$VERSION\"\`, or install without git from the zip:"
+            echo
+            echo '```json'
+            echo '{'
+            echo '  "source": "archive",'
+            echo "  \"url\": \"https://github.com/$REPO/releases/download/v$VERSION/self-improvement-loop-$VERSION.zip\","
+            echo "  \"sha256\": \"$SHA256\""
+            echo '}'
+            echo '```'
+          } > "$notes"
+          gh release create "v$VERSION" --title "v$VERSION" --notes-file "$notes" "$ASSET"

@@ -56,6 +56,14 @@ export async function cmdCurriculumRun(opts: CurriculumRunOptions, deps: Deps = 
   console.log(`world: ${report.world}  dry_run: ${report.dry_run}`);
   console.log(`staged: ${JSON.stringify(report.staged)}`);
   console.log(`merged: ${JSON.stringify(report.merged)}`);
+  const routed = Object.entries(report.routed);
+  if (routed.length > 0) {
+    console.log("routed:");
+    for (const [pattern, r] of routed) {
+      const change = r.drafted === r.type ? r.type : `${r.drafted} -> ${r.type}`;
+      console.log(`  ${pattern}: ${change} (${r.reason})`);
+    }
+  }
   const gatedOut = Object.entries(report.gated_out);
   if (gatedOut.length > 0) {
     console.log("gated out:");

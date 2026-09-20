@@ -10,6 +10,7 @@ import {
   ledgerPath,
   type PromotionEntry,
   RULE_END,
+  RULE_START,
   ruleTag,
   targetRoot,
   type World,
@@ -20,14 +21,18 @@ import {
   branchName,
   draftMessages,
   git,
+  lintRule,
+  MAX_RULE_CHARS,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
+  ruleBudget,
   run,
   type RunOptions,
 } from "@sil/curriculum";
 import { parseLedger, saveLedger } from "@sil/store";
 import {
   addReflections,
+  agentBody,
   cleanupEnv,
   commitFile,
   FakeChat,
@@ -87,6 +92,7 @@ function entry(fields: Partial<PromotionEntry> & { pattern: string }): Promotion
     artifact_type: "none",
     served_by: null,
     last_updated: "2026-09-01T00:00:00Z",
+    promoted_at: null,
     commit: null,
     feedback: null,
     ...fields,
@@ -217,6 +223,70 @@ describe("the happy path", () => {
     expect(existsSync(join(repo, "RULES.md"))).toBe(false);
   });
 
+  test("promotion.max_rule_chars reaches the drafter and the lint alike", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const bullet =
+      ruleBody().slice(0, -1) +
+      ", then re-run `rg` after every later edit, count the hits again, compare that count with the graphify " +
+      "inventory, and name the call sites that changed in the commit message before calling the change safe.";
+    const total = bullet.length + 1 + ruleTag(PATTERN).length;
+    const stated = (cap: number) => `at most ${cap - 1 - ruleTag(PATTERN).length} characters`;
+
+    const tight = new FakeChat({ draft: ruleDraftFor(bullet) });
+    const refused = await run(world, makeCfg({ max_rule_chars: 150 }), opts({ apply: true, chat: tight.fn }));
+    expect(refused.staged).toEqual([]);
+    expect(refused.gated_out[PATTERN]).toContain(`rule is ${total} chars`);
+    expect(refused.gated_out[PATTERN]).toContain("the cap is 150");
+    expect(tight.promptsFor("drafter")[0]).toContain(stated(150));
+
+    const roomy = new FakeChat({ draft: ruleDraftFor(bullet) });
+    const staged = await run(world, makeCfg({ max_rule_chars: 400 }), opts({ apply: true, chat: roomy.fn }));
+    expect(staged.staged).toEqual([PATTERN]);
+    expect(roomy.promptsFor("drafter")[0]).toContain(stated(400));
+  });
+
+  test("an agent draft is written at the agents path", async () => {
+    // The fourth type. Skill, hook and rule each had a staging test; agent had
+    // none, and the loop had never staged one since the V2 port.
+    const world = worldWith();
+    const repo = initTarget(world);
+    const draft = {
+      trigger_event: "none",
+      gate: null,
+      needs_own_context: true,
+      context_evidence: QUOTE,
+      capability_evidence: null,
+      no_artifact: false,
+      artifact: agentBody(PATTERN, QUOTE),
+    };
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft }).fn }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toMatchObject({ drafted: "agent", type: "agent" });
+    const branch = branchName(world.name, PATTERN);
+    expect(git.commitPaths(repo, "main", branch)).toEqual([`agents/${PATTERN}.md`, "promotions.json"]);
+    const { text } = git.show(repo, branch, "promotions.json");
+    expect(parseLedger(text).entries[PATTERN]!.artifact_type).toBe("agent");
+  });
+
+  test("the report records the route of every pattern that reached the router", async () => {
+    // Staged or gated, the operator sees what the drafter proposed and what
+    // the router settled on. Before this field every promotion that came out
+    // as a rule looked the same in the log, whether or not a hook was asked for.
+    const world = worldWith();
+    initTarget(world);
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: skillDraft(PATTERN, QUOTE) }).fn }));
+
+    expect(report.routed[PATTERN]).toEqual({
+      drafted: "skill",
+      type: "skill",
+      reason: "capability evidence quoted verbatim from a source",
+    });
+  });
+
   test("a second run on the same evidence replaces the branch, not the history", async () => {
     const world = worldWith();
     const repo = initTarget(world);
@@ -250,6 +320,40 @@ describe("gates", () => {
     expect(report.gated_out[PATTERN]).toContain("managed-block marker");
     expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(false);
     expect(existsSync(join(repo, "RULES.md"))).toBe(false);
+  });
+
+  test("a refined rule that carries its own tag is normalised, not gated", async () => {
+    // The refine path shows the drafter the bullet it is replacing. That bullet
+    // lives in the managed block with a `<!--rule:pattern-->` tag, the drafter
+    // copies the tag, and the lint refuses a tagged bullet: the pattern is stuck
+    // on every run with no way out but a hand edit. The tag is the writer's, so
+    // reading drops it and a draft that still carries one is normalised.
+    const world = worldWith();
+    const repo = initTarget(world);
+    const old = `- old wording ${ruleTag(PATTERN)}`;
+    commitFile(repo, "RULES.md", `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+    const chat = new FakeChat({ draft: { artifact: `${ruleBody()} ${ruleTag(PATTERN)}` } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+
+    expect(report.gated_out).toEqual({});
+    expect(report.staged).toEqual([PATTERN]);
+    // The drafter never saw a tag, so it had none to copy.
+    expect(chat.promptsFor("drafter")[0]).toContain("- old wording");
+    expect(chat.promptsFor("drafter")[0]).not.toContain(ruleTag(PATTERN));
+    const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(found).toBe(true);
+    expect(text.split(ruleTag(PATTERN)).length - 1).toBe(1);
+    expect(text).toContain(ruleBody());
   });
 
   test("a custom target without a marker pair refuses the rule write", async () => {
@@ -375,6 +479,32 @@ describe("gates", () => {
     expect(report.gated_out["bbb-pattern"]).toContain("cap");
   });
 
+  test("a gated-out pattern frees its cap slot for the next candidate", async () => {
+    // The starvation bug: the cap was spent while planning, so a pattern that
+    // fails a gate still burned a budget slot and a viable later pattern was
+    // stranded at over-cap, staging nothing. Here the alphabetically-first
+    // pattern fails the judge; with a cap of one the second must still get its
+    // turn and stage.
+    const world = makeWorld();
+    addReflections(world, "aaa-pattern", 3);
+    addReflections(world, "bbb-pattern", 3, { startDay: 20 });
+    initTarget(world);
+
+    const chat: ChatFn = async (role, messages) => {
+      const isAaa = messages[messages.length - 1]!.content.includes("aaa-pattern");
+      if (role === "judge") {
+        return JSON.stringify({ verdict: isAaa ? "no" : "yes", reason: isAaa ? "rule 2: vague" : "quoted" });
+      }
+      return JSON.stringify(skillDraft(isAaa ? "aaa-pattern" : "bbb-pattern", QUOTE));
+    };
+
+    const report = await run(world, makeCfg({ per_run_cap: 1 }), opts({ apply: true, chat }));
+
+    expect(report.staged).toEqual(["bbb-pattern"]);
+    expect(report.gated_out["aaa-pattern"]).toContain("judge:");
+    expect(report.gated_out["bbb-pattern"]).toBeUndefined();
+  });
+
   test("a declined pattern stages nothing", async () => {
     const world = worldWith();
     initTarget(world);
@@ -390,6 +520,9 @@ describe("gates", () => {
     const report = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: declined }).fn }));
     expect(report.staged).toEqual([]);
     expect(report.gated_out[PATTERN]).toContain("drafter declined");
+    // A decline is on the route record too, not only a staged outcome.
+    expect(report.routed[PATTERN]).toMatchObject({ drafted: "rule", type: "none" });
+    expect(report.routed[PATTERN]!.reason).toContain("declined");
   });
 });
 
@@ -485,6 +618,7 @@ describe("served_by suppression", () => {
     expect(report.staged).toEqual([PATTERN]);
     expect(chat.roles).toEqual(["drafter", "judge"]);
     expect(chat.promptsFor("drafter")[0]).toContain("Its type is already decided");
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
     const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(found).toBe(true);
     expect(text).toContain(ruleTag(PATTERN));
@@ -537,6 +671,10 @@ describe("redraft after a route change", () => {
 
     expect(report.staged).toEqual([PATTERN]);
     expect(chat.roles).toEqual(["drafter", "drafter", "judge"]);
+    // The downgrade is on the record, with the router's reason.
+    expect(report.routed[PATTERN]!.drafted).toBe("skill");
+    expect(report.routed[PATTERN]!.type).toBe("rule");
+    expect(report.routed[PATTERN]!.reason).toContain("not verbatim");
     const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(found).toBe(true);
     expect(text).toContain(ruleTag(PATTERN));
@@ -549,6 +687,38 @@ describe("redraft after a route change", () => {
     const prompt = draftMessages(PATTERN, ["a lesson"], null, null).at(-1)!.content;
     expect(prompt).toContain(`${MIN_QUOTE_WORDS} words`);
     expect(prompt).toContain(`${MIN_QUOTE_CHARS} characters`);
+    // And what buys a skill or an agent, in concrete terms. Without them the
+    // drafter proposed hook or rule on every one of five real clusters.
+    expect(prompt).toContain(`does not fit one ${ruleBudget(PATTERN)}-character bullet`);
+    expect(prompt).toContain("reads many files, logs or tool outputs");
+  });
+
+  test("a rule written to the length the prompt states passes the lint", () => {
+    // The lint measures the line the writer produces, tag included. A prompt
+    // quoting the raw cap asks for a bullet that is then refused for being a
+    // few characters over, on every run, with nothing saying why.
+    const prompt = draftMessages(PATTERN, ["a lesson"], null, "rule").at(-1)!.content;
+    const stated = Number(/(?:at most|under) (\d+) characters/.exec(prompt)?.[1]);
+    expect(stated).toBeGreaterThan(0);
+    const bullet = "- " + "x".repeat(stated - 2);
+    expect(bullet.length).toBe(stated);
+    expect(lintRule(bullet, PATTERN)).toEqual([]);
+    // The stated number is the maximum, not just some length that fits: one
+    // character more is refused, and the raw cap never reaches the drafter.
+    expect(lintRule(bullet + "x", PATTERN).some((p) => p.includes("cap is"))).toBe(true);
+    expect(prompt).not.toContain(`${MAX_RULE_CHARS} characters`);
+  });
+
+  test("the prompt states the configured cap net of the tag", () => {
+    const cap = 200;
+    const prompt = draftMessages(PATTERN, ["a lesson"], null, "rule", { maxRuleChars: cap }).at(-1)!.content;
+    expect(prompt).toContain(`at most ${cap - 1 - ruleTag(PATTERN).length} characters`);
+    const bullet = "- " + "x".repeat(cap - 1 - ruleTag(PATTERN).length - 2);
+    expect(lintRule(bullet, PATTERN, cap)).toEqual([]);
+    expect(lintRule(bullet + "x", PATTERN, cap).some((p) => p.includes(`cap is ${cap}`))).toBe(true);
+    // The routing contract names the same budget when it says what a rule holds.
+    const free = draftMessages(PATTERN, ["a lesson"], null, null, { maxRuleChars: cap }).at(-1)!.content;
+    expect(free).toContain(`does not fit one ${ruleBudget(PATTERN, cap)}-character bullet`);
   });
 });
 

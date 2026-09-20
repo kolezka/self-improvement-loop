@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version lives in .bun-version so a contributor installs the same
+      # bun this job runs. Bun.build output can differ between bun versions,
+      # and a dist/ rebuilt on another one fails the last step with a diff
+      # that reads like a source problem.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      # A plain install, not --frozen-lockfile: bun accepts a lockfile whose
+      # workspace versions are stale, then rewrites it on the next install.
+      # bun.lock is a sourceHash() input, so that rewrite fails the dist drift
+      # test on a checkout nobody touched. The diff below is the real guard.
+      - name: install
+        run: bun install
+
+      - name: lockfile is current
+        run: git diff --exit-code -- bun.lock
+
+      - name: lint dashes
+        run: bun run lint:dashes
+
+      - name: typecheck
+        run: bun run typecheck
+
+      - name: typecheck web
+        run: bun run check:web
+
+      # Before the tests, not after: dist/ is untracked now, so a fresh
+      # checkout has none, and tests/dist.test.ts skips its drift checks
+      # unless a build ran first. A build here also proves the bundles still
+      # resolve, which no unit test covers.
+      - name: build
+        run: bun run build
+
+      - name: test
+        run: bun test

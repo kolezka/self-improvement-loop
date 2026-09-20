@@ -85,13 +85,14 @@ export const V1_LAYOUT: Layout = {
 };
 
 export function makeCfg(
-  opts: { threshold?: number; per_run_cap?: number; auto_merge?: boolean; worlds?: World[] } = {},
+  opts: { threshold?: number; per_run_cap?: number; max_rule_chars?: number; auto_merge?: boolean; worlds?: World[] } = {},
 ): Config {
   return ConfigSchema.parse({
     worlds: opts.worlds ?? [makeWorld()],
     promotion: {
       threshold: opts.threshold ?? 3,
       per_run_cap: opts.per_run_cap ?? 3,
+      max_rule_chars: opts.max_rule_chars,
       auto_merge: opts.auto_merge ?? false,
     },
   });

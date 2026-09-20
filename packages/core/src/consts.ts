@@ -4,6 +4,9 @@
 export const RULE_START = "<!--loop-rules:start-->";
 export const RULE_END = "<!--loop-rules:end-->";
 export const ruleTag = (pattern: string): string => `<!--rule:${pattern}-->`;
+// One rule bullet in the managed block, tag included. `promotion.max_rule_chars`
+// overrides it; the drafter is told the budget net of the tag.
+export const DEFAULT_MAX_RULE_CHARS = 500;
 
 // Hook config snapshot written by the engine, read by the hook.
 export const HOOK_SNAPSHOT = "hook-config.json";

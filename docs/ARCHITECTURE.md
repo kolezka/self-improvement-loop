@@ -120,7 +120,8 @@ worlds:
     rules_inject: true             # SessionStart injects the managed rules block
 promotion:
   threshold: 3
-  per_run_cap: 3
+  per_run_cap: 3                   # stagings per run; a gated-out pattern frees its slot
+  max_rule_chars: 500              # one rule bullet, its <!--rule:...--> tag included
   auto_merge: false                # never honoured for llm: local worlds
 worker:
   idle_minutes: 10                 # a session is reflected once idle this long
@@ -280,8 +281,8 @@ failure:
 
 - The drafter reads each reflection's `What failed & why`, `Reusable lesson`
   and `Verification` sections, not the lesson line alone. The critic writes
-  that line as one imperative under 300 characters, which is a rule by
-  construction; on lesson-only input the drafter proposed hook or rule on every
+  that line as one imperative under 300 characters, which fits one rule bullet
+  at the default cap; on lesson-only input the drafter proposed hook or rule on every
   one of five real clusters, and with the fuller text it took a 56-reflection
   pattern to a skill the router accepted. The judge still reads the lesson
   lines, which are the conclusions it checks an artifact against. `Not

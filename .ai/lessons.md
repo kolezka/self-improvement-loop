@@ -47,6 +47,13 @@
   invariant at the single write point every caller passes through, and make the
   caller collapse the conflict rather than refuse, when refusing leaves the data in
   the broken state the feature exists to fix.
+- 2026-09-20: Implemented the rule-cap prompt fix and the per-run-cap starvation fix
+  on a worktree 40 commits behind `origin/main`; both were already merged (PR #14,
+  #25). `git worktree list` showed sibling branches named for the same symptom
+  (`fix-artifact-lint-rule-length-cap`, `fix-curriculum-loop-gating`) before the
+  first edit. Before implementing in a Jean worktree: fetch, run
+  `git log --oneline HEAD..origin/main`, and read sibling branch names for the
+  symptom; only then decide what is left to do.
 - 2026-09-19: `last_updated` is not "when this happened". Reject, re-home and retire
   all bumped it, so a refused redraft restarted the retire clock on an artifact
   nobody used, and the reason string named the rejection date while claiming it was

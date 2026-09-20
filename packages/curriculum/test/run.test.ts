@@ -25,6 +25,7 @@ import {
   MAX_RULE_CHARS,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
+  ruleBudget,
   run,
   type RunOptions,
 } from "@sil/curriculum";
@@ -220,6 +221,29 @@ describe("the happy path", () => {
     expect(text).toContain(ruleTag(PATTERN));
     // The live tree is untouched: the rules file was created inside the worktree.
     expect(existsSync(join(repo, "RULES.md"))).toBe(false);
+  });
+
+  test("promotion.max_rule_chars reaches the drafter and the lint alike", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const bullet =
+      ruleBody().slice(0, -1) +
+      ", then re-run `rg` after every later edit, count the hits again, compare that count with the graphify " +
+      "inventory, and name the call sites that changed in the commit message before calling the change safe.";
+    const total = bullet.length + 1 + ruleTag(PATTERN).length;
+    const stated = (cap: number) => `at most ${cap - 1 - ruleTag(PATTERN).length} characters`;
+
+    const tight = new FakeChat({ draft: ruleDraftFor(bullet) });
+    const refused = await run(world, makeCfg({ max_rule_chars: 150 }), opts({ apply: true, chat: tight.fn }));
+    expect(refused.staged).toEqual([]);
+    expect(refused.gated_out[PATTERN]).toContain(`rule is ${total} chars`);
+    expect(refused.gated_out[PATTERN]).toContain("the cap is 150");
+    expect(tight.promptsFor("drafter")[0]).toContain(stated(150));
+
+    const roomy = new FakeChat({ draft: ruleDraftFor(bullet) });
+    const staged = await run(world, makeCfg({ max_rule_chars: 400 }), opts({ apply: true, chat: roomy.fn }));
+    expect(staged.staged).toEqual([PATTERN]);
+    expect(roomy.promptsFor("drafter")[0]).toContain(stated(400));
   });
 
   test("an agent draft is written at the agents path", async () => {
@@ -665,7 +689,7 @@ describe("redraft after a route change", () => {
     expect(prompt).toContain(`${MIN_QUOTE_CHARS} characters`);
     // And what buys a skill or an agent, in concrete terms. Without them the
     // drafter proposed hook or rule on every one of five real clusters.
-    expect(prompt).toContain("does not fit one 300-character bullet");
+    expect(prompt).toContain(`does not fit one ${ruleBudget(PATTERN)}-character bullet`);
     expect(prompt).toContain("reads many files, logs or tool outputs");
   });
 
@@ -683,6 +707,18 @@ describe("redraft after a route change", () => {
     // character more is refused, and the raw cap never reaches the drafter.
     expect(lintRule(bullet + "x", PATTERN).some((p) => p.includes("cap is"))).toBe(true);
     expect(prompt).not.toContain(`${MAX_RULE_CHARS} characters`);
+  });
+
+  test("the prompt states the configured cap net of the tag", () => {
+    const cap = 200;
+    const prompt = draftMessages(PATTERN, ["a lesson"], null, "rule", { maxRuleChars: cap }).at(-1)!.content;
+    expect(prompt).toContain(`at most ${cap - 1 - ruleTag(PATTERN).length} characters`);
+    const bullet = "- " + "x".repeat(cap - 1 - ruleTag(PATTERN).length - 2);
+    expect(lintRule(bullet, PATTERN, cap)).toEqual([]);
+    expect(lintRule(bullet + "x", PATTERN, cap).some((p) => p.includes(`cap is ${cap}`))).toBe(true);
+    // The routing contract names the same budget when it says what a rule holds.
+    const free = draftMessages(PATTERN, ["a lesson"], null, null, { maxRuleChars: cap }).at(-1)!.content;
+    expect(free).toContain(`does not fit one ${ruleBudget(PATTERN, cap)}-character bullet`);
   });
 });
 

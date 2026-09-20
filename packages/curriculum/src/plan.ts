@@ -109,7 +109,7 @@ export function withoutSections(body: string, headings: readonly string[]): stri
  * how it was verified.
  *
  * Not the lesson line alone. The critic writes `lesson` as one imperative
- * under 300 characters, which is a rule by construction; handed only that,
+ * under 300 characters, which fits one rule bullet at the default cap; handed only that,
  * the drafter never had grounds to propose a skill or an agent. Measured on
  * five real clusters: lesson-only input yielded hook or rule every time, while
  * the body took a 56-reflection pattern to a skill the router accepted. */

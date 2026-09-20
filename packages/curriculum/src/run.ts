@@ -230,6 +230,8 @@ async function stageOne(
   // conclusions it checks the artifact against.
   const drafting = draftingTexts(items);
   const lessons = lessonTexts(items);
+  // One field feeds both the budget the drafter is told and the cap the lint checks.
+  const caps = { maxRuleChars: cfg.promotion.max_rule_chars };
   if (action.action === "refine" && action.reason) {
     // The misfire reasons travel with the evidence, so the redraft is told what
     // was wrong with the artifact it is replacing.
@@ -270,7 +272,7 @@ async function stageOne(
 
   let raw: string;
   try {
-    raw = await chat("drafter", prompts.draftMessages(pattern, drafting, existing, forcedType), {
+    raw = await chat("drafter", prompts.draftMessages(pattern, drafting, existing, forcedType, caps), {
       world,
       jsonMode: true,
     });
@@ -317,7 +319,7 @@ async function stageOne(
   // lint that can only ever fail.
   if (forcedType === null && routedType !== draftedType(answer)) {
     try {
-      raw = await chat("drafter", prompts.draftMessages(pattern, drafting, null, routedType), {
+      raw = await chat("drafter", prompts.draftMessages(pattern, drafting, null, routedType, caps), {
         world,
         jsonMode: true,
       });
@@ -337,7 +339,7 @@ async function stageOne(
   // pattern sat on that loop with 50 reflections behind it.
   if (routedType === "rule" && typeof body === "string") body = artifacts.stripRuleTag(body, pattern);
 
-  const problems = lint(routedType, body, pattern, sources);
+  const problems = lint(routedType, body, pattern, sources, caps);
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");
     if (forcedType === null) reason += `; router: ${routedReason}`;

@@ -86,6 +86,18 @@ lesson-only run asked for a skill or agent because the drafter only saw the
 - [x] skill path, real data: 3 V1 reflections of `controlled-cohort-comparison` -> drafted skill, routed skill, `feat(skill)` branch with a five-step `SKILL.md`
 - [ ] after the plugin picks up a build with this change: run `sil import payloads --days 30` once, then watch `routed:` in curriculum.log
 
+## Rule cap as config (2026-09-20, branch curriculum-artifact-lint-cap-300)
+Trigger: a live run gated `evidence-level-overclaim` at "316 chars; the cap is 300" and
+six patterns "over the per-run cap of 2". Two of the three causes were already on main
+(prompt states the cap net of the tag, b802fe3; a gated-out pattern frees its slot,
+c39d937). The third, the 300 itself, was a constant.
+- [x] `promotion.max_rule_chars` (default 500) replaces the hardcoded 300; `ruleBudget()`
+      in lint.ts is the one arithmetic both the drafter prompt and the lint use
+- [x] tests: configurable lint cap, prompt budget for a custom cap, config cap through
+      `run()` to both the drafter and the lint, core default
+- [ ] operator: raise `promotion.per_run_cap` in config.yaml if two slots a tick is too few;
+      staged-but-unreviewed patterns re-spend a slot every tick until accepted or rejected
+
 Review: the corpus test still cannot see prompts (`prompt_matches` gates only have the
 fixture), by design: prompts are free text. The gate runner deadline stays 250 ms;
 measured about 10 ms median with 2020 payloads (52 ms in an earlier run). Routing is

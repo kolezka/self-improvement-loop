@@ -8,12 +8,13 @@
 // Ported from V1's skilllint + artifactlint, merged because the split only ever
 // existed to keep two sets of callers apart.
 
-import { RULE_END, RULE_START, ruleTag, SECTIONS } from "@sil/core";
+import { DEFAULT_MAX_RULE_CHARS, RULE_END, RULE_START, ruleTag, SECTIONS } from "@sil/core";
 import { nudges } from "./deps.ts";
 
 export const MAX_DESCRIPTION = 500;
 export const MAX_SENTENCES = 2;
-export const MAX_RULE_CHARS = 300;
+/** Default for `promotion.max_rule_chars`: one bullet, its tag included. */
+export const MAX_RULE_CHARS = DEFAULT_MAX_RULE_CHARS;
 export const MIN_BODY_CHARS = 80;
 export const MIN_SHARED_TERMS = 4;
 
@@ -206,11 +207,20 @@ export function lintSkill(text: string, pattern: string, minBodyChars = MIN_BODY
   return problems;
 }
 
+/** Characters the bare bullet may use so that bullet, space and tag fit `maxChars`.
+ *
+ * The drafter is told this number and the lint checks the sum, so the two
+ * cannot drift: a prompt naming one cap against a lint measuring another was a
+ * compliant draft refused on every run. */
+export function ruleBudget(pattern: string, maxChars = MAX_RULE_CHARS): number {
+  return maxChars - 1 - ruleTag(pattern).length;
+}
+
 /** A rule is exactly one bullet with a bounded length and no block markers.
  *
  * `pattern` is what the writer will tag the bullet with. Without it the cap is
  * measured against a shorter line than the one that reaches disk. */
-export function lintRule(text: string, pattern: string | null = null): string[] {
+export function lintRule(text: string, pattern: string | null = null, maxChars = MAX_RULE_CHARS): string[] {
   const lines = (text ?? "").trim().split("\n").filter((line) => line.trim());
   if (lines.length !== 1) return [`a rule is exactly one bullet; got ${lines.length} line(s)`];
   const line = lines[0]!.trim();
@@ -231,9 +241,9 @@ export function lintRule(text: string, pattern: string | null = null): string[] 
   // The writer appends " <!--rule:pattern-->", so the cap covers it.
   const tag = pattern ? ruleTag(pattern) : "";
   const total = line.length + (tag ? 1 + tag.length : 0);
-  if (total > MAX_RULE_CHARS) {
+  if (total > maxChars) {
     const detail = tag ? ` once its ${tag} tag is appended` : "";
-    problems.push(`rule is ${total} chars${detail}; the cap is ${MAX_RULE_CHARS}`);
+    problems.push(`rule is ${total} chars${detail}; the cap is ${maxChars}`);
   }
   return problems;
 }
@@ -255,6 +265,11 @@ export function lintHook(payload: unknown): string[] {
   }
 }
 
+export interface LintOptions {
+  /** `promotion.max_rule_chars`; MAX_RULE_CHARS when absent. */
+  maxRuleChars?: number;
+}
+
 const typeName = (v: unknown): string => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v === "object" ? "dict" : typeof v);
 
 /** Empty array means clean. `payload` is an object for hooks, text for the rest.
@@ -266,7 +281,13 @@ const typeName = (v: unknown): string => (Array.isArray(v) ? "array" : v === nul
  * in a fixture: a served_by suppression forces the ledger's type onto whatever
  * the drafter returned. So each branch checks the shape it needs before touching
  * it. */
-export function lint(artifactType: string, payload: unknown, pattern: string, sourcesText: string): string[] {
+export function lint(
+  artifactType: string,
+  payload: unknown,
+  pattern: string,
+  sourcesText: string,
+  opts: LintOptions = {},
+): string[] {
   if (artifactType === "none") return [];
 
   let problems: string[];
@@ -289,7 +310,7 @@ export function lint(artifactType: string, payload: unknown, pattern: string, so
     body = String(obj["text"] ?? "");
   } else if (artifactType === "rule") {
     if (typeof payload !== "string") return [`rule artifact must be text, not ${typeName(payload)}`];
-    problems = lintRule(payload, pattern);
+    problems = lintRule(payload, pattern, opts.maxRuleChars);
     body = payload;
   } else if (artifactType === "skill" || artifactType === "agent") {
     if (typeof payload !== "string") return [`${artifactType} artifact must be text, not ${typeName(payload)}`];

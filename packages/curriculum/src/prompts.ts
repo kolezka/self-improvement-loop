@@ -33,6 +33,17 @@ import { emptyAnswer, MIN_QUOTE_CHARS, MIN_QUOTE_TERMS, MIN_QUOTE_WORDS, RouteAn
 // this much and no more.
 export const MAX_SOURCE_CHARS = 120_000;
 
+// Raw lessons quoted beside a rolling summary, newest end of the cluster. The
+// rest of the evidence reaches the drafter through the summary, which changes
+// only when new reflections arrive. Quoting all 66 lessons of a mature pattern
+// instead made every run a fresh generation, and the artifact churned.
+export const RECENT_LESSONS = 12;
+
+// Headers this module writes into the drafting prompt. `lint.ts` refuses an
+// artifact that echoes one, so the two lists move together.
+export const SUMMARY_HEADER = "Summary of every lesson recorded for this pattern";
+export const KNOWLEDGE_HEADER = "Artifacts this world already has";
+
 const FENCE_RE = /^```[A-Za-z]*\s*\n([\s\S]*?)\n?```\s*$/;
 const THINK_RE = /^\s*<think>[\s\S]*?<\/think>\s*/i;
 
@@ -87,6 +98,12 @@ export function agentShape(pattern: string): string {
 export interface DraftOptions {
   /** `promotion.max_rule_chars`; the rule shape states the budget net of its tag. */
   maxRuleChars?: number;
+  /** Rolling summary of every lesson in this cluster, built by `context.ts`.
+   * Absent for a small cluster, which is quoted in full instead. */
+  summary?: string | null;
+  /** The world's other patterns and the artifacts already serving them.
+   * Absent in a young world with nothing else to compare against. */
+  knowledge?: string | null;
 }
 
 export function ruleShape(pattern: string, opts: DraftOptions = {}): string {
@@ -204,9 +221,89 @@ export const DRAFTER_SYSTEM =
   "You write Claude Code artifacts from recurring lessons. You reply with one " +
   "JSON object and nothing else: no prose, no code fence, no <think> block.";
 
+export const SUMMARISER_SYSTEM =
+  "You keep one standing summary of a recurring engineering lesson, so a later " +
+  "writer can cover every occurrence without reading them all. You reply with " +
+  "one JSON object and nothing else.";
+
+// Asked for below the store's own cap, so an in-budget reply is never cut mid
+// sentence. `context.MAX_SUMMARY_CHARS` is the hard stop for one that is not.
+export const MAX_SUMMARY_PROMPT_CHARS = 1500;
+
 export const JUDGE_SYSTEM =
   "You are the last gate before an artifact is committed and starts changing an " +
   "agent's behaviour. You reply with one JSON object and nothing else.";
+
+/** The evidence the drafter sees before the quoted lessons.
+ *
+ * The summary carries the lessons that no longer fit; the knowledge map carries
+ * what the rest of the world already says, so a new artifact narrows or
+ * declines instead of restating a neighbour under a new name. */
+function contextBlock(summary: string, total: number, quoted: number, knowledge: string | null): string {
+  let out = "";
+  if (summary) {
+    out += `${SUMMARY_HEADER} (${total} in total, oldest to newest):\n\n${summary}\n\n`;
+    if (quoted < total) {
+      out +=
+        `The ${quoted} most recent lesson(s) follow in full. The other ${total - quoted} reach you ` +
+        "only through the summary above, and what you write must still cover them.\n\n";
+    }
+  }
+  if (knowledge && knowledge.trim()) {
+    out +=
+      `${KNOWLEDGE_HEADER}, and the other lessons it is tracking. Do not restate ` +
+      "one of these under a new name: if one of them already covers the lessons " +
+      "below, say so by declining (no_artifact) or by writing only the part it " +
+      "does not cover. Never contradict one.\n\n" +
+      `${knowledge.trim()}\n\n`;
+  }
+  return out;
+}
+
+/** Messages for the summariser, which runs on the drafter's own role.
+ *
+ * Incremental on purpose: the previous summary plus only the reflections it
+ * does not cover. A full re-summarisation every run would reintroduce the churn
+ * the summary exists to remove, and would re-read the whole cluster each time. */
+export function summaryMessages(
+  pattern: string,
+  newLessons: string[],
+  previous: string | null,
+  coveredCount: number,
+): ChatMessage[] {
+  const prior = (previous ?? "").trim();
+  const user =
+    `Maintain the standing summary of the recurring lesson '${pattern}'. It is ` +
+    "the only form in which older reflections reach the writer of this world's " +
+    "artifact, so everything still true has to survive.\n\n" +
+    'Reply with one JSON object holding exactly one key, "summary", a plain ' +
+    `text string under ${MAX_SUMMARY_PROMPT_CHARS} characters. It states: the ` +
+    "failure that repeats, the conditions it fires under, and the concrete " +
+    "checks, commands, tools and fields the lessons name, verbatim as they name " +
+    "them. Drop one-off session detail, dates and file names that appear once. " +
+    "Add nothing the lessons do not say.\n\n" +
+    (prior
+      ? `Previous summary (covers ${coveredCount} earlier reflection(s)). Keep what still holds, ` +
+        `rewrite only what the new lessons change:\n${prior}\n\n`
+      : "") +
+    `New lesson(s) to fold in (${newLessons.length}):\n\n` +
+    boundedSources(newLessons);
+  return [
+    { role: "system", content: SUMMARISER_SYSTEM },
+    { role: "user", content: user },
+  ];
+}
+
+/** The summary text, or "" when the reply is unreadable.
+ *
+ * "" means the caller keeps the summary it had. A summary is prompt material,
+ * never a gate, so an unusable reply costs prompt quality and nothing else. */
+export function parseSummary(raw: string): string {
+  const data = loads(raw);
+  if (data === null) return "";
+  const value = data["summary"];
+  return typeof value === "string" ? value.trim() : "";
+}
 
 /** Messages for the drafter.
  *
@@ -221,8 +318,19 @@ export function draftMessages(
   artifactType: string | null = null,
   opts: DraftOptions = {},
 ): ChatMessage[] {
-  const sources = boundedSources(lessons);
-  const tail = existing ? `\n\nExisting artifact to refine:\n${existing}` : "";
+  const summary = (opts.summary ?? "").trim();
+  // With a summary in front of it the prompt quotes only the newest lessons:
+  // the older ones are in the summary, and re-quoting them is what made every
+  // run redraft from scratch.
+  const quoted = summary && lessons.length > RECENT_LESSONS ? lessons.slice(-RECENT_LESSONS) : lessons;
+  const head = contextBlock(summary, lessons.length, quoted.length, opts.knowledge ?? null);
+  const sources = boundedSources(quoted);
+  const tail = existing
+    ? "\n\nExisting artifact to refine. Keep its wording wherever the lessons " +
+      "still support it and change only what a new lesson requires; a rewrite " +
+      "that says the same thing in different words is not a refinement:\n" +
+      existing
+    : "";
   let user: string;
   if (artifactType !== null && artifactType in SHAPES) {
     user =
@@ -234,6 +342,7 @@ export function draftMessages(
       SHAPES[artifactType]!(pattern, opts) +
       "\n\nDo not restate this task, do not add commentary, do not leave " +
       "angle-bracket fill-ins, do not include secrets or tokens.\n\n" +
+      head +
       "Lessons to generalise:\n\n" +
       sources +
       tail;
@@ -266,6 +375,7 @@ export function draftMessages(
       "in the wrong shape is rejected and this lesson is dropped. Do not " +
       "restate this task, do not add commentary, do not leave angle-bracket " +
       "fill-ins, do not include secrets or tokens.\n\n" +
+      head +
       "Lessons to generalise:\n\n" +
       sources +
       tail;

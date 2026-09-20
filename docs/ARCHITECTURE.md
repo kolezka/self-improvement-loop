@@ -96,6 +96,8 @@ Data dir (`$SIL_DATA_DIR`, default `~/.local/share/self-improvement-loop/`):
 ```
 worlds/<world>/reflections/<YYYY-MM-DD>-<pattern>-<id>.md
 worlds/<world>/aliases.json
+worlds/<world>/digests/<pattern>.json   rolling summary of a cluster, plus the
+                                        reflection ids it covers (a cache)
 worlds/<world>/learned/             default target repo (git, auto-init) when the
                                     world configures no `target`
 ```
@@ -314,6 +316,32 @@ failure:
 New: the planner reads scorecards and adds
 `refine` (misfires outnumber helpful votes) and `retire-candidate` (no use in
 `retire_after_days`) proposals. Both are surfaced, never executed automatically.
+
+### What the drafter sees (`context.ts`)
+
+A drafting prompt carries more than one cluster's raw lessons, because both
+failures that produces were measured in the default world:
+
+* **The rolling summary.** `evidence-level-overclaim` reached 66 reflections
+  against one 300 character rule. Re-quoting every lesson on every run made each
+  run a fresh generation, so the rule churned wording without covering more
+  evidence. A cluster of `SUMMARY_MIN_LESSONS` (8) or more gets a standing
+  summary, written by one extra `drafter` call and cached under
+  `worlds/<world>/digests/<pattern>.json` keyed by the reflection ids it covers.
+  It is updated incrementally (previous summary plus only the new lessons) and
+  reused untouched while nothing is new, so the drafting input barely moves
+  between runs. The prompt then quotes the `RECENT_LESSONS` (12) newest lessons
+  in full and tells the drafter the rest reach it through the summary.
+* **The knowledge map.** Every other pattern in the world, its reflection count
+  and the artifact serving it, one line each, with the instruction not to
+  restate a neighbour under a new name. Without it a drafter cannot know the
+  world already promoted a near-identical rule under a different pattern.
+
+Neither is a gate: lint's grounding check and the judge keep reading the full
+source text of every reflection in the cluster. A summariser call that fails
+falls back to the cached summary, then to the raw lessons, and never blocks a
+promotion. A redraft that reproduces the artifact already in place is reported
+as `no change` and stages nothing, so an unchanged line never reaches review.
 
 Accept: verify `reviewed_state`, re-check the branch head inside the scratch
 worktree against the reviewed sha, verify the branch carries only the artifact and

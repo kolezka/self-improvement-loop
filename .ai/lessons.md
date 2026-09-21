@@ -69,3 +69,18 @@
   worked on a machine with a global `user.email` and staged nothing on a machine
   without one. When two code paths build the same artifact, make them one path; a
   second implementation is a place for half the invariants to go missing.
+- 2026-09-21: `Bun.build({ target: "browser" })` does not refuse a `node:` import; it
+  bundles a polyfill under a `// node:crypto` header, and a `from "node:` string never
+  survives bundling in any target. A build check that greps the bundle for the import
+  specifier is vacuous. Check the source import closure, or the polyfill header, and
+  put a positive control on the checker itself, not on another artifact.
+- 2026-09-21: A first-hand probe beat every written source on the Claude Code hooks
+  module API. The blog said `$.process.run` cannot detach (a `sh -c 'nohup ... &'`
+  returns in 3 ms), the issue thread said the transcript path is unreachable
+  (`classic.Stop` carries it), and the typings did not say `claude plugin validate`
+  refuses `export const register = ...` (it wants a top level function declaration).
+  For an unreleased API, spend the first hour on a throwaway plugin and a debug log.
+- 2026-09-21: A guard on a bare literal (`SIL_HOOK_MODULE=1`) leaks through every
+  child process; a nested `claude` inherited it and would have lost its hooks. Bind a
+  process-scoped flag to something only that process shares with its children, here
+  the pid the hook shell sees as `$PPID`.

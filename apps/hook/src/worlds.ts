@@ -1,11 +1,13 @@
 // World resolution: which world's nudges/rules apply to a cwd. Ported from
 // sil/hook.py's _resolve_world, _cwd_under, _git_head. Mirrors
 // packages/core/src/config.ts's worldForCwd without importing config.ts
-// (that module pulls in yaml/zod, banned at hook runtime).
+// (that module pulls in yaml/zod, banned at hook runtime). The matching
+// itself lives in @sil/core/hook-snapshot; this file supplies realpath.
 
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { cwdUnder as cwdUnderWith, resolveWorld as resolveWorldWith } from "@sil/core/hook-snapshot";
 import type { HookSnapshot, HookWorld } from "./snapshot.ts";
 import { defaultWorld } from "./snapshot.ts";
 
@@ -24,45 +26,17 @@ function expandHome(p: string): string {
   return p;
 }
 
-function isWithin(child: string, parent: string): boolean {
-  const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
 /** cwd is the repo itself, or under it. Malformed input is not-under, never
  * an exception: a bad path in an inbox lesson must not break delivery. */
 export function cwdUnder(cwd: string, repo: string): boolean {
-  try {
-    return isWithin(realOrResolve(cwd), realOrResolve(repo));
-  } catch {
-    return false;
-  }
+  return cwdUnderWith(cwd, repo, realOrResolve);
 }
 
 /** Longest `repos` prefix match on cwd; the first world with an empty
  * `repos` list is the catch-all; no match at all falls back to the built-in
  * default world. */
 export function resolveWorld(snapshot: HookSnapshot, cwd: string): HookWorld {
-  const worlds = snapshot.worlds ?? [];
-  const target = realOrResolve(cwd);
-
-  let best: { score: number; world: HookWorld } | null = null;
-  let fallback: HookWorld | null = null;
-  for (const w of worlds) {
-    if (!w || typeof w !== "object") continue;
-    const repos = w.repos ?? [];
-    if (repos.length === 0 && fallback === null) fallback = w;
-    for (const repo of repos) {
-      const r = realOrResolve(repo);
-      if (isWithin(target, r)) {
-        const score = r.split("/").length;
-        if (!best || score > best.score) best = { score, world: w };
-      }
-    }
-  }
-  if (best) return best.world;
-  if (fallback) return fallback;
-  return defaultWorld();
+  return resolveWorldWith(snapshot, cwd, realOrResolve, defaultWorld());
 }
 
 /** `git rev-parse HEAD` in `cwd`, or null on any failure (not a repo, no

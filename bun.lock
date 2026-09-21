@@ -49,6 +49,14 @@
         "@sil/nudges": "workspace:*",
       },
     },
+    "apps/hook-module": {
+      "name": "@sil/hook-module",
+      "version": "0.3.4",
+      "dependencies": {
+        "@sil/core": "workspace:*",
+        "@sil/nudges": "workspace:*",
+      },
+    },
     "apps/server": {
       "name": "@sil/server",
       "version": "0.3.4",
@@ -243,6 +251,8 @@
     "@sil/feedback": ["@sil/feedback@workspace:packages/feedback"],
 
     "@sil/hook": ["@sil/hook@workspace:apps/hook"],
+
+    "@sil/hook-module": ["@sil/hook-module@workspace:apps/hook-module"],
 
     "@sil/nudges": ["@sil/nudges@workspace:packages/nudges"],
 

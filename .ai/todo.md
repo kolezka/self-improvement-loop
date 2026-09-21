@@ -52,6 +52,7 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [x] CI workflow on push/PR: `.github/workflows/ci.yml`. It now builds before the tests, because `dist/` is untracked and the drift test skips without a build.
 - [ ] second review by another model family (Codex) before use on employer repos
 - [ ] Codex and OpenCode have no hook equivalent; V1 had a parity build, V2 has none
+- [x] Claude Code function hooks (Mods, upstream anthropics/claude-code#91870): assessed and then built 2026-09-21 (see "Function hooks module" below). Still unshipped upstream and flag-gated (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`); without the flag the `modules` key is ignored and nothing changes. Re-check the upstream CHANGELOG before relying on it in a release note.
 
 ## Web UI version badge (done 2026-09-19)
 - [x] inject the root package.json version into the Svelte bundle via a vite `define`
@@ -363,3 +364,49 @@ run red against the old code first:
       fail. `bun install --frozen-lockfile` does not catch it, it exits 0. Fixed at the
       root in `scripts/bump-version.sh`, guarded by `tests/lockfile.test.ts` and by a
       `git diff --exit-code -- bun.lock` step in CI.
+
+## Function hooks module (2026-09-21, branch eval-function-hooks-blog-improvements)
+
+Goal: remove the bun spawn on the per tool call events. Measured ceiling: 15 ms per
+event, 30 ms per tool call (`bench-hooks`). Probe on Claude Code 2.1.278 with
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` (2026-09-21): a hooks module loads from
+`"modules": ["../dist/hook-module.js"]`; `classic.SessionStart`, `classic.UserPromptSubmit`,
+`classic.PreToolUse`, `classic.PostToolUse`, `classic.Stop`, `turn.complete`, `session.end`
+fire; `$.env.set` inside `classic.SessionStart` reaches the command hooks beneath;
+`$.process.run(["sh","-c","nohup ... &"])` returns in 3 ms; the module has no Node
+(`node:fs` import refused at load), `$.fs` has read/write/list/exists/stat only. With the
+flag off (2.1.276, 2.1.278) the `modules` key is ignored and command hooks run as before.
+
+Design: one plugin, one `hooks/hooks.json`. The module owns SessionStart, UserPromptSubmit,
+PreToolUse, PostToolUse in process and sets `SIL_HOOK_MODULE=1` so the guarded command
+hooks for those four events skip the bun spawn. Stop, SubagentStop, SessionEnd stay
+command hooks (transcript scan needs offsets and 20 MB reads). The module never appends
+to shared files: it buffers writes and hands them to the Stop/SessionEnd command hook
+through `sessions/<id>/module-spool.json`, ingested under the session lock.
+
+- [x] A: pure cores shared by hook and module: `@sil/core/layout` (paths from an env getter,
+      posix helpers, isWithin), `@sil/core/lessons` (selectLessons, rulesBlockFrom,
+      formatLesson), `@sil/core/hook-snapshot` (coerceSnapshot, resolveWorld over a realpath
+      callback), `@sil/nudges/dispatch-core` (dispatchWith over a sink, lintLoadedNudges);
+      existing wrappers keep their signatures and tests
+- [x] B: `@sil/core/spool` types, `apps/hook/src/spool-ingest.ts` called from Stop and
+      SessionEnd under the session lock (batched per target, never throws, orphan sweep after
+      30 min), hooks.json guard plus `modules`, `dist/hook-module.js` bundle target with a
+      polyfill and size check, dist and manifest tests
+- [x] C: `apps/hook-module` register.ts over `$` with a fake engine test harness; typed
+      against a hand-written subset of the upstream `claude-code` contract and checked once
+      against the generated one (`/plugin-types`); `claude plugin validate .` passes
+- [x] guard bound to the claude pid: the module sets `SIL_HOOK_MODULE=<pid>` from
+      `sh -c 'echo $PPID'`, the command hooks compare with their own `$PPID`, so a nested
+      `claude` keeps its command hooks
+- [x] independent review (Fable): 14 findings, the 10 confirmed ones fixed with red then green
+      tests; open: a per-flush id in the spool wire format would close a narrow duplicate
+      window when Stop and SessionEnd overlap and new lines are buffered in between
+- [x] verify: `bun test` 1346 pass 0 fail, `bun run build`, live run on and off the flag with
+      `--plugin-dir` (rule, lesson and nudge delivered in both; spool ingested; module cost
+      0.8 ms PreToolUse, 0.5 ms PostToolUse, 67 ms SessionStart, see docs/BENCHMARK.md)
+- [x] docs: ARCHITECTURE hook fast path section, INSTALL (flag), BENCHMARK numbers
+- [ ] not done: `bun run lint:dashes` reads tracked files only, so the untracked module was
+      checked with `rg` by hand; commit makes the lint cover it
+- [ ] not done: the marketplace release still ships the `modules` key to every user; the key
+      is ignored on 2.1.276 and 2.1.278 with the flag off, older builds not tested here

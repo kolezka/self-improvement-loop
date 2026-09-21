@@ -63,7 +63,7 @@ commands/*.md               /reflect /loop /curriculum /feedback
 skills/self-improvement-loop/SKILL.md
 packages/*                  TypeScript engine, one package per concern (@sil/core, @sil/store, ...)
 apps/{cli,hook,server,web}  entry points: the sil CLI, the hook fast path, the web API, the Svelte UI
-dist/{hook,cli,server,gate-runner}.js, dist/web/    built single-file bundles the plugin actually runs (built by the release workflow, not committed on main; see docs/RELEASE.md)
+dist/{hook,cli,server,gate-runner,hook-module}.js, dist/web/    built single-file bundles the plugin actually runs (built by the release workflow, not committed on main; see docs/RELEASE.md)
 scripts/sil                 shim: resolves the plugin root, execs `bun dist/cli.js` (or source, in a dev checkout)
 ```
 
@@ -203,6 +203,28 @@ does the `llm.use` op behind the web Models pane.
 
 One entry point for every event; imports only `@sil/core` and `@sil/nudges`; wall
 budget 250 ms shared by nudge gates. Everything is wrapped so a failure is a silent exit 0.
+
+With `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, Claude Code loads a hooks module
+(`dist/hook-module.js`, registered via `hooks.json`'s top-level `modules` key)
+that owns SessionStart, UserPromptSubmit, PreToolUse and PostToolUse in
+process; the four command-hook entries for those events are guarded with
+`[ "$SIL_HOOK_MODULE" = "$PPID" ] || bun dist/hook.js` and skip once the module
+sets `SIL_HOOK_MODULE` to the pid of its own claude process. The comparison is
+with the hook shell's parent pid, so a nested `claude` started from a Bash tool
+call inherits the variable, does not match, and keeps its four command hooks;
+when the module cannot read the pid it leaves the variable unset and every
+command hook runs. Stop, SubagentStop and SessionEnd stay command-only: the
+module's sandbox has no Node and can only overwrite a whole file, so it cannot
+append to the state dir's JSONL logs. Instead it buffers appends and moves for
+a session into `sessions/<session_id>/module-spool.json`; the Stop and
+SessionEnd command hooks apply and delete that spool under the same session
+lock they already hold, before either checks for a missing transcript. The
+module caches the snapshot, resolved world and loaded nudge list per session,
+so a config edit, `sil init`, or a newly promoted nudge is seen by the next
+session, not the current one; the command hook path re-reads all three on
+every event. A session that never gets a Stop or SessionEnd (crash, kill, or
+a last Stop with `stop_hook_active`) has its spool swept and applied at the
+next Stop or SessionEnd of any session, once it is 30 minutes old.
 
 | Event | Action |
 |---|---|

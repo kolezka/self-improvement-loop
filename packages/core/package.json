@@ -11,7 +11,11 @@
     "./consts": "./src/consts.ts",
     "./errors": "./src/errors.ts",
     "./fsx": "./src/fsx.ts",
-    "./samples": "./src/samples.ts"
+    "./samples": "./src/samples.ts",
+    "./layout": "./src/layout.ts",
+    "./lessons": "./src/lessons.ts",
+    "./hook-snapshot": "./src/hook-snapshot.ts",
+    "./spool": "./src/spool.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1",

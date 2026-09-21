@@ -128,3 +128,25 @@ What the live run taught:
   as used and helpful in session 2, so the scorecard for that rule shows
   `helpful: 1` after one cycle.
 
+## Live run, 2026-09-21: hooks module against command hooks
+
+One prompt with one Bash tool call, Claude Code 2.1.278, the worktree plugin
+loaded with `claude --plugin-dir`, the installed copy disabled, isolated `SIL_*`
+dirs seeded with one rule, one inbox lesson and one PreToolUse nudge. Run once
+with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` (the module owns the four in-session
+events) and once without (command hooks only). Both runs delivered the rule, the
+lesson and the nudge to the model, queued the session, and kicked the worker.
+
+| event | command hook (`bun dist/hook.js`, transcript `durationMs`) | module (own work, `hook:module:*` in hook-runs.jsonl) |
+|---|---|---|
+| SessionStart, cold | 163 to 191 ms | 67 and 98 ms over two runs (includes the pid probe 9 ms, `realpath` 6 ms, `git rev-parse` 2 ms) |
+| UserPromptSubmit | not recorded by Claude Code | 0.8 and 1 ms |
+| PreToolUse | 22 ms | 0.8 and 4.1 ms |
+| PostToolUse | about 15 ms (`bench-hooks`) | 0.5 ms both runs |
+| Stop, SessionEnd | unchanged, still command hooks | spool written once per Stop, ingested by the command hook |
+
+Per tool call that is 30 ms down to under 2 ms, with the guarded command hook
+reduced to a `sh` test that exits at once. The module's `classic.PreToolUse`
+`settled in` time reported by `claude --debug` still includes every other
+plugin's command hooks beneath it, so it is not a measure of this plugin.
+

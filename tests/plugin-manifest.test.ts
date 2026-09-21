@@ -78,6 +78,14 @@ describe("version", () => {
 
 // --- hooks.json --------------------------------------------------------------
 
+// Events the hooks module owns in process; the command hook below skips them
+// via the $SIL_HOOK_MODULE guard the module sets. The value is the claude pid
+// and the hook's own shell compares it with $PPID, so a nested claude keeps
+// its command hooks. Stop/SubagentStop/SessionEnd stay command-only: they run
+// the spool handshake and other work the sandbox cannot do.
+const MODULE_GUARDED_EVENTS = new Set(["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"]);
+const GUARD_PREFIX = '[ "$SIL_HOOK_MODULE" = "$PPID" ] || ';
+
 describe("hooks.json", () => {
   const data = JSON.parse(readFileSync(join(ROOT, "hooks", "hooks.json"), "utf8"));
   const hooks = data.hooks as Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string; timeout: number }> }>>;
@@ -91,12 +99,31 @@ describe("hooks.json", () => {
     }
   });
 
+  test("registers the hooks module", () => {
+    expect(data.modules).toEqual(["../dist/hook-module.js"]);
+  });
+
   test("every event calls bun dist/hook.js with a timeout of 5s or less", () => {
     for (const entries of Object.values(hooks)) {
       const cmd = entries[0]!.hooks[0]!;
       expect(cmd.type).toBe("command");
-      expect(cmd.command).toBe('bun "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"');
+      expect(cmd.command.endsWith('bun "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"')).toBe(true);
       expect(cmd.timeout).toBeLessThanOrEqual(10);
+    }
+  });
+
+  test("module-owned events guard the command hook behind $SIL_HOOK_MODULE", () => {
+    for (const event of MODULE_GUARDED_EVENTS) {
+      const cmd = hooks[event]![0]!.hooks[0]!.command;
+      expect(cmd.startsWith(GUARD_PREFIX)).toBe(true);
+    }
+  });
+
+  test("Stop, SubagentStop, SessionEnd are not guarded", () => {
+    for (const event of ["Stop", "SubagentStop", "SessionEnd"]) {
+      const cmd = hooks[event]![0]!.hooks[0]!.command;
+      expect(cmd.startsWith(GUARD_PREFIX)).toBe(false);
+      expect(cmd).toBe('bun "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"');
     }
   });
 

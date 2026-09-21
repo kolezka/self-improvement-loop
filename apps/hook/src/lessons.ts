@@ -1,35 +1,28 @@
 // Inbox lesson delivery + rules block extraction. Ported from sil/hook.py's
 // _format_lesson, _read_delivered, _bump_lesson_deliveries,
 // _session_start_mtime, _pending_lessons, _rules_block.
+//
+// The selection and the marker parsing live in @sil/core/lessons, which is
+// pure; this file does the reading, the delivery bookkeeping and the guards
+// that need a stat.
 
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as paths from "@sil/core/paths";
-import { RULE_START, RULE_END } from "@sil/core/consts";
+import { LESSON_ARCHIVE_AT_DELIVERIES, rulesBlockFrom, selectLessons } from "@sil/core/lessons";
+import type { Lesson, LessonCandidate } from "@sil/core/lessons";
 import { atomicWrite } from "@sil/core/fsx";
 import { cwdUnder } from "./worlds.ts";
 
-const LESSON_ARCHIVE_AT_DELIVERIES = 5;
+export type { Lesson };
+export { formatLesson } from "@sil/core/lessons";
+
 // The rules block is a handful of lines. Anything above this is not a rules
 // file, and reading it on the hook's hot path is time we cannot afford.
 const MAX_RULES_BYTES = 256 * 1024;
 
-export interface Lesson {
-  id: string;
-  pattern?: string;
-  text?: string;
-  created?: string;
-  repo?: string;
-  deliveries?: number;
-  [key: string]: unknown;
-}
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-export function formatLesson(lesson: Lesson): string {
-  return `Lesson (${lesson["pattern"] ?? ""}): ${lesson["text"] ?? ""}`;
 }
 
 function readDelivered(path: string): Set<string> {
@@ -139,38 +132,30 @@ export function pendingLessons(
   const deliveredFile = join(paths.sessionDir(sessionId), "delivered");
   const already = readDelivered(deliveredFile);
 
-  const candidates: { obj: Lesson; path: string }[] = [];
+  const candidates: LessonCandidate[] = [];
   for (const name of names) {
     const stem = name.slice(0, -".json".length);
     if (already.has(stem)) continue;
     const path = join(inbox, name);
+    let mtimeMs = 0;
     if (minMtime !== null) {
       try {
-        if (statSync(path).mtimeMs < minMtime) continue;
+        mtimeMs = statSync(path).mtimeMs;
       } catch {
         continue;
       }
+      if (mtimeMs < minMtime) continue;
     }
-    let parsed: unknown;
+    let raw: unknown;
     try {
-      parsed = JSON.parse(readFileSync(path, "utf8"));
+      raw = JSON.parse(readFileSync(path, "utf8"));
     } catch {
       continue;
     }
-    if (!isRecord(parsed)) continue;
-    const lid = typeof parsed["id"] === "string" ? parsed["id"] : parsed["id"] != null ? String(parsed["id"]) : "";
-    if (!lid || already.has(lid)) continue;
-    const repo = parsed["repo"];
-    if (typeof repo === "string" && repo && !cwdUnder(cwd, repo)) continue;
-    candidates.push({ obj: parsed as Lesson, path });
+    candidates.push({ path, stem, mtimeMs, raw });
   }
 
-  candidates.sort((a, b) => {
-    const ca = String(a.obj["created"] ?? "");
-    const cb = String(b.obj["created"] ?? "");
-    return ca < cb ? 1 : ca > cb ? -1 : 0;
-  });
-  const chosen = candidates.slice(0, limit);
+  const chosen = selectLessons(candidates, already, (repo) => cwdUnder(cwd, repo), limit, minMtime);
 
   for (const { obj, path } of chosen) {
     try {
@@ -207,8 +192,5 @@ export function rulesBlock(world: { rules_inject?: boolean; rules_file?: string 
   } catch {
     return "";
   }
-  const start = text.indexOf(RULE_START);
-  const end = text.indexOf(RULE_END);
-  if (start === -1 || end === -1 || end <= start) return "";
-  return text.slice(start + RULE_START.length, end).trim();
+  return rulesBlockFrom(text);
 }

@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./dispatch-core": "./src/dispatch-core.ts",
+    "./gates": "./src/gates.ts",
+    "./lint": "./src/lint.ts"
   },
   "dependencies": {
     "@sil/core": "workspace:*"

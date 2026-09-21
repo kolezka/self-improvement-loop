@@ -12,6 +12,7 @@
     "build": "bun run scripts/build.ts",
     "bench": "bun run scripts/bench.ts",
     "bench:hooks": "bun run scripts/bench-hooks.ts",
+    "eval:alias-semantic": "bun run scripts/eval-alias-semantic.ts",
     "test": "bun test",
     "typecheck": "bun x tsc -p tsconfig.json --noEmit",
     "check:web": "bun run --cwd apps/web check",

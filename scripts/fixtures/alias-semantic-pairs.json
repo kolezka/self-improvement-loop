@@ -1,0 +1,109 @@
+{
+  "note": "Hand written pattern pairs for the live evaluation of the semantic alias pass. `expected` is the human label. `ambiguous` means a person could argue either way: report what the model said, do not score it as right or wrong. Excerpts are written in the shape of a real reflection lesson, but no line here comes from a private log.",
+  "pairs": [
+    {
+      "id": "equivalent-stale-env",
+      "expected": "same_mechanism",
+      "why": "One cause: a value is cached and read again after it goes out of date. The names differ only in wording.",
+      "a": {
+        "name": "stale-env",
+        "reflections": [
+          { "id": "fixture-01", "excerpt": "I read the environment variable from the cached config object after the refresh had already written a new value. Read the live source after a refresh, never the copy taken before it." },
+          { "id": "fixture-02", "excerpt": "The process kept the value it read at boot. Re-read the variable at the point of use." }
+        ]
+      },
+      "b": {
+        "name": "cached-config-read-before-refresh",
+        "reflections": [
+          { "id": "fixture-03", "excerpt": "The config cache answered from the copy it took before the reload finished, so the new value was invisible for one request. Invalidate the cache before the reload, not after." },
+          { "id": "fixture-04", "excerpt": "A memoised getter returned the pre-reload value. Clear the memo when the source changes." }
+        ]
+      }
+    },
+    {
+      "id": "equivalent-partial-callsites",
+      "expected": "same_mechanism",
+      "why": "Both are: a change was called safe after checking one consumer instead of every call site.",
+      "a": {
+        "name": "verify-callsites",
+        "reflections": [
+          { "id": "fixture-05", "excerpt": "I renamed a shared symbol, checked the obvious consumer, and called the change safe. One unguarded call site was the whole bug. Enumerate every call site before calling a change safe." }
+        ]
+      },
+      "b": {
+        "name": "generalised-from-one-consumer",
+        "reflections": [
+          { "id": "fixture-06", "excerpt": "I read the first caller, assumed the rest matched, and shipped. The second caller had no null guard. Read every caller, not the first one." }
+        ]
+      }
+    },
+    {
+      "id": "distinct-same-topic",
+      "expected": "distinct",
+      "why": "Both patterns are about tests, and the words overlap, but the causes have nothing in common.",
+      "a": {
+        "name": "test-not-run-before-claiming-green",
+        "reflections": [
+          { "id": "fixture-07", "excerpt": "I said the suite passed without running it. Run the test and quote the output before reporting a result." }
+        ]
+      },
+      "b": {
+        "name": "test-fixture-leaks-machine-state",
+        "reflections": [
+          { "id": "fixture-08", "excerpt": "The fixture read the operator's real home directory, so the test passed on my machine and failed in CI. Point every root at a temp directory." }
+        ]
+      }
+    },
+    {
+      "id": "distinct-shared-tool",
+      "expected": "distinct",
+      "why": "Both mention git. One is about a destructive command, the other about a stale checkout.",
+      "a": {
+        "name": "shared-stash-stack",
+        "reflections": [
+          { "id": "fixture-09", "excerpt": "I popped a stash entry another session had pushed, and lost its work. Apply by SHA, never pop from a shared stack." }
+        ]
+      },
+      "b": {
+        "name": "implemented-on-stale-branch",
+        "reflections": [
+          { "id": "fixture-10", "excerpt": "I built the feature on a worktree that was 40 commits behind main, so half the diff was a revert. Fetch and compare with the remote before the first edit." }
+        ]
+      }
+    },
+    {
+      "id": "ambiguous-unverified-claim",
+      "expected": "ambiguous",
+      "why": "Both are unverified claims. A person could call that one mechanism, or could split the counted number from the remembered fact.",
+      "a": {
+        "name": "reported-a-count-without-counting",
+        "reflections": [
+          { "id": "fixture-11", "excerpt": "I reported a number of matches from memory instead of re-running the search. Re-run the command and quote the raw output." }
+        ]
+      },
+      "b": {
+        "name": "asserted-absence-without-searching",
+        "reflections": [
+          { "id": "fixture-12", "excerpt": "I said no call site existed without searching for one. An absence claim needs the same evidence as a presence claim." }
+        ]
+      }
+    },
+    {
+      "id": "ambiguous-silent-fallback",
+      "expected": "ambiguous",
+      "why": "A swallowed error and a default value are the same failure to some reviewers and two different ones to others.",
+      "a": {
+        "name": "catch-swallows-the-error",
+        "reflections": [
+          { "id": "fixture-13", "excerpt": "The shared client caught the failure and returned an empty list, so every consumer saw a healthy empty result. Let the error travel; handle it at the boundary." }
+        ]
+      },
+      "b": {
+        "name": "default-hides-a-missing-value",
+        "reflections": [
+          { "id": "fixture-14", "excerpt": "A missing flag fell back to `false`, which reads the same as a real `false`. Separate absent from set-to-false." }
+        ]
+      }
+    }
+  ]
+}

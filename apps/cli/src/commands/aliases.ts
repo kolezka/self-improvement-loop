@@ -1,8 +1,10 @@
 // sil aliases: list, set, rm the one-hop pattern alias map, plus suggest
-// candidates from token overlap. suggest never writes; only set and rm do.
+// candidates from token overlap, with an optional semantic second opinion on
+// each candidate. suggest never writes; only set and rm do.
 
 import { isSlug, loadConfig, ValidationError } from "@sil/core";
-import { loadAliases, saveAliases, suggestAliases } from "@sil/store";
+import { assessAliasSuggestions, type SemanticAssessment, type SemanticVerdict } from "@sil/curriculum";
+import { loadAliases, saveAliases } from "@sil/store";
 import { resolveWorld } from "../common.ts";
 
 export interface AliasesListOptions {
@@ -79,17 +81,54 @@ export interface AliasesSuggestOptions {
   world?: string;
 }
 
-export function cmdAliasesSuggest(opts: AliasesSuggestOptions): number {
+// Fixed labels. The model picks an option id; every word a human reads here
+// is written in this file, never generated.
+const VERDICT_LABEL: Record<SemanticVerdict, string> = {
+  same_mechanism: "same mechanism",
+  distinct: "different mechanisms",
+  unsure: "unsure",
+};
+
+function semanticLines(semantic: SemanticAssessment | null, cap: number): string[] {
+  if (semantic === null) return [`    semantic: not assessed (past the candidate cap of ${cap})`];
+  // A row without a verdict was not assessed, whatever its status says. Never
+  // supply a default here: a printed `unsure` would look like a model answer.
+  if (semantic.status === "unavailable" || semantic.verdict === null) {
+    return [`    semantic: unavailable (${semantic.error ?? "no verdict reported"})`];
+  }
+  const confidence = semantic.confidence === null ? "confidence not reported" : `confidence ${semantic.confidence.toFixed(2)}`;
+  const model = semantic.model === null ? "unknown model" : `model ${semantic.model}`;
+  return [
+    `    semantic: ${VERDICT_LABEL[semantic.verdict]} (${confidence}, ${model})`,
+    `      evidence ${semantic.alias}: ${semantic.alias_reflection_ids.join(", ") || "none"}`,
+    `      evidence ${semantic.canonical}: ${semantic.canonical_reflection_ids.join(", ") || "none"}`,
+  ];
+}
+
+export async function cmdAliasesSuggest(opts: AliasesSuggestOptions): Promise<number> {
   const cfg = loadConfig();
   const world = resolveWorld(cfg, opts.world);
-  const suggestions = suggestAliases(world.name);
-  if (suggestions.length === 0) {
+  // Reads only. The semantic pass hangs an assessment off each candidate and
+  // changes neither the candidates, their counts nor their order.
+  const report = await assessAliasSuggestions(cfg, world);
+  if (report.suggestions.length === 0) {
     console.log(`no alias suggestions for world ${world.name}`);
     return 0;
   }
   console.log(`possible near-duplicate patterns (same mechanism, different slug). Review each, then apply with the command shown:`);
-  for (const s of suggestions) {
+  // A config, endpoint or credential problem stops every pair for the same
+  // reason, and no pair carries an assessment. Say it once and leave the
+  // per-candidate lines out. `none_assessed` also gets the one-line summary,
+  // because per-pair errors alone do not say the whole pass produced nothing.
+  const preflightFailed = report.status === "preflight_failed";
+  if (preflightFailed || report.status === "none_assessed") {
+    console.log(`  semantic assessment unavailable: ${report.reason}`);
+  }
+  for (const s of report.suggestions) {
     console.log(`  ${s.alias} (${s.alias_count}) ~ ${s.canonical} (${s.canonical_count})  score=${s.score.toFixed(2)}`);
+    if (report.status !== "disabled" && !preflightFailed) {
+      for (const line of semanticLines(s.semantic, cfg.alias_semantic.max_candidates)) console.log(line);
+    }
     console.log(`    sil aliases set ${s.alias} ${s.canonical} --world ${world.name}`);
   }
   return 0;

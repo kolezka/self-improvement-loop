@@ -199,6 +199,13 @@ sil aliases list
 re-points any alias that pointed at the slug you just aliased, so a two hop
 chain (which would resolve to nothing) can never form.
 
+Token overlap misses a pair that shares a mechanism but no words. Setting
+`alias_semantic.enabled: true` adds one typed question per candidate on the
+`system-one` endpoint that serves the judge, and prints the verdict under the
+candidate. It is off by default, it still only proposes, and a pair judged
+`distinct` stays on the list. See
+[docs/OPERATIONS.md](docs/OPERATIONS.md#semantic-alias-review-optional-off-by-default).
+
 ## Privacy
 
 Reflections, the ledger, scorecards and the queue all live on disk under

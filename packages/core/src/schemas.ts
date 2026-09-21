@@ -66,6 +66,24 @@ export const WorkerConfig = z.object({
 });
 export type WorkerConfig = z.infer<typeof WorkerConfig>;
 
+/** Opt-in second opinion on the deterministic alias suggestions. Off by
+ * default: it sends bounded reflection excerpts to the System One endpoint
+ * that serves the judge role. It never writes an alias, never changes a count
+ * and never touches promotion. */
+export const AliasSemanticConfig = z.object({
+  enabled: z.boolean().default(false),
+  // Candidates are assessed in the order suggestAliases returns them. The rest
+  // stay listed and unassessed, so the deterministic list never shrinks.
+  max_candidates: z.number().int().min(1).max(100).default(10),
+  max_reflections_per_pattern: z.number().int().min(1).max(10).default(2),
+  max_excerpt_chars: z.number().int().min(80).max(4000).default(600),
+  timeout_s: z.number().int().min(1).max(120).default(20),
+  concurrency: z.number().int().min(1).max(8).default(2),
+  // Below this bar the verdict is `unsure`, whatever the model picked.
+  min_confidence: z.number().min(0).max(1).default(0.6),
+});
+export type AliasSemanticConfig = z.infer<typeof AliasSemanticConfig>;
+
 export const WebConfig = z.object({
   port: z.number().int().default(8766),
   // Loopback by default. Set a LAN or tailscale address, or 0.0.0.0 for every
@@ -83,6 +101,7 @@ export const Config = z.object({
   promotion: Promotion.default(() => Promotion.parse({})),
   worker: WorkerConfig.default(() => WorkerConfig.parse({})),
   web: WebConfig.default(() => WebConfig.parse({})),
+  alias_semantic: AliasSemanticConfig.default(() => AliasSemanticConfig.parse({})),
 });
 export type Config = z.infer<typeof Config>;
 

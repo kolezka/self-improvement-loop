@@ -114,6 +114,120 @@ zero-shot decision engine": zero-shot accuracy on the typed-decisions set is
 advertised error after temperature refitting. Treat a zero-shot Laya judge as an
 experiment, keep `auto_merge` off, and read the staged branches yourself.
 
+### Semantic alias review (optional, off by default)
+
+`sil aliases suggest` compares slug tokens. It cannot see that
+`stale-cached-env` and `env-read-before-refresh` are one mechanism under two
+names, and it fires on pairs that only share vocabulary. With this feature on,
+each candidate pair also gets one typed question on the `system-one` endpoint
+that serves the judge, and the answer prints under the candidate.
+
+It never applies an alias, never folds two counts together and never touches
+promotion, routing or the ledger. `sil aliases set` stays the only way a pair
+becomes an alias, and a pair judged `distinct` stays on the list.
+
+Turn it on in `config.yaml`:
+
+```yaml
+alias_semantic:
+  enabled: true              # default false: no request is made at all
+  max_candidates: 10         # assess the first N of the deterministic list
+  max_reflections_per_pattern: 2
+  max_excerpt_chars: 600     # per reflection, cut not summarised
+  timeout_s: 20              # per pair
+  concurrency: 2             # pairs in flight
+  min_confidence: 0.6        # below this the verdict is `unsure`
+```
+
+An answer at exactly `min_confidence` is a verdict; only a lower number
+becomes `unsure`. An answer that carries no confidence and no probability for
+its own pick is not `unsure` at all: nothing was measured, so that pair reads
+`unavailable`.
+
+It needs the judge on a `system-one` endpoint (see the section above). A world
+with `llm: local` only reaches a model listed in `local_models`; the feature
+reports that it could not run rather than sending the evidence anywhere else.
+The endpoint's `base_url` and, when it declares `api_key_env`, the credential
+are both checked before the first request, so a missing one is one line above
+the list instead of the same line under every candidate.
+
+```
+$ sil aliases suggest --world default
+possible near-duplicate patterns (same mechanism, different slug). Review each, then apply with the command shown:
+  stale-env (2) ~ stale-cached-env (5)  score=0.67
+    semantic: same mechanism (confidence 0.94, model jev-1.13.0)
+      evidence stale-env: 2026-09-02-stale-env-01, 2026-09-01-stale-env-00
+      evidence stale-cached-env: 2026-09-05-stale-cached-env-02, 2026-09-04-stale-cached-env-01
+    sil aliases set stale-env stale-cached-env --world default
+  verify-callsites (1) ~ verify-callsites-before-fix (2)  score=0.50
+    semantic: different mechanisms (confidence 0.81, model jev-1.13.0)
+      evidence verify-callsites: 2026-09-06-verify-callsites-00
+      evidence verify-callsites-before-fix: 2026-09-08-verify-callsites-before-fix-01
+    sil aliases set verify-callsites verify-callsites-before-fix --world default
+```
+
+What leaves the machine: the two slugs, and up to
+`max_reflections_per_pattern` reflections per slug, each one as its id and an
+excerpt cut to `max_excerpt_chars`. The excerpt is the reflection's reusable
+lesson, or its body when there is no lesson section. Nothing else: no
+transcript, no reflection frontmatter, no env var, nothing from another world.
+
+Two details worth knowing before turning it on. The excerpt is the critic's own
+sentence and is cut, not scrubbed, so it carries whatever a lesson normally
+carries, repository paths included. The reflection id carries a date and a
+pattern slug, and when a slug was folded by an existing alias the id names the
+retired pattern rather than the slug above it: `2026-09-15-old-env-00` can
+appear as evidence for `stale-cached-env`.
+
+The model picks one of two named options and never writes prose, so every
+verdict line is a fixed template plus real reflection ids. An answer that is
+not one of the two options is refused. The refusal quotes the answer when it
+is short and identifier-shaped, and reports its length instead when it is not.
+
+When a pair times out or the endpoint answers badly, that pair says so and the
+rest carry on:
+
+```
+  stale-env (2) ~ stale-cached-env (5)  score=0.67
+    semantic: unavailable (ProviderTimeout: provider "jev" at http://localhost:5000/v1/systemone timed out after 20s)
+    sil aliases set stale-env stale-cached-env --world default
+```
+
+A problem that stops every pair before the first request (no `system-one`
+endpoint for the judge, no model for the role, no `base_url`, an unset
+`api_key_env`, a locality refusal) is reported once, above the list, which
+still prints in full:
+
+```
+  semantic assessment unavailable: role judge runs on endpoint "litellm" of kind "openai"; semantic assessment needs a system-one endpoint (sil llm use <endpoint> --role judge)
+```
+
+The same one-line summary also appears when every pair was tried and every
+pair failed. Then each candidate keeps its own `unavailable (...)` line as
+well, and the summary names the error most of them agree on.
+
+An error line quotes the provider's own error text, cut to one bounded line.
+That is the one place where text from the far end reaches the screen, and it
+is always inside `unavailable (...)`, never inside a verdict.
+
+The unit tests use a fake provider: they prove the integration, not the
+quality of the judgment. For that, run the live evaluation against your own
+endpoint:
+
+```
+bun run eval:alias-semantic            # add --json for machine output
+```
+
+It asks the configured judge about six hand-labelled pairs in
+`scripts/fixtures/alias-semantic-pairs.json` (two clearly equivalent, two
+clearly distinct, two genuinely ambiguous), prints the human label next to the
+verdict, and lists every disagreement. Ambiguous pairs are reported, never
+scored. It writes nothing.
+
+A disagreement is a finding, not a failure, so it exits 0. A failed request,
+an answer with no confidence, and a run that scored no pair at all exit 1,
+because then the evaluation measured nothing.
+
 ## Rotating API keys
 
 Edit the env var named by `llm.yaml`'s `api_key_env` (or your shell profile), then

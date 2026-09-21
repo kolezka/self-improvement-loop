@@ -271,33 +271,47 @@ Fixed here:
 - [x] `sil review rehome` and the web rehome button said "rehomed" for an action
       that only stages a branch.
 
-Found and not fixed, ranked (all read from the source, none reproduced by me
-beyond a reading of the code unless noted):
+Found in the audit, all fixed now. Every fix ships a regression test that was
+run red against the old code first:
 
-- [ ] MEDIUM `ReviewItem` / `ReviewDetail` carry no status, so a staged
-      retirement renders in the queue and the detail pane exactly like a
-      promotion, with an empty body and nothing saying the artifact is being
-      removed (`packages/review/src/index.ts`, `apps/web/src/panes/Review.svelte`).
-- [ ] MEDIUM A re-home placeholder is only redrafted when the pattern earns
-      `threshold` new reflections (`plan()` returns `done` otherwise), so the
-      staged re-home cannot be accepted until then and the old artifact keeps
-      serving. Needs a plan action for "staged placeholder awaiting a draft".
-- [ ] MEDIUM `handleSessionEnd` writes the session file without `sessionLock`
-      (`apps/hook/src/handlers.ts`), so a concurrent Stop write can lose the
-      `stops` counter or the `ended` flag.
-- [ ] MEDIUM The worker writes a reflection and then moves the queue entry to a
-      terminal state with no idempotency key between the two
-      (`packages/worker/src/index.ts`), so a crash in between duplicates the
-      reflection and inflates the count `plan()` compares to the watermark.
-- [ ] LOW `AliasArgs.world` and `FeedbackArgs.world` skip `WORLD_NAME_RE`, and
-      `aliases.*`, `reflections.*` and `lessons.list` skip `cfgWorld()`
-      (`packages/ops/src/args.ts`), so an unknown world writes or returns empty
-      instead of a 503.
-- [ ] LOW A reflection id collision throws a plain `Error`
-      (`packages/store/src/reflections.ts`), which `isTransient` does not match,
-      so computed work is moved to `failed` instead of retried.
-- [ ] LOW `router.rehome` has no confirm gate while `router.retire` does, so
-      re-homing to `none` (now a retirement) stages a deletion without one.
+- [x] MEDIUM `ReviewItem` / `ReviewDetail` carried no status, so a staged
+      retirement rendered in the queue and the detail pane exactly like a
+      promotion. Fixed in 5cf2937 with the rest of that commit: `status` is on
+      `ReviewItem` and both the queue row and the detail pane name a retirement.
+- [x] MEDIUM A re-home placeholder was only redrafted when the pattern earned
+      `threshold` new reflections (`plan()` returned `done` otherwise), so the
+      staged re-home could not be accepted and the old artifact kept serving.
+      `plan()` now returns `promote` for a `staged` row whose branch still holds
+      only the stub. A re-home writes that row and that stub into a scratch
+      worktree of the branch, never into the live tree, so `placeholderPatterns()`
+      reads both off the branch. `branchName()` moved from `run.ts` to `git.ts`
+      so `plan.ts` can use it without an import cycle.
+- [x] MEDIUM `handleSessionEnd` wrote the session file without `sessionLock`
+      (`apps/hook/src/handlers.ts`), so a concurrent Stop write lost the `stops`
+      counter or the `ended` flag. It now takes the same lock Stop takes, and
+      waits 4 s for it: the default 2 s can run out while a Stop scans a large
+      transcript, and a lost `ended` flag holds the session out of the queue for
+      the full `idle_minutes`.
+- [x] MEDIUM The worker wrote a reflection and then moved the queue entry to a
+      terminal state with no guard between the two, so a re-queued or replayed
+      session got a second reflection and inflated the count `plan()` compares to
+      the watermark. `reflectedSessions()` (`@sil/store`) maps each session id to
+      the time of its newest reflection, and the worker skips an entry only when
+      that reflection is not older than the entry's own `first_stop`. A resumed
+      session keeps its id, so the time is what keeps its new work.
+- [x] LOW `AliasArgs.world` and `FeedbackArgs.world` skipped `WORLD_NAME_RE`, and
+      `aliases.*`, `reflections.*`, `lessons.list` and `feedback.add` skipped
+      `cfgWorld()`, so an unknown world wrote or returned empty instead of a 503.
+      Both schemas hold the world to the same shape now and every one of those
+      handlers resolves the world first.
+- [x] LOW A reflection id collision threw `reflection already exists`, and
+      `isTransient` does not match it, so finished critic work went to `failed`.
+      A generated id now retries up to 16 times; an id the caller named still
+      throws, because writing that body to another file would be a silent rename.
+- [x] LOW `router.rehome` had no confirm gate while `router.retire` does, so
+      re-homing to `none` (a retirement) staged a deletion without one. The op
+      wants `confirm: true` for `none`, the CLI wants `--yes`, and the web pane
+      sends the confirmation it already asked the operator for.
 
 ### Still open, by design not by accident
 - [ ] No cross-artifact consistency check: the judge sees one draft against its own

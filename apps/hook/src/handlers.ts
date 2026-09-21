@@ -352,6 +352,9 @@ function handleSubagentStop(payload: Record<string, unknown>, world: HookWorld):
   return "";
 }
 
+// How long SessionEnd waits for the session lock. The hook deadline is 5 s.
+const SESSION_END_LOCK_MS = 4000;
+
 function handleSessionEnd(payload: Record<string, unknown>, world: HookWorld): string {
   const sessionId = sessionIdOf(payload);
   const worldName = world.name || "default";
@@ -359,7 +362,15 @@ function handleSessionEnd(payload: Record<string, unknown>, world: HookWorld): s
     log(`SessionEnd not queued for ${sessionId}: transcript not on disk (session not persisted)`);
     return "";
   }
-  markQueueEnded(payload, worldName, sessionId);
+  // Under the same lock as Stop. Both read the queue entry, change it and write
+  // it back, so an unlocked SessionEnd that starts before a running Stop writes
+  // its stale copy back on top and loses the stop it never saw.
+  //
+  // It waits longer than the 2 s a Stop waits. A Stop holds the lock across a
+  // transcript scan of up to 20 MB, nothing reads SessionEnd's output, and the
+  // hook deadline is 5 s. Giving up here would drop `ended`, and then the worker
+  // waits out `idle_minutes` on a session that is already over.
+  sessionLock(sessionId, () => markQueueEnded(payload, worldName, sessionId), SESSION_END_LOCK_MS);
   return "";
 }
 

@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type Ledger,
   ledgerPath,
@@ -17,11 +17,15 @@ import {
   type World,
 } from "@sil/core";
 import {
+  artifactRel,
+  branchName,
   cluster,
   draftingTexts,
+  git,
   lessonTexts,
   loadPayloadCorpus,
   MAX_SAMPLED_PAYLOADS,
+  placeholderBody,
   plan,
   reflections,
   scorecards,
@@ -31,7 +35,18 @@ import {
   withoutSections,
 } from "@sil/curriculum";
 import { loadLedger, saveAliases, saveLedger } from "@sil/store";
-import { addReflections, cleanupEnv, LESSON, makeCfg, makeWorld, silEnv, type TestEnv } from "./fixtures.ts";
+import {
+  addReflections,
+  agentBody,
+  cleanupEnv,
+  commitFile,
+  initTarget,
+  LESSON,
+  makeCfg,
+  makeWorld,
+  silEnv,
+  type TestEnv,
+} from "./fixtures.ts";
 
 const PATTERN = "verify-callsites";
 
@@ -371,6 +386,72 @@ describe("the drafter's view of a reflection", () => {
     expect(withoutSections(body, ["## A"])).toBe("## B\ntwo\n\n## C\nthree");
     expect(withoutSections(body, ["## C"])).toBe("## A\none\n\n## B\ntwo");
     expect(withoutSections(body, ["## Z"])).toBe(body.trim());
+  });
+});
+
+describe("a re-homed pattern", () => {
+  // What `rehome` really leaves behind: the live ledger still says the old type
+  // is promoted, and the branch alone carries the stub and the `staged` row.
+  // Built by hand, because the plan must read it without the review package.
+  const OLD_REL = "claude/skills/verify-callsites/SKILL.md";
+  const LEDGER_REL = () => world.layout.ledger.replace(/^\/+|\/+$/g, "");
+
+  function ledgerText(row: Partial<PromotionEntry>): string {
+    return JSON.stringify({ version: 1, entries: { [PATTERN]: entry({ pattern: PATTERN, ...row }) } });
+  }
+
+  /** The live row a re-home never touches: the old type, still promoted. */
+  function liveLedger(repo: string): void {
+    const text = ledgerText({
+      promoted_at_count: 3,
+      status: "promoted",
+      artifact_type: "skill",
+      served_by: { type: "skill", path: OLD_REL },
+    });
+    commitFile(repo, LEDGER_REL(), text, "chore: promote the skill");
+  }
+
+  /** What `rehome` commits: the stub plus the staged row, on the branch only. */
+  function stageBranch(repo: string, body: string): string {
+    const rel = artifactRel(world, "agent", PATTERN);
+    const base = git.defaultBranch(repo);
+    git.git(repo, ["checkout", "-q", "-b", branchName(world.name, PATTERN)]);
+    const text = ledgerText({
+      promoted_at_count: 3,
+      status: "staged",
+      artifact_type: "agent",
+      served_by: { type: "agent", path: rel },
+    });
+    writeFileSync(join(repo, LEDGER_REL()), text, "utf8");
+    git.git(repo, ["add", "--", LEDGER_REL()]);
+    commitFile(repo, rel, body, `feat(agent): re-home ${PATTERN}`);
+    git.git(repo, ["checkout", "-q", base]);
+    return rel;
+  }
+
+  test("whose branch holds only the stub comes back as promote, not done", () => {
+    // The old artifact keeps serving until the branch is accepted, and the
+    // branch is a stub nobody may accept. Waiting for `threshold` new
+    // reflections leaves the world on the artifact the operator re-homed away.
+    const repo = initTarget(world);
+    addReflections(world, PATTERN, 3);
+    liveLedger(repo);
+    stageBranch(repo, String(placeholderBody(PATTERN, "agent", "skill")));
+
+    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    expect(action.action).toBe("promote");
+    expect(action.reason).toContain("placeholder");
+  });
+
+  test("whose branch holds a real draft stays done", () => {
+    // Every staged proposal waiting for review is also `status: "staged"`.
+    // Redrafting one would move the diff under the reviewer.
+    const repo = initTarget(world);
+    addReflections(world, PATTERN, 3);
+    liveLedger(repo);
+    stageBranch(repo, agentBody(PATTERN));
+
+    expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
   });
 });
 

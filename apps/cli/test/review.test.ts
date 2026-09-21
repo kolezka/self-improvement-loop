@@ -58,3 +58,15 @@ describe("sil review accept", () => {
     expect(stderr).toContain("--world");
   });
 });
+
+describe("sil review rehome", () => {
+  // `--type none` deletes the artifact, which is what `sil review retire`
+  // does, and that one has needed --yes from the start.
+  test("re-homing to none needs --yes", async () => {
+    expect(await run(["init"])).toBe(0);
+
+    const { code } = await captureStderr(() => run(["review", "rehome", "some-pattern", "--world", "default", "--type", "none"]));
+
+    expect(code).toBe(2);
+  });
+});

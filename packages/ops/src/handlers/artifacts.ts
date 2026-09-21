@@ -16,9 +16,10 @@ export function artifactsRebuild(args: WorldArgs) {
 }
 
 export function feedbackAdd(args: FeedbackArgs) {
+  const [, world] = cfgWorld(args.world);
   const hf = HumanFeedback.parse({
     ts: fsx.nowIso(),
-    world: args.world,
+    world: world.name,
     ref: args.ref,
     vote: args.vote,
     note: args.note,
@@ -28,5 +29,6 @@ export function feedbackAdd(args: FeedbackArgs) {
 }
 
 export function lessonsList(args: WorldArgs) {
-  return listLessons(args.world);
+  const [, world] = cfgWorld(args.world);
+  return listLessons(world.name);
 }

@@ -40,7 +40,7 @@ register({ name: "review.detail", tier: "read", gate: "none", args: Args.Pattern
 register({ name: "review.diff", tier: "read", gate: "none", args: Args.PatternArgs, fn: review.reviewDiff, doc: "Diff of one staged proposal." });
 register({ name: "skill.accept", tier: "remote", gate: "reviewed_state", args: Args.AcceptArgs, fn: review.skillAccept, doc: "Accept a staged proposal; reviewed_state must match exactly what was reviewed." });
 register({ name: "skill.reject", tier: "local", gate: "none", args: Args.PatternArgs, fn: review.skillReject, doc: "Reject a staged proposal; delete its branch." });
-register({ name: "router.rehome", tier: "local", gate: "none", args: Args.RehomeArgs, fn: review.routerRehome, doc: "Re-route a pattern to a different artifact type." });
+register({ name: "router.rehome", tier: "local", gate: "confirm", args: Args.RehomeArgs, fn: review.routerRehome, doc: "Re-route a pattern to a different artifact type; artifact_type \"none\" removes it and requires confirm: true." });
 register({ name: "router.retire", tier: "local", gate: "confirm", args: Args.RetireArgs, fn: review.routerRetire, doc: "Retire an artifact; requires confirm: true." });
 register({ name: "router.inventory", tier: "read", gate: "none", args: Args.WorldArgs, fn: review.routerInventory, doc: "Router state joined with scorecards." });
 register({ name: "artifacts.scorecards", tier: "read", gate: "none", args: Args.WorldArgs, fn: artifacts.artifactsScorecards, doc: "Per-artifact usage scorecards." });

@@ -126,7 +126,10 @@
     // Staged only, exactly like retire: the old artifact keeps serving until
     // the branch is accepted.
     const verb = rehomeType === "none" ? "retirement staged. Accept it to remove the artifact." : `re-home to ${rehomeType} staged. Accept it to apply the move.`;
-    void act(() => call("router.rehome", { world: appState.world, pattern, artifact_type: rehomeType }), verb);
+    // The op asks for confirm on "none", because that type takes the artifact
+    // out of service. The operator already picked it in the select here.
+    const confirm = rehomeType === "none";
+    void act(() => call("router.rehome", { world: appState.world, pattern, artifact_type: rehomeType, confirm }), verb);
   }
 
   const canAccept = $derived(reviewedState !== null && !detail?.accept_blocked);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
@@ -183,6 +183,46 @@ describe("runOnce entry below min_tool_uses", () => {
     expect(done).not.toBeNull();
     expect(done!.result).toBe("skipped: below min_tool_uses");
     expect(existsSync(sessionDir)).toBe(false);
+  });
+});
+
+describe("runOnce entry whose session already has a reflection", () => {
+  // The reflection is written first and the queue entry moves after it. A
+  // crash between the two leaves the entry pending, and a second reflection
+  // for one session counts twice against the promotion threshold.
+  test("moves the entry on without writing a second reflection", async () => {
+    prepareEnv();
+    const entry = writePending("sess-twice", { ended: true });
+    await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
+    const files = () => readdirSync(paths.reflectionsDir("default")).filter((n) => n.endsWith(".md"));
+    expect(files()).toHaveLength(1);
+
+    writeEntry("pending", entry);
+    const summary = await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
+
+    expect(files()).toHaveLength(1);
+    expect(summary.reflected).toEqual([]);
+    expect(summary.skipped).toEqual(["sess-twice"]);
+    expect(loadEntry("pending", "sess-twice")).toBeNull();
+    expect(loadEntry("done", "sess-twice")!.result).toContain("already");
+  });
+
+  // `claude --resume` keeps the session id and appends to the same transcript,
+  // so the queue entry for the resumed work is new while the id is old. Skipping
+  // on the id alone would drop every lesson a resumed session ever produces.
+  test("reflects again when the entry is newer than the reflection", async () => {
+    prepareEnv();
+    const entry = writePending("sess-resumed", { ended: true });
+    await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
+    const files = () => readdirSync(paths.reflectionsDir("default")).filter((n) => n.endsWith(".md"));
+    expect(files()).toHaveLength(1);
+
+    const later = new Date(Date.now() + 60_000).toISOString();
+    writeEntry("pending", { ...entry, first_stop: later, last_stop: later });
+    const summary = await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
+
+    expect(summary.reflected).toEqual(["sess-resumed"]);
+    expect(files()).toHaveLength(2);
   });
 });
 

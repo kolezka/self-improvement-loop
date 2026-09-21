@@ -37,7 +37,7 @@ import * as context from "./context.ts";
 import type { GateRunner } from "./deps.ts";
 import * as git from "./git.ts";
 import { lint } from "./lint.ts";
-import { cluster, draftingTexts, lessonTexts, loadLedger, loadPayloadCorpus, plan, reflections, sourcesText } from "./plan.ts";
+import { branchEntry, cluster, draftingTexts, lessonTexts, loadLedger, loadPayloadCorpus, plan, reflections, sourcesText } from "./plan.ts";
 import * as prompts from "./prompts.ts";
 import { type RouteAnswer, route } from "./router.ts";
 
@@ -52,17 +52,6 @@ export interface RunOptions {
   gateRunner?: GateRunner;
 }
 
-/** `curriculum/<world>/<pattern>`, world segment casefolded.
- *
- * Git cannot hold `curriculum/x` and `curriculum/x/y` at once, so the world
- * segment is never optional. Casefolded at this one construction site: refs are
- * case-sensitive, a world is spelled both ways by different config files, and
- * the day this was missing V1 staged `curriculum/Inkitt/<p>` while the review
- * pane globbed `curriculum/inkitt/*` and reported nothing pending. */
-export function branchName(world: string, pattern: string): string {
-  return `curriculum/${world.toLowerCase()}/${pattern}`;
-}
-
 function describe(e: unknown): string {
   const err = e as Error;
   return `${err?.name || "Error"}: ${String(err?.message ?? e).slice(0, 160)}`;
@@ -74,23 +63,6 @@ function draftedType(answer: RouteAnswer): string {
   if (answer.needs_own_context) return "agent";
   if (answer.capability_evidence !== null) return "skill";
   return "rule";
-}
-
-/** This pattern's ledger entry as committed on `branch`, or null.
- *
- * null means "cannot tell": no such ref, or a ledger git or json refuses. Every
- * caller treats that as "do the work". Reading an unreadable file as "already
- * done" would strand a pattern behind one corrupt commit forever. */
-function branchEntry(world: World, repo: string, branch: string, pattern: string): PromotionEntry | null {
-  if (!git.refExists(repo, `refs/heads/${branch}`)) return null;
-  const { found, text } = git.show(repo, branch, world.layout.ledger.replace(/^\/+|\/+$/g, ""));
-  if (!found) return null;
-  try {
-    return parseLedger(text, branch).entries[pattern] ?? null;
-  } catch {
-    // A malformed ledger is an unknown ledger.
-    return null;
-  }
 }
 
 /** What artifact type already serves this pattern, branch first.
@@ -260,7 +232,7 @@ async function stageOne(
     lessons.push(`Artifact feedback: ${action.reason}`);
   }
 
-  const branch = branchName(world.name, pattern);
+  const branch = git.branchName(world.name, pattern);
   const prior = ctx.ledger.entries[pattern] ?? null;
   const stagedEntry = branchEntry(world, ctx.target, branch, pattern);
   // A retirement owns this branch until a human answers it. Redrafting here has

@@ -2,9 +2,11 @@ import { join } from "node:path";
 import { paths, ValidationError } from "@sil/core";
 import { listReflections, parseReflection } from "@sil/store";
 import type { ReflectionArgs, ReflectionListArgs } from "../args.ts";
+import { cfgWorld } from "../cfg-world.ts";
 
 export function reflectionsList(args: ReflectionListArgs) {
-  let refs = listReflections(args.world);
+  const [, world] = cfgWorld(args.world);
+  let refs = listReflections(world.name);
   if (args.pattern) refs = refs.filter((r) => r.pattern === args.pattern);
   if (args.limit) refs = refs.slice(0, args.limit);
   return refs.map((r) => ({
@@ -19,8 +21,9 @@ export function reflectionsList(args: ReflectionListArgs) {
 }
 
 export function reflectionsGet(args: ReflectionArgs) {
-  const path = join(paths.reflectionsDir(args.world), `${args.id}.md`);
-  const r = parseReflection(path, args.world);
+  const [, world] = cfgWorld(args.world);
+  const path = join(paths.reflectionsDir(world.name), `${args.id}.md`);
+  const r = parseReflection(path, world.name);
   if (r === null) throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
   return r;
 }

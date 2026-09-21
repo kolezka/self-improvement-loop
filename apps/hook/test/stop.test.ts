@@ -214,6 +214,34 @@ describe("SessionEnd", () => {
     expect(() => queueEntry("sess-end-ephemeral")).toThrow();
   });
 
+  // SessionEnd read-modify-writes the same queue entry Stop does. Outside the
+  // lock, a SessionEnd that read the entry before a concurrent Stop wrote it
+  // puts the old stops count back on disk.
+  test("waits for the session lock instead of writing over a running Stop", async () => {
+    writeSnapshot();
+    const sessionId = "sess-end-locked";
+    runHook(MAIN_TS, hookEnv, { session_id: sessionId, hook_event_name: "Stop", stop_hook_active: false, cwd: hookEnv.root });
+    expect(queueEntry(sessionId)["stops"]).toBe(1);
+
+    // Stands in for a Stop handler holding the lock. The pid is this test
+    // process, which is alive, so the lock is never reclaimed as stale.
+    const lockDir = `${paths.sessionDir(sessionId)}/lock.lockdir`;
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(`${lockDir}/pid`, `${process.pid}\n`, "utf8");
+
+    const payload = JSON.stringify({ session_id: sessionId, hook_event_name: "SessionEnd", cwd: hookEnv.root });
+    const proc = Bun.spawn(["bun", MAIN_TS], { stdin: Buffer.from(payload, "utf8"), stdout: "pipe", stderr: "pipe", env: hookEnv.env });
+
+    await Bun.sleep(800);
+    expect(queueEntry(sessionId)["ended"]).not.toBe(true);
+
+    rmSync(lockDir, { recursive: true, force: true });
+    await proc.exited;
+    const entry = queueEntry(sessionId);
+    expect(entry["ended"]).toBe(true);
+    expect(entry["stops"]).toBe(1);
+  }, 30000);
+
   test("marks an existing queue entry ended without clobbering its stops count", () => {
     writeSnapshot();
     const stopPayload = { session_id: "sess-end-2", hook_event_name: "Stop", stop_hook_active: false, cwd: hookEnv.root };

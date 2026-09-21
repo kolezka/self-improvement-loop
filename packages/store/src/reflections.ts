@@ -137,11 +137,36 @@ export function newReflectionId(pattern: string, when: Date = new Date()): strin
   return `${d}-${pattern}-${rand}`;
 }
 
+/** How many ids a generated one may try before it gives up. */
+const ID_ATTEMPTS = 16;
+
+/** A free reflection id for `pattern`, or the caller's own id unchanged.
+ *
+ * The generated id holds 16 random bits, so two reflections of one pattern on
+ * one day collide about once in 65536. On a collision the loop used to throw and
+ * the worker marked the session failed, which lost the reflection for a name
+ * clash. A caller-supplied id still throws: it names a specific file, and
+ * writing that content somewhere else would be a silent rename. */
+function freeReflectionPath(world: string, pattern: string, wanted: string | null): [string, string] {
+  const dir = paths.reflectionsDir(world);
+  if (wanted !== null) {
+    const path = join(dir, `${wanted}.md`);
+    if (fsx.exists(path)) throw new Error(`reflection already exists: ${path}`);
+    return [wanted, path];
+  }
+  for (let i = 0; i < ID_ATTEMPTS; i++) {
+    const id = newReflectionId(pattern);
+    const path = join(dir, `${id}.md`);
+    if (!fsx.exists(path)) return [id, path];
+  }
+  throw new Error(`no free reflection id for ${pattern} in ${dir} after ${ID_ATTEMPTS} tries`);
+}
+
 /** Append-only: a new file per occurrence, never overwrite. */
 export function writeReflection(world: string, meta: Record<string, unknown>, body: string): string {
   const pattern = reflectionPattern(body);
   if (!pattern) throw new Error("reflection body has no `Pattern: <slug>` line");
-  const id = meta["id"] ? String(meta["id"]) : newReflectionId(pattern);
+  const [id, path] = freeReflectionPath(world, pattern, meta["id"] ? String(meta["id"]) : null);
   const full: Record<string, unknown> = {
     id,
     world,
@@ -149,11 +174,35 @@ export function writeReflection(world: string, meta: Record<string, unknown>, bo
     created: meta["created"] ? String(meta["created"]) : fsx.today(),
     ...meta,
   };
-  const path = join(paths.reflectionsDir(world), `${id}.md`);
-  if (fsx.exists(path)) throw new Error(`reflection already exists: ${path}`);
   const front = YAML.stringify(full).trimEnd();
   fsx.atomicWrite(path, `---\n${front}\n---\n${body.trimEnd()}\n`);
   return path;
+}
+
+/** session id -> when this world's newest reflection of it was written, in ms.
+ *
+ * The queue is the only guard against a second reflection of one session, and a
+ * re-queued or replayed entry passes it. The files on disk are the durable
+ * record, so the worker asks them instead.
+ *
+ * The time matters as much as the id. A resumed session keeps its id and earns
+ * new work, so "already reflected" alone would throw that work away for ever; a
+ * caller compares against the queue entry's own first stop. An unreadable mtime
+ * counts as 0, which reflects again rather than losing a lesson. */
+export function reflectedSessions(world: string, extraDirs: string[] = []): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const r of listReflections(world, extraDirs)) {
+    if (!r.session_id) continue;
+    let at = 0;
+    try {
+      at = statSync(r.path).mtimeMs;
+    } catch {
+      at = 0;
+    }
+    const prev = out.get(r.session_id);
+    if (prev === undefined || at > prev) out.set(r.session_id, at);
+  }
+  return out;
 }
 
 export function patternCounts(world: string, extraDirs: string[] = []): Record<string, number> {

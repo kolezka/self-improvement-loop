@@ -119,6 +119,7 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .argument("<pattern>")
     .requiredOption("--type <type>")
     .requiredOption("--world <name>")
+    .option("--yes")
     .action(wire((pattern: string, opts) => cmdReviewRehome(pattern, opts, deps)));
   review
     .command("retire")

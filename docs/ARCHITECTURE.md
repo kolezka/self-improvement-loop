@@ -375,6 +375,12 @@ alive on its own:
   `skill` links nowhere, and a retired skill can leave a non-empty directory
   behind; both used to keep `~/.claude/skills/<pattern>` in place.
 
+A re-home writes a stub, not an artifact, and it does not move the watermark. The
+plan therefore treats a `staged` row whose branch still holds only that stub as
+`promote`, whatever the reflection count says. Read as `done`, the stub sat on the
+branch until the pattern earned `threshold` new reflections, and the artifact it
+replaces kept serving all that time.
+
 ## Web UI (`sil web`)
 
 FastAPI + uvicorn bound to `web.host` (loopback by default), token in the URL

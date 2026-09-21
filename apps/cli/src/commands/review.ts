@@ -77,9 +77,16 @@ export function cmdReviewReject(pattern: string, opts: ReviewRejectOptions, deps
 export interface ReviewRehomeOptions {
   world: string;
   type: ArtifactType;
+  yes?: boolean;
 }
 
 export function cmdReviewRehome(pattern: string, opts: ReviewRehomeOptions, deps: Deps = defaultDeps): number {
+  // `--type none` is a retirement wearing another name: it takes the artifact
+  // out of service. Same confirmation as `sil review retire`.
+  if (opts.type === "none" && !opts.yes) {
+    console.error("error: sil review rehome --type none removes the artifact: pass --yes to confirm");
+    return 2;
+  }
   const cfg = loadConfig();
   const world = worldNamed(cfg, opts.world);
   // Re-home stages a branch too. "rehomed" read as done, so the old artifact

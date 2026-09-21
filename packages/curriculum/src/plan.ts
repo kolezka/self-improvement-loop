@@ -21,6 +21,7 @@ import {
   type PlanActionKind,
   type PlanReport,
   paths,
+  type PromotionEntry,
   type Reflection,
   type Scorecard,
   targetRoot,
@@ -28,7 +29,9 @@ import {
   type World,
 } from "@sil/core";
 import * as feedback from "@sil/feedback";
-import { listReflections, loadAliases, loadLedger as loadLedgerFile } from "@sil/store";
+import { listReflections, loadAliases, loadLedger as loadLedgerFile, parseLedger } from "@sil/store";
+import * as artifacts from "./artifacts.ts";
+import * as git from "./git.ts";
 
 export interface PlanOptions {
   extraDirs?: string[];
@@ -216,6 +219,63 @@ export function scorecardByPattern(cards: Scorecard[]): Map<string, Scorecard> {
   return out;
 }
 
+/** This pattern's ledger entry as committed on `branch`, or null.
+ *
+ * null means "cannot tell": no such ref, or a ledger git or json refuses. Every
+ * caller treats that as "do the work". Reading an unreadable file as "already
+ * done" would strand a pattern behind one corrupt commit forever.
+ *
+ * Here rather than in run.ts because `plan()` needs it too and run.ts imports
+ * this file. A re-home lives only on its branch until accept, so the live ledger
+ * cannot answer any question about what is staged. */
+export function branchEntry(world: World, repo: string, branch: string, pattern: string): PromotionEntry | null {
+  if (!git.refExists(repo, `refs/heads/${branch}`)) return null;
+  const { found, text } = git.show(repo, branch, world.layout.ledger.replace(/^\/+|\/+$/g, ""));
+  if (!found) return null;
+  try {
+    return parseLedger(text, branch).entries[pattern] ?? null;
+  } catch {
+    // A malformed ledger is an unknown ledger.
+    return null;
+  }
+}
+
+/** Patterns whose staged branch still holds only the re-home stub.
+ *
+ * `rehome` writes a placeholder body, flips `served_by` and sets the row back to
+ * `staged`, all on the branch and none of it in the live ledger. It moves no
+ * watermark either, so with no new reflections the pattern read as `done`,
+ * `run()` never drafted the real artifact, and the artifact the operator
+ * re-homed away kept serving behind a stub nobody may accept.
+ *
+ * One branch listing per plan, the same one the review queue uses. Asking git
+ * per pattern would cost two subprocesses for every row in the ledger. */
+function placeholderPatterns(world: World): Set<string> {
+  const out = new Set<string>();
+  const repo = targetRoot(world);
+  if (!git.isRepo(repo)) return out;
+  const prefix = `${git.branchName(world.name, "")}`;
+  const listing = git.git(
+    repo,
+    ["branch", "--list", `${prefix}*`, "--no-merged", git.defaultBranch(repo), "--format=%(refname:short)"],
+    { check: false },
+  );
+  for (const line of listing.split("\n")) {
+    const branch = line.trim();
+    if (!branch.startsWith(prefix)) continue;
+    const pattern = branch.slice(prefix.length);
+    const staged = branchEntry(world, repo, branch, pattern);
+    if (!staged || staged.status !== "staged") continue;
+    const ref = staged.served_by;
+    if (!ref || !ref.path || ref.type === "none") continue;
+    const { found, text } = git.show(repo, branch, ref.path);
+    if (!found) continue;
+    const body = ref.type === "rule" ? artifacts.stripRuleTag(artifacts.ruleBulletInText(text, pattern), pattern) : text;
+    if (artifacts.isPlaceholderBody(ref.type, body)) out.add(pattern);
+  }
+  return out;
+}
+
 /** The evidence level this pattern has to beat to be proposed again.
  *
  * The higher of the two marks. Promotion and rejection cost the same: a refused
@@ -244,6 +304,7 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
   const ledger = loadLedger(world);
   const groups = cluster(opts.items ?? reflections(world, opts.extraDirs ?? []));
   const byPattern = scorecardByPattern(opts.cards ?? scorecards(world));
+  const placeholders = placeholderPatterns(world);
 
   const actions: PlanAction[] = [];
   for (const { pattern, items } of groups) {
@@ -258,6 +319,9 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
     if (count - mark >= threshold) {
       action = "promote";
       reason = `${count - mark} new reflection(s) past the watermark ${mark}`;
+    } else if (placeholders.has(pattern)) {
+      action = "promote";
+      reason = "a re-homed placeholder is staged with no real draft yet";
     } else if (entry && entry.status === "promoted" && card) {
       if (card.proposal === "refine") {
         action = "refine";

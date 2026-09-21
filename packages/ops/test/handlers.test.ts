@@ -162,6 +162,33 @@ describe("router.retire", () => {
   });
 });
 
+describe("router.rehome", () => {
+  // Re-homing to "none" deletes the artifact. It went through with no
+  // confirmation at all, while the op that does the same thing under its own
+  // name (router.retire) needed confirm: true.
+  test("refuses artifact_type none without confirm", async () => {
+    await expect(invoke("router.rehome", { world: "default", pattern: "foo-bar", artifact_type: "none" })).rejects.toThrow();
+  });
+});
+
+// Every world-scoped op resolves the world through cfgWorld, so an unknown
+// world is one error (503) everywhere. These read or wrote a directory named
+// after the unknown world instead, and answered with an empty result.
+describe("a world that is not configured", () => {
+  const unknown = { world: "ghost" };
+
+  test.each([
+    ["aliases.get", unknown],
+    ["aliases.suggest", unknown],
+    ["aliases.set", { ...unknown, aliases: {} }],
+    ["reflections.list", unknown],
+    ["reflections.get", { ...unknown, id: "2026-09-01-foo-bar-0001" }],
+    ["lessons.list", unknown],
+  ])("%s rejects it", async (op, args) => {
+    await expect(invoke(op as string, args)).rejects.toThrow(/ghost/);
+  });
+});
+
 describe("health.report", () => {
   test("passes World objects, never bare names, to providers.status", async () => {
     const seen: unknown[] = [];

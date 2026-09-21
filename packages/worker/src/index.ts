@@ -19,7 +19,7 @@ import {
 import type { ChatFn } from "@sil/providers";
 import { reflectSession } from "@sil/critic";
 import { compactUsageEvents, rebuild as rebuildScorecards } from "@sil/feedback";
-import { entryPath, listQueue, loadEntry, moveEntry, writeEntry, type Bucket } from "@sil/store";
+import { entryPath, listQueue, loadEntry, moveEntry, reflectedSessions, writeEntry, type Bucket } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import { run as curriculumRun } from "@sil/curriculum";
 import { exportNew } from "./outline.ts";
@@ -391,6 +391,19 @@ async function reflectPending(
   chat: ChatFn | undefined,
   summary: RunSummary,
 ): Promise<void> {
+  // Per world, read once and only when an entry gets as far as reflecting: a
+  // full listing of the reflections directory is not free, and most runs walk
+  // past entries that are not idle yet.
+  const already = new Map<string, Map<string, number>>();
+  const reflectedIn = (name: string): Map<string, number> => {
+    let seen = already.get(name);
+    if (!seen) {
+      seen = reflectedSessions(name);
+      already.set(name, seen);
+    }
+    return seen;
+  };
+
   for (const entry of listQueue("pending")) {
     if (worldName !== undefined && entry.world !== worldName) continue;
     const world = worldByName.get(entry.world);
@@ -419,8 +432,24 @@ async function reflectPending(
       continue;
     }
 
+    // A reflection this world already holds for this session, written after the
+    // entry's first stop, covers exactly this work: a re-queued session, a
+    // replayed hook payload, or a crash between the reflection write and the
+    // queue move. Reflecting again doubles the session's weight behind its
+    // pattern and buys a promotion with one event. An older reflection does not
+    // count: a resumed session keeps its id and the new work is new evidence.
+    const writtenAt = reflectedIn(entry.world).get(entry.session_id);
+    if (writtenAt !== undefined && !(writtenAt < Date.parse(entry.first_stop))) {
+      const done = "done: a reflection for this session already exists";
+      moveToTerminal(entry, "done", done);
+      summary.skipped.push(entry.session_id);
+      log({ action: "reflect", session_id: entry.session_id, result: done });
+      continue;
+    }
+
     try {
       const result = await reflectSession(entry, { cfg, world, chat });
+      if (result.recorded) reflectedIn(entry.world).set(entry.session_id, Date.now());
       const outcome = result.recorded ? `recorded:${result.pattern}` : result.reason || "not recorded";
       moveToTerminal(entry, "done", outcome);
       summary.reflected.push(entry.session_id);

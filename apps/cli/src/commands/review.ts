@@ -56,8 +56,9 @@ export interface ReviewAcceptOptions {
 export function cmdReviewAccept(pattern: string, opts: ReviewAcceptOptions, deps: Deps = defaultDeps): number {
   const cfg = loadConfig();
   const world = worldNamed(cfg, opts.world);
-  deps.review.accept(world, cfg, pattern, opts.reviewedState);
-  console.log(`accepted ${pattern} in world ${world.name}`);
+  const out = deps.review.accept(world, cfg, pattern, opts.reviewedState);
+  const what = out.status === "retired" ? "retired" : "accepted";
+  console.log(`${what} ${pattern} in world ${world.name}`);
   return 0;
 }
 
@@ -76,13 +77,23 @@ export function cmdReviewReject(pattern: string, opts: ReviewRejectOptions, deps
 export interface ReviewRehomeOptions {
   world: string;
   type: ArtifactType;
+  yes?: boolean;
 }
 
 export function cmdReviewRehome(pattern: string, opts: ReviewRehomeOptions, deps: Deps = defaultDeps): number {
+  // `--type none` is a retirement wearing another name: it takes the artifact
+  // out of service. Same confirmation as `sil review retire`.
+  if (opts.type === "none" && !opts.yes) {
+    console.error("error: sil review rehome --type none removes the artifact: pass --yes to confirm");
+    return 2;
+  }
   const cfg = loadConfig();
   const world = worldNamed(cfg, opts.world);
-  deps.review.rehome(world, cfg, pattern, opts.type);
-  console.log(`rehomed ${pattern} to ${opts.type} in world ${world.name}`);
+  // Re-home stages a branch too. "rehomed" read as done, so the old artifact
+  // stayed live and the branch sat in the queue with nobody expecting it.
+  const out = deps.review.rehome(world, cfg, pattern, opts.type);
+  console.log(`staged the re-home of ${pattern} to ${opts.type} on ${out.branch} in world ${world.name}`);
+  console.log(`accept it to apply the move: sil review show ${pattern} --world ${world.name}`);
   return 0;
 }
 
@@ -98,7 +109,10 @@ export function cmdReviewRetire(pattern: string, opts: ReviewRetireOptions, deps
   }
   const cfg = loadConfig();
   const world = worldNamed(cfg, opts.world);
-  deps.review.retire(world, cfg, pattern);
-  console.log(`retired ${pattern} in world ${world.name}`);
+  // Retire only stages a branch. Saying "retired" here read as done, so the
+  // artifact stayed live until somebody accepted the branch as well.
+  const out = deps.review.retire(world, cfg, pattern);
+  console.log(`staged the retirement of ${pattern} on ${out.branch} in world ${world.name}`);
+  console.log(`accept it to remove the artifact: sil review show ${pattern} --world ${world.name}`);
   return 0;
 }

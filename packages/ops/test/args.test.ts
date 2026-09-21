@@ -70,6 +70,22 @@ describe("RetireArgs", () => {
   });
 });
 
+describe("RehomeArgs", () => {
+  // Re-homing to "none" is a retirement: it stages the deletion of the
+  // artifact. It costs the same confirmation router.retire costs.
+  test("artifact_type none without confirm rejected", () => {
+    expect(() => Args.RehomeArgs.parse({ world: "default", pattern: "foo-bar", artifact_type: "none" })).toThrow();
+  });
+  test("artifact_type none with confirm: true accepted", () => {
+    expect(() =>
+      Args.RehomeArgs.parse({ world: "default", pattern: "foo-bar", artifact_type: "none", confirm: true }),
+    ).not.toThrow();
+  });
+  test("any other type needs no confirm", () => {
+    expect(() => Args.RehomeArgs.parse({ world: "default", pattern: "foo-bar", artifact_type: "agent" })).not.toThrow();
+  });
+});
+
 describe("AliasArgs", () => {
   test("rejects an alias map with a non-slug key or value", () => {
     expect(() => Args.AliasArgs.parse({ world: "default", aliases: { "Bad Key": "ok-target" } })).toThrow();
@@ -77,6 +93,18 @@ describe("AliasArgs", () => {
   });
   test("accepts a slug to slug map", () => {
     expect(() => Args.AliasArgs.parse({ world: "default", aliases: { "old-name": "new-name" } })).not.toThrow();
+  });
+  test("holds the world name to the same shape every other op does", () => {
+    expect(() => Args.AliasArgs.parse({ world: "a/b", aliases: {} })).toThrow();
+    expect(() => Args.AliasArgs.parse({ world: "--no-curriculum", aliases: {} })).toThrow();
+  });
+});
+
+describe("FeedbackArgs", () => {
+  test("holds the world name to the same shape every other op does", () => {
+    const base = { ref: "skill:foo-bar", vote: "good" };
+    expect(() => Args.FeedbackArgs.parse({ ...base, world: "a/b" })).toThrow();
+    expect(() => Args.FeedbackArgs.parse({ ...base, world: "default" })).not.toThrow();
   });
 });
 

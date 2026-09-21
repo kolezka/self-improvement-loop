@@ -76,6 +76,7 @@ export function publish(
   branch: string,
   pattern: string,
   artifactType: string,
+  retiring = false,
 ): PublishResult {
   const out: PublishResult = {};
   if (world.remote === "none") return out;
@@ -91,18 +92,25 @@ export function publish(
     return out;
   }
 
-  if (!io.hasGh()) {
-    out.remote_error = "gh not found on PATH; the artifact is merged locally but no pull request was opened";
-    return out;
-  }
   try {
+    // Inside the try with the rest of it: accept is already merged by the time
+    // publish runs, so every remote step, the probe included, records its own
+    // problem instead of throwing back into a caller that cannot unwind.
+    if (!io.hasGh()) {
+      out.remote_error = "gh not found on PATH; the artifact is merged locally but no pull request was opened";
+      return out;
+    }
     io.push(repo, ["-q", "-u", "origin", branch]);
     const headAtCreate = git.git(repo, ["rev-parse", branch], { check: false });
     const baseAtCreate = io.lsRemote(repo, defaultRef);
-    const title = `feat(${artifactType}): ${pattern} (reviewed)`;
-    const body =
-      `Promotes \`${pattern}\` from the curriculum loop in world \`${world.name}\`. ` +
-      "Reviewed in the loop UI: the artifact body, its source reflections and the full diff.";
+    // A retirement deletes the artifact. Read by a team, a pull request that
+    // announces a promotion for it is the same wrong record the ledger kept.
+    const title = retiring ? `feat(${artifactType}): retire ${pattern} (reviewed)` : `feat(${artifactType}): ${pattern} (reviewed)`;
+    const body = retiring
+      ? `Retires \`${pattern}\` in world \`${world.name}\`: the artifact is deleted and nothing serves the pattern. ` +
+        "Reviewed in the loop UI: the artifact being removed, its source reflections and the full diff."
+      : `Promotes \`${pattern}\` from the curriculum loop in world \`${world.name}\`. ` +
+        "Reviewed in the loop UI: the artifact body, its source reflections and the full diff.";
     io.gh(repo, ["pr", "create", "--base", defaultRef, "--head", branch, "--title", title, "--body", body]);
     const listed: unknown = JSON.parse(
       io.gh(repo, ["pr", "list", "--head", branch, "--base", defaultRef, "--state", "open", "--json", "number,url", "--limit", "1"]) || "[]",

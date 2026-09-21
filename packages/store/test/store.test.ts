@@ -10,6 +10,7 @@ import {
   loadAliases,
   loadLedger,
   moveEntry,
+  newReflectionId,
   parseLedger,
   patternCounts,
   putLesson,
@@ -61,6 +62,33 @@ describe("reflections", () => {
     expect(items[2]!.session_id).toBe("s1");
     expect(items[0]!.lesson).toBe("Do the thing.");
     expect(patternCounts("w")).toEqual({ a: 2, b: 1 });
+  });
+
+  test("a colliding generated id picks another one, it does not lose the reflection", () => {
+    // The generated suffix is 16 random bits, so two reflections of one
+    // pattern on one day collide now and then. The whole session's work used
+    // to fail on that, and the queue entry went to `failed`.
+    const saved = Math.random;
+    const values = [0.5, 0.5, 0.25, 0.75];
+    let call = 0;
+    Math.random = () => values[Math.min(call++, values.length - 1)]!;
+    try {
+      const taken = newReflectionId("a");
+      mkdirSync(paths.reflectionsDir("w"), { recursive: true });
+      writeFileSync(join(paths.reflectionsDir("w"), `${taken}.md`), body("a"), "utf8");
+
+      const path = writeReflection("w", {}, body("a"));
+
+      expect(path).not.toContain(taken);
+      expect(listReflections("w")).toHaveLength(2);
+    } finally {
+      Math.random = saved;
+    }
+  });
+
+  test("an id the caller named is never silently changed", () => {
+    writeReflection("w", { id: "2026-09-10-a-0001" }, body("a"));
+    expect(() => writeReflection("w", { id: "2026-09-10-a-0001" }, body("a"))).toThrow(/already exists/);
   });
 
   test("aliases fold counts one hop", () => {

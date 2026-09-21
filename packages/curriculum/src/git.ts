@@ -109,6 +109,17 @@ export function refExists(repo: string, ref: string): boolean {
   return git(repo, ["rev-parse", "--verify", "--quiet", ref], { check: false }) !== "";
 }
 
+/** `curriculum/<world>/<pattern>`, world segment casefolded.
+ *
+ * Git cannot hold `curriculum/x` and `curriculum/x/y` at once, so the world
+ * segment is never optional. Casefolded at this one construction site: refs are
+ * case-sensitive, a world is spelled both ways by different config files, and
+ * the day this was missing V1 staged `curriculum/Inkitt/<p>` while the review
+ * pane globbed `curriculum/inkitt/*` and reported nothing pending. */
+export function branchName(world: string, pattern: string): string {
+  return `curriculum/${world.toLowerCase()}/${pattern}`;
+}
+
 /** `main`, else `master`, else whatever is checked out.
  *
  * Asked of the repo rather than configured, because a world's target can be any

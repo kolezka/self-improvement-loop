@@ -357,6 +357,30 @@ branch, relink skills into the world's Claude config dir, optionally `push` or
 open a PR (`remote`, with the PR head re-checked before merge). Reject:
 delete the branch and record the rejected watermark. Rehome and retire as in V1.
 
+Rehome and retire stage a branch and change nothing live. Accepting a retirement
+records `retired`, not `promoted`: the branch deleted the artifact, so the row it
+merges must say the pattern is out of rotation, or the inventory keeps listing it
+as serving and the next plan can refine it back into existence.
+
+Three more things hold along that path, each of which kept a retired artifact
+alive on its own:
+
+- A tick skips any pattern whose branch row says `retired`. Otherwise the branch
+  reset that keeps a redraft at one commit throws the staged deletion away, and
+  the accept that follows records a promotion of the artifact just removed.
+- Retiring stamps the rejected watermark, so the reflections already on disk are
+  not read as new evidence on the next tick.
+- Accept reaps the link of every linkable type, not only the accepted one, and
+  reads liveness from the artifact file rather than its directory. A re-home off
+  `skill` links nowhere, and a retired skill can leave a non-empty directory
+  behind; both used to keep `~/.claude/skills/<pattern>` in place.
+
+A re-home writes a stub, not an artifact, and it does not move the watermark. The
+plan therefore treats a `staged` row whose branch still holds only that stub as
+`promote`, whatever the reflection count says. Read as `done`, the stub sat on the
+branch until the pattern earned `threshold` new reflections, and the artifact it
+replaces kept serving all that time.
+
 ## Web UI (`sil web`)
 
 FastAPI + uvicorn bound to `web.host` (loopback by default), token in the URL

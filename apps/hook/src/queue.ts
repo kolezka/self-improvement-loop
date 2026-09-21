@@ -159,8 +159,8 @@ export function markQueueEnded(payload: Record<string, unknown>, worldName: stri
  * own delta, and the later write clobbers the earlier one. Bun has no
  * flock; withDirLock (mkdir-based, cross-process) stands in for the
  * fcntl.flock sil/hook.py uses. */
-export function sessionLock<T>(sessionId: string, fn: () => T): T {
+export function sessionLock<T>(sessionId: string, fn: () => T, staleMs?: number): T {
   const sdir = paths.sessionDir(sessionId);
   mkdirSync(sdir, { recursive: true });
-  return withDirLock(`${sdir}/lock.lockdir`, fn);
+  return withDirLock(`${sdir}/lock.lockdir`, fn, staleMs);
 }

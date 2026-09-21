@@ -24,7 +24,16 @@ export type PatternArgs = z.infer<typeof PatternArgs>;
 export const AcceptArgs = PatternArgs.extend({ reviewed_state: z.string().regex(REVIEWED_STATE_RE) });
 export type AcceptArgs = z.infer<typeof AcceptArgs>;
 
-export const RehomeArgs = PatternArgs.extend({ artifact_type: z.enum(["skill", "hook", "rule", "agent", "none"]) });
+// `none` is not a re-home, it is a retirement proposal: it drops the artifact
+// from the ledger's service. Same confirmation the retire op asks for, because
+// the two do the same thing to the operator's artifact.
+export const RehomeArgs = PatternArgs.extend({
+  artifact_type: z.enum(["skill", "hook", "rule", "agent", "none"]),
+  confirm: z.boolean().default(false),
+}).refine((a) => a.artifact_type !== "none" || a.confirm === true, {
+  message: "artifact_type \"none\" removes the artifact: pass confirm: true",
+  path: ["confirm"],
+});
 export type RehomeArgs = z.infer<typeof RehomeArgs>;
 
 export const RetireArgs = PatternArgs.extend({ confirm: z.literal(true) });
@@ -34,7 +43,7 @@ export const SessionArgs = z.object({ session_id: z.string().regex(SESSION_ID_RE
 export type SessionArgs = z.infer<typeof SessionArgs>;
 
 export const FeedbackArgs = z.object({
-  world: z.string().min(1),
+  world: z.string().regex(WORLD_RE).max(64),
   ref: z.string().regex(ARTIFACT_REF_RE),
   vote: z.enum(["good", "bad"]),
   note: z.string().default(""),
@@ -57,7 +66,7 @@ export const ConfigArgs = z.object({ config: z.record(z.string(), z.unknown()) }
 export type ConfigArgs = z.infer<typeof ConfigArgs>;
 
 export const AliasArgs = z.object({
-  world: z.string().min(1),
+  world: z.string().regex(WORLD_RE).max(64),
   aliases: z.record(z.string(), z.string()).refine(
     (m) => Object.entries(m).every(([k, v]) => SLUG_RE.test(k) && SLUG_RE.test(v)),
     { message: "alias entries must be slugs" },

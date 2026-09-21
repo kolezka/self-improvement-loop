@@ -75,10 +75,12 @@
   }
 
   async function retire(pattern: string) {
-    if (!window.confirm(`Retire ${pattern}? This cannot be undone from the UI.`)) return;
+    if (!window.confirm(`Retire ${pattern}? The retirement is staged for review, not applied yet.`)) return;
     try {
       await call("router.retire", { world: appState.world, pattern, confirm: true });
-      toast(`${pattern} retired`, "ok");
+      // Staged only: the artifact keeps serving until the branch is accepted in
+      // the review queue.
+      toast(`${pattern}: retirement staged. Accept it in Review to remove the artifact.`, "ok");
       await loadInventory();
     } catch (e) {
       toast(`Could not retire ${pattern}: ${(e as Error).message}`);

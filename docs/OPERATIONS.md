@@ -26,6 +26,18 @@ sil review retire old-pattern --world default --yes
 sil feedback add skill:verify-callsites good --note "caught a real bug"
 ```
 
+`rehome` and `retire` only stage a branch. The artifact keeps serving until you
+accept that branch, so a retirement is two steps: `sil review retire <pattern>
+--yes`, then `sil review accept <pattern> --reviewed-state <hash>`.
+
+While a retirement waits on its branch, the worker leaves that pattern alone and
+reports it as gated out. Accepting the retirement deletes the artifact, reaps its
+symlink in `~/.claude`, records the row as `retired` and stamps a watermark, so
+the pattern needs `promotion.threshold` new reflections before it is proposed
+again. `sil review rehome <pattern> --type none --yes` is a retirement as well:
+nothing serves the pattern after it, so it asks for `--yes` exactly like
+`retire` (the `router.rehome` op wants `confirm: true` for the same reason).
+
 `accept` always needs `--reviewed-state`: paste the hash `sil review show` prints.
 This binds the accept to exactly what you looked at; if the branch changed
 underneath you, accept fails and asks you to reload.

@@ -78,7 +78,7 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "review.diff": ["read", "none"],
   "skill.accept": ["remote", "reviewed_state"],
   "skill.reject": ["local", "none"],
-  "router.rehome": ["local", "none"],
+  "router.rehome": ["local", "confirm"],
   "router.retire": ["local", "confirm"],
   "router.inventory": ["read", "none"],
   "artifacts.scorecards": ["read", "none"],

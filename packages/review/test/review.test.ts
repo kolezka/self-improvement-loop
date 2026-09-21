@@ -15,6 +15,7 @@ import {
   RULE_END,
   RULE_START,
   ruleTag,
+  Scorecard,
   targetRoot,
   type World,
 } from "@sil/core";
@@ -29,6 +30,7 @@ import {
   cleanupEnv,
   commitFile,
   fakeGateRunner,
+  hookDraft,
   initTarget,
   installFakeNudge,
   makeCfg,
@@ -801,6 +803,175 @@ describe("rehome and retire", () => {
     review.retire(world, cfg(), PATTERN);
     expect(() => review.retire(world, cfg(), PATTERN)).toThrow(/already retired/);
   });
+
+  test("accepting a retirement leaves the row retired, not promoted", async () => {
+    // Accept used to stamp "promoted" on every row it merged, so a retirement
+    // landed as a promotion: the inventory kept serving the pattern and the next
+    // plan could refine the artifact back into existence.
+    const world = makeWorld();
+    const repo = await accepted(world);
+
+    review.retire(world, cfg(), PATTERN);
+    const detail = review.detail(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+
+    expect(out.merged).toBe(true);
+    expect(out.status).toBe("retired");
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(false);
+    const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(entry.status).toBe("retired");
+    expect(entry.served_by).toBeNull();
+    // A retirement promotes nothing, so the promotion date it removes stands.
+    expect(entry.promoted_at).not.toBeNull();
+  });
+
+  test("retiring a staged pattern never stamps a promotion date", async () => {
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+
+    review.retire(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(entry.status).toBe("retired");
+    expect(entry.promoted_at).toBeNull();
+  });
+
+  test("a retired pattern is never refined back into existence", async () => {
+    const world = makeWorld();
+    const repo = await accepted(world);
+    review.retire(world, cfg(), PATTERN);
+    const detail = review.detail(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+
+    const card = Scorecard.parse({
+      ref: `skill:${PATTERN}`,
+      type: "skill",
+      name: PATTERN,
+      misfired: 4,
+      human_bad: 3,
+      proposal: "refine",
+      reason: "misfires",
+    });
+    const actions = plan(world, cfg(), { cards: [card] }).actions;
+    expect(actions.find((a) => a.pattern === PATTERN)!.action).toBe("done");
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(false);
+  });
+
+  test("accepting a retired rule drops its bullet and keeps the sibling's", async () => {
+    // The rules file is shared, so a retirement there is a merge into a file
+    // every other pattern also lives in, not a delete.
+    const world = makeWorld();
+    const repo = seed(world);
+    seedRules(repo);
+    await run(world, cfg(), { apply: true, chat: new FakeChat({ draft: ruleDraft() }).fn, gateRunner: fakeGateRunner });
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    review.retire(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(out.status).toBe("retired");
+    const text = readFileSync(join(repo, RULES), "utf8");
+    expect(text).not.toContain(ruleTag(PATTERN));
+    expect(text).toContain(ruleTag(SIBLING));
+    expect(loadLedger(ledgerPath(world)).entries[PATTERN]!.status).toBe("retired");
+  });
+
+  test("a curriculum tick never overwrites a retirement waiting for review", async () => {
+    // A tick force-resets a pattern's branch onto the default branch before it
+    // redrafts. Run over a staged retirement, that threw away the deletion the
+    // operator was about to accept, and the accept that followed recorded a
+    // promotion of the artifact the retirement had removed.
+    const world = makeWorld();
+    const repo = await accepted(world);
+    const retired = review.retire(world, cfg(), PATTERN);
+    const head = git.git(repo, ["rev-parse", retired.branch]);
+
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    const report = (await stage(world, PATTERN, [], "a different quote about reading every call site first")) as {
+      staged: string[];
+      gated_out: Record<string, string>;
+    };
+
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("retirement");
+    expect(git.git(repo, ["rev-parse", retired.branch])).toBe(head);
+    expect(git.show(repo, retired.branch, `skills/${PATTERN}/SKILL.md`).found).toBe(false);
+
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(out.status).toBe("retired");
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(false);
+  });
+
+  test("the queue and the detail say a branch is a retirement", async () => {
+    // Both used to render it as a promotion with an empty body, so the operator
+    // had only the diff to tell them what accepting would do.
+    const world = makeWorld();
+    await accepted(world);
+    review.retire(world, cfg(), PATTERN);
+
+    expect(review.queue(world, cfg()).map((r) => r.status)).toEqual(["retired"]);
+    const detail = review.detail(world, cfg(), PATTERN);
+    expect(detail.status).toBe("retired");
+    expect(detail.accept_blocked).toBeNull();
+  });
+
+  test("accepting a retirement makes the pattern earn its way back", async () => {
+    // A retirement costs a watermark, exactly as a rejection does. Without it
+    // the next tick read the old promotion mark, found the reflections that
+    // were already on disk past it, and staged the artifact again at once.
+    const world = makeWorld();
+    await accepted(world);
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+
+    review.retire(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(loadLedger(ledgerPath(world)).entries[PATTERN]!.rejected_at_count).toBe(6);
+    expect(plan(world, cfg()).actions.find((a) => a.pattern === PATTERN)!.action).toBe("done");
+
+    // Not a ban: new evidence past the new watermark proposes the pattern again.
+    addReflections(world, PATTERN, 3, { startDay: 40 });
+    expect(plan(world, cfg()).actions.find((a) => a.pattern === PATTERN)!.action).toBe("promote");
+  });
+
+  test("re-homing to none records a retirement, not a promotion of nothing", async () => {
+    // "none" has no file to write, so the re-home placeholder guard never saw
+    // it and accept stamped a promotion of an artifact that does not exist.
+    const world = makeWorld();
+    const repo = await accepted(world);
+
+    const out = review.rehome(world, cfg(), PATTERN, "none");
+    expect(out.path).toBe("");
+
+    const merged = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(merged.status).toBe("retired");
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(false);
+    const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(entry.status).toBe("retired");
+    expect(entry.served_by).toBeNull();
+  });
+
+  test("accepting a retired hook removes the nudge the dispatcher reads", async () => {
+    const world = makeWorld();
+    const repo = seed(world);
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: hookDraft(PATTERN) }).fn,
+      gateRunner: fakeGateRunner,
+    });
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(existsSync(join(repo, "nudges", `${PATTERN}.json`))).toBe(true);
+
+    review.retire(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(out.status).toBe("retired");
+    expect(existsSync(join(repo, "nudges", `${PATTERN}.json`))).toBe(false);
+    expect(loadLedger(ledgerPath(world)).entries[PATTERN]!.status).toBe("retired");
+  });
 });
 
 // --- relink -------------------------------------------------------------------
@@ -895,6 +1066,50 @@ describe("relink", () => {
     // A retired skill must not stay listed in the config.
     expect(existsSync(link)).toBe(false);
   });
+
+  test("a retirement reaps the link even when the skill directory survives", async () => {
+    // Retiring deletes SKILL.md and reaps the directory only when it is empty.
+    // One other committed file keeps the directory alive, and liveness was read
+    // off the directory, so the config kept a link to a skill with no body.
+    const world = makeWorld();
+    const repo = await accepted(world);
+    commitFile(repo, `skills/${PATTERN}/reference.md`, "background notes\n", "chore: a note beside the skill");
+    const link = join(paths.claudeConfigDir(), "skills", PATTERN);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+
+    review.retire(world, cfg(), PATTERN);
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(out.status).toBe("retired");
+    expect(existsSync(join(repo, "skills", PATTERN, "reference.md"))).toBe(true);
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(false);
+    expect(() => lstatSync(link)).toThrow();
+  });
+
+  test("accepting a re-home reaps the link the old type left behind", async () => {
+    // `relink` is called for the type being accepted, and a hook links nowhere,
+    // so a skill re-homed to a hook kept its symlink in the config with nothing
+    // behind it.
+    const world = makeWorld();
+    const repo = seed(world);
+    await stage(world);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    const link = join(paths.claudeConfigDir(), "skills", PATTERN);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+
+    review.rehome(world, cfg(), PATTERN, "hook");
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    await run(world, cfg(), {
+      apply: true,
+      chat: new FakeChat({ draft: hookDraft(PATTERN) }).fn,
+      gateRunner: fakeGateRunner,
+    });
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    expect(out.artifact_type).toBe("hook");
+    expect(existsSync(join(repo, "nudges", `${PATTERN}.json`))).toBe(true);
+    expect(() => lstatSync(link)).toThrow();
+  });
 });
 
 // --- the remote half ----------------------------------------------------------
@@ -961,6 +1176,46 @@ describe("the remote half", () => {
 
     expect(out.remote_error).toBeUndefined();
     expect(seen.some((a) => a[0] === "pr" && a[1] === "merge")).toBe(true);
+  });
+
+  test("a retirement opens a pull request that says retire, not promote", async () => {
+    // The pull request is what the rest of a team reads. Announcing a promotion
+    // for a branch that deletes the artifact is the same wrong record the
+    // ledger used to keep.
+    const world = makeWorld({ remote: "pr" });
+    const repo = seed(world);
+    const branch = branchName(world.name, PATTERN);
+    const seen: string[][] = [];
+    review.setRemoteOps({
+      hasGh: () => true,
+      push: () => {},
+      lsRemote: () => "",
+      gh: (_repo, args) => {
+        seen.push(args);
+        if (args[0] === "pr" && args[1] === "list") {
+          return JSON.stringify([{ number: 9, url: "https://example.invalid/pr/9" }]);
+        }
+        if (args[0] === "pr" && args[1] === "view") {
+          return JSON.stringify({ headRefOid: git.git(repo, ["rev-parse", branch]) });
+        }
+        return "";
+      },
+    });
+
+    await stage(world);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    seen.length = 0;
+
+    review.retire(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    const create = seen.find((a) => a[0] === "pr" && a[1] === "create")!;
+    expect(create).toBeDefined();
+    const title = create[create.indexOf("--title") + 1]!;
+    const body = create[create.indexOf("--body") + 1]!;
+    expect(title).toContain("retire");
+    expect(body).toContain("Retires");
+    expect(body).not.toContain("Promotes");
   });
 
   test("a remote: none world never calls the remote half at all", async () => {

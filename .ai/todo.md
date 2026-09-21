@@ -222,6 +222,97 @@ one e2e test, which turned out to be a real hole rather than a CI quirk.
       identity on a repo an older install already created. An identity git can
       resolve is never overwritten.
 
+### Retire then accept left the artifact serving (2026-09-21)
+
+- [x] `acceptInner` stamped `status: "promoted"` on every row it merged, so an
+      accepted retirement landed in the ledger as a promotion. The file was
+      deleted and the symlink reaped, but the inventory still counted the pattern
+      as serving and `plan()` read `status === "promoted"` plus the scorecard that
+      caused the retirement and proposed `refine`, which drafts the artifact back
+      into existence. Accept now carries the branch row's `retired` status and
+      `served_by: null` through the merge, `AcceptResult.status` is
+      `"promoted" | "retired"`, and the commit subject says `retire`. Regression
+      tests cover skill, rule and hook retirements plus the "never refined back"
+      invariant (`packages/review/test/review.test.ts`).
+- [x] `sil review retire` printed "retired <pattern>" for an action that only
+      stages a branch, and the web UI toast said the same. Both now say the
+      retirement is staged and needs an accept.
+
+### End-to-end audit of the same path (2026-09-21)
+
+Fixed here:
+
+- [x] A curriculum tick destroyed a retirement waiting for review.
+      `stageOne` force-resets the pattern's branch onto the default branch
+      (`packages/curriculum/src/run.ts`) unless `migrating()` says a type change
+      is in flight, and `migrating()` cannot see a retirement: `served_by` is
+      null, so `rowType()` falls back to `artifact_type` and both sides read the
+      same type. `servedBy()` then recovers the old `served_by` from the default
+      branch and redrafts the artifact in its old shape. A single tick between
+      retire and accept was enough, and a tick is as cheap as opening a session.
+      `stageOne` now gates the pattern out while its branch row says `retired`.
+- [x] Retiring left the watermark where the promotion put it, so the reflections
+      already on disk counted as new evidence and the next tick staged the
+      artifact again. Retire now stamps `rejected_at_count`, exactly as reject
+      does; the pattern needs `threshold` new reflections to come back.
+- [x] Accept relinked only the type being accepted, and a hook or rule links
+      nowhere, so a skill re-homed to either kept a dangling
+      `~/.claude/skills/<pattern>`. Accept now passes every linkable type through
+      `relink`.
+- [x] `relink` read liveness off the skill directory. Retiring deletes SKILL.md
+      and reaps the directory only when it is empty, so one other committed file
+      kept the link alive. Liveness is now the artifact file itself.
+- [x] `rehome --type none` wrote no file, so the placeholder guard had nothing to
+      refuse and accept stamped a promotion of an artifact that does not exist.
+      It is now run as a retirement.
+- [x] A retirement's pull request announced a promotion (`remote.ts`), and
+      `io.hasGh()` sat outside the try that keeps every post-merge step from
+      hard-failing.
+- [x] `sil review rehome` and the web rehome button said "rehomed" for an action
+      that only stages a branch.
+
+Found in the audit, all fixed now. Every fix ships a regression test that was
+run red against the old code first:
+
+- [x] MEDIUM `ReviewItem` / `ReviewDetail` carried no status, so a staged
+      retirement rendered in the queue and the detail pane exactly like a
+      promotion. Fixed in 5cf2937 with the rest of that commit: `status` is on
+      `ReviewItem` and both the queue row and the detail pane name a retirement.
+- [x] MEDIUM A re-home placeholder was only redrafted when the pattern earned
+      `threshold` new reflections (`plan()` returned `done` otherwise), so the
+      staged re-home could not be accepted and the old artifact kept serving.
+      `plan()` now returns `promote` for a `staged` row whose branch still holds
+      only the stub. A re-home writes that row and that stub into a scratch
+      worktree of the branch, never into the live tree, so `placeholderPatterns()`
+      reads both off the branch. `branchName()` moved from `run.ts` to `git.ts`
+      so `plan.ts` can use it without an import cycle.
+- [x] MEDIUM `handleSessionEnd` wrote the session file without `sessionLock`
+      (`apps/hook/src/handlers.ts`), so a concurrent Stop write lost the `stops`
+      counter or the `ended` flag. It now takes the same lock Stop takes, and
+      waits 4 s for it: the default 2 s can run out while a Stop scans a large
+      transcript, and a lost `ended` flag holds the session out of the queue for
+      the full `idle_minutes`.
+- [x] MEDIUM The worker wrote a reflection and then moved the queue entry to a
+      terminal state with no guard between the two, so a re-queued or replayed
+      session got a second reflection and inflated the count `plan()` compares to
+      the watermark. `reflectedSessions()` (`@sil/store`) maps each session id to
+      the time of its newest reflection, and the worker skips an entry only when
+      that reflection is not older than the entry's own `first_stop`. A resumed
+      session keeps its id, so the time is what keeps its new work.
+- [x] LOW `AliasArgs.world` and `FeedbackArgs.world` skipped `WORLD_NAME_RE`, and
+      `aliases.*`, `reflections.*`, `lessons.list` and `feedback.add` skipped
+      `cfgWorld()`, so an unknown world wrote or returned empty instead of a 503.
+      Both schemas hold the world to the same shape now and every one of those
+      handlers resolves the world first.
+- [x] LOW A reflection id collision threw `reflection already exists`, and
+      `isTransient` does not match it, so finished critic work went to `failed`.
+      A generated id now retries up to 16 times; an id the caller named still
+      throws, because writing that body to another file would be a silent rename.
+- [x] LOW `router.rehome` had no confirm gate while `router.retire` does, so
+      re-homing to `none` (a retirement) staged a deletion without one. The op
+      wants `confirm: true` for `none`, the CLI wants `--yes`, and the web pane
+      sends the confirmation it already asked the operator for.
+
 ### Still open, by design not by accident
 - [ ] No cross-artifact consistency check: the judge sees one draft against its own
       sources only (`packages/curriculum/src/prompts.ts:263-283`), so a new artifact

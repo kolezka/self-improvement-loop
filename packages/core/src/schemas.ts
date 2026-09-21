@@ -306,6 +306,10 @@ export const ReviewItem = z.object({
   pattern: slug,
   branch: z.string(),
   artifact_type: ArtifactType,
+  // What the branch proposes, read off the row the branch itself carries.
+  // "retired" means accepting it deletes the artifact; without this a
+  // retirement renders exactly like a promotion with an empty body.
+  status: PromotionStatus.default("staged"),
   artifact_path: z.string().nullable().default(null),
   count: z.number().int().default(0),
   staged_at: z.string().nullable().default(null),

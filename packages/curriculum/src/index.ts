@@ -71,5 +71,6 @@ export {
   watermark,
   withoutSections,
 } from "./plan.ts";
-export { branchName, run, type RunOptions } from "./run.ts";
+export { branchName } from "./git.ts";
+export { run, type RunOptions } from "./run.ts";
 export { type GateCorpusResult, type GateRunner, type NudgeAdapter, setNudgeAdapter } from "./deps.ts";

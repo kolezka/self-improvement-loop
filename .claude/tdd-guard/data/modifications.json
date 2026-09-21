@@ -1,0 +1,12 @@
+{
+  "session_id": "a27e29ed-bd2d-464c-8df5-c59b66db70c4",
+  "transcript_path": "/home/me/.claude/projects/-home-me-jean-self-improvement-loop-maple-swift/a27e29ed-bd2d-464c-8df5-c59b66db70c4.jsonl",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "/home/me/jean/self-improvement-loop/maple-swift/apps/cli/src/commands/bundle.ts",
+    "old_string": "export function cmdImportBundle(src: string, opts: ImportBundleCmdOptions): number {\n  importBundle({ src, worlds: opts.world, force: opts.force });\n  return 0;\n}",
+    "new_string": "export function cmdImportBundle(src: string, opts: ImportBundleCmdOptions): number {\n  const result = importBundle({ src, worlds: opts.world, force: opts.force });\n  console.log(`restored ${result.files} files from ${result.path}`);\n  console.log(`  worlds: ${result.worlds.join(\", \")} (${result.addedWorlds} new)`);\n  if (result.skipped > 0) console.log(`  kept ${result.skipped} file(s) this host already had; pass --force to overwrite them`);\n  for (const warning of result.warnings) console.log(`  note: ${warning}`);\n  console.log();\n  console.log(\"Set the API key env vars this install needs, then run: sil status\");\n  return 0;\n}",
+    "replace_all": false
+  }
+}

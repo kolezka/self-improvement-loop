@@ -12,6 +12,7 @@ import { mapKnownError } from "./common.ts";
 import { defaultDeps, type Deps } from "./deps.ts";
 import { cmdAliasesList, cmdAliasesRm, cmdAliasesSet, cmdAliasesSuggest } from "./commands/aliases.ts";
 import { cmdArtifacts } from "./commands/artifacts.ts";
+import { cmdExport, cmdImportBundle } from "./commands/bundle.ts";
 import { cmdCurriculumPlan, cmdCurriculumRun } from "./commands/curriculum.ts";
 import { cmdFeedbackAdd, cmdFeedbackList } from "./commands/feedback.ts";
 import { cmdHookSnapshot } from "./commands/hookSnapshot.ts";
@@ -268,7 +269,23 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .option("--json")
     .action(wire((opts) => cmdOpenclawStatus(opts)));
 
+  program
+    .command("export")
+    .description("write a migration bundle: config, worlds, reflections, learned repos and history")
+    .argument("<path>", "destination directory, or a .tar.gz / .tgz archive")
+    .option("--world <name...>", "worlds to export; defaults to every world")
+    .option("--no-history", "leave usage, feedback and inbox files behind")
+    .option("--force", "overwrite an existing destination")
+    .action(wire((path: string, opts) => cmdExport(path, opts)));
+
   const imp = program.command("import");
+  imp
+    .command("bundle")
+    .description("restore a migration bundle written by sil export")
+    .argument("<path>", "bundle directory or .tar.gz / .tgz archive")
+    .option("--world <name...>", "worlds to restore; defaults to every world in the bundle")
+    .option("--force", "overwrite files this host already has")
+    .action(wire((path: string, opts) => cmdImportBundle(path, opts)));
   imp
     .command("reflections")
     .argument("<dir>")

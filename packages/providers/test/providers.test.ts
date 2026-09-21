@@ -648,6 +648,7 @@ describe("system-one kind", () => {
         return fakeResponse({ model: "jev-1.13.0", answers: { same_mechanism: { type: "choice", choice: "distinct", probabilities: { same_mechanism: 0.2, distinct: 0.8 }, confidence: 0.8 } } });
       }) as typeof fetch;
 
+      const priorKey = process.env["TEST_SO_KEY"];
       process.env["TEST_SO_KEY"] = "jev-secret";
       const ep = endpoint({ name: "jev", kind: "system-one", base_url: "http://localhost:5000", models: { judge: "jev-1" }, api_key_env: "TEST_SO_KEY" });
       const llm = llmConfig({ endpoints: [ep], active: "jev" });
@@ -664,7 +665,8 @@ describe("system-one kind", () => {
           same_mechanism: { type: "choice", instructions: "one mechanism or two?", criteria: { same_mechanism: "one cause", distinct: "two causes" } },
         });
       } finally {
-        delete process.env["TEST_SO_KEY"];
+        if (priorKey === undefined) delete process.env["TEST_SO_KEY"];
+        else process.env["TEST_SO_KEY"] = priorKey;
       }
     });
   });
@@ -720,13 +722,64 @@ describe("system-one kind", () => {
       }
     });
 
-    test("a model field that is a sentence falls back to the requested model name", async () => {
+    test("an absent model field falls back to the requested name, a prose one yields null", async () => {
+      const reply = (extra: Record<string, unknown>) => fakeResponse({ ...extra, answers: { same_mechanism: { choice: "distinct" } } });
+
+      globalThis.fetch = (async () => reply({})) as unknown as typeof fetch;
+      expect((await runChoice())["same_mechanism"]!.model).toBe("jev-1");
+
+      // Present but unprintable is not the same as absent: we know the server
+      // answered with something else, so claiming our own model would be a lie.
+      globalThis.fetch = (async () => reply({ model: "here is my answer to your question" })) as unknown as typeof fetch;
+      expect((await runChoice())["same_mechanism"]!.model).toBeNull();
+    });
+
+    test("a probability that is a whole object is bounded in the message, never echoed", async () => {
+      const blob = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`field_${i}`, "a value nobody should see in an error"]));
       globalThis.fetch = (async () =>
-        fakeResponse({ model: "here is my answer to your question", answers: { same_mechanism: { choice: "distinct" } } })) as unknown as typeof fetch;
+        fakeResponse({ answers: { same_mechanism: { choice: "distinct", probabilities: { distinct: blob } } } })) as unknown as typeof fetch;
+      try {
+        await runChoice();
+        throw new Error("expected decideChoice to throw");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ProviderError);
+        const msg = String((e as Error).message);
+        expect(msg).not.toContain("nobody should see");
+        expect(msg).toMatch(/a object of \d+ JSON characters/);
+      }
+    });
 
-      const result = await runChoice();
+    test("a confidence that is prose is bounded in the message, never echoed", async () => {
+      const prose = "I am fairly confident these describe the same underlying mechanism";
+      globalThis.fetch = (async () =>
+        fakeResponse({ answers: { same_mechanism: { choice: "distinct", confidence: prose } } })) as unknown as typeof fetch;
+      try {
+        await runChoice();
+        throw new Error("expected decideChoice to throw");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ProviderError);
+        const msg = String((e as Error).message);
+        expect(msg).not.toContain("underlying mechanism");
+        expect(msg).toContain(`${prose.length}-character string`);
+      }
+    });
 
-      expect(result["same_mechanism"]!.model).toBe("jev-1");
+    test("raises when probabilities arrive as an array", async () => {
+      globalThis.fetch = (async () =>
+        fakeResponse({ answers: { same_mechanism: { choice: "distinct", probabilities: [0.2, 0.8] } } })) as unknown as typeof fetch;
+      await expect(runChoice()).rejects.toBeInstanceOf(ProviderError);
+    });
+
+    test("raises when the choice field is absent entirely", async () => {
+      globalThis.fetch = (async () =>
+        fakeResponse({ answers: { same_mechanism: { type: "choice", confidence: 0.9 } } })) as unknown as typeof fetch;
+      try {
+        await runChoice();
+        throw new Error("expected decideChoice to throw");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ProviderError);
+        expect(String((e as Error).message)).toContain("with undefined,");
+      }
     });
 
     test("raises when the pick has no probability of its own", async () => {
@@ -766,6 +819,46 @@ describe("system-one kind", () => {
       globalThis.fetch = (async () => {
         throw new DOMException("The operation timed out.", "TimeoutError");
       }) as unknown as typeof fetch;
+      await expect(runChoice()).rejects.toBeInstanceOf(ProviderTimeout);
+    });
+
+    test("the per-call timeoutMs drives the abort signal, not the endpoint's timeout_s", async () => {
+      // Honours init.signal the way a real fetch does, so dropping the
+      // timeoutMs argument would leave this request running to completion.
+      globalThis.fetch = (async (_url: string, init: RequestInit) =>
+        await new Promise<Response>((resolve, reject) => {
+          const timer = setTimeout(() => resolve(fakeResponse({ answers: {} })), 80);
+          init.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(init.signal!.reason);
+          });
+        })) as unknown as typeof fetch;
+
+      const ep = endpoint({ name: "jev", kind: "system-one", base_url: "http://localhost:5000", models: { judge: "jev-1" }, timeout_s: 240 });
+      const llm = llmConfig({ endpoints: [ep], active: "jev" });
+
+      let err: unknown;
+      try {
+        await decideChoice("judge", { a: 1 }, PAIR, { world: world(), llm, timeoutMs: 10 });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(ProviderTimeout);
+      const msg = String((err as Error).message);
+      expect(msg).toContain("timed out after 0.01s");
+      expect(msg).not.toContain("240s");
+    });
+
+    test("a deadline that fires while the body is being read is still a ProviderTimeout", async () => {
+      globalThis.fetch = (async () =>
+        ({
+          ok: true,
+          status: 200,
+          text: async () => {
+            throw new DOMException("The operation timed out.", "TimeoutError");
+          },
+        }) as unknown as Response) as unknown as typeof fetch;
+
       await expect(runChoice()).rejects.toBeInstanceOf(ProviderTimeout);
     });
   });

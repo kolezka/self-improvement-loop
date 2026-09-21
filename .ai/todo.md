@@ -94,13 +94,22 @@ deterministic pass; `sil aliases set` stays the only thing that writes.
       per-pair failure isolation. No new package, no new role, no new service.
 - [x] CLI: verdict, confidence, model and the evidence ids under each candidate;
       disabled output is byte-identical to before
-- [x] tests with a fake decision provider (29 in curriculum, 12 in providers,
-      4 in the CLI); full suite 1171 pass, 0 fail
+- [x] tests with a fake decision provider (30 in `packages/curriculum/test/alias-semantic.test.ts`,
+      44 in the providers `system-one kind` block, 8 in the CLI `semantic pass`
+      block); full suite 1188 pass, 0 fail, measured with `bun test`
 - [x] `scripts/eval-alias-semantic.ts` + `scripts/fixtures/alias-semantic-pairs.json`:
       six hand-labelled pairs, disagreement report, live provider only
 - [x] independent review; fixed: model text echoed into error lines, a per-pair
       failure hidden behind the report-level reason, probability keys outside the
       question, a contract-breaking transport taking the whole report down
+- [x] second review round (pr-review-toolkit), fixed: report status split into
+      `preflight_failed` and `none_assessed` so the CLI stops guessing from the
+      suggestion shape; an answer with no confidence signal is `unavailable`,
+      not `unsure`; the credential and `base_url` are checked before the first
+      request; the confidence gate is one exported `verdictFor` shared with the
+      evaluation script; `PAIR_CRITERIA` is typed by the option union; the
+      evaluation script validates its fixture and exits 1 when it measured
+      nothing; three false claims corrected in `docs/OPERATIONS.md`
 - [ ] run the live evaluation against a real Jev key or a Laya server. Nothing in
       this branch has been exercised against a real provider.
 

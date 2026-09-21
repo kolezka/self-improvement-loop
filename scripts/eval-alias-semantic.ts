@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, loadLlm, worldNamed } from "@sil/core";
-import { pairQuestion, QUESTION_ID, type PatternEvidence, type SemanticVerdict } from "@sil/curriculum";
+import { pairQuestion, QUESTION_ID, type PatternEvidence, type SemanticVerdict, verdictFor } from "@sil/curriculum";
 import { decideChoice } from "@sil/providers";
 
 interface FixturePair {
@@ -27,10 +27,47 @@ interface FixturePair {
 interface Row {
   id: string;
   expected: string;
-  verdict: SemanticVerdict | "error";
+  /** `error`: the request failed. `unmeasured`: the request returned, but the
+   * answer carried no confidence signal, so there is nothing to score. */
+  verdict: SemanticVerdict | "error" | "unmeasured";
   confidence: number | null;
   agrees: boolean | null;
   detail: string;
+}
+
+/** The fixture is a file on disk, so it is checked before use. zod lives in
+ * the packages, not at the repo root, so this is by hand and deliberately
+ * shallow: it proves the fields the evaluation reads. */
+function readFixture(path: string): FixturePair[] {
+  const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const pairs = (raw as { pairs?: unknown })?.pairs;
+  if (!Array.isArray(pairs) || pairs.length === 0) throw new Error(`${path}: expected a non-empty "pairs" array`);
+  const evidenceOk = (v: unknown): v is PatternEvidence => {
+    const e = v as PatternEvidence;
+    return (
+      typeof e?.name === "string" &&
+      e.name.length > 0 &&
+      Array.isArray(e.reflections) &&
+      e.reflections.every((r) => typeof r?.id === "string" && typeof r?.excerpt === "string")
+    );
+  };
+  return pairs.map((p, i) => {
+    const pair = p as FixturePair;
+    const where = `${path}: pairs[${i}]`;
+    if (typeof pair?.id !== "string" || pair.id === "") throw new Error(`${where}: missing "id"`);
+    if (pair.expected !== "same_mechanism" && pair.expected !== "distinct" && pair.expected !== "ambiguous") {
+      throw new Error(`${where}: "expected" must be same_mechanism, distinct or ambiguous`);
+    }
+    if (typeof pair.why !== "string") throw new Error(`${where}: missing "why"`);
+    if (!evidenceOk(pair.a) || !evidenceOk(pair.b)) throw new Error(`${where}: "a" and "b" need a name and {id, excerpt} reflections`);
+    return pair;
+  });
+}
+
+/** One line, bounded. A provider error can carry a whole HTML error page. */
+function describe(e: unknown): string {
+  const message = String((e as Error)?.message ?? e).replace(/\s+/g, " ").trim();
+  return message.slice(0, 160);
 }
 
 const args = process.argv.slice(2);
@@ -42,8 +79,7 @@ const flag = (name: string): string | null => {
 const worldName = flag("--world") ?? "default";
 const asJson = args.includes("--json");
 
-const fixturePath = join(import.meta.dir, "fixtures", "alias-semantic-pairs.json");
-const pairs = (JSON.parse(readFileSync(fixturePath, "utf8")) as { pairs: FixturePair[] }).pairs;
+const pairs = readFixture(join(import.meta.dir, "fixtures", "alias-semantic-pairs.json"));
 
 const cfg = loadConfig();
 const world = worldNamed(cfg, worldName);
@@ -56,27 +92,55 @@ for (const pair of pairs) {
   try {
     const answers = await decideChoice("judge", state, questions, { world, llm, timeoutMs: semantic.timeout_s * 1000 });
     const answer = answers[QUESTION_ID]!;
-    const gate = answer.confidence ?? answer.probabilities[answer.choice] ?? null;
-    const verdict: SemanticVerdict = gate === null || gate < semantic.min_confidence ? "unsure" : (answer.choice as SemanticVerdict);
+    // Same gate as the live path, from the same function, so the evaluation
+    // cannot drift away from what `sil aliases suggest` prints.
+    const gated = verdictFor(answer, semantic.min_confidence);
+    if (gated === null) {
+      rows.push({
+        id: pair.id,
+        expected: pair.expected,
+        verdict: "unmeasured",
+        confidence: null,
+        agrees: null,
+        detail: `model ${answer.model ?? "unknown"} reported no confidence for its pick`,
+      });
+      continue;
+    }
     rows.push({
       id: pair.id,
       expected: pair.expected,
-      verdict,
-      confidence: gate,
-      agrees: pair.expected === "ambiguous" ? null : verdict === pair.expected,
-      detail: `model ${answer.model}`,
+      verdict: gated.verdict,
+      confidence: gated.confidence,
+      agrees: pair.expected === "ambiguous" ? null : gated.verdict === pair.expected,
+      detail: `model ${answer.model ?? "unknown"}`,
     });
   } catch (e) {
-    rows.push({ id: pair.id, expected: pair.expected, verdict: "error", confidence: null, agrees: null, detail: (e as Error).message.slice(0, 160) });
+    rows.push({ id: pair.id, expected: pair.expected, verdict: "error", confidence: null, agrees: null, detail: describe(e) });
   }
 }
 
 const scored = rows.filter((r) => r.agrees !== null);
 const disagreements = scored.filter((r) => !r.agrees);
 const errors = rows.filter((r) => r.verdict === "error");
+const unmeasured = rows.filter((r) => r.verdict === "unmeasured");
+const ambiguous = rows.length - scored.length - errors.length - unmeasured.length;
 
 if (asJson) {
-  console.log(JSON.stringify({ world: worldName, min_confidence: semantic.min_confidence, rows, scored: scored.length, disagreements: disagreements.length, errors: errors.length }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        world: worldName,
+        min_confidence: semantic.min_confidence,
+        rows,
+        scored: scored.length,
+        disagreements: disagreements.length,
+        errors: errors.length,
+        unmeasured: unmeasured.length,
+      },
+      null,
+      2,
+    ),
+  );
 } else {
   console.log(`live evaluation, world ${worldName}, min_confidence ${semantic.min_confidence}`);
   for (const r of rows) {
@@ -84,10 +148,17 @@ if (asJson) {
     const conf = r.confidence === null ? "   -" : r.confidence.toFixed(2);
     console.log(`${mark} ${r.id.padEnd(32)} expected ${r.expected.padEnd(14)} verdict ${r.verdict.padEnd(14)} ${conf}  ${r.detail}`);
   }
-  console.log(`\nscored pairs: ${scored.length}, disagreements: ${disagreements.length}, ambiguous (reported, not scored): ${rows.length - scored.length - errors.length}, errors: ${errors.length}`);
+  console.log(
+    `\nscored pairs: ${scored.length}, disagreements: ${disagreements.length}, ` +
+      `ambiguous (reported, not scored): ${ambiguous}, errors: ${errors.length}, unmeasured: ${unmeasured.length}`,
+  );
   for (const r of disagreements) console.log(`disagreement: ${r.id} expected ${r.expected}, model said ${r.verdict}. ${pairs.find((p) => p.id === r.id)!.why}`);
 }
 
-// A disagreement is a finding, not a build failure. Only a provider error
-// exits non-zero, because then nothing was measured at all.
-process.exit(errors.length > 0 ? 1 : 0);
+// A disagreement is a finding, not a build failure: the model answered, and a
+// human reads the answer. A failed request, an answer with no confidence, and
+// a run that scored nothing all exit non-zero, because then the evaluation
+// measured nothing and a green exit code would say otherwise.
+const measuredNothing = scored.length === 0;
+if (measuredNothing) console.error(`no pair was scored: ${rows.length} pairs, ${errors.length} errors, ${unmeasured.length} unmeasured`);
+process.exit(errors.length > 0 || unmeasured.length > 0 || measuredNothing ? 1 : 0);

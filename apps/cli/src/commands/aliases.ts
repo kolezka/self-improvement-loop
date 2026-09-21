@@ -1,5 +1,6 @@
 // sil aliases: list, set, rm the one-hop pattern alias map, plus suggest
-// candidates from token overlap. suggest never writes; only set and rm do.
+// candidates from token overlap, with an optional semantic second opinion on
+// each candidate. suggest never writes; only set and rm do.
 
 import { isSlug, loadConfig, ValidationError } from "@sil/core";
 import { assessAliasSuggestions, type SemanticAssessment, type SemanticVerdict } from "@sil/curriculum";
@@ -90,11 +91,15 @@ const VERDICT_LABEL: Record<SemanticVerdict, string> = {
 
 function semanticLines(semantic: SemanticAssessment | null, cap: number): string[] {
   if (semantic === null) return [`    semantic: not assessed (past the candidate cap of ${cap})`];
-  if (semantic.status === "unavailable") return [`    semantic: unavailable (${semantic.error})`];
+  // A row without a verdict was not assessed, whatever its status says. Never
+  // supply a default here: a printed `unsure` would look like a model answer.
+  if (semantic.status === "unavailable" || semantic.verdict === null) {
+    return [`    semantic: unavailable (${semantic.error ?? "no verdict reported"})`];
+  }
   const confidence = semantic.confidence === null ? "confidence not reported" : `confidence ${semantic.confidence.toFixed(2)}`;
   const model = semantic.model === null ? "unknown model" : `model ${semantic.model}`;
   return [
-    `    semantic: ${VERDICT_LABEL[semantic.verdict ?? "unsure"]} (${confidence}, ${model})`,
+    `    semantic: ${VERDICT_LABEL[semantic.verdict]} (${confidence}, ${model})`,
     `      evidence ${semantic.alias}: ${semantic.alias_reflection_ids.join(", ") || "none"}`,
     `      evidence ${semantic.canonical}: ${semantic.canonical_reflection_ids.join(", ") || "none"}`,
   ];
@@ -111,11 +116,14 @@ export async function cmdAliasesSuggest(opts: AliasesSuggestOptions): Promise<nu
     return 0;
   }
   console.log(`possible near-duplicate patterns (same mechanism, different slug). Review each, then apply with the command shown:`);
-  // A config, endpoint or locality problem stops every pair for the same
+  // A config, endpoint or credential problem stops every pair for the same
   // reason, and no pair carries an assessment. Say it once and leave the
-  // per-candidate lines out; every other failure is per pair and prints there.
-  const preflightFailed = report.status === "unavailable" && report.suggestions.every((s) => s.semantic === null);
-  if (preflightFailed) console.log(`  semantic assessment unavailable: ${report.reason}`);
+  // per-candidate lines out. `none_assessed` also gets the one-line summary,
+  // because per-pair errors alone do not say the whole pass produced nothing.
+  const preflightFailed = report.status === "preflight_failed";
+  if (preflightFailed || report.status === "none_assessed") {
+    console.log(`  semantic assessment unavailable: ${report.reason}`);
+  }
   for (const s of report.suggestions) {
     console.log(`  ${s.alias} (${s.alias_count}) ~ ${s.canonical} (${s.canonical_count})  score=${s.score.toFixed(2)}`);
     if (report.status !== "disabled" && !preflightFailed) {

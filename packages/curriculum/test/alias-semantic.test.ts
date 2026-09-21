@@ -6,6 +6,8 @@
 // They say nothing about how well a real model separates two mechanisms; see
 // `scripts/eval-alias-semantic.ts` for that.
 
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   type AliasSemanticConfig,
@@ -20,7 +22,7 @@ import {
   ProviderTimeout,
   type World,
 } from "@sil/core";
-import { assessAliasSuggestions, QUESTION_ID, type SemanticAssessment } from "@sil/curriculum";
+import { assessAliasSuggestions, pairQuestion, type PatternEvidence, QUESTION_ID, type SemanticAssessment } from "@sil/curriculum";
 import type { ChoiceAnswer, ChoiceQuestion, DecideChoiceFn } from "@sil/providers";
 import { loadAliases, patternCounts, saveAliases, suggestAliases } from "@sil/store";
 import { addReflections, cleanupEnv, LESSON, makeWorld, silEnv, type TestEnv } from "./fixtures.ts";
@@ -145,9 +147,30 @@ describe("evidence", () => {
     // 3 reflections exist for the canonical slug; the cap keeps 2.
     expect(first.state.pattern_b.reflections.length).toBe(2);
     const sent = JSON.stringify(fake.calls.map((c) => c.state));
+    // Positive control first: the assertion below only means something if this
+    // string would show up when it is present. The named world's own lesson
+    // text does travel, so the search does find lesson text when there is any.
+    expect(sent).toContain("The cached env copy is read before the refresh lands.");
     expect(sent).not.toContain("OTHER WORLD SECRET");
     // Newest first: day 05 and 04 of the canonical slug, not day 03.
     expect(first.state.pattern_b.reflections.map((r) => r.id)).toEqual(["2026-09-05-stale-cached-env-02", "2026-09-04-stale-cached-env-01"]);
+  });
+
+  test("no id or excerpt from another world reaches the report either", async () => {
+    const world = makeWorld();
+    const other = makeWorld({ name: "other" });
+    seedTwoPairs(world);
+    addReflections(other, "stale-env", 2, { startDay: 20, lesson: "OTHER WORLD SECRET" });
+
+    const fake = new FakeDecider({ "stale-env~stale-cached-env": answer("same_mechanism", 0.9), "verify-callsites~verify-callsites-before-fix": answer("distinct", 0.9) });
+    const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm: systemOneLlm(), decideChoice: fake.fn });
+
+    const printed = JSON.stringify(report);
+    // Every id from the other world is dated day 20 upward; the named world
+    // stops at day 15. Both ids and excerpts are checked, not excerpts alone.
+    expect(printed).toContain("2026-09-02-stale-env-01");
+    expect(printed).not.toContain("2026-09-20");
+    expect(printed).not.toContain("OTHER WORLD SECRET");
   });
 
   test("every excerpt is cut to max_excerpt_chars", async () => {
@@ -192,9 +215,21 @@ describe("results", () => {
       "stale-env~stale-cached-env": answer("same_mechanism", 0.91),
       "verify-callsites~verify-callsites-before-fix": answer("distinct", 0.84),
     });
+    // The first pair answers last. Both run at once, so a report that pairs
+    // answers by arrival order instead of by candidate index fails here; with
+    // two instantly resolved fakes it could not.
+    const finished: string[] = [];
+    const slowFirst: DecideChoiceFn = async (role, state, questions, opts) => {
+      const name = (state as { pattern_a: { name: string } }).pattern_a.name;
+      if (name === "stale-env") await new Promise((r) => setTimeout(r, 25));
+      const result = await fake.fn(role, state, questions, opts);
+      finished.push(name);
+      return result;
+    };
 
-    const report = await assessAliasSuggestions(cfg(world, { enabled: true, concurrency: 2 }), world, { llm: systemOneLlm(), decideChoice: fake.fn });
+    const report = await assessAliasSuggestions(cfg(world, { enabled: true, concurrency: 2 }), world, { llm: systemOneLlm(), decideChoice: slowFirst });
 
+    expect(finished).toEqual(["verify-callsites", "stale-env"]);
     expect(report.status).toBe("ok");
     expect(report.assessed).toBe(2);
     expect(report.model).toBe("jev-1");
@@ -219,6 +254,9 @@ describe("results", () => {
 
     await assessAliasSuggestions(cfg(world, { enabled: true, timeout_s: 7 }), world, { llm: systemOneLlm({ timeout_s: 240 }), decideChoice: fake.fn });
 
+    // Count first: `every` on an empty array is true, so without this the
+    // assertion would also pass if no call had been made at all.
+    expect(fake.calls.length).toBe(2);
     expect(fake.calls.every((c) => c.timeoutMs === 7000)).toBe(true);
   });
 
@@ -282,7 +320,22 @@ describe("confidence", () => {
     expect(byAlias(report, "verify-callsites")!.verdict).toBe("distinct");
   });
 
-  test("neither confidence nor probabilities is unsure, not a verdict", async () => {
+  test("a pick exactly at min_confidence is a verdict, not unsure", async () => {
+    const world = makeWorld();
+    seedTwoPairs(world);
+    const fake = new FakeDecider({
+      "stale-env~stale-cached-env": answer("same_mechanism", 0.6),
+      "verify-callsites~verify-callsites-before-fix": answer("distinct", 0.6),
+    });
+
+    const report = await assessAliasSuggestions(cfg(world, { enabled: true, min_confidence: 0.6 }), world, { llm: systemOneLlm(), decideChoice: fake.fn });
+
+    // The bar is `< min_confidence`, so the boundary belongs to the verdict.
+    expect(byAlias(report, "stale-env")!.verdict).toBe("same_mechanism");
+    expect(byAlias(report, "verify-callsites")!.verdict).toBe("distinct");
+  });
+
+  test("neither confidence nor probabilities is unavailable, never unsure", async () => {
     const world = makeWorld();
     seedTwoPairs(world);
     const fake = new FakeDecider({
@@ -292,9 +345,15 @@ describe("confidence", () => {
 
     const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm: systemOneLlm(), decideChoice: fake.fn });
 
+    // Nothing was measured, so there is nothing to hedge about. `unsure` here
+    // would read as a model that weighed the pair and could not decide.
     const row = byAlias(report, "stale-env")!;
-    expect(row.verdict).toBe("unsure");
+    expect(row.status).toBe("unavailable");
+    expect(row.verdict).toBeNull();
     expect(row.confidence).toBeNull();
+    expect(row.error).toContain("neither confidence nor probabilities");
+    expect(report.status).toBe("none_assessed");
+    expect(report.assessed).toBe(0);
   });
 });
 
@@ -318,6 +377,9 @@ describe("failures", () => {
     const failed = byAlias(report, "stale-env")!;
     expect(failed.status).toBe("unavailable");
     expect(failed.verdict).toBeNull();
+    // The class name is in the line, so a human reading the output can tell a
+    // timeout from a refusal without guessing at the message text.
+    expect(failed.error).toStartWith("ProviderTimeout: ");
     expect(failed.error).toContain("timed out");
     // The candidate itself survives, counts and all.
     expect(report.suggestions.find((s) => s.alias === "stale-env")!.alias_count).toBe(2);
@@ -325,17 +387,40 @@ describe("failures", () => {
     expect(report.assessed).toBe(1);
   });
 
-  test("a provider failure on every pair makes the whole report unavailable", async () => {
+  test("a provider failure on every pair makes the whole report none_assessed", async () => {
     const world = makeWorld();
     const { report } = await reportWith(world, {
       "stale-env~stale-cached-env": new ProviderError("HTTP 500: boom"),
       "verify-callsites~verify-callsites-before-fix": new ProviderError("HTTP 500: boom"),
     });
 
-    expect(report.status).toBe("unavailable");
+    // Every pair was tried and every pair failed. That is not a preflight
+    // failure, and the CLI prints the two states differently.
+    expect(report.status).toBe("none_assessed");
+    expect(report.reason).toStartWith("ProviderError: ");
     expect(report.reason).toContain("HTTP 500");
     expect(report.suggestions.length).toBe(2);
     expect(report.suggestions.every((s) => s.semantic!.status === "unavailable")).toBe(true);
+  });
+
+  test("the run level reason is the error most pairs agree on", async () => {
+    const world = makeWorld();
+    seedTwoPairs(world);
+    addReflections(world, "flaky-retry", 2, { startDay: 10, lesson: "Retry the flaky step." });
+    addReflections(world, "flaky-retry-loop", 3, { startDay: 12, lesson: "The retry loop never exits." });
+    const fake = new FakeDecider({
+      "stale-env~stale-cached-env": new ProviderError("one-off transport hiccup"),
+      "verify-callsites~verify-callsites-before-fix": new ProviderError("HTTP 503: endpoint down"),
+      "flaky-retry~flaky-retry-loop": new ProviderError("HTTP 503: endpoint down"),
+    });
+
+    const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm: systemOneLlm(), decideChoice: fake.fn });
+
+    expect(report.status).toBe("none_assessed");
+    // Two pairs out of three say the endpoint is down. The first pair's
+    // one-off must not become the reason for the whole run.
+    expect(report.reason).toContain("HTTP 503");
+    expect(report.reason).not.toContain("hiccup");
   });
 
   test("an answer outside the question's options is unavailable, never a verdict", async () => {
@@ -390,15 +475,15 @@ describe("failures", () => {
 
     const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm: systemOneLlm(), decideChoice });
 
-    expect(report.status).toBe("unavailable");
+    expect(report.status).toBe("none_assessed");
     expect(report.suggestions.every((s) => s.semantic!.status === "unavailable")).toBe(true);
   });
 });
 
 // --- configuration refusals --------------------------------------------------
 
-describe("endpoint and locality", () => {
-  test("a judge on a text endpoint reports unavailable and calls nothing", async () => {
+describe("preflight", () => {
+  test("a judge on a text endpoint reports preflight_failed and calls nothing", async () => {
     const world = makeWorld();
     seedTwoPairs(world);
     const llm = LlmConfigSchema.parse({
@@ -408,9 +493,11 @@ describe("endpoint and locality", () => {
 
     const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm, decideChoice: neverCalled });
 
-    expect(report.status).toBe("unavailable");
+    expect(report.status).toBe("preflight_failed");
     expect(report.reason).toContain("system-one");
     expect(report.suggestions.length).toBe(2);
+    // No row carries an assessment, so the CLI prints the reason once.
+    expect(report.suggestions.every((s) => s.semantic === null)).toBe(true);
   });
 
   test("a local world refuses a model that is not in local_models", async () => {
@@ -419,7 +506,7 @@ describe("endpoint and locality", () => {
 
     const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm: systemOneLlm(), decideChoice: neverCalled });
 
-    expect(report.status).toBe("unavailable");
+    expect(report.status).toBe("preflight_failed");
     // Not "local": that substring also hides inside "localhost" in any URL.
     expect(report.reason).toContain("LocalityViolation");
     expect(report.reason).toContain("local_models");
@@ -438,27 +525,116 @@ describe("endpoint and locality", () => {
     expect(report.assessed).toBe(2);
   });
 
-  test("no model for the judge role reports unavailable", async () => {
+  test("no model for the judge role reports preflight_failed", async () => {
     const world = makeWorld();
     seedTwoPairs(world);
     const llm = systemOneLlm({ models: {} });
 
     const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm, decideChoice: neverCalled });
 
-    expect(report.status).toBe("unavailable");
+    expect(report.status).toBe("preflight_failed");
     expect(report.reason).toContain("judge");
+  });
+
+  test("an unset api key env var stops the pass once, not once per candidate", async () => {
+    const world = makeWorld();
+    seedTwoPairs(world);
+    delete process.env["SIL_TEST_ABSENT_KEY"];
+    const llm = systemOneLlm({ api_key_env: "SIL_TEST_ABSENT_KEY" });
+
+    const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm, decideChoice: neverCalled });
+
+    // resolveRole checks the model and the locality, never the credential, so
+    // without an explicit check this failed inside every job instead.
+    expect(report.status).toBe("preflight_failed");
+    expect(report.reason).toContain("SIL_TEST_ABSENT_KEY");
+    expect(report.suggestions.length).toBe(2);
+    expect(report.suggestions.every((s) => s.semantic === null)).toBe(true);
+  });
+
+  test("an endpoint with no base_url stops the pass before any request", async () => {
+    const world = makeWorld();
+    seedTwoPairs(world);
+    const llm = systemOneLlm({ base_url: "   " });
+
+    const report = await assessAliasSuggestions(cfg(world, { enabled: true }), world, { llm, decideChoice: neverCalled });
+
+    expect(report.status).toBe("preflight_failed");
+    expect(report.reason).toContain("base_url");
+  });
+});
+
+// --- the evaluation fixture --------------------------------------------------
+
+describe("the live evaluation fixture", () => {
+  // The fixture only runs under `bun run eval:alias-semantic`, against a real
+  // endpoint. This checks it offline, so a broken pair is a failing test here
+  // instead of a crash in front of a live model.
+  const path = join(import.meta.dir, "..", "..", "..", "scripts", "fixtures", "alias-semantic-pairs.json");
+
+  test("every pair has a label, a reason and usable evidence on both sides", () => {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      pairs: { id: string; expected: string; why: string; a: { name: string; reflections: { id: string; excerpt: string }[] }; b: { name: string; reflections: { id: string; excerpt: string }[] } }[];
+    };
+    expect(parsed.pairs.length).toBeGreaterThan(0);
+    expect(new Set(parsed.pairs.map((p) => p.id)).size).toBe(parsed.pairs.length);
+
+    for (const pair of parsed.pairs) {
+      expect(["same_mechanism", "distinct", "ambiguous"]).toContain(pair.expected);
+      expect(pair.why.length).toBeGreaterThan(0);
+      for (const side of [pair.a, pair.b]) {
+        expect(side.name.length).toBeGreaterThan(0);
+        expect(side.reflections.length).toBeGreaterThan(0);
+        for (const r of side.reflections) {
+          expect(r.id.length).toBeGreaterThan(0);
+          expect(r.excerpt.trim().length).toBeGreaterThan(0);
+        }
+      }
+    }
+    // Both labels are represented, or the run could score 100% by answering
+    // the same way every time.
+    const labels = new Set(parsed.pairs.map((p) => p.expected));
+    expect(labels.has("same_mechanism")).toBe(true);
+    expect(labels.has("distinct")).toBe(true);
+  });
+
+  test("each pair builds the same question the live path sends", () => {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { pairs: { a: PatternEvidence; b: PatternEvidence }[] };
+    for (const pair of parsed.pairs) {
+      const { state, questions } = pairQuestion(pair.a, pair.b);
+      expect(Object.keys(questions)).toEqual([QUESTION_ID]);
+      expect(Object.keys(questions[QUESTION_ID]!.criteria).sort()).toEqual(["distinct", "same_mechanism"]);
+      expect(state["pattern_a"]).toEqual(pair.a);
+    }
   });
 });
 
 // --- it never writes ---------------------------------------------------------
 
 describe("read only", () => {
+  /** Every file under `dir`, with its bytes. A new file, a changed file and a
+   * deleted file all show up in one comparison. */
+  function treeOf(dir: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    const walk = (at: string): void => {
+      for (const entry of readdirSync(at, { withFileTypes: true })) {
+        const full = join(at, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile()) out[relative(dir, full)] = readFileSync(full, "utf8");
+      }
+    };
+    walk(dir);
+    return out;
+  }
+
   test("no alias is written, no count moves, no ledger appears", async () => {
     const world = makeWorld();
     seedTwoPairs(world);
     saveAliases(world.name, { "old-env": "stale-cached-env" });
     const aliasesBefore = loadAliases(world.name);
     const countsBefore = patternCounts(world.name);
+    const treeBefore = treeOf(env.root);
+    expect(Object.keys(treeBefore).length).toBeGreaterThan(0);
     expect(fsx.exists(ledgerPath(world))).toBe(false);
 
     const fake = new FakeDecider({
@@ -470,6 +646,9 @@ describe("read only", () => {
     expect(report.assessed).toBe(2);
     expect(report.suggestions.every((s) => s.semantic!.verdict === "same_mechanism")).toBe(true);
     // A confident `same_mechanism` on every pair changes nothing on disk.
+    // The whole temp root is compared, not the three files a write was
+    // expected in: a cache, a queue entry or a log would show up here too.
+    expect(treeOf(env.root)).toEqual(treeBefore);
     expect(loadAliases(world.name)).toEqual(aliasesBefore);
     expect(patternCounts(world.name)).toEqual(countsBefore);
     expect(fsx.exists(ledgerPath(world))).toBe(false);

@@ -77,12 +77,17 @@ export {
   assessAliasSuggestions,
   type AssessedAliasSuggestion,
   type EvidenceExcerpt,
+  type EvidenceIds,
+  type GatedVerdict,
+  isModelChoice,
+  type ModelChoice,
   PAIR_CRITERIA,
   pairQuestion,
   type PatternEvidence,
   QUESTION_ID,
   type SemanticAssessment,
   type SemanticVerdict,
+  verdictFor,
 } from "./alias-semantic.ts";
 export { branchName } from "./git.ts";
 export { run, type RunOptions } from "./run.ts";

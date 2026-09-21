@@ -187,9 +187,30 @@ describe("sil aliases suggest with the semantic pass", () => {
     writeReflection("default", { id: "3" }, body("stale-cached-env"));
   }
 
-  function enableSemantic(): void {
+  /** A second near-duplicate pair, scoring below the first one (0.50 against
+   * 0.67), so it is the candidate a cap of 1 leaves out. */
+  function seedSecondPair(): void {
+    const body = (pattern: string) => `Pattern: ${pattern}\n\n## Reusable lesson\nCheck every call site first.\n`;
+    writeReflection("default", { id: "4" }, body("verify-callsites"));
+    writeReflection("default", { id: "5" }, body("verify-callsites"));
+    writeReflection("default", { id: "6" }, body("verify-callsites-before-fix"));
+  }
+
+  /** Answers every pair with one fixed choice. */
+  function answerWith(choice: string, confidence: number): typeof fetch {
+    return (async () =>
+      new Response(
+        JSON.stringify({
+          model: "jev-1.13.0",
+          answers: { same_mechanism: { type: "choice", choice, probabilities: { same_mechanism: 0.5, distinct: 0.5 }, confidence } },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+  }
+
+  function enableSemantic(overrides: Record<string, unknown> = {}): void {
     const cfg = loadConfig();
-    saveConfig({ ...cfg, alias_semantic: { ...cfg.alias_semantic, enabled: true } });
+    saveConfig({ ...cfg, alias_semantic: { ...cfg.alias_semantic, enabled: true, ...overrides } });
     saveLlm(
       LlmConfig.parse({
         endpoints: [{ name: "jev", kind: "system-one", base_url: "http://localhost:5000", models: { judge: "jev-1" } }],
@@ -280,5 +301,67 @@ describe("sil aliases suggest with the semantic pass", () => {
     expect(out).toContain("system-one");
     expect(out).not.toContain("semantic: ");
     expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
+  });
+
+  test("a distinct verdict prints under the candidate, and the candidate stays", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    enableSemantic();
+    globalThis.fetch = answerWith("distinct", 0.88);
+
+    const out = await suggest();
+
+    // `distinct` never hides a candidate: the human still sees the pair and
+    // the command that would apply it.
+    expect(out).toContain("semantic: different mechanisms (confidence 0.88, model jev-1.13.0)");
+    expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
+  });
+
+  test("a pick under min_confidence prints as unsure", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    enableSemantic({ min_confidence: 0.6 });
+    globalThis.fetch = answerWith("same_mechanism", 0.41);
+
+    const out = await suggest();
+
+    expect(out).toContain("semantic: unsure (confidence 0.41, model jev-1.13.0)");
+    // The model picked `same_mechanism`, and the low confidence turned it into
+    // `unsure`. The picked option must not reach the line the human reads.
+    expect(out).not.toContain("semantic: same mechanism");
+  });
+
+  test("a candidate past the cap says so instead of looking unassessed by accident", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    seedSecondPair();
+    enableSemantic({ max_candidates: 1 });
+    globalThis.fetch = answerWith("same_mechanism", 0.94);
+
+    const out = await suggest();
+
+    expect(out).toContain("semantic: same mechanism (confidence 0.94, model jev-1.13.0)");
+    expect(out).toContain("semantic: not assessed (past the candidate cap of 1)");
+    // Both candidates are listed; only one was sent to the model.
+    expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
+    expect(out).toContain("sil aliases set verify-callsites-before-fix verify-callsites --world default");
+  });
+
+  test("every pair failing says so once above the list, on top of the per pair lines", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    seedSecondPair();
+    enableSemantic();
+    globalThis.fetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+
+    const out = await suggest();
+
+    // The run level summary is what says the whole pass produced nothing. Two
+    // per pair error lines alone do not.
+    expect(out.match(/semantic assessment unavailable/g)?.length).toBe(1);
+    expect(out.match(/semantic: unavailable/g)?.length).toBe(2);
+    expect(out).toContain("connection refused");
   });
 });

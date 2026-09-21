@@ -2,33 +2,29 @@
 //
 // `suggestAliases` compares slug tokens, so it cannot see that
 // `stale-cached-env` and `env-read-before-refresh` are one mechanism under two
-// names, and it fires on pairs that only share vocabulary. This asks a System
-// One endpoint one typed question per candidate pair and hangs the answer off
-// the suggestion.
+// names. This asks a System One endpoint one typed question per candidate pair
+// and hangs the answer off the suggestion.
 //
-// Three rules shape the module:
-//
-// * It reads. It never writes an alias, never folds two counts together and
-//   never reaches the ledger, the router or promotion. `sil aliases set` is
-//   still the only way a pair becomes an alias.
-// * The deterministic list is the list. Every candidate comes back, in the
-//   same order, with the same counts, whatever the model said. A pair assessed
-//   `distinct` stays visible.
-// * No generated prose. The model picks one of two named options; every
-//   sentence a human reads is a fixed template plus real reflection ids.
+// Three rules shape it. It reads and never writes, so `sil aliases set` stays
+// the only way a pair becomes an alias. The deterministic list comes back
+// whole, in order, whatever the model said. The model picks one of two named
+// options, so every sentence a human reads is a fixed template plus real ids.
 
-import { type AliasSemanticConfig, type Config, loadLlm, type LlmConfig, resolveRole, type Reflection, type World } from "@sil/core";
-import { type ChoiceQuestion, decideChoice as defaultDecideChoice, type DecideChoiceFn } from "@sil/providers";
+import { apiKey, type AliasSemanticConfig, type Config, loadLlm, type LlmConfig, resolveRole, type Reflection, type World } from "@sil/core";
+import { type ChoiceAnswer, type ChoiceQuestion, decideChoice as defaultDecideChoice, type DecideChoiceFn } from "@sil/providers";
 import { type AliasSuggestion, listReflections, loadAliases, suggestAliases } from "@sil/store";
 
 /** The three answers a human sees. `unsure` is never a model option: it is
  * what a pick below the confidence bar becomes. */
 export type SemanticVerdict = "same_mechanism" | "distinct" | "unsure";
 
+/** What the model may actually pick. `unsure` is ours, not the model's. */
+export type ModelChoice = Exclude<SemanticVerdict, "unsure">;
+
 export const QUESTION_ID = "same_mechanism";
 
 /** The options the model picks between, with what each one means. */
-export const PAIR_CRITERIA: Record<string, string> = {
+export const PAIR_CRITERIA: Record<ModelChoice, string> = {
   same_mechanism:
     "The two patterns describe one underlying failure mechanism. The same cause produces both, " +
     "and one corrective lesson would cover both occurrences. The names differ; the mechanism does not.",
@@ -36,6 +32,8 @@ export const PAIR_CRITERIA: Record<string, string> = {
     "The two patterns describe different failure mechanisms. The causes differ, or a lesson written for one " +
     "would not correct the other. A shared topic, a shared tool or shared words in the name are not enough.",
 };
+
+export const isModelChoice = (v: unknown): v is ModelChoice => typeof v === "string" && Object.hasOwn(PAIR_CRITERIA, v);
 
 const INSTRUCTIONS =
   "`pattern_a` and `pattern_b` are two recurring failure patterns from one engineering log. " +
@@ -51,6 +49,13 @@ export interface EvidenceExcerpt {
 export interface PatternEvidence {
   name: string;
   reflections: EvidenceExcerpt[];
+}
+
+/** The reflection ids behind one pair, named so the two lists cannot be
+ * swapped by a positional mistake. */
+export interface EvidenceIds {
+  alias: string[];
+  canonical: string[];
 }
 
 /** What the model was asked and what it answered, for one candidate pair.
@@ -70,17 +75,19 @@ export interface SemanticAssessment {
 }
 
 /** A deterministic suggestion, unchanged, plus its assessment. `semantic` is
- * null when the pair was not assessed at all: the feature is off, or the pair
- * sits past `max_candidates`. */
+ * null when the pair was not assessed at all: the feature is off, the pass
+ * never started, or the pair sits past `max_candidates`. */
 export interface AssessedAliasSuggestion extends AliasSuggestion {
   semantic: SemanticAssessment | null;
 }
 
 export interface AliasSemanticReport {
   world: string;
-  /** `disabled`: the feature is off. `unavailable`: it is on and could not
-   * run at all. `ok`: at least one pair was assessed. */
-  status: "disabled" | "ok" | "unavailable";
+  /** `disabled`: the feature is off. `preflight_failed`: config or endpoint
+   * stopped the pass before any request, so no row carries an assessment.
+   * `none_assessed`: every pair was tried and every pair failed. `ok`: at
+   * least one pair was assessed. */
+  status: "disabled" | "ok" | "preflight_failed" | "none_assessed";
   reason: string | null;
   model: string | null;
   assessed: number;
@@ -91,6 +98,25 @@ export interface AliasSemanticOptions {
   llm?: LlmConfig;
   /** Injected transport. Tests pass a fake; nothing else does. */
   decideChoice?: DecideChoiceFn;
+}
+
+/** A verdict and the number it was gated on. */
+export interface GatedVerdict {
+  verdict: SemanticVerdict;
+  confidence: number;
+}
+
+/** The verdict an answer carries, or null when nothing can be read from it.
+ *
+ * Null covers two cases the caller has to treat as a failed assessment: a pick
+ * outside the two options, and a server that reported neither a confidence nor
+ * a probability for its own pick. Neither is a hedge, so neither may become
+ * `unsure`. Shared with the evaluation script so both judge answers alike. */
+export function verdictFor(answer: ChoiceAnswer, minConfidence: number): GatedVerdict | null {
+  if (!isModelChoice(answer.choice)) return null;
+  const gate = answer.confidence ?? (answer.probabilities ?? {})[answer.choice] ?? null;
+  if (gate === null) return null;
+  return { verdict: gate < minConfidence ? "unsure" : answer.choice, confidence: gate };
 }
 
 /** State and question for one pair, shared by the live path and the offline
@@ -117,7 +143,11 @@ function evidenceByPattern(world: World, cfg: AliasSemanticConfig): Map<string, 
     const pattern = aliases[r.pattern] ?? r.pattern;
     const bucket = out.get(pattern) ?? [];
     if (bucket.length >= cfg.max_reflections_per_pattern) continue;
-    bucket.push({ id: r.id, excerpt: excerptOf(r, cfg.max_excerpt_chars) });
+    const excerpt = excerptOf(r, cfg.max_excerpt_chars);
+    // An empty excerpt is not evidence. Kept, it would send the model a blank
+    // string and print the id below the verdict as if it grounded the answer.
+    if (excerpt === "") continue;
+    bucket.push({ id: r.id, excerpt });
     out.set(pattern, bucket);
   }
   return out;
@@ -137,7 +167,14 @@ function describe(e: unknown): string {
   return `${err?.name || "Error"}: ${message.slice(0, 200)}`;
 }
 
-function unavailable(alias: string, canonical: string, evidence: [string[], string[]], error: string): SemanticAssessment {
+/** A rejected pick is printed under a candidate, so a transport that answers
+ * with a paragraph must not get that paragraph echoed back. */
+function quotePick(v: unknown): string {
+  if (typeof v !== "string") return JSON.stringify(v) ?? "undefined";
+  return /^[\w.-]{1,64}$/.test(v) ? JSON.stringify(v) : `a ${v.length}-character string`;
+}
+
+function unavailable(alias: string, canonical: string, ids: EvidenceIds, error: string): SemanticAssessment {
   return {
     alias,
     canonical,
@@ -145,14 +182,34 @@ function unavailable(alias: string, canonical: string, evidence: [string[], stri
     verdict: null,
     confidence: null,
     probabilities: {},
-    alias_reflection_ids: evidence[0],
-    canonical_reflection_ids: evidence[1],
+    alias_reflection_ids: ids.alias,
+    canonical_reflection_ids: ids.canonical,
     model: null,
     error,
   };
 }
 
-/** Runs `jobs` with at most `limit` in flight, keeping the input order. */
+/** The error most rows agree on. One dead endpoint reads better as the run's
+ * reason than whichever pair happened to be first in the list. */
+function commonReason(results: SemanticAssessment[]): string {
+  const counts = new Map<string, number>();
+  for (const r of results) {
+    if (r.error === null) continue;
+    counts.set(r.error, (counts.get(r.error) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [error, count] of counts) {
+    if (count > bestCount) {
+      best = error;
+      bestCount = count;
+    }
+  }
+  return best ?? "no candidate could be assessed";
+}
+
+/** Runs `jobs` with at most `limit` in flight, keeping the input order. A job
+ * that rejects would abandon the other workers, so every job self-catches. */
 async function pooled<T>(jobs: Array<() => Promise<T>>, limit: number): Promise<T[]> {
   const out = new Array<T>(jobs.length);
   let next = 0;
@@ -192,23 +249,30 @@ export async function assessAliasSuggestions(
   if (!semantic.enabled) return plain("disabled", null);
   if (suggestions.length === 0) return plain("ok", null);
 
-  // Resolved once, before any request. A wrong endpoint kind, a missing model
-  // and a locality violation all land here, so the answer is one clear reason
-  // instead of the same provider error repeated per pair.
+  // Everything that would fail identically for every pair is settled here,
+  // before any request, so the answer is one clear reason instead of the same
+  // error repeated under every candidate.
   let model: string;
   try {
     const llm = opts.llm ?? loadLlm(world);
     const resolved = resolveRole(llm, "judge", world);
     if (resolved.endpoint.kind !== "system-one") {
       return plain(
-        "unavailable",
+        "preflight_failed",
         `role judge runs on endpoint ${JSON.stringify(resolved.endpoint.name)} of kind ${JSON.stringify(resolved.endpoint.kind)}; ` +
           "semantic assessment needs a system-one endpoint (sil llm use <endpoint> --role judge)",
       );
     }
+    if (!resolved.endpoint.base_url?.trim()) {
+      return plain("preflight_failed", `endpoint ${JSON.stringify(resolved.endpoint.name)} has no base_url configured`);
+    }
+    // Raises when api_key_env names a variable that is not set. resolveRole
+    // does not look at credentials, so without this one unset key would print
+    // the same line under every candidate.
+    apiKey(resolved.endpoint);
     model = resolved.model;
   } catch (e) {
-    return plain("unavailable", describe(e));
+    return plain("preflight_failed", describe(e));
   }
 
   const evidence = evidenceByPattern(world, semantic);
@@ -218,14 +282,14 @@ export async function assessAliasSuggestions(
   const jobs = candidates.map((s) => async (): Promise<SemanticAssessment> => {
     const aliasRows = evidence.get(s.alias) ?? [];
     const canonicalRows = evidence.get(s.canonical) ?? [];
-    const ids: [string[], string[]] = [aliasRows.map((r) => r.id), canonicalRows.map((r) => r.id)];
+    const ids: EvidenceIds = { alias: aliasRows.map((r) => r.id), canonical: canonicalRows.map((r) => r.id) };
     // One pair can never take the report down with it: whatever goes wrong in
     // here, including a transport that breaks its own contract, is this row's
     // `unavailable` and nothing else.
     try {
       if (aliasRows.length === 0 || canonicalRows.length === 0) {
         const empty = aliasRows.length === 0 ? s.alias : s.canonical;
-        return unavailable(s.alias, s.canonical, ids, `no readable reflection evidence for ${empty}`);
+        return unavailable(s.alias, s.canonical, ids, `no reflection resolves to ${empty} in world ${world.name} after alias folding`);
       }
 
       const { state, questions } = pairQuestion(
@@ -238,24 +302,26 @@ export async function assessAliasSuggestions(
       // decideChoice already refuses an answer outside the question's options,
       // but the transport is injectable, so the identity check is repeated where
       // the result gets attached to a candidate.
-      if (!answer || (answer.choice !== "same_mechanism" && answer.choice !== "distinct")) {
-        return unavailable(s.alias, s.canonical, ids, `provider answered ${JSON.stringify(answer?.choice ?? null)} for ${QUESTION_ID}`);
+      if (!answer || !isModelChoice(answer.choice)) {
+        return unavailable(s.alias, s.canonical, ids, `provider answered ${quotePick(answer?.choice ?? null)} for ${QUESTION_ID}`);
       }
 
-      // Confidence first, the winning option's probability when the server
-      // reports no confidence, and `unsure` when it reports neither.
-      const probabilities = answer.probabilities ?? {};
-      const gate = answer.confidence ?? probabilities[answer.choice] ?? null;
-      const verdict: SemanticVerdict = gate === null || gate < semantic.min_confidence ? "unsure" : answer.choice;
+      const gated = verdictFor(answer, semantic.min_confidence);
+      // No confidence and no probability for the pick means nothing was
+      // measured. That is a failed assessment, not a hedge, and `unsure` would
+      // read as a hedge.
+      if (gated === null) {
+        return unavailable(s.alias, s.canonical, ids, `provider reported neither confidence nor probabilities for ${QUESTION_ID}`);
+      }
       return {
         alias: s.alias,
         canonical: s.canonical,
         status: "assessed",
-        verdict,
-        confidence: gate,
-        probabilities: { ...probabilities },
-        alias_reflection_ids: ids[0],
-        canonical_reflection_ids: ids[1],
+        verdict: gated.verdict,
+        confidence: gated.confidence,
+        probabilities: { ...(answer.probabilities ?? {}) },
+        alias_reflection_ids: ids.alias,
+        canonical_reflection_ids: ids.canonical,
         model: answer.model,
         error: null,
       };
@@ -268,8 +334,8 @@ export async function assessAliasSuggestions(
   const assessed = results.filter((r) => r.status === "assessed").length;
   return {
     world: world.name,
-    status: assessed > 0 ? "ok" : "unavailable",
-    reason: assessed > 0 ? null : (results[0]?.error ?? "no candidate could be assessed"),
+    status: assessed > 0 ? "ok" : "none_assessed",
+    reason: assessed > 0 ? null : commonReason(results),
     model,
     assessed,
     suggestions: suggestions.map((s, i) => ({ ...s, semantic: i < results.length ? results[i]! : null })),

@@ -1,7 +1,7 @@
 // The model transports. `chat` is the only way engine code asks a model for
-// text; `decide` is the only way it asks a System One endpoint (TypeSafe Jev,
-// or Laya behind a Jev compatible server) for a typed decision. No base_url
-// fallback, no placeholder key, no default model.
+// text; `decide` and `decideChoice` are the only ways it asks a System One
+// endpoint (TypeSafe Jev, or Laya behind a Jev compatible server) for a typed
+// decision. No base_url fallback, no placeholder key, no default model.
 
 import { activeEndpoint, apiKey, endpointFor, loadLlm, ProviderError, ProviderTimeout, resolveRole, ROLES } from "@sil/core";
 import type { Endpoint, LlmConfig, Role, World } from "@sil/core";
@@ -60,8 +60,7 @@ export const chat: ChatFn = async (role, messages, opts) => {
 
 /** One yes/no proposition. `criteria` is optional and describes each outcome.
  *
- * Only the noul primitive is wired up: the judge gate is the loop's single
- * typed decision, and choice and score have no caller here yet. */
+ * Noul and choice are both wired up; score has no caller here yet. */
 export interface NoulQuestion {
   instructions: string;
   criteria?: { true: string; false: string };
@@ -83,12 +82,13 @@ export interface ChoiceQuestion {
 
 /** The pick, the distribution behind it, and how concentrated that
  * distribution is. `confidence` is null when the server does not report one:
- * a Jev compatible server may answer probabilities only. */
+ * a Jev compatible server may answer probabilities only. `model` is null when
+ * the server named a model we will not print. */
 export interface ChoiceAnswer {
   choice: string;
   probabilities: Record<string, number>;
   confidence: number | null;
-  model: string;
+  model: string | null;
 }
 
 export interface DecideOptions extends ChatOptions {
@@ -182,21 +182,34 @@ async function postSystemOne(
   if (key) headers["Authorization"] = `Bearer ${key}`;
 
   const ms = timeoutMs ?? endpoint.timeout_s * 1000;
+  // The deadline covers the body stream too, so every step that can abort maps
+  // through here: a timeout during the read is still a timeout to the caller.
+  const failure = (e: unknown): ProviderError => {
+    const err = e as Error;
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      return new ProviderTimeout(`provider ${JSON.stringify(endpoint.name)} at ${url} timed out after ${ms / 1000}s`);
+    }
+    return new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} unreachable: ${err.message}`);
+  };
+
   let resp: Response;
   try {
     resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
   } catch (e) {
-    const err = e as Error;
-    if (err.name === "TimeoutError" || err.name === "AbortError") {
-      throw new ProviderTimeout(`provider ${JSON.stringify(endpoint.name)} at ${url} timed out after ${ms / 1000}s`);
-    }
-    throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} unreachable: ${err.message}`);
+    throw failure(e);
   }
   if (!resp.ok) {
-    const detail = (await resp.text().catch(() => "")).slice(0, 300);
+    // The status is the useful fact here, so an unreadable body names itself in
+    // the detail rather than replacing the status with a timeout.
+    const detail = (await resp.text().catch((e) => `<body unreadable: ${(e as Error).name}>`)).slice(0, 300);
     throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} answered HTTP ${resp.status}: ${detail}`);
   }
-  const raw = await resp.text();
+  let raw: string;
+  try {
+    raw = await resp.text();
+  } catch (e) {
+    throw failure(e);
+  }
   try {
     return JSON.parse(raw);
   } catch {
@@ -246,15 +259,19 @@ const NAME_SHAPE = /^[A-Za-z0-9._:@/-]{1,64}$/;
  * with a paragraph must not get that paragraph printed back as if the loop
  * wrote it, so only identifier-shaped values are echoed. */
 function safeQuote(v: unknown): string {
-  if (typeof v !== "string") return JSON.stringify(v) ?? "undefined";
+  if (typeof v !== "string") {
+    // A whole object pasted into an error message is the same leak as prose,
+    // just with braces around it.
+    const s = JSON.stringify(v) ?? "undefined";
+    return s.length > 80 ? `a ${typeof v} of ${s.length} JSON characters` : s;
+  }
   return NAME_SHAPE.test(v) ? JSON.stringify(v) : `a ${v.length}-character string`;
 }
 
 /** One validated choice per requested id.
  *
- * The pick has to be one of the options that question offered. A server that
- * answers something else, or answers a question nobody asked, is not a result
- * this can attach to a candidate. */
+ * A pick outside the options that question offered raises. An answer for an id
+ * nobody asked is not read at all: only the requested ids are looked up. */
 function readChoices(
   endpoint: Endpoint,
   model: string,
@@ -263,10 +280,11 @@ function readChoices(
 ): Record<string, ChoiceAnswer> {
   const where = `provider ${JSON.stringify(endpoint.name)} model ${JSON.stringify(model)}`;
   const answers = answersObject(where, data);
-  // The reply names the model that answered. It is printed, so it has to look
-  // like a model name; anything else falls back to the model we asked for.
+  // The reply names the model that answered, and it is printed, so it has to
+  // look like a model name. Absent means the server said nothing and ours
+  // stands in; present but unprintable means we do not know who answered.
   const answered = (data as Record<string, unknown>)["model"];
-  const answeredBy = typeof answered === "string" && NAME_SHAPE.test(answered) ? answered : model;
+  const answeredBy = answered === undefined ? model : typeof answered === "string" && NAME_SHAPE.test(answered) ? answered : null;
 
   const out: Record<string, ChoiceAnswer> = {};
   for (const [id, question] of Object.entries(questions)) {
@@ -295,7 +313,7 @@ function readChoices(
           throw new ProviderError(`${where} answered question ${JSON.stringify(id)} with a probability for ${safeQuote(option)}, which it was not offered`);
         }
         if (!isProbability(p)) {
-          throw new ProviderError(`${where} answered question ${JSON.stringify(id)} with a probability of ${JSON.stringify(p)} for ${JSON.stringify(option)}`);
+          throw new ProviderError(`${where} answered question ${JSON.stringify(id)} with a probability of ${safeQuote(p)} for ${JSON.stringify(option)}`);
         }
         probabilities[option] = p;
       }
@@ -306,7 +324,7 @@ function readChoices(
 
     const conf = row["confidence"];
     if (conf !== undefined && conf !== null && !isProbability(conf)) {
-      throw new ProviderError(`${where} answered question ${JSON.stringify(id)} with a confidence of ${JSON.stringify(conf)}, not a probability`);
+      throw new ProviderError(`${where} answered question ${JSON.stringify(id)} with a confidence of ${safeQuote(conf)}, not a probability`);
     }
     out[id] = { choice: picked, probabilities, confidence: conf === undefined || conf === null ? null : conf, model: answeredBy };
   }
@@ -475,7 +493,7 @@ async function chatOpenai(
   }
 
   if (!resp.ok) {
-    const detail = (await resp.text().catch(() => "")).slice(0, 300);
+    const detail = (await resp.text().catch((e) => `<body unreadable: ${(e as Error).name}>`)).slice(0, 300);
     throw new ProviderError(`provider ${JSON.stringify(endpoint.name)} at ${url} answered HTTP ${resp.status}: ${detail}`);
   }
 

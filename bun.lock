@@ -51,7 +51,7 @@
     },
     "apps/hook-module": {
       "name": "@sil/hook-module",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/nudges": "workspace:*",

@@ -6,6 +6,9 @@
 export type { Gate, Nudge, DispatchOptions, LoadedNudges, RejectedNudge } from "./dispatch.ts";
 export { dispatch, loadNudges, loadNudgesDetailed } from "./dispatch.ts";
 
+export type { DispatchSink, DispatchBudget } from "./dispatch-core.ts";
+export { dispatchWith, lintLoadedNudges } from "./dispatch-core.ts";
+
 export {
   MAX_MATCH_LEN,
   MAX_PATTERN_LEN,

@@ -72,6 +72,19 @@ sil status
 sil web
 ```
 
+## Function hooks (early access)
+
+Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment before starting
+`claude`. Nothing changes without it: the plugin runs exactly as above, one
+command hook per event. With it set, Claude Code loads the plugin's hooks
+module (`dist/hook-module.js`) and runs SessionStart, UserPromptSubmit,
+PreToolUse and PostToolUse in process instead of spawning `bun dist/hook.js`
+for those four events. The command hooks for those four are guarded by
+`[ "$SIL_HOOK_MODULE" = "$PPID" ] ||`, which compares the variable the module
+sets with the hook shell's parent pid, so a nested `claude` run from a Bash tool
+call keeps its own command hooks instead of silently losing them. Stop,
+SubagentStop and SessionEnd are unaffected either way.
+
 ## Reaching the UI from another machine
 
 `sil web` binds `127.0.0.1` by default and runs tokenless there, so the printed

@@ -1,12 +1,13 @@
 {
-  "description": "self-improvement-loop fast path. Every event runs dist/hook.js under bun; it never blocks and never calls a model.",
+  "description": "self-improvement-loop fast path. Every event runs dist/hook.js under bun and never blocks or calls a model; when Claude Code loads the hooks module (dist/hook-module.js), it owns SessionStart/UserPromptSubmit/PreToolUse/PostToolUse in process and the guarded commands below skip.",
+  "modules": ["../dist/hook-module.js"],
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
+            "command": "[ \"$SIL_HOOK_MODULE\" = \"$PPID\" ] || bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -17,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
+            "command": "[ \"$SIL_HOOK_MODULE\" = \"$PPID\" ] || bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -29,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
+            "command": "[ \"$SIL_HOOK_MODULE\" = \"$PPID\" ] || bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]
@@ -41,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
+            "command": "[ \"$SIL_HOOK_MODULE\" = \"$PPID\" ] || bun \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\"",
             "timeout": 5
           }
         ]

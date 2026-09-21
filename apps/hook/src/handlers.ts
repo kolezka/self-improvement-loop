@@ -2,8 +2,7 @@
 // _dispatch_nudge, _handle_*, HANDLERS, and sil/usage.py's append_event /
 // read_events / artifact_ref (folded in here: only handlers need them).
 
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { appendLine, atomicWrite } from "@sil/core/fsx";
 import { SAMPLES_KEEP_LINES, SAMPLES_ROTATE_AT_BYTES, sampleRecord } from "@sil/core/samples";
@@ -16,6 +15,8 @@ import { formatLesson, pendingLessons, rulesBlock } from "./lessons.ts";
 import { maybeKickWorker } from "./kick.ts";
 import { hasTranscript, markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
 import { scanTranscript } from "./scan.ts";
+import { ingestSpool, ORPHAN_SPOOL_OLDER_THAN_MS, ORPHAN_SPOOL_SWEEP_LIMIT, sweepOrphanSpools } from "./spool-ingest.ts";
+import { appendHookRun, appendUsageEvent, HOOK_RUNS_KEEP_LINES, HOOK_RUNS_ROTATE_AT_BYTES } from "./usage-log.ts";
 
 // --- usage event log ------------------------------------------------------
 
@@ -23,44 +24,9 @@ export function artifactRef(kind: string, name: string): string {
   return `${kind}:${name}`;
 }
 
-// Set on the first failed write in this process, so a consistently broken
-// path (bad permissions, full disk) writes one line to hook.log instead of
-// one per hook invocation for the rest of the process.
-let usageFailureLogged = false;
-
-/** Append one JSON line to `path`. Never throws: a failure here must not
- * break a hook invocation, so it goes to the hook log instead. */
-export function appendUsageEvent(path: string, event: Record<string, unknown>): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", flag: "a" });
-  } catch (e) {
-    if (usageFailureLogged) return;
-    usageFailureLogged = true;
-    log(`usage.append_event failed for ${path}: ${(e as Error).message}`);
-  }
-}
-
-// One tool call in a hooked session writes several hook_run lines, about 10k
-// per day here. They are diagnostics, so the file rotates instead of growing.
-export const HOOK_RUNS_ROTATE_AT_BYTES = 8 * 1024 * 1024;
-export const HOOK_RUNS_KEEP_LINES = 40_000;
-
-// Own flag, not usageFailureLogged: a broken hook-runs.jsonl must not silence
-// the first failure on events.jsonl.
-let hookRunFailureLogged = false;
-
-/** Append one hook_run diagnostic line. Same never-throw contract as
- * `appendUsageEvent`, plus rotation. */
-export function appendHookRun(event: Record<string, unknown>): void {
-  try {
-    appendLine(paths.hookRunsFile(), JSON.stringify(event), HOOK_RUNS_ROTATE_AT_BYTES, HOOK_RUNS_KEEP_LINES);
-  } catch (e) {
-    if (hookRunFailureLogged) return;
-    hookRunFailureLogged = true;
-    log(`usage.append_hook_run failed: ${(e as Error).message}`);
-  }
-}
+// Re-exported from usage-log.ts: this used to be where they lived, kept
+// visible from here so nothing importing handlers.ts breaks.
+export { appendHookRun, appendUsageEvent, HOOK_RUNS_KEEP_LINES, HOOK_RUNS_ROTATE_AT_BYTES };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -307,24 +273,35 @@ function handlePostToolUse(payload: Record<string, unknown>, world: HookWorld): 
 }
 
 function handleStop(payload: Record<string, unknown>, world: HookWorld): string {
-  if (payload["stop_hook_active"] === true) return "";
   const sessionId = sessionIdOf(payload);
   const worldName = world.name || "default";
   // Stop is not in nudge.EVENTS: hook.ts never delivers additionalContext on
   // it (not in OUTPUT_EVENTS), so a nudge dispatch here would claim its
   // once-per marker and log a fire for a delivery that never happens.
-  sessionLock(sessionId, () => {
-    if (!hasTranscript(payload, sessionId)) {
-      log(`Stop not queued for ${sessionId}: transcript not on disk (session not persisted)`);
-      return;
-    }
-    upsertStopQueue(payload, worldName, sessionId);
-    scanTranscript(payload, sessionId, (kind, ref, detail) => {
-      const event = { ts: nowIso(), session_id: sessionId, world: worldName, kind, ref, detail };
-      if (kind === "hook_run") appendHookRun(event);
-      else appendUsageEvent(paths.usageEventsFile(), event);
+  if (payload["stop_hook_active"] !== true) {
+    sessionLock(sessionId, () => {
+      // The module (SessionStart/UserPromptSubmit/PreToolUse/PostToolUse, when
+      // loaded) cannot append to files in its sandbox, so it buffers writes to
+      // a spool and this command hook applies them. Must run before the
+      // transcript-missing check: a session with no transcript still needs its
+      // spool ingested, or the buffered writes leak until the next Stop.
+      ingestSpool(sessionId);
+      if (!hasTranscript(payload, sessionId)) {
+        log(`Stop not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+        return;
+      }
+      upsertStopQueue(payload, worldName, sessionId);
+      scanTranscript(payload, sessionId, (kind, ref, detail) => {
+        const event = { ts: nowIso(), session_id: sessionId, world: worldName, kind, ref, detail };
+        if (kind === "hook_run") appendHookRun(event);
+        else appendUsageEvent(paths.usageEventsFile(), event);
+      });
     });
-  });
+  }
+  // Outside this session's own lock and unconditional on stop_hook_active:
+  // a session whose last Stop hits the stop_hook_active guard above never
+  // gets another Stop, so this is the only remaining chance to reclaim it.
+  sweepOrphanSpools({ olderThanMs: ORPHAN_SPOOL_OLDER_THAN_MS, limit: ORPHAN_SPOOL_SWEEP_LIMIT });
   return "";
 }
 
@@ -358,10 +335,6 @@ const SESSION_END_LOCK_MS = 4000;
 function handleSessionEnd(payload: Record<string, unknown>, world: HookWorld): string {
   const sessionId = sessionIdOf(payload);
   const worldName = world.name || "default";
-  if (!hasTranscript(payload, sessionId)) {
-    log(`SessionEnd not queued for ${sessionId}: transcript not on disk (session not persisted)`);
-    return "";
-  }
   // Under the same lock as Stop. Both read the queue entry, change it and write
   // it back, so an unlocked SessionEnd that starts before a running Stop writes
   // its stale copy back on top and loses the stop it never saw.
@@ -370,7 +343,23 @@ function handleSessionEnd(payload: Record<string, unknown>, world: HookWorld): s
   // transcript scan of up to 20 MB, nothing reads SessionEnd's output, and the
   // hook deadline is 5 s. Giving up here would drop `ended`, and then the worker
   // waits out `idle_minutes` on a session that is already over.
-  sessionLock(sessionId, () => markQueueEnded(payload, worldName, sessionId), SESSION_END_LOCK_MS);
+  sessionLock(
+    sessionId,
+    () => {
+      // Same reasoning as handleStop: ingest the spool before the
+      // transcript-missing check, since that check can return early.
+      ingestSpool(sessionId);
+      if (!hasTranscript(payload, sessionId)) {
+        log(`SessionEnd not queued for ${sessionId}: transcript not on disk (session not persisted)`);
+        return;
+      }
+      markQueueEnded(payload, worldName, sessionId);
+    },
+    SESSION_END_LOCK_MS,
+  );
+  // Outside this session's own lock; see handleStop for why the sweep runs
+  // unconditionally.
+  sweepOrphanSpools({ olderThanMs: ORPHAN_SPOOL_OLDER_THAN_MS, limit: ORPHAN_SPOOL_SWEEP_LIMIT });
   return "";
 }
 

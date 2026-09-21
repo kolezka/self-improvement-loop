@@ -1,9 +1,22 @@
 // Filesystem layout. Every path the engine touches is derived here from three
 // roots so tests can point all of them at a temp dir via environment variables.
+//
+// The arithmetic lives in layout.ts, which is pure so the sandboxed hooks
+// module can import it. This file is the Node binding: it supplies process.env
+// and homedir(), and keeps the functions that genuinely need node:.
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { expandHomeWith, layout, safeComponent } from "./layout.ts";
+import type { Layout } from "./layout.ts";
+
+export { safeComponent };
+
+// Built per call, never cached: tests change process.env between calls.
+function current(): Layout {
+  return layout({ get: (name) => process.env[name], home: homedir() });
+}
 
 function envPath(name: string, fallback: string): string {
   const raw = process.env[name];
@@ -11,19 +24,19 @@ function envPath(name: string, fallback: string): string {
 }
 
 export function expandHome(p: string): string {
-  return p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+  return expandHomeWith(p, homedir());
 }
 
 export function configDir(): string {
-  return envPath("SIL_CONFIG_DIR", join(envPath("XDG_CONFIG_HOME", join(homedir(), ".config")), "self-improvement-loop"));
+  return current().configDir();
 }
 
 export function stateDir(): string {
-  return envPath("SIL_STATE_DIR", join(envPath("XDG_STATE_HOME", join(homedir(), ".local", "state")), "self-improvement-loop"));
+  return current().stateDir();
 }
 
 export function dataDir(): string {
-  return envPath("SIL_DATA_DIR", join(envPath("XDG_DATA_HOME", join(homedir(), ".local", "share")), "self-improvement-loop"));
+  return current().dataDir();
 }
 
 // Cached because it only depends on import.meta.dir, which is fixed for the
@@ -68,42 +81,29 @@ export const llmFile = (): string => join(configDir(), "llm.yaml");
 // --- state --------------------------------------------------------------
 
 export type QueueBucket = "pending" | "done" | "failed";
-export const queueDir = (bucket: QueueBucket): string => join(stateDir(), "queue", bucket);
-export const usageEventsFile = (): string => join(stateDir(), "usage", "events.jsonl");
+export const queueDir = (bucket: QueueBucket): string => current().queueDir(bucket);
+export const usageEventsFile = (): string => current().usageEventsFile();
 // hook_run lines live apart from the artifact uses: they are about 90% of the
 // volume and no scorecard reads them, so every rebuild parsed and dropped them.
-export const hookRunsFile = (): string => join(stateDir(), "usage", "hook-runs.jsonl");
-export const payloadSamplesFile = (world: string): string => join(stateDir(), "usage", "payloads", `${safeComponent(world)}.jsonl`);
-export const nudgeFiresFile = (): string => join(stateDir(), "usage", "nudge-fires.jsonl");
+export const hookRunsFile = (): string => current().hookRunsFile();
+export const payloadSamplesFile = (world: string): string => current().payloadSamplesFile(world);
+export const nudgeFiresFile = (): string => current().nudgeFiresFile();
 export const humanFeedbackFile = (): string => join(stateDir(), "feedback", "human.jsonl");
 export const criticFeedbackFile = (): string => join(stateDir(), "feedback", "critic.jsonl");
-export const inboxDir = (world: string): string => join(stateDir(), "inbox", safeComponent(world));
-export const sessionDir = (sessionId: string): string => join(stateDir(), "sessions", safeComponent(sessionId));
-export const workerLockFile = (): string => join(stateDir(), "worker.lock");
-export const hookSnapshotFile = (): string => join(stateDir(), "hook-config.json");
+export const inboxDir = (world: string): string => current().inboxDir(world);
+export const sessionDir = (sessionId: string): string => current().sessionDir(sessionId);
+export const workerLockFile = (): string => current().workerLockFile();
+export const hookSnapshotFile = (): string => current().hookSnapshotFile();
 // Stable across restarts on purpose: sil web restarts itself after a plugin
 // update, and a fresh token there would 401 every tab that is already open.
 export const webTokenFile = (): string => join(stateDir(), "web-token");
-export const logFile = (name: string): string => join(stateDir(), "logs", `${safeComponent(name)}.log`);
+export const logFile = (name: string): string => current().logFile(name);
 
 // --- data ---------------------------------------------------------------
 
-export const worldDir = (world: string): string => join(dataDir(), "worlds", safeComponent(world));
+export const worldDir = (world: string): string => current().worldDir(world);
 export const reflectionsDir = (world: string): string => join(worldDir(world), "reflections");
 export const aliasesFile = (world: string): string => join(worldDir(world), "aliases.json");
 export const scorecardsFile = (world: string): string => join(worldDir(world), "scorecards.json");
-export const defaultTarget = (world: string): string => join(worldDir(world), "learned");
+export const defaultTarget = (world: string): string => current().defaultTarget(world);
 export const builtinNudgesDir = (): string => join(pluginRoot(), "nudges");
-
-const SAFE_CHAR = /[\p{L}\p{N}._-]/u;
-
-/** Path component from an identifier: no separators, no traversal.
- *
- * Unicode letters and digits are kept. Folding them to "_" made every
- * non-ASCII name collide: Koleżka and Koleźka both became Kole_ka and shared
- * one directory. NFC first so the same name typed two ways lands on one path,
- * which matters on filesystems that store bytes rather than normalize. */
-export function safeComponent(name: string): string {
-  const cleaned = Array.from(name.normalize("NFC"), (c) => (SAFE_CHAR.test(c) ? c : "_")).join("");
-  return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
-}

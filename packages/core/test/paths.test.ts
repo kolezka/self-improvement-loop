@@ -9,6 +9,9 @@ import { join } from "node:path";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(/\/$/, "");
 const PATHS_TS = join(REPO_ROOT, "packages", "core", "src", "paths.ts");
+// paths.ts delegates the layout arithmetic to its pure sibling, so the fake
+// bundle below needs both files next to each other.
+const LAYOUT_TS = join(REPO_ROOT, "packages", "core", "src", "layout.ts");
 const SIL_SH = join(REPO_ROOT, "scripts", "sil");
 
 let tmp: string;
@@ -66,6 +69,7 @@ describe("pluginRoot without CLAUDE_PLUGIN_ROOT", () => {
     mkdirSync(join(plugin, "nudges"), { recursive: true });
     writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "self-improvement-loop" }));
     copyFileSync(PATHS_TS, join(plugin, "dist", "paths.ts"));
+    copyFileSync(LAYOUT_TS, join(plugin, "dist", "layout.ts"));
 
     const out = runBun(
       `const p = await import(${JSON.stringify(join(plugin, "dist", "paths.ts"))}); console.log(p.builtinNudgesDir());`,

@@ -1,0 +1,10 @@
+{
+  "name": "@sil/hook-module",
+  "version": "0.3.4",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@sil/core": "workspace:*",
+    "@sil/nudges": "workspace:*"
+  }
+}

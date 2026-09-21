@@ -4,7 +4,7 @@ import { loadConfig, paths } from "@sil/core";
 import type { NoArgs } from "../args.ts";
 import { deps } from "../deps.ts";
 
-const SIL_VERSION = "0.3.4";
+const SIL_VERSION = "0.3.5";
 
 /** Which build is on disk now, and whether the running server predates it.
  *

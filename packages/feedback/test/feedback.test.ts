@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fsx, ledgerPath, paths, type Config, type Ledger, type World } from "@sil/core";
+import { AliasSemanticConfig, fsx, ledgerPath, paths, type Config, type Ledger, type World } from "@sil/core";
 import { saveLedger } from "@sil/store";
 import { compactUsageEvents, load, rebuild, recordHuman, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
@@ -45,7 +45,7 @@ function world(name = "default"): World {
 }
 
 function cfg(w: World): Config {
-  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] } };
+  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] }, alias_semantic: AliasSemanticConfig.parse({}) };
 }
 
 function buildWorldAndLedger(): { w: World; c: Config } {

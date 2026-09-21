@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import { fsx, LlmConfig, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
+import { AliasSemanticConfig, fsx, LlmConfig, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
 import { listQueue, loadEntry, writeEntry } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import {
@@ -104,6 +104,7 @@ function cfg(opts: { idleMinutes?: number; minToolUses?: number } = {}): Config 
     promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 },
     worker: { idle_minutes: opts.idleMinutes ?? 10, curriculum_interval_minutes: 60, min_tool_uses: opts.minToolUses ?? 1, auto_kick: true },
     web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] },
+    alias_semantic: AliasSemanticConfig.parse({}),
   };
 }
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfig, LlmConfig, saveConfig, saveLlm } from "@sil/core";
 import { loadAliases, patternCounts, saveAliases, writeReflection } from "@sil/store";
 import { run } from "../src/main.ts";
 
@@ -168,6 +169,116 @@ describe("sil aliases suggest", () => {
     const out = lines.join("\n");
     expect(out).toContain("stale-cached-env");
     expect(out).toContain("stale-env");
+    expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
+  });
+});
+
+describe("sil aliases suggest with the semantic pass", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function seed(): void {
+    const body = (pattern: string) => `Pattern: ${pattern}\n\n## Reusable lesson\nRead the env var again after the refresh.\n`;
+    writeReflection("default", { id: "1" }, body("stale-env"));
+    writeReflection("default", { id: "2" }, body("stale-env"));
+    writeReflection("default", { id: "3" }, body("stale-cached-env"));
+  }
+
+  function enableSemantic(): void {
+    const cfg = loadConfig();
+    saveConfig({ ...cfg, alias_semantic: { ...cfg.alias_semantic, enabled: true } });
+    saveLlm(
+      LlmConfig.parse({
+        endpoints: [{ name: "jev", kind: "system-one", base_url: "http://localhost:5000", models: { judge: "jev-1" } }],
+        active: "jev",
+      }),
+    );
+  }
+
+  async function suggest(): Promise<string> {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+    try {
+      expect(await run(["aliases", "suggest"])).toBe(0);
+    } finally {
+      console.log = orig;
+    }
+    return lines.join("\n");
+  }
+
+  test("off by default: the output is the plain list and nothing reaches the network", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    globalThis.fetch = (async () => {
+      throw new Error("must not reach the network");
+    }) as unknown as typeof fetch;
+
+    const out = await suggest();
+
+    expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
+    expect(out).not.toContain("semantic");
+  });
+
+  test("enabled: the verdict and the evidence ids print under the candidate", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    enableSemantic();
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ model: "jev-1.13.0", answers: { same_mechanism: { type: "choice", choice: "same_mechanism", probabilities: { same_mechanism: 0.94, distinct: 0.06 }, confidence: 0.94 } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+
+    const out = await suggest();
+
+    expect(out).toContain("semantic: same mechanism (confidence 0.94, model jev-1.13.0)");
+    expect(out).toContain("evidence stale-cached-env: 3");
+    expect(out).toContain("evidence stale-env: 2, 1");
+    // The apply command is still the only way to act on it.
+    expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
+    expect(loadAliases("default")).toEqual({});
+  });
+
+  test("a dead endpoint reports the failure under the candidate and keeps the full list", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    enableSemantic();
+    globalThis.fetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+
+    const out = await suggest();
+
+    expect(out).toContain("semantic: unavailable");
+    expect(out).toContain("connection refused");
+    expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
+    expect(patternCounts("default")).toEqual({ "stale-env": 2, "stale-cached-env": 1 });
+  });
+
+  test("a judge on a text endpoint says so once, above the untouched list", async () => {
+    expect(await run(["init"])).toBe(0);
+    seed();
+    const cfg = loadConfig();
+    saveConfig({ ...cfg, alias_semantic: { ...cfg.alias_semantic, enabled: true } });
+    saveLlm(
+      LlmConfig.parse({
+        endpoints: [{ name: "litellm", kind: "openai", base_url: "http://localhost:4000", models: { judge: "glm" } }],
+        active: "litellm",
+      }),
+    );
+    globalThis.fetch = (async () => {
+      throw new Error("must not reach the network");
+    }) as unknown as typeof fetch;
+
+    const out = await suggest();
+
+    expect(out.match(/semantic assessment unavailable/g)?.length).toBe(1);
+    expect(out).toContain("system-one");
+    expect(out).not.toContain("semantic: ");
     expect(out).toContain("sil aliases set stale-cached-env stale-env --world default");
   });
 });

@@ -76,6 +76,34 @@ whose answer is a decision, so it is the only role a System One endpoint serves.
 - [x] smoke run against a stand-in `/v1/systemone` server: probe, `sil llm use` guards, five nouls in one call
 - [ ] run the judge against a real Laya server or a Jev key and measure it against the chat judge
 
+## Semantic alias review (2026-09-21, branch semantic-alias-review-typesafe-decision)
+
+`sil aliases suggest` compares slug tokens, so it misses a pair that shares a
+mechanism but no words, and it fires on pairs that only share vocabulary. The
+opt-in pass asks the System One judge one Choice question per candidate pair and
+prints the verdict under the candidate. Off by default. It proposes, like the
+deterministic pass; `sil aliases set` stays the only thing that writes.
+
+- [x] `AliasSemanticConfig` in `config.yaml`: enabled, max_candidates,
+      max_reflections_per_pattern, max_excerpt_chars, timeout_s, concurrency,
+      min_confidence
+- [x] `@sil/providers`: `decideChoice()` on the existing `postSystemOne` transport,
+      with `readChoices` validating the pick against the question's own options
+- [x] `@sil/curriculum/alias-semantic.ts`: evidence selection (world scoped,
+      alias resolved, capped), bounded concurrency, confidence gate to `unsure`,
+      per-pair failure isolation. No new package, no new role, no new service.
+- [x] CLI: verdict, confidence, model and the evidence ids under each candidate;
+      disabled output is byte-identical to before
+- [x] tests with a fake decision provider (29 in curriculum, 12 in providers,
+      4 in the CLI); full suite 1171 pass, 0 fail
+- [x] `scripts/eval-alias-semantic.ts` + `scripts/fixtures/alias-semantic-pairs.json`:
+      six hand-labelled pairs, disagreement report, live provider only
+- [x] independent review; fixed: model text echoed into error lines, a per-pair
+      failure hidden behind the report-level reason, probability keys outside the
+      question, a contract-breaking transport taking the whole report down
+- [ ] run the live evaluation against a real Jev key or a Laya server. Nothing in
+      this branch has been exercised against a real provider.
+
 ## Small
 - [ ] decide whether `.ai/` stays in the repo
 - [ ] revisit command texts and `argument-hint` after first real use

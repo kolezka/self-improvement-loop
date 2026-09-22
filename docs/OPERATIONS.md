@@ -228,6 +228,54 @@ A disagreement is a finding, not a failure, so it exits 0. A failed request,
 an answer with no confidence, and a run that scored no pair at all exit 1,
 because then the evaluation measured nothing.
 
+## Moving an install to another host
+
+```
+sil export ~/sil.tar.gz              # old host
+sil import bundle ~/sil.tar.gz       # new host
+sil status
+```
+
+A destination that ends in `.tar.gz` or `.tgz` gives an archive; any other path
+gives a plain directory you can inspect file by file. Both forms import the
+same way.
+
+The bundle holds what the loop created: `config.yaml`, `llm.yaml`, and per world
+the reflections, aliases, scorecards, inbox and the built-in `learned` repo with
+its review branches, plus the usage and feedback history the scorecards are
+rebuilt from. Every path under `$HOME` is stored as `~/...`, so a bundle written
+in `/home/me` restores under `/Users/me`.
+
+Host state stays behind on purpose: the queue, sessions, logs, the worker lock,
+the web token, and `hook-config.json`, which import regenerates. `usage/hook-runs.jsonl`
+is also left out; it is the bulk of the volume and no scorecard reads it.
+
+Flags:
+
+- `--world <name...>` on either command limits the worlds. `sil export` refuses
+  a name no world has.
+- `--no-history` leaves usage, feedback and inbox files behind. The scorecards
+  still travel, but they cannot be recomputed on the new host.
+- `--force` on export overwrites a non-empty destination. On import it takes the
+  bundle's copy of a file this host already has.
+
+Import merges, it does not replace. On a host with no `config.yaml` the bundle's
+config is taken whole. On a live host the worlds are merged, and any file the
+host already has is kept and counted in the summary; `--force` reverses that
+choice. Reflections are the one exception: they are append-only and are never
+overwritten, not even with `--force`. The history files are whole-file copies
+rather than appends, because appending would double every usage event the host
+already counted.
+
+Two things need a hand after an import:
+
+- **Credentials.** `llm.yaml` names an env var, never a key, and no other file
+  in the config directory is read, so nothing secret is in the bundle. Set the
+  API key env vars on the new host, then run `sil status` to confirm the wiring.
+- **External targets.** A world whose `target` points at a repo of your own is
+  recorded in the manifest and reported as a note, but never copied. Clone that
+  repo on the new host and check the path still matches.
+
 ## Rotating API keys
 
 Edit the env var named by `llm.yaml`'s `api_key_env` (or your shell profile), then

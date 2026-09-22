@@ -25,6 +25,7 @@ OpenClaw sessions feed the same loop. See [`docs/OPENCLAW.md`](docs/OPENCLAW.md)
 - [Worlds](#worlds)
 - [Model providers](#model-providers)
 - [Patterns and aliases](#patterns-and-aliases)
+- [Moving to another host](#moving-to-another-host)
 - [Privacy](#privacy)
 - [Development](#development)
 - [Documentation](#documentation)
@@ -104,6 +105,8 @@ for the default world. Edit `llm.yaml` and set `models.critic`,
 | `sil worlds` | Add, list and edit worlds. |
 | `sil llm` | Inspect and switch model endpoints per role. |
 | `sil aliases` | Fold near-duplicate pattern slugs together. |
+| `sil export <path>` | Write a migration bundle: config, worlds, reflections, learned repos and history. |
+| `sil import bundle <path>` | Restore a migration bundle on another host. |
 
 The plugin also ships slash commands: `/loop`, `/reflect`, `/curriculum` and
 `/feedback`.
@@ -206,6 +209,34 @@ candidate. It is off by default, it still only proposes, and a pair judged
 `distinct` stays on the list. See
 [docs/OPERATIONS.md](docs/OPERATIONS.md#semantic-alias-review-optional-off-by-default).
 
+## Moving to another host
+
+`sil export` writes one bundle with everything the loop made: `config.yaml`,
+`llm.yaml`, and per world the reflections, aliases, scorecards, inbox and the
+built-in `learned` repo with its review branches, plus the usage and feedback
+history the scorecards are rebuilt from.
+
+```sh
+sil export ~/sil.tar.gz              # on the old host
+sil import bundle ~/sil.tar.gz       # on the new one
+```
+
+A path that ends in `.tar.gz` or `.tgz` gives an archive; any other path gives a
+plain directory. Flags: `--world <name...>` picks the worlds, `--no-history`
+leaves usage and feedback behind, and `--force` overwrites.
+
+On import the host always wins: a file this install already has is kept, and the
+count of kept files is printed. Pass `--force` to take the bundle's copy
+instead. Reflections are append-only and are never overwritten, not even with
+`--force`.
+
+Two things do not travel. Credentials stay behind, because `llm.yaml` names an
+env var and never a key, so set the API key env vars again on the new host. A
+world with an external `target` repo is recorded and reported, but not copied:
+clone it on the new host yourself.
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md#moving-an-install-to-another-host).
+
 ## Privacy
 
 Reflections, the ledger, scorecards and the queue all live on disk under
@@ -214,6 +245,10 @@ Reflections, the ledger, scorecards and the queue all live on disk under
 calls leave the machine, to whatever endpoint you configured. Curriculum never
 pushes to a remote on its own; accept is a human action, and `remote: push|pr`
 is an explicit per-world opt-in on top of that.
+
+A migration bundle carries `config.yaml` and `llm.yaml` only. No other file from
+the config directory is read, so an `env` file you keep next to them never
+enters a bundle.
 
 ## Development
 
@@ -239,7 +274,7 @@ optional for a local dev install.
 | --- | --- |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Design rules, runtime layout, full loop mechanics. |
 | [`docs/INSTALL.md`](docs/INSTALL.md) | Marketplace install, local dev install, scheduling. |
-| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Daily loop, reviewing, key rotation, troubleshooting. |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Daily loop, reviewing, host migration, key rotation, troubleshooting. |
 | [`docs/OPENCLAW.md`](docs/OPENCLAW.md) | Running the loop on OpenClaw sessions. |
 | [`docs/BENCHMARK.md`](docs/BENCHMARK.md) | Engine benchmark: hook fast path, worker, curriculum, API timings. |
 | [`docs/RELEASE.md`](docs/RELEASE.md) | How a version is cut and where the installed `dist/` comes from. |

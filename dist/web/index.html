@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Local console for the self-improvement loop: review what it learned and accept or reject what it proposes." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d0f13" media="(prefers-color-scheme: dark)" />
+    <title>sil console</title>
+    <script>
+      // Set the theme before first paint. Mirrors src/lib/theme.ts.
+      (function () {
+        var mode = null;
+        try {
+          mode = localStorage.getItem("sil.theme");
+        } catch (e) {}
+        var dark = mode === "dark" || (mode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-DNjzuj7H.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CmCCmB5D.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

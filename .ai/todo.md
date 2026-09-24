@@ -410,3 +410,18 @@ through `sessions/<id>/module-spool.json`, ingested under the session lock.
       checked with `rg` by hand; commit makes the lint cover it
 - [ ] not done: the marketplace release still ships the `modules` key to every user; the key
       is ignored on 2.1.276 and 2.1.278 with the flag off, older builds not tested here
+
+## Web UI console polish (inspired by inkitt/source-code-graph-engine)
+
+- [x] restyle `apps/web/src/app.css`: bordered surfaces, 240px rail with icons, 48px top bar,
+      thin scrollbars, token names kept so panes need no change
+- [x] light, dark and system theme: `src/lib/theme.ts` plus a pre-paint script in `index.html`
+- [x] `Icon.svelte`: inline Lucide shapes, no new dependency
+- [x] responsive: icon rail under 64rem, overlay nav under 45rem with focus moved in and out,
+      `inert` content, closes on Escape, scrim, route change or widening
+- [x] independent review (Sonnet): 3 findings, all confirmed; link `aria-label` and overlay focus
+      fixed and checked in a 600px frame
+- [x] `loadThemeMode` and `saveThemeMode` survive a throwing `localStorage` (red then green
+      tests in `test/theme.test.ts`); tdd-guard sees no `bun test` results (no bun reporter,
+      no `test.json`), so it kept blocking, and was switched off for this repo
+- [x] verify: `bun run check` 0 errors, `bun run build`, `lint:dashes` plus `rg` on untracked files

@@ -31,10 +31,20 @@ Sentence case everywhere, no tracked-out caps, no eyebrow labels.
 
 ## Layout
 
-A narrow left rail groups the nine panes by what the operator is doing
-(Watch, Decide, Configure). The content column carries a sticky head with the
-pane title, a one-line description, the world selector and a live worker dot.
-Master and detail panes keep a two-column split with a sticky detail side.
+A 240px left rail groups the nine panes by what the operator is doing
+(Watch, Decide, Configure). Each link has a small line icon next to its label.
+The rail foot holds the worker state, the theme switch (light, dark, system)
+and a one-line note. A 48px top bar shows `world / Pane`, the world selector
+and the reload control. The pane title and one-line description sit at the
+top of the content. Master and detail panes keep a two-column split with a
+sticky detail side.
+
+Under 64rem the rail shrinks to icons only. Under 45rem it becomes an overlay
+opened from a menu button; focus moves into it, the content behind it is
+inert, and Escape or the scrim closes it. Surfaces are told apart by borders,
+not shadows (after inkitt/source-code-graph-engine). The theme is set on
+`<html data-theme>` by an inline script before first paint and stored under
+`sil.theme`.
 
 ```
 +---------------+--------------------------------------------------+
@@ -84,8 +94,8 @@ Alignment is left throughout. Numbers are tabular and right aligned in tables.
   arrow glyphs appended to buttons, no monospace used as decoration.
 - A left rail plus top bar is itself the admin default, so the identity comes
   from what sits inside it: the loop band, the petrol palette, the density, and
-  a wordmark that doubles as the worker state light. The rail stays typographic
-  with grouped verbs instead of an icon strip.
+  a wordmark. The rail keeps grouped text labels; the icons only help scanning
+  and carry the rail when it shrinks to icons on narrow screens.
 - The stage numbering on Overview is justified because the content really is a
   sequence: a session becomes a reflection, a reflection joins a pattern, a
   pattern at threshold becomes a staged proposal, an accepted proposal becomes

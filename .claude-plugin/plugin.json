@@ -1,6 +1,6 @@
 {
   "name": "self-improvement-loop",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Background reflection on Claude Code sessions that promotes recurring lessons into skills, hooks, rules and agents, tracks artifact usage feedback, and ships a local web UI to review and rate them. Runs on Bun, no Python required.",
   "author": {
     "name": "Mariusz Rakus"

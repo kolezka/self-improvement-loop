@@ -10,15 +10,13 @@ export interface ScheduleInstallOptions {
 }
 
 export function cmdScheduleInstall(opts: ScheduleInstallOptions): number {
-  if (!opts.systemd && !opts.launchd) {
-    console.error("error: sil schedule install needs --systemd or --launchd");
+  let kind: "systemd" | "launchd";
+  try {
+    kind = schedule.resolveKind(opts);
+  } catch (e) {
+    console.error(`error: ${(e as Error).message}`);
     return 2;
   }
-  if (opts.systemd && opts.launchd) {
-    console.error("error: sil schedule install takes only one of --systemd or --launchd");
-    return 2;
-  }
-  const kind = opts.systemd ? "systemd" : "launchd";
   const written = schedule.install(kind, opts.intervalMin ?? 60, opts.web ?? false);
   for (const p of written) console.log(`wrote ${p}`);
   return 0;

@@ -120,18 +120,17 @@ If the address answers nowhere, check the host firewall before the config:
 ## Running on a schedule
 
 ```
-sil schedule install --systemd --web --interval-min 60
+sil schedule install --web --interval-min 60
 ```
 
-or on macOS:
-
-```
-sil schedule install --launchd --web
-```
+It picks systemd on Linux and launchd on macOS. Pass `--systemd` or
+`--launchd` to choose one yourself. Running it again replaces the installed
+units and reloads them, so a new `--interval-min` takes effect at once.
 
 This installs a worker timer/interval and a web service, both calling a stable
 shim at `~/.local/bin/sil` so a plugin version bump never breaks the schedule.
-See `docs/OPERATIONS.md` for what runs and when.
+See `docs/OPERATIONS.md` for what runs and when. On macOS the agents write
+their output to the files `sil logs worker` and `sil logs web` read.
 
 The web service picks up a plugin update on its own: `sil web` notices that the
 current install path or the built `dist/` changed, stops and exits 0, and the

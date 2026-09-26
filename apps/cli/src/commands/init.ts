@@ -78,6 +78,6 @@ export function cmdInit(opts: InitOptions): number {
   console.log("  sil llm use claude                      send every role to `claude -p`");
   console.log("  sil llm use litellm --role drafter      send one role back to LiteLLM");
   console.log("  sil web                                 open the review UI");
-  console.log("  sil schedule install --systemd --web    run the worker and web UI on a schedule");
+  console.log("  sil schedule install --web              run the worker and web UI on a schedule");
   return 0;
 }

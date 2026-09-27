@@ -9,3 +9,6 @@ dist/
 
 # TDD Guard scratch: rewritten on every test run, never source.
 .claude/tdd-guard/data/
+
+# Agent worktree checkouts, never source.
+.claude/worktrees/

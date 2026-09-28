@@ -1239,3 +1239,64 @@ pre.diff .hunk {
   overflow: auto;
   padding: 1rem;
 }
+
+/* queue */
+.queue-updated {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-status-error {
+  margin: 0.5rem 0 0;
+  font-size: var(--fs-xs);
+}
+
+.queue-list > li {
+  padding: 0;
+}
+
+button.queue-row {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  font-weight: 400;
+}
+
+button.queue-row:hover:not(:disabled) {
+  border-left-color: var(--border-strong);
+  background: var(--hover);
+}
+
+.queue-entry-cwd {
+  overflow: hidden;
+  margin: 0.15rem 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.75rem 0.5rem;
+}
+
+.queue-preview-section {
+  margin-top: 1.5rem;
+}
+
+.queue-preview-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: var(--fs-sm);
+}
+
+.transcript-list pre {
+  margin: 0.4rem 0 0;
+}

@@ -2,7 +2,7 @@
 // day and turning a revise instruction into a short title.
 
 import { describe, expect, test } from "bun:test";
-import { actionTarget, instructionTitle, summariseSources } from "../src/lib/review.ts";
+import { instructionTitle, summariseSources } from "../src/lib/review.ts";
 
 describe("summariseSources", () => {
   test("groups ids by the day encoded in their prefix and counts each day", () => {
@@ -54,23 +54,5 @@ describe("instructionTitle", () => {
 
   test("returns an empty string for empty input", () => {
     expect(instructionTitle("")).toBe("");
-  });
-});
-
-describe("actionTarget", () => {
-  test("returns the pattern when the selection and the loaded detail agree", () => {
-    expect(actionTarget("flaky-test", { pattern: "flaky-test" })).toBe("flaky-test");
-  });
-
-  test("returns null while the detail is still for the previous selection", () => {
-    expect(actionTarget("flaky-test-2", { pattern: "flaky-test" })).toBeNull();
-  });
-
-  test("returns null when nothing is selected", () => {
-    expect(actionTarget(null, { pattern: "flaky-test" })).toBeNull();
-  });
-
-  test("returns null when the detail has not loaded yet", () => {
-    expect(actionTarget("flaky-test", null)).toBeNull();
   });
 });

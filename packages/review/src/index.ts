@@ -559,7 +559,8 @@ function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOpt
   const rel = ledgerRel(world);
   // The complaints this refusal answered; only new ones may propose a refine
   // again. Computed fresh, since the scorecards file is only as new as the last rebuild.
-  const card = scorecardByPattern(feedback.scorecards(world, cfg)).get(pattern) ?? null;
+  const fresh = scorecardByPattern(feedback.scorecards(world, cfg)).get(pattern);
+  const card = fresh ? { ...fresh, snapshot_at: fsx.nowIso() } : null;
   let recorded = at;
 
   const sha = commitOnDefault(world, repo, defaultRef, `chore(curriculum): reject ${pattern}`, (tree) => {

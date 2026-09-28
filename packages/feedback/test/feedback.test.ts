@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type World } from "@sil/core";
-import { saveLedger } from "@sil/store";
-import { complaints, compactUsageEvents, load, rebuild, recordHuman, scorecards } from "../src/index.ts";
+import { saveAliases, saveLedger, writeReflection } from "@sil/store";
+import { complaints, compactUsageEvents, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -422,6 +422,116 @@ describe("critic verdicts and the refine snapshot", () => {
     const card = cardOf(w, c);
     expect(card.misfired).toBe(5);
     expect(card.proposal).toBe("refine");
+  });
+});
+
+describe("recurrence since promotion", () => {
+  // Live case: a V1 row with promoted_at null, used daily, reflected 54 times in
+  // 30 days, and never proposed for anything because nobody voted on it.
+  function row(fields: Partial<Ledger["entries"][string]> = {}): void {
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        recurring: { pattern: "recurring", promoted_at_count: 181, rejected_at_count: 0, status: "promoted", artifact_type: "rule", served_by: null, last_updated: iso(daysAgo(20)), promoted_at: null, commit: null, feedback: null, ...fields },
+      },
+    };
+    saveLedger(ledgerPath(world()), ledger);
+  }
+  let seq = 0;
+  const reflect = (day: number, pattern = "recurring") =>
+    writeReflection("default", { id: `r-${pattern}-${seq++}`, created: iso(daysAgo(day)) }, `Pattern: ${pattern}\n\n## Reusable lesson\nx\n`);
+  const use = () =>
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "rule", ref: "rule:recurring" });
+  const cardOf = (now: Date = NOW) => new Map(scorecards(world(), cfg(world()), { now }).map((s) => [s.ref, s])).get("rule:recurring")!;
+  const snapshot = (recurrence: number, at: Date | null) =>
+    Scorecard.parse({ ref: "rule:recurring", type: "rule", name: "recurring", recurrence_30d: recurrence, snapshot_at: at ? iso(at) : null });
+
+  test("counts reflections after promotion and inside 30 days, through aliases", () => {
+    row({ promoted_at: iso(daysAgo(20)) });
+    saveAliases("default", { "recurring-old-name": "recurring" });
+    reflect(25); // before the promotion
+    reflect(10);
+    reflect(5, "recurring-old-name");
+    reflect(3, "something-else");
+    use();
+    expect(cardOf().recurrence_30d).toBe(2);
+    // Past the promotion but out of the window from the later clock.
+    expect(cardOf(new Date(daysAgo(10).getTime() + 30.5 * 86_400_000)).recurrence_30d).toBe(1);
+  });
+
+  test("a date-only reflection from the promotion day counts", () => {
+    // created is a day, promoted_at an instant: midnight read as before 10:00.
+    const promoted = new Date("2026-09-04T10:00:00.000Z");
+    row({ promoted_at: iso(promoted) });
+    writeReflection("default", { id: "same-day", created: "2026-09-04" }, "Pattern: recurring\n\n## Reusable lesson\nx\n");
+    writeReflection("default", { id: "day-before", created: "2026-09-03" }, "Pattern: recurring\n\n## Reusable lesson\nx\n");
+    use();
+    expect(cardOf().recurrence_30d).toBe(1);
+  });
+
+  test("a row with no promoted_at counts the whole window, not from last_updated", () => {
+    // Live: a reject at 02:19 bumped last_updated and hid 54 reflections.
+    row({ promoted_at: null, last_updated: iso(daysAgo(1)) });
+    reflect(15);
+    reflect(4);
+    reflect(40);
+    use();
+    expect(cardOf().recurrence_30d).toBe(2);
+  });
+
+  test("used and reflected past the threshold proposes refine", () => {
+    row();
+    use();
+    for (const d of [2, 3, 4]) reflect(d);
+    const card = cardOf();
+    expect(card.proposal).toBe("refine");
+    expect(card.reason).toBe("served 1 times, failure reflected 3 times in the last 30 days");
+    row({ promoted_at: iso(daysAgo(10)) });
+    expect(cardOf().reason).toBe("served 1 times, failure reflected 3 times since promotion");
+  });
+
+  test("an unused artifact keeps, however often its failure recurs", () => {
+    row();
+    for (const d of [2, 3, 4, 5]) reflect(d);
+    expect(cardOf().recurrence_30d).toBe(4);
+    expect(cardOf().proposal).toBe("keep");
+  });
+
+  test("inside the 7 day new window it stays new", () => {
+    row({ promoted_at: iso(daysAgo(5)) });
+    use();
+    for (const d of [1, 2, 3, 4]) reflect(d);
+    expect(cardOf().recurrence_30d).toBe(4);
+    expect(cardOf().proposal).toBe("new");
+  });
+
+  test("growth below max(threshold, half the snapshot) keeps", () => {
+    // Snapshot 10: needs 5 more, not 3.
+    row({ feedback: snapshot(10, daysAgo(20)) });
+    use();
+    for (let i = 0; i < 14; i++) reflect(2 + i);
+    expect(cardOf().proposal).toBe("keep");
+    reflect(1);
+    expect(cardOf().recurrence_30d).toBe(15);
+    expect(cardOf().proposal).toBe("refine");
+  });
+
+  test("a snapshot younger than the cooldown keeps even with a large delta, and refines after", () => {
+    row({ feedback: snapshot(0, daysAgo(REFINE_COOLDOWN_DAYS - 1)) });
+    use();
+    for (let i = 0; i < 12; i++) reflect(1 + i);
+    expect(cardOf().proposal).toBe("keep");
+    const later = new Date(NOW.getTime() + 2 * 86_400_000);
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(later), session_id: "s2", world: "default", kind: "rule", ref: "rule:recurring" });
+    expect(cardOf(later).proposal).toBe("refine");
+  });
+
+  test("scorecards on disk keep recurrence_30d and snapshot_at", () => {
+    row();
+    use();
+    reflect(2);
+    rebuild(world(), cfg(world()));
+    expect(load(world()).find((c) => c.ref === "rule:recurring")).toMatchObject({ recurrence_30d: 1, snapshot_at: null });
   });
 });
 

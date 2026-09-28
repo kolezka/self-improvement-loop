@@ -51,8 +51,50 @@ export function launchdDir(): string {
   return join(home(), "Library", "LaunchAgents");
 }
 
-export function renderSystemd(intervalMin: number, web: boolean): Record<string, string> {
+// launchd and systemd both start a job with this minimal PATH (verified on
+// macOS): no bun, no claude, whatever else a login shell's profile adds.
+const MINIMAL_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
+// Binaries MINIMAL_PATH does not carry; git already lives in /usr/bin. Each
+// install resolves claude/bun's dir from whatever PATH ran it, not a guess.
+export const WORKER_BINS = ["claude", "bun"] as const;
+
+/** The directory on `envPath` holding an executable named `bin`, or null. */
+export function resolveBinDir(bin: string, envPath: string): string | null {
+  const resolved = Bun.which(bin, { PATH: envPath });
+  return resolved ? dirname(resolved) : null;
+}
+
+/** Each WORKER_BINS entry resolved from `envPath`, or null where it could
+ * not be. install() reports this so a miss is a loud warning, not a repeat
+ * of the bug this file exists to fix. */
+export function resolveWorkerBins(envPath: string): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const bin of WORKER_BINS) out[bin] = resolveBinDir(bin, envPath);
+  return out;
+}
+
+/** The PATH to bake into the installed unit: resolved WORKER_BINS dirs
+ * ahead of MINIMAL_PATH. An unresolved bin is left out here, never an
+ * error; resolveWorkerBins is where a caller checks for a miss. */
+export function workerPath(envPath: string): string {
+  const dirs: string[] = [];
+  for (const dir of Object.values(resolveWorkerBins(envPath))) {
+    if (dir && !dirs.includes(dir)) dirs.push(dir);
+  }
+  for (const dir of MINIMAL_PATH) if (!dirs.includes(dir)) dirs.push(dir);
+  return dirs.join(":");
+}
+
+// systemd expands a bare % as a specifier, so a literal one needs doubling;
+// quoting the assignment also protects a space in a resolved bin dir.
+function systemdPathLine(path: string): string {
+  return `Environment="PATH=${path.replace(/%/g, "%%")}"`;
+}
+
+export function renderSystemd(intervalMin: number, web: boolean, envPath: string): Record<string, string> {
   const shim = shimPath();
+  const pathLine = systemdPathLine(workerPath(envPath));
   const units: Record<string, string> = {
     "sil-worker.service": [
       "[Unit]",
@@ -60,6 +102,7 @@ export function renderSystemd(intervalMin: number, web: boolean): Record<string,
       "",
       "[Service]",
       "Type=oneshot",
+      pathLine,
       `ExecStart=${shim} worker --once`,
       "",
     ].join("\n"),
@@ -83,6 +126,7 @@ export function renderSystemd(intervalMin: number, web: boolean): Record<string,
       "",
       "[Service]",
       "Type=simple",
+      pathLine,
       `ExecStart=${shim} web`,
       // always, not on-failure: `sil web` exits 0 on a plugin update so the
       // restart picks up the new version.
@@ -97,15 +141,41 @@ export function renderSystemd(intervalMin: number, web: boolean): Record<string,
   return units;
 }
 
+/** The PATH a rendered unit declares, or null (a hand-edited or pre-fix
+ * file might have none). Used by `sil schedule show` and by tests. */
+export function unitPath(kind: "systemd" | "launchd", content: string): string | null {
+  if (kind === "systemd") {
+    const m = content.match(/^Environment="PATH=(.*)"$/m);
+    return m ? m[1]!.replace(/%%/g, "%") : null;
+  }
+  const m = content.match(/<key>PATH<\/key><string>(.*)<\/string>/);
+  return m ? xmlUnescape(m[1]!) : null;
+}
+
+// A path containing & < or > breaks plist XML (plutil -lint rejects it and
+// launchd then refuses to load the agent), so every <string> value is escaped.
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function xmlUnescape(s: string): string {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
 // launchd drops stdout and stderr unless told where to put them. Both go to
 // the same file `sil logs <name>` reads.
 function launchdLogKeys(name: "worker" | "web"): string[] {
-  const log = paths.logFile(name);
+  const log = xmlEscape(paths.logFile(name));
   return [`  <key>StandardOutPath</key><string>${log}</string>`, `  <key>StandardErrorPath</key><string>${log}</string>`];
 }
 
-export function renderLaunchd(intervalMin: number, web: boolean): Record<string, string> {
-  const shim = shimPath();
+function launchdPathKeys(envPath: string): string[] {
+  const path = xmlEscape(workerPath(envPath));
+  return ["  <key>EnvironmentVariables</key><dict>", `    <key>PATH</key><string>${path}</string>`, "  </dict>"];
+}
+
+export function renderLaunchd(intervalMin: number, web: boolean, envPath: string): Record<string, string> {
+  const shim = xmlEscape(shimPath());
   const intervalS = intervalMin * 60;
   const units: Record<string, string> = {
     [LAUNCHD_WORKER_PLIST]: [
@@ -120,6 +190,7 @@ export function renderLaunchd(intervalMin: number, web: boolean): Record<string,
       "  </array>",
       `  <key>StartInterval</key><integer>${intervalS}</integer>`,
       "  <key>RunAtLoad</key><true/>",
+      ...launchdPathKeys(envPath),
       ...launchdLogKeys("worker"),
       "</dict></plist>",
       "",
@@ -137,6 +208,7 @@ export function renderLaunchd(intervalMin: number, web: boolean): Record<string,
       "  </array>",
       "  <key>KeepAlive</key><true/>",
       "  <key>RunAtLoad</key><true/>",
+      ...launchdPathKeys(envPath),
       ...launchdLogKeys("web"),
       "</dict></plist>",
       "",
@@ -164,15 +236,25 @@ export function resolveKind(opts: { systemd?: boolean; launchd?: boolean }, plat
   throw new Error(`no default supervisor on ${platform}, pass --systemd or --launchd`);
 }
 
-/** Write the units for `kind` (systemd | launchd) and load them. Returns the
- * written file paths. Idempotent: re-running overwrites the same files. */
-export function install(kind: "systemd" | "launchd", intervalMin = 60, web = false, run: Runner = realRunner): string[] {
+export interface InstallResult {
+  written: string[];
+  /** WORKER_BINS resolved at install time; a null means the scheduled job
+   * will hit this file's bug for that bin until a reinstall finds it. */
+  resolvedBins: Record<string, string | null>;
+}
+
+/** Write the units for `kind` (systemd | launchd) and load them. Idempotent:
+ * re-running overwrites the same files. `envPath` resolves WORKER_BINS; it
+ * defaults to this process's own PATH, the interactive shell `sil schedule
+ * install` normally runs under. */
+export function install(kind: "systemd" | "launchd", intervalMin = 60, web = false, run: Runner = realRunner, envPath: string = process.env["PATH"] ?? ""): InstallResult {
   installShim();
+  const resolvedBins = resolveWorkerBins(envPath);
   if (kind === "systemd") {
     const d = systemdDir();
     mkdirSync(d, { recursive: true });
     const written: string[] = [];
-    for (const [name, content] of Object.entries(renderSystemd(intervalMin, web))) {
+    for (const [name, content] of Object.entries(renderSystemd(intervalMin, web, envPath))) {
       const p = join(d, name);
       writeFileSync(p, content, "utf8");
       written.push(p);
@@ -180,7 +262,7 @@ export function install(kind: "systemd" | "launchd", intervalMin = 60, web = fal
     run(["systemctl", "--user", "daemon-reload"]);
     run(["systemctl", "--user", "enable", "--now", "sil-worker.timer"]);
     if (web) run(["systemctl", "--user", "enable", "--now", SYSTEMD_WEB_UNIT]);
-    return written;
+    return { written, resolvedBins };
   }
   if (kind === "launchd") {
     const d = launchdDir();
@@ -188,7 +270,7 @@ export function install(kind: "systemd" | "launchd", intervalMin = 60, web = fal
     // launchd does not create the parent dir of StandardOutPath.
     mkdirSync(dirname(paths.logFile("worker")), { recursive: true });
     const written: string[] = [];
-    for (const [name, content] of Object.entries(renderLaunchd(intervalMin, web))) {
+    for (const [name, content] of Object.entries(renderLaunchd(intervalMin, web, envPath))) {
       const p = join(d, name);
       writeFileSync(p, content, "utf8");
       written.push(p);
@@ -197,7 +279,7 @@ export function install(kind: "systemd" | "launchd", intervalMin = 60, web = fal
       run(["launchctl", "unload", p]);
       run(["launchctl", "load", p]);
     }
-    return written;
+    return { written, resolvedBins };
   }
   throw new Error(`unknown schedule kind: ${JSON.stringify(kind)}, use systemd or launchd`);
 }

@@ -1,9 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
+  import type { HistorySeries } from "../lib/api-types.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { formatTime, plural } from "../lib/format.ts";
   import WorkerStatus from "../components/WorkerStatus.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
+  import BarChart from "../components/charts/BarChart.svelte";
+  import LineChart from "../components/charts/LineChart.svelte";
   import type { WorkerStatusData } from "../lib/worker-types.ts";
 
   // health.report() catches a throw from deps.worker.status() and reports it
@@ -41,42 +45,49 @@
     actions: PlanAction[];
   }
 
-  /** A stage count the loop has not reported yet prints as a dash, never as a
-   * zero that would read like real news. */
-  type Count = number | null;
+  /** A loop-band count while it loads, once it settles, or if its call failed.
+   * A failed call never falls back to a count, so it can never read as a 0. */
+  type Stat = { status: "loading" } | { status: "ok"; value: number } | { status: "error"; error: string };
+
+  const LOADING: Stat = { status: "loading" };
 
   let health = $state<Health | null>(null);
-  let pendingCount = $state<Count>(null);
-  let reflectionCount = $state<Count>(null);
-  let promoteCount = $state<Count>(null);
-  let reviewCount = $state<Count>(null);
-  let artifactCount = $state<Count>(null);
-  let lessonCount = $state<Count>(null);
+  let pending = $state<Stat>(LOADING);
+  let reflections = $state<Stat>(LOADING);
+  let promote = $state<Stat>(LOADING);
+  let review = $state<Stat>(LOADING);
+  let artifacts = $state<Stat>(LOADING);
+  let lessons = $state<Stat>(LOADING);
   let threshold = $state<number | null>(null);
   let lastLoad = $state<string | null>(null);
   let healthError = $state<string | null>(null);
-  let loading = $state(false);
+  let busy = $state(false);
+
+  interface HistoryState {
+    status: "loading" | "ok" | "error";
+    data?: HistorySeries;
+    error?: string;
+  }
+
+  let history = $state<HistoryState>({ status: "loading" });
+  const HISTORY_DAYS = 30;
 
   // The reflection stage reads a window, not the whole store, so the number
   // below it says which window it is.
   const REFLECTION_WINDOW = 500;
 
-  function count(value: Count): string {
-    return value === null ? "-" : String(value);
-  }
-
-  async function countOf(op: string, payload: Record<string, unknown>): Promise<Count> {
+  async function countOf(op: string, payload: Record<string, unknown>): Promise<Stat> {
     try {
       const items = (await call(op, payload)) as unknown[];
-      return Array.isArray(items) ? items.length : null;
-    } catch {
-      return null;
+      return { status: "ok", value: Array.isArray(items) ? items.length : 0 };
+    } catch (e) {
+      return { status: "error", error: (e as Error).message };
     }
   }
 
   async function load() {
-    if (loading) return;
-    loading = true;
+    if (busy) return;
+    busy = true;
     const world = appState.world;
 
     try {
@@ -87,21 +98,22 @@
       toast(`Could not read the health report: ${healthError}`);
     }
 
-    const [pending, reflections, plan, review, artifacts, lessons] = await Promise.all([
-      (async (): Promise<Count> => {
+    const [pendingStat, reflectionsStat, planResult, reviewStat, artifactsStat, lessonsStat] = await Promise.all([
+      (async (): Promise<Stat> => {
         try {
           const q = (await call("queue.list", {})) as { pending: unknown[] };
-          return q.pending.length;
-        } catch {
-          return null;
+          return { status: "ok", value: q.pending.length };
+        } catch (e) {
+          return { status: "error", error: (e as Error).message };
         }
       })(),
       countOf("reflections.list", { world, limit: REFLECTION_WINDOW }),
-      (async (): Promise<PlanReport | null> => {
+      (async (): Promise<{ stat: Stat; threshold: number | null }> => {
         try {
-          return (await call("curriculum.plan", { world })) as PlanReport;
-        } catch {
-          return null;
+          const plan = (await call("curriculum.plan", { world })) as PlanReport;
+          return { stat: { status: "ok", value: plan.actions.filter((a) => a.action === "promote").length }, threshold: plan.threshold };
+        } catch (e) {
+          return { stat: { status: "error", error: (e as Error).message }, threshold: null };
         }
       })(),
       countOf("review.queue", { world }),
@@ -109,16 +121,48 @@
       countOf("lessons.list", { world }),
     ]);
 
-    pendingCount = pending;
-    reflectionCount = reflections;
-    promoteCount = plan ? plan.actions.filter((a) => a.action === "promote").length : null;
-    threshold = plan ? plan.threshold : null;
-    reviewCount = review;
-    artifactCount = artifacts;
-    lessonCount = lessons;
+    pending = pendingStat;
+    reflections = reflectionsStat;
+    promote = planResult.stat;
+    threshold = planResult.threshold;
+    review = reviewStat;
+    artifacts = artifactsStat;
+    lessons = lessonsStat;
     lastLoad = new Date().toISOString();
-    loading = false;
+    busy = false;
   }
+
+  async function loadHistory() {
+    history = { status: "loading" };
+    try {
+      const data = (await call("history.series", { world: appState.world, days: HISTORY_DAYS })) as HistorySeries;
+      history = { status: "ok", data };
+    } catch (e) {
+      history = { status: "error", error: (e as Error).message };
+    }
+  }
+
+  function refresh() {
+    load();
+    loadHistory();
+  }
+
+  /** "Tracked since 28 Sep 2026", the caveat under the proposals chart when the
+   * window is not fully covered by the append-only proposal log. Null means
+   * the log has never seen a staged proposal at all. */
+  const proposalsSinceNote = $derived.by((): string => {
+    if (history.status !== "ok" || !history.data) return "";
+    const since = history.data.since.proposals_staged;
+    if (!since) return "Tracking starts with this version.";
+    const sinceDate = new Date(since);
+    if (Number.isNaN(sinceDate.getTime())) return "";
+    const windowStart = new Date();
+    windowStart.setDate(windowStart.getDate() - (history.data.days - 1));
+    windowStart.setHours(0, 0, 0, 0);
+    if (sinceDate <= windowStart) return "";
+    const label = sinceDate.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    return `Tracked since ${label}.`;
+  });
 
   async function runWorker() {
     try {
@@ -136,6 +180,11 @@
     } catch (e) {
       toast(`Could not start the curriculum: ${(e as Error).message}`);
     }
+  }
+
+  function reviewHint(stat: Stat): string {
+    if (stat.status === "error") return "Status unknown";
+    return stat.status === "ok" && stat.value > 0 ? "Your gate, nothing moves without you" : "Nothing needs you";
   }
 
   interface ProviderRow {
@@ -159,11 +208,21 @@
     });
   });
 
-  onMount(load);
+  onMount(refresh);
 </script>
 
+{#snippet statValue(stat: Stat)}
+  {#if stat.status === "loading"}
+    <Skeleton width="3ch" height="1.6em" />
+  {:else if stat.status === "error"}
+    <span class="chip err stage__err" title={stat.error}>{stat.error}</span>
+  {:else}
+    {stat.value}
+  {/if}
+{/snippet}
+
 <div class="toolbar">
-  <button onclick={load} disabled={loading}>Refresh</button>
+  <button onclick={refresh} disabled={busy}>Refresh</button>
   <button class="primary" onclick={runWorker}>Run worker</button>
   <button onclick={runCurriculum}>Run curriculum</button>
   <span class="toolbar__spacer"></span>
@@ -174,48 +233,94 @@
   <ol class="loopband__track">
     <li class="stage">
       <a class="stage__link" href="#/queue">
-        <span class="stage__value">{count(pendingCount)}</span>
+        <span class="stage__value">{@render statValue(pending)}</span>
         <span class="stage__label">Sessions waiting</span>
         <span class="stage__hint">Queued by the hook</span>
       </a>
     </li>
     <li class="stage">
       <a class="stage__link" href="#/reflections">
-        <span class="stage__value">{count(reflectionCount)}</span>
+        <span class="stage__value">{@render statValue(reflections)}</span>
         <span class="stage__label">Reflections</span>
         <span class="stage__hint">Last {REFLECTION_WINDOW} in this world</span>
       </a>
     </li>
     <li class="stage">
       <a class="stage__link" href="#/loop">
-        <span class="stage__value">{count(promoteCount)}</span>
+        <span class="stage__value">{@render statValue(promote)}</span>
         <span class="stage__label">Patterns ready</span>
         <span class="stage__hint">{threshold === null ? "Threshold unknown" : `Seen ${threshold} times or more`}</span>
       </a>
     </li>
-    <li class="stage" class:is-gate={(reviewCount ?? 0) > 0}>
+    <li class="stage" class:is-gate={review.status === "ok" && review.value > 0}>
       <a class="stage__link" href="#/review">
-        <span class="stage__value">{count(reviewCount)}</span>
+        <span class="stage__value">{@render statValue(review)}</span>
         <span class="stage__label">Waiting for review</span>
-        <span class="stage__hint">{(reviewCount ?? 0) > 0 ? "Your gate, nothing moves without you" : "Nothing needs you"}</span>
+        <span class="stage__hint">{reviewHint(review)}</span>
       </a>
     </li>
     <li class="stage">
       <a class="stage__link" href="#/artifacts">
-        <span class="stage__value">{count(artifactCount)}</span>
+        <span class="stage__value">{@render statValue(artifacts)}</span>
         <span class="stage__label">Live artifacts</span>
         <span class="stage__hint">Accepted and tracked</span>
       </a>
     </li>
   </ol>
   <div class="loopband__return">
-    <span>{count(lessonCount)} lessons queued for your next session</span>
+    <span>{@render statValue(lessons)} lessons queued for your next session</span>
   </div>
 </section>
 
 {#if healthError}
   <p class="notice error">Could not read the health report: {healthError}. Check that the loop is installed and that config.yaml exists.</p>
 {/if}
+
+<section class="history-section" aria-label="Last 30 days">
+  <div class="section-title">Last {HISTORY_DAYS} days</div>
+  {#if history.status === "loading"}
+    <div class="grid">
+      <Skeleton height="120px" />
+      <Skeleton height="120px" />
+      <Skeleton height="120px" />
+      <Skeleton height="120px" />
+    </div>
+  {:else if history.status === "error"}
+    <p class="notice error">Could not load the history charts: {history.error}</p>
+  {:else if history.data}
+    <div class="grid">
+      <BarChart
+        title="Sessions"
+        stacked
+        series={[
+          { label: "Done", tone: "ok", points: history.data.series.sessions_done },
+          { label: "Failed", tone: "err", points: history.data.series.sessions_failed },
+        ]}
+      />
+      <LineChart title="Reflections" series={[{ label: "Reflections", tone: "accent", points: history.data.series.reflections }]} />
+      <div class="history__proposals">
+        <LineChart
+          title="Proposals"
+          series={[
+            { label: "Staged", tone: "muted", points: history.data.series.proposals_staged },
+            { label: "Accepted", tone: "ok", points: history.data.series.proposals_accepted },
+            { label: "Rejected", tone: "err", points: history.data.series.proposals_rejected },
+          ]}
+        />
+        {#if proposalsSinceNote}
+          <p class="meta">{proposalsSinceNote}</p>
+        {/if}
+      </div>
+      <BarChart
+        title="Votes"
+        series={[
+          { label: "Good", tone: "ok", points: history.data.series.votes_good },
+          { label: "Bad", tone: "err", points: history.data.series.votes_bad },
+        ]}
+      />
+    </div>
+  {/if}
+</section>
 
 <div class="grid">
   <section class="panel">
@@ -323,11 +428,22 @@
   }
 
   .stage__value {
+    display: flex;
+    align-items: center;
     font-size: var(--fs-xl);
     font-weight: 600;
     line-height: 1.1;
     letter-spacing: -0.03em;
     font-variant-numeric: tabular-nums;
+  }
+
+  .stage__err {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-xs);
+    font-weight: 500;
   }
 
   .stage__label {
@@ -367,11 +483,24 @@
     left: 50%;
     bottom: -0.65rem;
     transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
     padding: 0 0.6rem;
     background: var(--bg);
     color: var(--muted);
     font-size: var(--fs-xs);
     white-space: nowrap;
+  }
+
+  .history-section {
+    margin-bottom: 1.6rem;
+  }
+
+  .history__proposals {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
   }
 
   .kv dd {

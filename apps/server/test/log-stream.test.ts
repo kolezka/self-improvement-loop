@@ -3,7 +3,7 @@
 // would read it (guard, initial tail, growth, truncation, partial lines).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
@@ -188,6 +188,94 @@ describe("GET /api/logs/stream", () => {
       await reader.cancel();
     }
   });
+
+  test("a delta bigger than the read cap is spread over several poll ticks, lines intact", async () => {
+    const capped = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      token: TOKEN,
+      logStream: { pollMs: 20, heartbeatMs: 60_000, readCapBytes: 5 },
+    });
+    try {
+      const path = seedLog("worker", "");
+      const res = await fetch(`http://127.0.0.1:${capped.port}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+      const reader = res.body!.getReader();
+      try {
+        // 17 bytes over a 5-byte cap needs 4 capped reads, at least 3 poll
+        // gaps between them; an unbounded read would return it in one tick.
+        appendFileSync(path, "alpha\nbeta\ngamma\n");
+        const start = Date.now();
+        const grown = await readUntil(reader, '"line":"gamma"', 3000);
+        const elapsedMs = Date.now() - start;
+        const got = [...grown.matchAll(/data: (\{"line":"[^}]*"\})/g)].map((m) => (JSON.parse(m[1]!) as { line: string }).line);
+        expect(got).toEqual(["alpha", "beta", "gamma"]);
+        expect(elapsedMs).toBeGreaterThanOrEqual(40);
+      } finally {
+        await reader.cancel();
+      }
+    } finally {
+      capped.stop(true);
+    }
+  });
+
+  test("a pending line over the cap is flushed without waiting for a newline", async () => {
+    const capped = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      token: TOKEN,
+      logStream: { pollMs: 20, heartbeatMs: 100, pendingCapBytes: 1000 },
+    });
+    try {
+      const path = seedLog("worker", "");
+      const res = await fetch(`http://127.0.0.1:${capped.port}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+      const reader = res.body!.getReader();
+      try {
+        const big = "A".repeat(1500);
+        appendFileSync(path, big);
+        const grown = await readUntil(reader, `"line":"${big}"`, 2000);
+        expect(grown).toContain(`"line":"${big}"`);
+      } finally {
+        await reader.cancel();
+      }
+    } finally {
+      capped.stop(true);
+    }
+  }, 4000);
+
+  test("a forced read error emits one event: error and the stream recovers", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const capped = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      token: TOKEN,
+      logStream: { pollMs: 20, heartbeatMs: 100 },
+    });
+    try {
+      const path = seedLog("worker", "a\n");
+      const res = await fetch(`http://127.0.0.1:${capped.port}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+      const reader = res.body!.getReader();
+      try {
+        await readUntil(reader, '"line":"a"}', 2000);
+
+        appendFileSync(path, "b\n");
+        chmodSync(path, 0o000);
+        let errored: string;
+        try {
+          errored = await readUntil(reader, "event: error", 2000);
+        } finally {
+          chmodSync(path, 0o644);
+        }
+        expect(errored).toContain('"detail"');
+
+        const recovered = await readUntil(reader, '"line":"b"}', 2000);
+        expect(recovered.match(/event: error/g)).toBeNull();
+      } finally {
+        await reader.cancel();
+      }
+    } finally {
+      capped.stop(true);
+    }
+  }, 6000);
 });
 
 function existsWebError(root: string): boolean {

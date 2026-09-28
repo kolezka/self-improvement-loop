@@ -6,18 +6,26 @@
 // trailing line, and restarts from 0 on truncation or rotation.
 
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { LOG_NAMES, paths } from "@sil/core";
+import { fsx, LOG_NAMES, paths } from "@sil/core";
 import { tailLines } from "@sil/ops";
 
 export interface LogStreamOptions {
   pollMs?: number;
   heartbeatMs?: number;
   initialLines?: number;
+  /** Cap on bytes read in one poll tick; a bigger delta continues over the
+   * following ticks instead of one unbounded allocation. */
+  readCapBytes?: number;
+  /** Cap on the buffered partial line; past this it is flushed as a line of
+   * its own rather than growing forever while no newline arrives. */
+  pendingCapBytes?: number;
 }
 
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const DEFAULT_INITIAL_LINES = 500;
+const DEFAULT_READ_CAP_BYTES = 1024 * 1024;
+const DEFAULT_PENDING_CAP_BYTES = 64 * 1024;
 
 /** Pure follower: given the previous offset and the current file size, what
  * to read next. A shrunk file (truncation or rotation) reads from 0. */
@@ -42,6 +50,10 @@ function sseLine(line: string): string {
   return `event: line\ndata: ${JSON.stringify({ line })}\n\n`;
 }
 
+function sseError(detail: string): string {
+  return `event: error\ndata: ${JSON.stringify({ detail })}\n\n`;
+}
+
 const SSE_RESET = "event: reset\ndata: {}\n\n";
 const SSE_MISSING = "event: missing\ndata: {}\n\n";
 const SSE_HEARTBEAT = ": hb\n\n";
@@ -63,11 +75,14 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
   const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const initialLines = opts.initialLines ?? DEFAULT_INITIAL_LINES;
+  const readCapBytes = opts.readCapBytes ?? DEFAULT_READ_CAP_BYTES;
+  const pendingCapBytes = opts.pendingCapBytes ?? DEFAULT_PENDING_CAP_BYTES;
   const encoder = new TextEncoder();
 
   let offset = 0;
   let pending = "";
   let missingSent = false;
+  let errorSent = false;
   let identity: { dev: number; ino: number } | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let hbTimer: ReturnType<typeof setInterval> | null = null;
@@ -121,38 +136,58 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
       };
 
       const poll = (): void => {
-        let stat: { size: number; dev: number; ino: number };
         try {
-          stat = statSync(path);
-        } catch {
-          if (!missingSent) {
-            send(SSE_MISSING);
-            missingSent = true;
+          let stat: { size: number; dev: number; ino: number };
+          try {
+            stat = statSync(path);
+          } catch {
+            if (!missingSent) {
+              send(SSE_MISSING);
+              missingSent = true;
+            }
+            identity = null;
+            return;
           }
-          identity = null;
-          return;
+          missingSent = false;
+          // A file renamed away and recreated can land at the same or a
+          // larger size, so a shrink check alone misses it: the identity
+          // (dev, ino) changes even when the byte count does not.
+          const identityChanged = identity !== null && (stat.ino !== identity.ino || stat.dev !== identity.dev);
+          const range = nextRange(offset, stat.size);
+          const reset = range.reset || identityChanged;
+          if (reset) {
+            send(SSE_RESET);
+            pending = "";
+          }
+          const from = reset ? 0 : range.from;
+          // A delta bigger than the cap continues on the next tick instead
+          // of one unbounded allocation for a burst of writes.
+          const to = range.to - from > readCapBytes ? from + readCapBytes : range.to;
+          const chunk = readRange(path, from, to);
+          if (chunk) {
+            pending += chunk;
+            const lines = pending.split("\n");
+            pending = lines.pop() ?? "";
+            for (const line of lines) send(sseLine(line));
+            // No newline in sight for a very long time: flush what is held
+            // rather than growing pending without bound.
+            if (Buffer.byteLength(pending, "utf8") > pendingCapBytes) {
+              send(sseLine(pending));
+              pending = "";
+            }
+          }
+          offset = to;
+          identity = { dev: stat.dev, ino: stat.ino };
+          errorSent = false;
+        } catch (err) {
+          const e = err instanceof Error ? err : new Error(String(err));
+          const trace = e.stack ?? `${e.name}: ${e.message}`;
+          fsx.appendLine(paths.logFile("web"), `${fsx.nowIso()} ERROR ${trace}`);
+          if (!errorSent) {
+            send(sseError(e.message));
+            errorSent = true;
+          }
         }
-        missingSent = false;
-        // A file renamed away and recreated can land at the same or a larger
-        // size, so a shrink check alone misses it: the identity (dev, ino)
-        // changes even when the byte count does not.
-        const identityChanged = identity !== null && (stat.ino !== identity.ino || stat.dev !== identity.dev);
-        const range = nextRange(offset, stat.size);
-        const reset = range.reset || identityChanged;
-        if (reset) {
-          send(SSE_RESET);
-          pending = "";
-        }
-        const from = reset ? 0 : range.from;
-        const chunk = readRange(path, from, range.to);
-        if (chunk) {
-          pending += chunk;
-          const lines = pending.split("\n");
-          pending = lines.pop() ?? "";
-          for (const line of lines) send(sseLine(line));
-        }
-        offset = range.to;
-        identity = { dev: stat.dev, ino: stat.ino };
       };
 
       pollTimer = setInterval(poll, pollMs);

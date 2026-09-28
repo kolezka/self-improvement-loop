@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSseParser } from "../src/lib/stream.ts";
+import { createSseParser, streamLog } from "../src/lib/stream.ts";
 
 describe("createSseParser", () => {
   test("emits events split across chunks and ignores comments", () => {
@@ -27,5 +27,35 @@ describe("createSseParser", () => {
     expect(got).toEqual([]);
     feed("\n");
     expect(got).toEqual([["reset", "{}"]]);
+  });
+});
+
+describe("streamLog", () => {
+  test("routes an event: error to onError with its detail, not onLine", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: error\ndata: {"detail":"boom"}\n\n'));
+        controller.close();
+      },
+    });
+    const originalFetch = globalThis.fetch;
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = { location: { origin: "http://test.local" } };
+    globalThis.fetch = (async () => new Response(body, { status: 200 })) as typeof fetch;
+    try {
+      const errors: string[] = [];
+      const lines: string[] = [];
+      await streamLog(
+        "worker",
+        { onLine: (l) => lines.push(l), onError: (d) => errors.push(d) },
+        new AbortController().signal,
+      );
+      expect(errors).toEqual(["boom"]);
+      expect(lines).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      (globalThis as { window?: unknown }).window = originalWindow;
+    }
   });
 });

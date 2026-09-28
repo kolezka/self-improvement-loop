@@ -3,7 +3,7 @@
 // would read it (guard, initial tail, growth, truncation, partial lines).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
@@ -131,6 +131,27 @@ describe("GET /api/logs/stream", () => {
     // A truncation mid-poll must never throw inside the stream; the web log
     // would carry the trace if handleLogStream let a stat/read error escape.
     expect(existsWebError(tmp)).toBe(false);
+  });
+
+  test("a rename-away-and-recreate at equal or larger size resets, no dropped bytes", async () => {
+    const path = seedLog("worker", "a\nb\n");
+    const res = await fetch(`${base()}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+    const reader = res.body!.getReader();
+    try {
+      await readUntil(reader, '"line":"b"');
+
+      renameSync(path, `${path}.old`);
+      writeFileSync(path, "c\nd\ne\n");
+
+      const grown = await readUntil(reader, '"line":"e"');
+      expect(grown).toContain("event: reset");
+      expect(grown.indexOf("event: reset")).toBeLessThan(grown.indexOf('"line":"c"'));
+      expect(grown).toContain('data: {"line":"c"}');
+      expect(grown).toContain('data: {"line":"d"}');
+      expect(grown).toContain('data: {"line":"e"}');
+    } finally {
+      await reader.cancel();
+    }
   });
 
   test("a partial line is buffered until its newline arrives: exactly one event", async () => {

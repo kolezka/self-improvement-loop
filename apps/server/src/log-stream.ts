@@ -68,6 +68,7 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
   let offset = 0;
   let pending = "";
   let missingSent = false;
+  let identity: { dev: number; ino: number } | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let hbTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -89,14 +90,17 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
 
       let size = 0;
       let exists = true;
+      let initialStat: { size: number; dev: number; ino: number } | null = null;
       try {
-        size = statSync(path).size;
+        initialStat = statSync(path);
+        size = initialStat.size;
       } catch {
         exists = false;
       }
       if (exists) {
         for (const line of tailLines(path, initialLines, undefined, size)) send(sseLine(line));
         offset = size;
+        identity = initialStat ? { dev: initialStat.dev, ino: initialStat.ino } : null;
       } else {
         send(SSE_MISSING);
         missingSent = true;
@@ -110,23 +114,30 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
       };
 
       const poll = (): void => {
-        let size: number;
+        let stat: { size: number; dev: number; ino: number };
         try {
-          size = statSync(path).size;
+          stat = statSync(path);
         } catch {
           if (!missingSent) {
             send(SSE_MISSING);
             missingSent = true;
           }
+          identity = null;
           return;
         }
         missingSent = false;
-        const range = nextRange(offset, size);
-        if (range.reset) {
+        // A file renamed away and recreated can land at the same or a larger
+        // size, so a shrink check alone misses it: the identity (dev, ino)
+        // changes even when the byte count does not.
+        const identityChanged = identity !== null && (stat.ino !== identity.ino || stat.dev !== identity.dev);
+        const range = nextRange(offset, stat.size);
+        const reset = range.reset || identityChanged;
+        if (reset) {
           send(SSE_RESET);
           pending = "";
         }
-        const chunk = readRange(path, range.from, range.to);
+        const from = reset ? 0 : range.from;
+        const chunk = readRange(path, from, range.to);
         if (chunk) {
           pending += chunk;
           const lines = pending.split("\n");
@@ -134,6 +145,7 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
           for (const line of lines) send(sseLine(line));
         }
         offset = range.to;
+        identity = { dev: stat.dev, ino: stat.ino };
       };
 
       pollTimer = setInterval(poll, pollMs);

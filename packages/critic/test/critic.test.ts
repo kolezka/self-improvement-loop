@@ -254,6 +254,24 @@ describe("installedArtifacts", () => {
     expect(refs).toContain("skill:good-skill");
     expect(refs).not.toContain("skill:staged-thing");
   });
+
+  test("a promoted entry served by another artifact is keyed by the served type", async () => {
+    const w = world();
+    const c = cfg(w);
+    const { saveLedger } = await import("@sil/store");
+    const { ledgerPath } = await import("@sil/core");
+    const ledger = {
+      version: 1,
+      entries: {
+        rehomed: { pattern: "rehomed", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "none" as const, served_by: { type: "skill" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+
+    const refs = installedArtifacts(w, c);
+    expect(refs).toContain("skill:rehomed");
+    expect(refs).not.toContain("none:rehomed");
+  });
 });
 
 describe("reflectSession feedback refs and lesson repo", () => {

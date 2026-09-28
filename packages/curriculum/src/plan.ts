@@ -17,6 +17,7 @@ import {
   fsx,
   type Ledger,
   ledgerPath,
+  servedType,
   type PlanAction,
   type PlanActionKind,
   type PlanReport,
@@ -221,7 +222,7 @@ export function scorecardByPattern(cards: Scorecard[], entries: Readonly<Record<
     const name = card.name || (card.ref ? card.ref.split(":").slice(-1)[0]! : "");
     if (!name) continue;
     const entry = Object.hasOwn(entries, name) ? entries[name] : undefined;
-    if (entry && card.ref === `${entry.artifact_type}:${name}`) out.set(name, card);
+    if (entry && card.ref === `${servedType(entry)}:${name}`) out.set(name, card);
     else if (!out.has(name)) out.set(name, card);
   }
   return out;

@@ -9,6 +9,7 @@ import {
   isSlug,
   loadLlm,
   ledgerPath,
+  servedType,
   modelFor,
   paths,
   SECTIONS,
@@ -48,7 +49,7 @@ export function installedArtifacts(world: World, _cfg: Config): string[] {
   try {
     const ledger = loadLedger(ledgerPath(world));
     for (const entry of Object.values(ledger.entries)) {
-      if (entry.status === "promoted") refs.add(`${entry.artifact_type}:${entry.pattern}`);
+      if (entry.status === "promoted") refs.add(`${servedType(entry)}:${entry.pattern}`);
     }
   } catch {
     // a corrupt or missing ledger contributes nothing

@@ -276,6 +276,13 @@ export const PromotionEntry = z.object({
 });
 export type PromotionEntry = z.infer<typeof PromotionEntry>;
 
+/** The type of the artifact that actually serves a ledger row: a re-home's
+ * `served_by` wins over the drafted `artifact_type`. The one place this rule
+ * lives, so the planner, the critic and the curriculum cannot disagree. */
+export function servedType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): string {
+  return entry.served_by ? entry.served_by.type : entry.artifact_type;
+}
+
 export const Ledger = z.object({
   version: z.number().int().default(1),
   entries: z.record(z.string(), PromotionEntry).default({}),

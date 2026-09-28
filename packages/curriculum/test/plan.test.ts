@@ -112,6 +112,15 @@ describe("scorecardByPattern", () => {
     expect(scorecardByPattern(cards, entries).get("foo")?.ref).toBe("skill:foo");
   });
 
+  test("a served_by row decides the type, not artifact_type", () => {
+    const cards = cardRows([
+      { ref: "hook:foo", type: "hook", name: "foo", proposal: "keep" },
+      { ref: "skill:foo", type: "skill", name: "foo", proposal: "refine" },
+    ]);
+    const entries = { foo: { artifact_type: "none", served_by: { type: "skill", path: null } } } as unknown as Record<string, PromotionEntry>;
+    expect(scorecardByPattern(cards, entries).get("foo")?.ref).toBe("skill:foo");
+  });
+
   test("without a ledger entry it keeps the first card by name", () => {
     const cards = cardRows([{ ref: "hook:bar", type: "hook", name: "bar", proposal: "keep" }]);
     expect(scorecardByPattern(cards, {}).get("bar")?.ref).toBe("hook:bar");

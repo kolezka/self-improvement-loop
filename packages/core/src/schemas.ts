@@ -125,6 +125,9 @@ export const Endpoint = z.object({
   // `system-one` only. A noul answer is a probability, so the judge needs a bar
   // at which it reads as yes. Raise it to make the gate harder to trip.
   decision_threshold: z.number().min(0).max(1).default(0.5),
+  // `claude-cli` only. Passed through as `--effort <level>`. Null means the
+  // flag is omitted and the CLI's own default effort applies.
+  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullable().default(null),
 });
 export type Endpoint = z.infer<typeof Endpoint>;
 

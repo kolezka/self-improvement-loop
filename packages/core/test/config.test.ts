@@ -104,8 +104,8 @@ describe("llm", () => {
 
   test("apiKey refuses a placeholder", () => {
     delete process.env["SIL_TEST_KEY_X"];
-    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1, models: {}, extra_body: {}, decision_threshold: 0.5 })).toThrow(ModelNotConfigured);
-    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1, models: {}, extra_body: {}, decision_threshold: 0.5 })).toBeNull();
+    expect(() => apiKey({ name: "e", kind: "openai", base_url: "http://x", api_key_env: "SIL_TEST_KEY_X", timeout_s: 1, models: {}, extra_body: {}, decision_threshold: 0.5, effort: null })).toThrow(ModelNotConfigured);
+    expect(apiKey({ name: "c", kind: "claude-cli", base_url: null, api_key_env: null, timeout_s: 1, models: {}, extra_body: {}, decision_threshold: 0.5, effort: null })).toBeNull();
   });
 });
 
@@ -269,5 +269,22 @@ describe("Endpoint decision_threshold", () => {
   test("rejects a threshold outside 0..1", () => {
     expect(() => Endpoint.parse({ name: "x", decision_threshold: 1.5 })).toThrow();
     expect(() => Endpoint.parse({ name: "x", decision_threshold: -0.1 })).toThrow();
+  });
+});
+
+describe("Endpoint effort", () => {
+  test("defaults to null", () => {
+    expect(Endpoint.parse({ name: "x" }).effort).toBeNull();
+  });
+
+  test("accepts the documented levels", () => {
+    const levels = ["low", "medium", "high", "xhigh", "max"] as const;
+    for (const level of levels) {
+      expect(Endpoint.parse({ name: "x", effort: level }).effort).toBe(level);
+    }
+  });
+
+  test("rejects an undocumented level", () => {
+    expect(() => Endpoint.parse({ name: "x", effort: "extreme" })).toThrow();
   });
 });

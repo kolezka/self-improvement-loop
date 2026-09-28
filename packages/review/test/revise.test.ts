@@ -4,10 +4,10 @@
 // reviewed_state refuses before the drafter is ever called).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, readFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths, ReviewError, targetRoot, type World } from "@sil/core";
-import { git, run, type RunOptions } from "@sil/curriculum";
+import { branchName, git, run, type RunOptions } from "@sil/curriculum";
 import { readProposalEvents } from "@sil/store";
 import * as review from "../src/index.ts";
 import {
@@ -175,6 +175,68 @@ describe("revise", () => {
     } finally {
       chmodSync(eventsDir, 0o755);
     }
+  });
+
+  test("a concurrent change while the drafter is thinking is refused (item 12)", async () => {
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+    const repo = targetRoot(world);
+    const branch = branchName(world.name, PATTERN);
+    const before = review.detail(world, cfg(), PATTERN);
+    const newQuote = "run `rg -n` across every call site and cross check the graphify inventory before merging";
+    let concurrentSha = "";
+
+    // Simulates another revise, restage or rehome landing on the branch
+    // while this drafter call is still in flight.
+    const chat = async (): Promise<string> => {
+      git.withScratchWorktree(repo, branch, branch, (tree) => {
+        writeFileSync(join(tree, "race.txt"), "concurrent change\n", "utf8");
+        git.git(tree, ["add", "--", "race.txt"]);
+        git.git(tree, ["commit", "-q", "-m", "chore: concurrent change"]);
+      });
+      concurrentSha = git.git(repo, ["rev-parse", branch], { check: false });
+      return JSON.stringify(skillDraft(PATTERN, newQuote));
+    };
+
+    await expect(
+      review.revise(world, cfg(), PATTERN, before.reviewed_state, "make it better", { chat }),
+    ).rejects.toThrow(/changed while/);
+
+    expect(concurrentSha).not.toBe("");
+    expect(git.git(repo, ["rev-parse", branch], { check: false })).toBe(concurrentSha);
+    expect(readProposalEvents().events.some((e) => e.event === "revised")).toBe(false);
+  });
+
+  test("a branch that moves right at the worktree checkout is refused", async () => {
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+    const repo = targetRoot(world);
+    const branch = branchName(world.name, PATTERN);
+    const before = review.detail(world, cfg(), PATTERN);
+    const fake = new FakeChat({ draft: skillDraft(PATTERN, "a materially different capability quote for revision") });
+    let concurrentSha = "";
+
+    review.setScratchWorktree((r, b, base, fn) => {
+      if (b === branch) {
+        git.withScratchWorktree(r, b, b, (tree) => {
+          writeFileSync(join(tree, "race.txt"), "concurrent change\n", "utf8");
+          git.git(tree, ["add", "--", "race.txt"]);
+          git.git(tree, ["commit", "-q", "-m", "chore: concurrent change"]);
+        });
+        concurrentSha = git.git(r, ["rev-parse", b], { check: false });
+      }
+      return git.withScratchWorktree(r, b, base, fn);
+    });
+
+    await expect(
+      review.revise(world, cfg(), PATTERN, before.reviewed_state, "make it better", { chat: fake.fn }),
+    ).rejects.toThrow(/changed while|moved/);
+
+    expect(concurrentSha).not.toBe("");
+    expect(git.git(repo, ["rev-parse", branch], { check: false })).toBe(concurrentSha);
+    expect(readProposalEvents().events.some((e) => e.event === "revised")).toBe(false);
   });
 
   test("a staged retirement refuses revise before calling the drafter", async () => {

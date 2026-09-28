@@ -13,7 +13,7 @@ import { artifacts, draftCaps, git, lint, prompts, sameArtifact } from "@sil/cur
 import * as providers from "@sil/providers";
 import type { ChatFn } from "@sil/providers";
 import { listReflections, recordProposalEvent } from "@sil/store";
-import { detail, diff } from "./index.ts";
+import { detail, diff, withTree, withWorkerLock } from "./index.ts";
 import { snapshot } from "./snapshot.ts";
 
 export interface ReviseOptions {
@@ -94,22 +94,43 @@ export async function revise(
   const firstLine = instruction.split("\n")[0]!.trim().slice(0, INSTRUCTION_TITLE_MAX);
   const message = `revise(${artifactType}): ${pattern}: ${firstLine}`;
 
-  git.withScratchWorktree(repo, branch, branch, (tree) => {
-    if (artifactType === "rule") artifacts.ensureRulesFile(world, tree);
-    artifacts.writeArtifact(world, artifactType, pattern, body, tree);
-    if (artifactType === "rule") {
-      // Diffed against HEAD (the branch's own tip), not the default branch:
-      // the branch already carries the staged commit, and comparing to the
-      // default branch would flag that whole prior diff as foreign.
-      const rulesDiff = git.git(tree, ["diff", "HEAD", "--", rel], { check: false });
-      const foreign = artifacts.foreignRuleTags(rulesDiff, pattern);
-      if (foreign.length > 0) throw new Error(`${rel} also changes rule(s) for ${foreign.join(", ")}`);
+  // The digest check above ran before the drafter call, which can take
+  // seconds. Another revise, a restage or a rehome can move this branch in
+  // that window, so the write half takes the same lock accept uses and
+  // rechecks the digest before touching anything: fail fast, then anchor the
+  // worktree to the exact commit that check just verified, not the branch
+  // name, so a move landing between the recheck and the checkout itself is
+  // still caught rather than silently building on top of it.
+  withWorkerLock(() => {
+    const recheck = snapshot(world, repo, defaultRef, pattern);
+    if (recheck.reviewed_state !== reviewedState) {
+      throw new ReviewError("proposal changed while the drafter was working; reload and retry");
     }
-    git.git(tree, ["add", "--", rel]);
-    git.git(tree, ["commit", "-q", "-m", message]);
-  });
 
-  recordProposalEvent(world.name, pattern, "revised");
+    withTree(repo, branch, branch, (tree) => {
+      const checkedOut = git.git(tree, ["rev-parse", "HEAD"], { check: false });
+      if (checkedOut !== recheck.branch_sha) {
+        throw new ReviewError(
+          `${branch} moved from ${recheck.branch_sha.slice(0, 12)} to ${checkedOut.slice(0, 12) || "an unreadable commit"} ` +
+            "while the drafter was working; reload and retry. Nothing was written.",
+        );
+      }
+      if (artifactType === "rule") artifacts.ensureRulesFile(world, tree);
+      artifacts.writeArtifact(world, artifactType, pattern, body, tree);
+      if (artifactType === "rule") {
+        // Diffed against HEAD (the branch's own tip), not the default branch:
+        // the branch already carries the staged commit, and comparing to the
+        // default branch would flag that whole prior diff as foreign.
+        const rulesDiff = git.git(tree, ["diff", "HEAD", "--", rel], { check: false });
+        const foreign = artifacts.foreignRuleTags(rulesDiff, pattern);
+        if (foreign.length > 0) throw new Error(`${rel} also changes rule(s) for ${foreign.join(", ")}`);
+      }
+      git.git(tree, ["add", "--", rel]);
+      git.git(tree, ["commit", "-q", "-m", message]);
+    });
+
+    recordProposalEvent(world.name, pattern, "revised");
+  });
 
   const freshDetail = detail(world, cfg, pattern);
   const freshDiff = diff(world, cfg, pattern);

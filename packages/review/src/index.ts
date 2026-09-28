@@ -63,7 +63,7 @@ export function setScratchWorktree(fn: ScratchWorktree | null): void {
   scratchWorktree = fn;
 }
 
-function withTree<T>(repo: string, branch: string, base: string, fn: (tree: string) => T): T {
+export function withTree<T>(repo: string, branch: string, base: string, fn: (tree: string) => T): T {
   return (scratchWorktree ?? git.withScratchWorktree)(repo, branch, base, fn);
 }
 
@@ -74,7 +74,7 @@ function withTree<T>(repo: string, branch: string, base: string, fn: (tree: stri
  * check and its merge replaces the reviewed commit with one nobody read. The
  * lock is what the worker already takes, so taking it here makes the review path
  * and the run mutually exclusive rather than merely unlikely to overlap. */
-function withWorkerLock<T>(fn: () => T): T {
+export function withWorkerLock<T>(fn: () => T): T {
   const lock = new worker.Lock();
   try {
     lock.acquire();

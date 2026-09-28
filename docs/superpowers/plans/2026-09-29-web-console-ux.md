@@ -49,7 +49,7 @@ Each line above has its test in the owning task (Tasks 6, 7, 4, 3).
 
 Shared-file rule: `packages/ops/src/index.ts` and `packages/ops/src/args.ts` are touched by both server teammates. server-data adds its lines first; server-live rebases onto that commit before registering `review.revise`. Each adds lines only in its own marked block.
 
-All teammates share one worktree, `/Users/me/Development/sil-web-console-ux`, on branch `feat/web-console-ux`. Commit only your own paths (`git add <paths>`, never `-A`, never `git stash`, never `git checkout -- <other paths>`). Before committing, run the CI subset for your scope. A test failure in a path you do not own is reported to the lead, not fixed.
+Each teammate works in its own worktree `/Users/me/Development/sil-wcux-<teammate>` on branch `feat/wcux-<teammate>`, created by the lead from `feat/web-console-ux` after Task 0. The lead merges each branch into `feat/web-console-ux`. Commit only your own paths (`git add <paths>`, never `-A`, never `git stash`, never `git checkout -- <other paths>`). Before committing, run the CI subset for your scope. A test failure in a path you do not own is reported to the lead, not fixed.
 
 ---
 
@@ -527,7 +527,7 @@ export function toViewerLine(raw: string, seq: number, source: string): ViewerLi
 
 Logs pane: segmented control for `LOG_NAMES` (hook, worker, web, curriculum); on select, abort the previous stream and start `streamLog(name, onLine, signal)`; append mapped lines, cap at 20 000 (drop oldest, set `capped`); `live` true while the stream is open; on error or end, `live = false` and retry with backoff 1 s, 2 s, 5 s, 10 s (max), showing "Reconnecting". On `reset` clear lines. Remove the Refresh button. Keep the level colouring through the viewer's stream field.
 
-For `reset` events `streamLog` must surface them: extend `streamLog` with an optional `onReset?: () => void` fourth parameter (coordinate: this is the only change to `stream.ts` outside Task 0, owned here).
+`streamLog(name, { onLine, onReset, onMissing }, signal)` (as built in Task 0, commit 70ed4e4) already surfaces `reset` and `missing`. Do not edit `stream.ts`.
 
 - [ ] **Step 1:** Failing test for `toViewerLine` (JSON worker line with `errors=1` becomes `stderr`, ts preserved; plain `"<iso> msg"` keeps ts; no-ts line has `ts: ""`). **Step 2:** FAIL. **Step 3:** Implement mapper, vendor files, pane. **Step 4:** PASS; `bun test apps/web/test/vendor-virtual.test.ts` PASS; `bun run check:web` 0 errors; `bun run lint:dashes`.
 - [ ] **Step 5: Commit** `feat(web): live logs with vendored svelte-log-viewer`.

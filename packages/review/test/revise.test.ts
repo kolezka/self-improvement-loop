@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ReviewError, targetRoot, type World } from "@sil/core";
 import { git, run, type RunOptions } from "@sil/curriculum";
+import { readProposalEvents } from "@sil/store";
 import * as review from "../src/index.ts";
 import {
   addReflections,
@@ -100,6 +101,7 @@ describe("revise", () => {
     const after = review.detail(world, cfg(), PATTERN);
     expect(after.commit).toBe(before.commit);
     expect(after.reviewed_state).toBe(before.reviewed_state);
+    expect(readProposalEvents().events.some((e) => e.event === "revised")).toBe(false);
   });
 
   test("a reply identical to the existing artifact refuses as unchanged", async () => {
@@ -126,6 +128,8 @@ describe("revise", () => {
     const result = await review.revise(world, cfg(), PATTERN, before.reviewed_state, instruction, { chat: fake.fn });
 
     expect(result.reviewed_state).not.toBe(before.reviewed_state);
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "revised" });
     const fresh = review.detail(world, cfg(), PATTERN);
     expect(result.reviewed_state).toBe(fresh.reviewed_state);
     expect(result.detail.body).toContain(newQuote);

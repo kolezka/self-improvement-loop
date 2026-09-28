@@ -64,6 +64,8 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "llm.use": ["local", "none"],
   "queue.list": ["read", "none"],
   "queue.skip": ["local", "none"],
+  "queue.clear": ["local", "none"],
+  "queue.unclear": ["local", "none"],
   "worker.status": ["read", "none"],
   "loop.run": ["local", "none"],
   "curriculum.plan": ["read", "none"],

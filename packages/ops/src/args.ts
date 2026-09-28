@@ -42,6 +42,11 @@ export type RetireArgs = z.infer<typeof RetireArgs>;
 export const SessionArgs = z.object({ session_id: z.string().regex(SESSION_ID_RE) });
 export type SessionArgs = z.infer<typeof SessionArgs>;
 
+// web console: history and queue ops
+export const ClearArgs = z.object({ bucket: z.enum(["done", "failed"]) });
+export type ClearArgs = z.infer<typeof ClearArgs>;
+// end: web console: history and queue ops
+
 export const FeedbackArgs = z.object({
   world: z.string().regex(WORLD_RE).max(64),
   ref: z.string().regex(ARTIFACT_REF_RE),

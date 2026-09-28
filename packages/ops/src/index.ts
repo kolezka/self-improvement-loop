@@ -24,8 +24,12 @@ register({ name: "llm.get", tier: "read", gate: "none", args: Args.NoArgs, fn: l
 register({ name: "llm.set", tier: "local", gate: "none", args: Args.LlmArgs, fn: llm.llmSet, doc: "Validate and write llm.yaml." });
 register({ name: "llm.status", tier: "read", gate: "none", args: Args.WorldArgs, fn: llm.llmStatus, doc: "Provider reachability for a world, per endpoint." });
 register({ name: "llm.use", tier: "local", gate: "none", args: Args.LlmUseArgs, fn: llm.llmUse, doc: "Switch the active endpoint, or route one role to an endpoint." });
-register({ name: "queue.list", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.queueList, doc: "Pending, done and failed queue entries." });
+register({ name: "queue.list", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.queueList, doc: "Pending, done and failed queue entries; done/failed hide what queue.clear cut off." });
 register({ name: "queue.skip", tier: "local", gate: "none", args: Args.SessionArgs, fn: queue.queueSkip, doc: "Skip a pending session." });
+// web console: history and queue ops
+register({ name: "queue.clear", tier: "local", gate: "none", args: Args.ClearArgs, fn: queue.queueClear, doc: "Hide done or failed sessions up to now; reversible with queue.unclear." });
+register({ name: "queue.unclear", tier: "local", gate: "none", args: Args.ClearArgs, fn: queue.queueUnclear, doc: "Show the sessions queue.clear hid for one bucket." });
+// end: web console: history and queue ops
 register({ name: "worker.status", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.workerStatus, doc: "Worker lock/last-run status." });
 register({ name: "loop.run", tier: "local", gate: "none", args: Args.WorldArgs, fn: queue.loopRun, doc: "Spawn a detached worker --once run." });
 register({ name: "curriculum.plan", tier: "read", gate: "none", args: Args.WorldArgs, fn: curriculum.curriculumPlan, doc: "Dry-run curriculum plan for a world." });

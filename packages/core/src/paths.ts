@@ -82,6 +82,9 @@ export const llmFile = (): string => join(configDir(), "llm.yaml");
 
 export type QueueBucket = "pending" | "done" | "failed";
 export const queueDir = (bucket: QueueBucket): string => current().queueDir(bucket);
+// The reversible "Clear done"/"Clear failed" cutoff. Never moves or deletes a
+// queue file; queue.list just hides entries at or before it.
+export const queueClearedFile = (): string => join(stateDir(), "queue", "cleared.json");
 export const usageEventsFile = (): string => current().usageEventsFile();
 // hook_run lines live apart from the artifact uses: they are about 90% of the
 // volume and no scorecard reads them, so every rebuild parsed and dropped them.

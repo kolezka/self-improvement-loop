@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fsx, ValidationError } from "@sil/core";
 import { SECRET_RE } from "@sil/curriculum";
 import { isHidden, listQueue, listReflections, loadEntry, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
@@ -113,6 +113,21 @@ function transcriptMessages(path: string, limit: number, maxChars: number): { ro
   return out.slice(-limit);
 }
 
+/** iterEvidenceRecords swallows a read failure (EACCES, a race) into an
+ * empty generator, which would otherwise surface as an empty transcript
+ * instead of the error it actually is. A direct read first tells them apart:
+ * missing is "not persisted", anything else is a real failure to report. */
+function transcriptStatus(path: string): { ok: true } | { ok: false; reason: string } {
+  if (!existsSync(path)) return { ok: false, reason: "transcript not persisted" };
+  try {
+    readFileSync(path, "utf8");
+    return { ok: true };
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : String(err);
+    return { ok: false, reason: `transcript unreadable: ${code}` };
+  }
+}
+
 export function queueDetail(args: SessionArgs) {
   for (const bucket of DETAIL_BUCKETS) {
     const entry = loadEntry(bucket, args.session_id);
@@ -120,13 +135,13 @@ export function queueDetail(args: SessionArgs) {
     const reflectionIds = listReflections(entry.world)
       .filter((r) => r.session_id === entry.session_id)
       .map((r) => r.id);
-    const hasTranscript = existsSync(entry.transcript_path);
+    const status = transcriptStatus(entry.transcript_path);
     return {
       bucket,
       entry,
       reflection_ids: reflectionIds,
-      transcript: hasTranscript ? transcriptMessages(entry.transcript_path, TRANSCRIPT_MESSAGE_LIMIT, TRANSCRIPT_TEXT_MAX_CHARS) : null,
-      transcript_reason: hasTranscript ? null : "transcript not persisted",
+      transcript: status.ok ? transcriptMessages(entry.transcript_path, TRANSCRIPT_MESSAGE_LIMIT, TRANSCRIPT_TEXT_MAX_CHARS) : null,
+      transcript_reason: status.ok ? null : status.reason,
     };
   }
   throw new ValidationError(`unknown session: ${JSON.stringify(args.session_id)}`);

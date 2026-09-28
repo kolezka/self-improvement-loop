@@ -2,7 +2,7 @@
 // its session_id, and previews the last 40 transcript messages.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueEntry } from "@sil/core";
@@ -96,6 +96,26 @@ describe("queue.detail", () => {
     expect(out.bucket).toBe("failed");
     expect(out.transcript).toBeNull();
     expect(out.transcript_reason).toBe("transcript not persisted");
+  });
+
+  test("an unreadable transcript is an error, not a silent empty preview", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const sessionId = "sess-unreadable";
+    const e = entry(sessionId);
+    writeFiftyMessageTranscript(e.transcript_path, sessionId);
+    writeEntry("done", e);
+
+    chmodSync(e.transcript_path, 0o000);
+    try {
+      const out = (await invoke("queue.detail", { session_id: sessionId })) as {
+        transcript: unknown;
+        transcript_reason: string | null;
+      };
+      expect(out.transcript).toBeNull();
+      expect(out.transcript_reason).toMatch(/^transcript unreadable: /);
+    } finally {
+      chmodSync(e.transcript_path, 0o644);
+    }
   });
 
   test("an unknown session id is a validation error", async () => {

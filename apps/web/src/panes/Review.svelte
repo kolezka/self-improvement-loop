@@ -42,6 +42,9 @@
   // one selection does not stick around once another is opened.
   let loadingDetail = $state(false);
   let loadError = $state<{ pattern: string; message: string } | null>(null);
+  // The full instruction from the last successful revise, shown as a note
+  // until the operator dismisses it, opens another proposal, or acts again.
+  let reviseNote = $state<string | null>(null);
   // Guards against a slow response landing after the operator has already
   // moved on to a different pattern.
   let seq = 0;
@@ -98,6 +101,7 @@
     activeTab = "proposal";
     sourcesOpen = false;
     showRevise = false;
+    reviseNote = null;
     const mySeq = ++seq;
 
     let d: ReviewDetail;
@@ -159,6 +163,7 @@
     selectedPattern = null;
     detail = null;
     showRevise = false;
+    reviseNote = null;
     await loadQueue();
     appState.statusSeq += 1;
   }
@@ -198,6 +203,10 @@
     showRevise = true;
   }
 
+  function dismissReviseNote() {
+    reviseNote = null;
+  }
+
   function cancelRevise() {
     showRevise = false;
     instruction = "";
@@ -224,6 +233,7 @@
         activeTab = "diff";
         showRevise = false;
         instruction = "";
+        reviseNote = text;
       }
       toast(`Revised: ${instructionTitle(text)}`, "ok");
     } catch (e) {
@@ -379,6 +389,13 @@
             </div>
           {/if}
 
+          {#if reviseNote}
+            <div class="notice revise-note">
+              <span class="grow">Requested: {reviseNote}</span>
+              <button class="ghost" onclick={dismissReviseNote} aria-label="Dismiss requested-changes note">Dismiss</button>
+            </div>
+          {/if}
+
           <div class="tabs" role="tablist">
             <button type="button" role="tab" aria-selected={activeTab === "proposal"} class:active={activeTab === "proposal"} onclick={() => (activeTab = "proposal")}>
               Proposal
@@ -489,6 +506,11 @@
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
+  }
+
+  .revise-note {
+    align-items: center;
+    background: var(--panel);
   }
 
   .detail-scroll {

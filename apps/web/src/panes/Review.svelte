@@ -447,8 +447,12 @@
             {detail.status === "retired" ? "Accept retirement" : "Accept proposal"}
           </button>
           <button
-            disabled={revising || reviewedState === null || target === null}
-            title={reviewedState === null ? "Refresh this proposal before requesting changes." : undefined}
+            disabled={revising || reviewedState === null || target === null || detail.status === "retired"}
+            title={detail.status === "retired"
+              ? "A retirement has no artifact to revise; reject it or rehome instead."
+              : reviewedState === null
+                ? "Refresh this proposal before requesting changes."
+                : undefined}
             onclick={openRevise}
           >
             Request changes

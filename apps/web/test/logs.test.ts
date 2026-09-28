@@ -1,7 +1,7 @@
 // Unit tests for the Logs pane parsing helpers.
 
 import { describe, expect, test } from "bun:test";
-import { highlight, levelOf, matchesFilter, parseLogLine, parseLogLines, sizeText } from "../src/lib/logs.ts";
+import { highlight, levelOf, matchesFilter, parseLogLine, parseLogLines, sizeText, toViewerLine } from "../src/lib/logs.ts";
 
 describe("parseLogLine", () => {
   test("flattens a worker JSON record and keeps ts out of the text", () => {
@@ -176,6 +176,33 @@ describe("highlight", () => {
   test("leaves a very long line unmarked", () => {
     const text = "x".repeat(5000);
     expect(highlight(text, "x")).toEqual([{ text, hit: false }]);
+  });
+});
+
+describe("toViewerLine", () => {
+  test("maps an error worker record to stderr and keeps its timestamp", () => {
+    const raw = JSON.stringify({ ts: "2026-09-18T10:00:00.000Z", action: "run", errors: 1 });
+    expect(toViewerLine(raw, 7, "worker")).toEqual({
+      source: "worker",
+      seq: 7,
+      ts: "2026-09-18T10:00:00.000Z",
+      stream: "stderr",
+      text: "action=run errors=1",
+    });
+  });
+
+  test("keeps an ISO timestamp from a plain line", () => {
+    expect(toViewerLine("2026-09-18T10:00:00Z hook started", 2, "hook")).toMatchObject({
+      source: "hook",
+      seq: 2,
+      ts: "2026-09-18T10:00:00Z",
+      stream: "stdout",
+      text: "hook started",
+    });
+  });
+
+  test("uses an empty timestamp when no timestamp exists", () => {
+    expect(toViewerLine("plain line", 3, "web")).toMatchObject({ ts: "", stream: "stdout", text: "plain line" });
   });
 });
 

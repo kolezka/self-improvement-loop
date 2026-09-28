@@ -1336,4 +1336,154 @@ pre.diff .hunk {
   to {
     opacity: 0;
   }
+/* log viewer aliases */
+:root {
+  --surface-page: var(--bg);
+  --surface-panel: var(--surface);
+  --surface-raised: var(--panel);
+  --surface-hover: var(--hover);
+  --text-primary: var(--fg);
+  --text-secondary: var(--fg-soft);
+  --text-muted: var(--muted);
+  --accent-subtle: var(--accent-soft);
+  --accent-text: var(--accent);
+  --on-accent: var(--accent-ink);
+  --success: var(--ok);
+  --warning: var(--warn);
+  --danger: var(--err);
+  --danger-subtle: var(--err-soft);
+  --info: var(--accent);
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-6: 1.5rem;
+  --space-12: 3rem;
+  --font-sans: var(--font-ui);
+  --text-12: var(--fs-xs);
+  --text-13: var(--fs-sm);
+  --text-14: var(--fs-base);
+  --shadow-sm: var(--shadow);
+
+  --lv-surface-page: var(--bg);
+  --lv-surface-panel: var(--surface);
+  --lv-surface-raised: var(--panel);
+  --lv-surface-hover: var(--hover);
+  --lv-border: var(--border);
+  --lv-border-strong: var(--border-strong);
+  --lv-text-primary: var(--fg);
+  --lv-text-secondary: var(--fg-soft);
+  --lv-text-muted: var(--muted);
+  --lv-accent: var(--accent);
+  --lv-accent-subtle: var(--accent-soft);
+  --lv-accent-text: var(--accent);
+  --lv-on-accent: var(--accent-ink);
+  --lv-success: var(--ok);
+  --lv-warning: var(--warn);
+  --lv-danger: var(--err);
+  --lv-danger-subtle: var(--err-soft);
+  --lv-info: var(--accent);
+  --lv-radius-sm: var(--r-sm);
+  --lv-radius-md: var(--r-md);
+  --lv-radius-lg: var(--r-lg);
+  --lv-space-1: 0.25rem;
+  --lv-space-2: 0.5rem;
+  --lv-space-3: 0.75rem;
+  --lv-space-6: 1.5rem;
+  --lv-space-12: 3rem;
+  --lv-font-sans: var(--font-ui);
+  --lv-font-mono: var(--font-mono);
+  --lv-text-12: var(--fs-xs);
+  --lv-text-13: var(--fs-sm);
+  --lv-text-14: var(--fs-base);
+  --lv-shadow-sm: var(--shadow);
+}
+
+/* queue */
+.queue-updated {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-status-error {
+  margin: 0.5rem 0 0;
+  font-size: var(--fs-xs);
+}
+
+.queue-list > li {
+  padding: 0;
+}
+
+button.queue-row {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  font-weight: 400;
+}
+
+button.queue-row:hover:not(:disabled) {
+  border-left-color: var(--border-strong);
+  background: var(--hover);
+}
+
+.queue-entry-cwd {
+  overflow: hidden;
+  margin: 0.15rem 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.75rem 0.5rem;
+}
+
+.queue-preview-section {
+  margin-top: 1.5rem;
+}
+
+.queue-preview-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: var(--fs-sm);
+}
+
+.transcript-list pre {
+  margin: 0.4rem 0 0;
+}
+
+/* lessons */
+.lesson-text {
+  margin: 0.15rem 0 0;
+  max-width: 78ch;
+}
+
+.lesson-text--clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.lessons-card__body {
+  max-height: 34rem;
+  overflow-y: auto;
+}
+
+.lessons-search {
+  margin-bottom: 0.75rem;
+}
+
+.lessons-actions {
+  margin: 0.75rem 0 0;
 }

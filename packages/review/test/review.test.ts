@@ -14,12 +14,14 @@ import {
   type PromotionEntry,
   RULE_END,
   RULE_START,
+  fsx,
   ruleTag,
   Scorecard,
   targetRoot,
   type World,
 } from "@sil/core";
 import { branchName, git, plan, run, type RunOptions } from "@sil/curriculum";
+import * as feedback from "@sil/feedback";
 import { loadLedger, parseLedger, saveLedger } from "@sil/store";
 import { Lock } from "@sil/worker";
 import * as review from "../src/index.ts";
@@ -36,6 +38,7 @@ import {
   makeCfg,
   makeWorld,
   reflectionBody,
+  ruleBody,
   ruleDraft,
   silEnv,
   skillDraft,
@@ -724,6 +727,33 @@ describe("reject", () => {
     expect(plan(world, makeCfg({ threshold: 3 })).actions.find((a) => a.pattern === PATTERN)!.action).toBe("done");
   });
 
+  test("rejecting a scorecard refine never lowers the watermark and stamps the snapshot", async () => {
+    // A scorecard refine can reach review with fewer reflections on disk than
+    // the mark records. Observed live: 181 went down to 64.
+    const world = makeWorld();
+    const repo = await accepted(world);
+    const ledger = loadLedger(ledgerPath(world));
+    ledger.entries[PATTERN] = { ...ledger.entries[PATTERN]!, rejected_at_count: 181 };
+    saveLedger(ledgerPath(world), ledger);
+    git.git(repo, ["commit", "-q", "-am", "chore: a high mark"]);
+    // A stale scorecards file says 1; the events say 4. Reject must stamp what is true now.
+    const stale = Scorecard.parse({ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, misfired: 1, proposal: "refine", reason: "misfires" });
+    mkdirSync(join(paths.scorecardsFile(world.name), ".."), { recursive: true });
+    writeFileSync(paths.scorecardsFile(world.name), JSON.stringify([stale]));
+    for (let i = 0; i < 4; i++) {
+      fsx.appendJsonl(paths.criticFeedbackFile(), { ref: `skill:${PATTERN}`, verdict: "misfired", reason: "noise", reflection_id: `r${i}`, ts: new Date().toISOString(), world: world.name });
+    }
+    await stage(world, PATTERN, [], `${QUOTE}, and re-run it after every rebase`);
+    expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(true);
+
+    const out = review.reject(world, cfg(), PATTERN);
+
+    expect(out.rejected_at_count).toBe(181);
+    const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(entry.rejected_at_count).toBe(181);
+    expect(entry.feedback!.misfired).toBe(4);
+  });
+
   test("rejecting leaves the live tree clean", async () => {
     const world = makeWorld();
     const repo = seed(world);
@@ -733,6 +763,60 @@ describe("reject", () => {
     expect(git.currentBranch(repo)).toBe("main");
     // The scratch ref used to carry the commit is gone.
     expect(git.git(repo, ["branch", "--list", "sil-scratch/*"])).toBe("");
+  });
+});
+
+describe("a scorecard refine end to end", () => {
+  test("critic misfires refine a row with no reflections, and accepting settles it", async () => {
+    // Real scorecards, plan, run, accept and rebuild; only the model is fake.
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const old = `- Run \`rg\` over the changed symbol before calling the change safe; the graphify inventory misses consumers. ${ruleTag(PATTERN)}`;
+    commitFile(repo, RULES, `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    const promotedAt = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    saveLedger(ledgerPath(world), {
+      version: 1,
+      entries: {
+        [PATTERN]: {
+          pattern: PATTERN,
+          promoted_at_count: 5,
+          rejected_at_count: 0,
+          status: "promoted",
+          artifact_type: "rule",
+          served_by: { type: "rule", path: RULES },
+          last_updated: promotedAt,
+          promoted_at: promotedAt,
+          commit: null,
+          feedback: null,
+        },
+      },
+    });
+    git.git(repo, ["add", "--", "promotions.json"]);
+    git.git(repo, ["commit", "-q", "-m", "chore: a migrated row"]);
+    const now = Date.now();
+    for (const [i, verdict] of (["misfired", "misfired", "misfired", "helpful"] as const).entries()) {
+      const ts = new Date(now - (i + 1) * 3_600_000).toISOString();
+      const reason = "It let me call the change safe before I ran rg over the changed symbol and read the graphify inventory.";
+      fsx.appendJsonl(paths.criticFeedbackFile(), { ref: `rule:${PATTERN}`, verdict, reason, reflection_id: `r${i}`, ts, world: world.name });
+    }
+    const rowFor = () => plan(world, cfg()).actions.find((a) => a.pattern === PATTERN);
+
+    feedback.rebuild(world, cfg());
+    expect(rowFor()).toMatchObject({ action: "refine", count: 5, sources: [] });
+
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const report = await run(world, cfg(), { apply: true, chat: chat.fn, gateRunner: fakeGateRunner });
+    expect(report.gated_out).toEqual({});
+    expect(report.staged).toEqual([PATTERN]);
+
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(readFileSync(join(repo, RULES), "utf8")).toContain(ruleBody());
+    const live = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(live.promoted_at_count).toBe(5);
+    expect(live.feedback!.misfired).toBe(3);
+
+    feedback.rebuild(world, cfg());
+    expect(rowFor()).toBeUndefined();
   });
 });
 

@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AliasSemanticConfig, fsx, ledgerPath, paths, type Config, type Ledger, type World } from "@sil/core";
+import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type World } from "@sil/core";
 import { saveLedger } from "@sil/store";
-import { compactUsageEvents, load, rebuild, recordHuman, scorecards } from "../src/index.ts";
+import { complaints, compactUsageEvents, load, rebuild, recordHuman, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -54,7 +54,7 @@ function buildWorldAndLedger(): { w: World; c: Config } {
   const ledger: Ledger = {
     version: 1,
     entries: {
-      "new-thing": { pattern: "new-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: null, commit: null, feedback: null },
+      "new-thing": { pattern: "new-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: iso(daysAgo(2)), commit: null, feedback: null },
       "steady-thing": { pattern: "steady-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, commit: null, feedback: null },
       "flaky-thing": { pattern: "flaky-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "hook", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, commit: null, feedback: null },
       "dead-thing": { pattern: "dead-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "agent", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: null, commit: null, feedback: null },
@@ -340,6 +340,88 @@ describe("compactUsageEvents", () => {
 
     expect(compactUsageEvents(c, NOW)).toBe(0);
     expect(fsx.readJsonl(events)).toHaveLength(2);
+  });
+});
+
+describe("critic verdicts and the refine snapshot", () => {
+  function promotedLedger(w: World, snapshot: Scorecard | null = null): void {
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        judged: { pattern: "judged", promoted_at_count: 3, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: iso(daysAgo(90)), commit: null, feedback: snapshot },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+  }
+  const verdict = (n: number, v: "helpful" | "misfired") =>
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: v, reflection_id: `r${n}`, ts: iso(daysAgo(n)), world: "default" });
+  const use = () =>
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "skill", ref: "skill:judged" });
+  const cardOf = (w: World, c: Config) => new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("skill:judged")!;
+
+  // A verdict judges a past session. Counted as a use, it kept every judged
+  // artifact from ever going stale enough to retire.
+  test("critic verdicts alone leave last_used null; a usage event sets it", () => {
+    const w = world();
+    const c = cfg(w);
+    promotedLedger(w);
+    verdict(2, "misfired");
+    verdict(3, "helpful");
+    expect(cardOf(w, c).last_used).toBeNull();
+    use();
+    expect(cardOf(w, c).last_used).toBe(iso(daysAgo(1)));
+  });
+
+  test("a helpful verdict keeps an unused artifact off the retire list", () => {
+    const w = world();
+    const c = cfg(w);
+    promotedLedger(w);
+    expect(cardOf(w, c).proposal).toBe("retire-candidate");
+    verdict(2, "helpful");
+    expect(cardOf(w, c).proposal).not.toBe("retire-candidate");
+  });
+
+  // A reject bumps last_updated. Read as a promotion date, it hid a migrated
+  // row (promoted_at null) behind `new` for a week after every refusal.
+  test("a reject's last_updated never opens the new window", () => {
+    const w = world();
+    const c = cfg(w);
+    const ledger: Ledger = {
+      version: 1,
+      entries: {
+        judged: { pattern: "judged", promoted_at_count: 3, rejected_at_count: 9, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(NOW), promoted_at: null, commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+    use();
+    for (let i = 0; i < 3; i++) verdict(i + 2, "misfired");
+    expect(cardOf(w, c).proposal).toBe("refine");
+  });
+
+  test("complaints are misfire reasons and bad-vote notes, oldest first, after since", () => {
+    const w = world();
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: "misfired", reason: "fired on a docs-only change", ts: iso(daysAgo(5)), world: "default" });
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: "helpful", reason: "not a complaint", ts: iso(daysAgo(4)), world: "default" });
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:other", verdict: "misfired", reason: "another artifact", ts: iso(daysAgo(4)), world: "default" });
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: "misfired", reason: "other world", ts: iso(daysAgo(4)), world: "work" });
+    recordHuman({ ts: iso(daysAgo(3)), world: "default", ref: "skill:judged", vote: "bad", note: "too long to read", session_id: null });
+    recordHuman({ ts: iso(daysAgo(2)), world: "default", ref: "skill:judged", vote: "good", note: "praise", session_id: null });
+    recordHuman({ ts: iso(daysAgo(1)), world: "default", ref: "skill:judged", vote: "bad", note: "", session_id: null });
+    expect(complaints(w, "skill:judged")).toEqual(["fired on a docs-only change", "too long to read"]);
+    expect(complaints(w, "skill:judged", iso(daysAgo(4)))).toEqual(["too long to read"]);
+  });
+
+  test("refine counts only complaints past the snapshot", () => {
+    const w = world();
+    const c = cfg(w);
+    promotedLedger(w, Scorecard.parse({ ref: "skill:judged", type: "skill", name: "judged", misfired: 3 }));
+    use();
+    for (let i = 0; i < 4; i++) verdict(i + 2, "misfired");
+    expect(cardOf(w, c).proposal).toBe("keep");
+    verdict(9, "misfired");
+    const card = cardOf(w, c);
+    expect(card.misfired).toBe(5);
+    expect(card.proposal).toBe("refine");
   });
 });
 

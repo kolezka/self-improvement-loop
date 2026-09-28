@@ -263,6 +263,67 @@ describe("scorecards", () => {
   });
 });
 
+describe("scorecard proposals for rows with no reflections", () => {
+  // V1 rows were migrated without their reflections, so a scorecard is the only
+  // signal that can ever reach them. The plan used to iterate reflections only.
+  const promoted = (pattern: string, count: number) =>
+    entry({
+      pattern,
+      promoted_at_count: count,
+      status: "promoted",
+      artifact_type: "skill",
+      served_by: { type: "skill", path: `skills/${pattern}/SKILL.md` },
+    });
+  const card = (pattern: string, proposal: Scorecard["proposal"], reason = "") =>
+    ({ ref: `skill:${pattern}`, type: "skill", name: pattern, proposal, reason }) as Partial<Scorecard>;
+
+  test("a promoted row with no reflections and a refine card comes back as refine", () => {
+    writeLedger(world, [promoted(PATTERN, 17)]);
+    writeScorecards(world, [card(PATTERN, "refine", "misfired+human_bad=4 exceeds helpful+human_good=1")]);
+    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    expect(action.action).toBe("refine");
+    expect(action.count).toBe(17);
+    expect(action.watermark).toBe(17);
+    expect(action.sources).toEqual([]);
+    expect(action.feedback).toBe("misfired+human_bad=4 exceeds helpful+human_good=1");
+  });
+
+  test("new evidence promotes and still carries the refine complaint", () => {
+    addReflections(world, PATTERN, 4);
+    writeLedger(world, [promoted(PATTERN, 0)]);
+    writeScorecards(world, [card(PATTERN, "refine", "4 misfires")]);
+    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    expect(action.action).toBe("promote");
+    expect(action.feedback).toBe("4 misfires");
+  });
+
+  test("a cluster promote takes the only cap slot before a ledger refine", () => {
+    // "zzz" sorts after the ledger pattern, so only the append order can put it first.
+    addReflections(world, "zzz-pattern", 3);
+    writeLedger(world, [promoted("aaa-pattern", 9)]);
+    writeScorecards(world, [card("aaa-pattern", "refine", "misfires")]);
+    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 })));
+    expect(a["zzz-pattern"]!.action).toBe("promote");
+    expect(a["aaa-pattern"]!.action).toBe("over-cap");
+  });
+
+  test("a promoted row with no reflections and a retire card is a retire-candidate that spends no cap", () => {
+    addReflections(world, "zzz-pattern", 3);
+    writeLedger(world, [promoted("aaa-pattern", 9)]);
+    writeScorecards(world, [card("aaa-pattern", "retire-candidate", "no use in 60 days")]);
+    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 })));
+    expect(a["aaa-pattern"]!.action).toBe("retire-candidate");
+    expect(a["aaa-pattern"]!.sources).toEqual([]);
+    expect(a["zzz-pattern"]!.action).toBe("promote");
+  });
+
+  test("a keep card on a row with no reflections adds no row", () => {
+    writeLedger(world, [promoted(PATTERN, 9)]);
+    writeScorecards(world, [card(PATTERN, "keep")]);
+    expect(plan(world, makeCfg({ threshold: 3 })).actions).toEqual([]);
+  });
+});
+
 describe("the payload corpus", () => {
   test("a target's own payloads add to the corpus", () => {
     const extra = `${targetRoot(world)}/tests/fixtures/hook-payloads`;

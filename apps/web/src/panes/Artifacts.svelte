@@ -9,6 +9,8 @@
     misfired: number;
     human_good: number;
     human_bad: number;
+    proposal: string;
+    reason: string;
   }
 
   interface InventoryRow {
@@ -137,6 +139,8 @@
               <th scope="col" class="num">Helpful</th>
               <th scope="col" class="num">Misfired</th>
               <th scope="col">Human votes</th>
+              <th scope="col">Proposal</th>
+              <th scope="col">Reason</th>
               <th scope="col">Actions</th>
             </tr>
           </thead>
@@ -159,10 +163,14 @@
                   <td class="num">{row.scorecard.helpful}</td>
                   <td class="num">{row.scorecard.misfired}</td>
                   <td>{votesText(row.scorecard)}</td>
+                  <td>{row.scorecard.proposal}</td>
+                  <td>{row.scorecard.reason}</td>
                 {:else}
                   <td class="num muted">-</td>
                   <td class="num muted">-</td>
                   <td class="num muted">-</td>
+                  <td class="muted">-</td>
+                  <td class="muted">-</td>
                   <td class="muted">-</td>
                 {/if}
                 <td>

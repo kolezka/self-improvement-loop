@@ -33,6 +33,7 @@ import {
 } from "@sil/core";
 import { artifacts, branchName, git, loadLedger, reflections, scorecardByPattern, scorecards } from "@sil/curriculum";
 import { loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
+import * as feedback from "@sil/feedback";
 import * as worker from "@sil/worker";
 import { publish, type RemoteOps, setRemoteOps } from "./remote.ts";
 import {
@@ -546,7 +547,7 @@ export function reject(world: World, cfg: Config, pattern: string, opts: ReviewO
   return withWorkerLock(() => rejectInner(world, cfg, pattern, opts));
 }
 
-function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOptions): RejectResult {
+function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOptions): RejectResult {
   const repo = targetRoot(world);
   const defaultRef = git.defaultBranch(repo);
   const snap = snapshot(world, repo, defaultRef, pattern);
@@ -556,6 +557,10 @@ function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
   const branchRow = branchEntry(world, repo, snap.branch_sha, pattern);
   const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   const rel = ledgerRel(world);
+  // The complaints this refusal answered; only new ones may propose a refine
+  // again. Computed fresh, since the scorecards file is only as new as the last rebuild.
+  const card = scorecardByPattern(feedback.scorecards(world, cfg)).get(pattern) ?? null;
+  let recorded = at;
 
   const sha = commitOnDefault(world, repo, defaultRef, `chore(curriculum): reject ${pattern}`, (tree) => {
     const ledger = loadLedgerFile(join(tree, rel));
@@ -565,7 +570,10 @@ function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
       // default branch, so its type and served_by still hold after the refusal;
       // overwriting them with the branch's would make the ledger describe a file
       // this rejection just threw away.
-      ledger.entries[pattern] = { ...prior, rejected_at_count: at, last_updated: fsx.nowIso() };
+      // Never lowered: a scorecard refine can be refused with fewer reflections on
+      // disk than the mark already records.
+      recorded = Math.max(prior.rejected_at_count, at);
+      ledger.entries[pattern] = { ...prior, rejected_at_count: recorded, last_updated: fsx.nowIso(), feedback: card };
     } else {
       // Never promoted, so nothing serves this pattern now. `served_by` is
       // deliberately not recovered from the branch: `run()` reads it as a forced
@@ -581,7 +589,7 @@ function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
         last_updated: fsx.nowIso(),
         promoted_at: null,
         commit: null,
-        feedback: null,
+        feedback: card,
       };
     }
     saveLedger(join(tree, rel), ledger);
@@ -593,7 +601,7 @@ function rejectInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
     pattern,
     deleted: snap.branch,
     sha: snap.branch_sha,
-    rejected_at_count: at,
+    rejected_at_count: recorded,
     commit: sha.slice(0, 12),
   };
 }

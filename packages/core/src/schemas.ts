@@ -287,6 +287,8 @@ export const PlanAction = z.object({
   action: PlanActionKind,
   sources: z.array(z.string()).default([]),
   reason: z.string().default(""),
+  // The scorecard's complaint about the live artifact, handed to the drafter.
+  feedback: z.string().nullable().default(null),
 });
 export type PlanAction = z.infer<typeof PlanAction>;
 

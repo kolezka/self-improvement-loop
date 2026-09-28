@@ -123,6 +123,7 @@ interface Built {
  * does not parse adds to `baseSkipped`, the same as a torn line. */
 function fold(records: Record<string, unknown>[], tsField: string, days: number, now: Date, baseSkipped: number): Built {
   let since: string | null = null;
+  let sinceMs = Number.POSITIVE_INFINITY;
   let skipped = baseSkipped;
   const dayKeys: string[] = [];
   for (const rec of records) {
@@ -133,7 +134,13 @@ function fold(records: Record<string, unknown>[], tsField: string, days: number,
       continue;
     }
     const tsStr = String(raw);
-    if (since === null || tsStr < since) since = tsStr;
+    // Compared as instants: two ISO timestamps can carry different UTC
+    // offsets, so a string compare picks the wrong one as "earliest".
+    const ms = Date.parse(tsStr);
+    if (ms < sinceMs) {
+      sinceMs = ms;
+      since = tsStr;
+    }
     dayKeys.push(day);
   }
   return { points: bucket(dayKeys, days, now), since, skipped };

@@ -116,6 +116,17 @@ describe("history.series", () => {
     expect(out.series.sessions_done[0]!.count).toBe(1);
   });
 
+  test("since compares timestamps by instant, not by string", async () => {
+    const path = paths.humanFeedbackFile();
+    // By instant, the +02:00 record (2026-09-27T23:00:00Z) is earlier than
+    // the Z record (2026-09-27T23:30:00Z), even though its string sorts later.
+    appendLine(path, { ts: "2026-09-28T01:00:00+02:00", world: "default", ref: "skill:a", vote: "good", note: "" });
+    appendLine(path, { ts: "2026-09-27T23:30:00Z", world: "default", ref: "skill:a", vote: "good", note: "" });
+
+    const out = (await invoke("history.series", { world: "default", days: 90 })) as HistorySeries;
+    expect(out.since.votes_good).toBe("2026-09-28T01:00:00+02:00");
+  });
+
   test("proposals draw from the append-only log; worker_runs stays global", async () => {
     appendProposalEvent("default", "verify-callsites", "staged");
     appendProposalEvent("other", "verify-callsites", "staged");

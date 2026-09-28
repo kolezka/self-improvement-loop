@@ -35,7 +35,7 @@ export interface ProviderStatus {
 // spawnSync indirection for claude-cli: tests reassign `spawnSyncImpl.run`
 // instead of patching the Bun global.
 export interface SpawnSyncResult { success: boolean; exitCode: number; stdout: Buffer; stderr: Buffer; exitedDueToTimeout?: boolean }
-export type SpawnSyncFn = (cmd: string[], opts: { stdin?: Buffer; timeout?: number }) => SpawnSyncResult;
+export type SpawnSyncFn = (cmd: string[], opts: { stdin?: Buffer; timeout?: number; env?: Record<string, string | undefined> }) => SpawnSyncResult;
 export const spawnSyncImpl: { run: SpawnSyncFn } = {
   run: (cmd, opts) => Bun.spawnSync(cmd, { ...opts, stdout: "pipe", stderr: "pipe" }),
 };
@@ -399,7 +399,7 @@ export async function status(world: World, llm?: LlmConfig): Promise<ProviderSta
   return result;
 }
 
-interface Probe { reachable: boolean | null; error: string | null }
+export interface Probe { reachable: boolean | null; error: string | null }
 
 async function probeEndpoint(endpoint: Endpoint): Promise<Probe> {
   if (endpoint.kind === "claude-cli") return probeClaudeCli();
@@ -442,9 +442,16 @@ async function probeSystemOne(endpoint: Endpoint): Promise<Probe> {
   }
 }
 
-function probeClaudeCli(): Probe {
+/** Runs `claude --version` under this process's own PATH, or, when `envPath`
+ * is given, under that PATH instead. The status command uses the override to
+ * check reachability under a scheduled unit's baked PATH, not the
+ * interactive shell's: those can differ (see schedule.ts, PR #48). */
+export function probeClaudeCli(envPath?: string): Probe {
   try {
-    const r = spawnSyncImpl.run(["claude", "--version"], { timeout: 5000 });
+    // Always pass env: Bun resolves the binary against the env it is given,
+    // and without one it uses the PATH from process start, not the current one.
+    const env = envPath === undefined ? { ...process.env } : { ...process.env, PATH: envPath };
+    const r = spawnSyncImpl.run(["claude", "--version"], { timeout: 5000, env });
     if (r.exitedDueToTimeout) return { reachable: false, error: "claude --version timed out after 5s" };
     if (!r.success) return { reachable: false, error: `claude --version exited ${r.exitCode}: ${r.stderr.toString("utf8").slice(0, 200)}` };
     return { reachable: true, error: null };

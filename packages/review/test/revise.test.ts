@@ -176,4 +176,25 @@ describe("revise", () => {
       chmodSync(eventsDir, 0o755);
     }
   });
+
+  test("a staged retirement refuses revise before calling the drafter", async () => {
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+    const staged = review.detail(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, staged.reviewed_state);
+    review.retire(world, cfg(), PATTERN);
+    const before = review.detail(world, cfg(), PATTERN);
+    expect(before.status).toBe("retired");
+
+    const fake = new FakeChat({ draft: skillDraft(PATTERN, "a fabricated body that should never be written") });
+
+    await expect(
+      review.revise(world, cfg(), PATTERN, before.reviewed_state, "bring it back", { chat: fake.fn }),
+    ).rejects.toThrow(/retirement/);
+
+    expect(fake.calls).toHaveLength(0);
+    const after = review.detail(world, cfg(), PATTERN);
+    expect(after.commit).toBe(before.commit);
+  });
 });

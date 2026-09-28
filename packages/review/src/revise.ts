@@ -55,6 +55,13 @@ export async function revise(
   }
 
   const current = detail(world, cfg, pattern);
+  if (current.status === "retired") {
+    // A staged retirement's branch deletes the artifact; its body is empty.
+    // Revising it asks the drafter for a fresh one and commits that onto the
+    // retirement branch, so accepting it recreates and relinks a file the
+    // human meant to remove.
+    throw new ReviewError("a retirement has no artifact to revise; reject it or rehome instead");
+  }
   const artifactType = current.artifact_type;
   const existing = artifactType === "rule" ? artifacts.stripRuleTag(current.body, pattern) : current.body;
 

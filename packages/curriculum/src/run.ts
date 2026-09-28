@@ -442,9 +442,18 @@ async function stageOne(
     git.git(ctx.target, ["branch", "-q", "-f", branch, ctx.defaultRef]);
   }
 
+  // Type of the artifact the starting tree still carries; a branch mid-migration
+  // keeps its own row, every other tree starts from the default branch. Removed
+  // below when the routed type differs.
+  const oldType = migrating(stagedEntry, prior) ? rowType(stagedEntry) : rowType(prior);
+
   const verb = action.action === "refine" ? "refine" : "promote";
   const message = `feat(${routedType}): ${verb} ${pattern} (auto, gated)`;
   const sha = git.withScratchWorktree(ctx.target, branch, ctx.defaultRef, (tree) => {
+    let removedRel = "";
+    if (oldType && oldType !== "none" && oldType !== routedType) {
+      removedRel = artifacts.removeArtifact(world, oldType, pattern, tree);
+    }
     if (routedType === "rule") artifacts.ensureRulesFile(world, tree);
     artifacts.writeArtifact(world, routedType, pattern, body, tree);
     if (routedType === "rule") {
@@ -460,7 +469,7 @@ async function stageOne(
     // so one may never claim another's promotion.
     treeLedger.entries[pattern] = entry;
     saveLedger(join(tree, ctx.ledgerRel), treeLedger);
-    git.git(tree, ["add", "--", rel, ctx.ledgerRel]);
+    git.git(tree, ["add", "--", rel, ctx.ledgerRel, ...(removedRel ? [removedRel] : [])]);
     git.git(tree, ["commit", "-q", "-m", message]);
     return git.git(tree, ["rev-parse", "HEAD"]);
   });

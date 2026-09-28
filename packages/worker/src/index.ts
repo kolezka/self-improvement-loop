@@ -375,6 +375,7 @@ export async function runOnce(cfg?: Config, opts: RunOnceOptions = {}): Promise<
 
       summary.duration_s = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
       fsx.writeJson(join(paths.stateDir(), "worker-status.json"), { last_run: fsx.nowIso(), last_summary: sampleSummary(summary) });
+      log({ action: "run", reflected: summary.reflected.length, failed: summary.failed.length, skipped: summary.skipped.length });
     });
   } catch (e) {
     if (e instanceof LockHeld) return { reflected: [], failed: [], skipped: [], curriculum: {}, duration_s: 0, locked: true };

@@ -91,11 +91,11 @@ function writeLedger(w: World, entries: PromotionEntry[]): string {
   return path;
 }
 
-/** Scorecards on disk, where the real `feedback.load` reads them. */
-function writeScorecards(w: World, rows: Partial<Scorecard>[]): void {
-  const path = paths.scorecardsFile(w.name);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(rows.map((r) => ScorecardSchema.parse(r))), "utf8");
+/** Scorecard rows for `plan()`'s `cards` override: `plan()` decides live, so a
+ * test that wants to hand it a specific proposal passes rows straight
+ * through rather than writing a scorecards.json nothing reads any more. */
+function cardRows(rows: Partial<Scorecard>[]): Scorecard[] {
+  return rows.map((r) => ScorecardSchema.parse(r));
 }
 
 describe("clustering and aliases", () => {
@@ -214,7 +214,7 @@ describe("scorecards", () => {
         served_by: { type: "skill", path: `skills/${PATTERN}/SKILL.md` },
       }),
     ]);
-    writeScorecards(world, [
+    const cards = cardRows([
       {
         ref: `skill:${PATTERN}`,
         type: "skill",
@@ -225,7 +225,7 @@ describe("scorecards", () => {
         reason: "4 misfires against 1 helpful vote in 30 days",
       },
     ]);
-    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    const action = actions(plan(world, makeCfg({ threshold: 3 }), { cards }))[PATTERN]!;
     expect(action.action).toBe("refine");
     expect(action.reason).toContain("misfires");
   });
@@ -233,10 +233,10 @@ describe("scorecards", () => {
   test("an unused promoted artifact comes back as a retire-candidate", () => {
     addReflections(world, PATTERN, 4);
     writeLedger(world, [entry({ pattern: PATTERN, promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
-    writeScorecards(world, [
+    const cards = cardRows([
       { ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, uses_30d: 0, proposal: "retire-candidate", reason: "no use in 45 days" },
     ]);
-    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    const action = actions(plan(world, makeCfg({ threshold: 3 }), { cards }))[PATTERN]!;
     expect(action.action).toBe("retire-candidate");
     expect(action.reason).toContain("45 days");
   });
@@ -245,8 +245,8 @@ describe("scorecards", () => {
     addReflections(world, "aaa-pattern", 4);
     addReflections(world, "bbb-pattern", 3);
     writeLedger(world, [entry({ pattern: "aaa-pattern", promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
-    writeScorecards(world, [{ ref: "skill:aaa-pattern", type: "skill", name: "aaa-pattern", proposal: "retire-candidate" }]);
-    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 })));
+    const cards = cardRows([{ ref: "skill:aaa-pattern", type: "skill", name: "aaa-pattern", proposal: "retire-candidate" }]);
+    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 }), { cards }));
     expect(a["aaa-pattern"]!.action).toBe("retire-candidate");
     expect(a["bbb-pattern"]!.action).toBe("promote");
   });
@@ -254,14 +254,18 @@ describe("scorecards", () => {
   test("a keep scorecard leaves a settled pattern done", () => {
     addReflections(world, PATTERN, 4);
     writeLedger(world, [entry({ pattern: PATTERN, promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
-    writeScorecards(world, [{ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, proposal: "keep" }]);
-    expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
+    const cards = cardRows([{ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, proposal: "keep" }]);
+    expect(actions(plan(world, makeCfg({ threshold: 3 }), { cards }))[PATTERN]!.action).toBe("done");
   });
 
-  test("no scorecards at all yields no proposals", () => {
+  test("a ledger row with no other signal computes a live keep card", () => {
+    // Scorecards are always computed live now (Finding 1): there is no longer
+    // an "empty scorecards file" state that skips the row entirely.
     addReflections(world, PATTERN, 4);
     writeLedger(world, [entry({ pattern: PATTERN, promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
-    expect(scorecards(world, makeCfg({ threshold: 3 }))).toEqual([]);
+    const cards = scorecards(world, makeCfg({ threshold: 3 }));
+    expect(cards.map((c) => c.ref)).toEqual([`skill:${PATTERN}`]);
+    expect(cards[0]!.proposal).toBe("keep");
     expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
   });
 
@@ -295,8 +299,8 @@ describe("scorecard proposals for rows with no reflections", () => {
 
   test("a promoted row with no reflections and a refine card comes back as refine", () => {
     writeLedger(world, [promoted(PATTERN, 17)]);
-    writeScorecards(world, [card(PATTERN, "refine", "misfired+human_bad=4 exceeds helpful+human_good=1")]);
-    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    const cards = cardRows([card(PATTERN, "refine", "misfired+human_bad=4 exceeds helpful+human_good=1")]);
+    const action = actions(plan(world, makeCfg({ threshold: 3 }), { cards }))[PATTERN]!;
     expect(action.action).toBe("refine");
     expect(action.count).toBe(17);
     expect(action.watermark).toBe(17);
@@ -307,8 +311,8 @@ describe("scorecard proposals for rows with no reflections", () => {
   test("new evidence promotes and still carries the refine complaint", () => {
     addReflections(world, PATTERN, 4);
     writeLedger(world, [promoted(PATTERN, 0)]);
-    writeScorecards(world, [card(PATTERN, "refine", "4 misfires")]);
-    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    const cards = cardRows([card(PATTERN, "refine", "4 misfires")]);
+    const action = actions(plan(world, makeCfg({ threshold: 3 }), { cards }))[PATTERN]!;
     expect(action.action).toBe("promote");
     expect(action.feedback).toBe("4 misfires");
   });
@@ -317,8 +321,8 @@ describe("scorecard proposals for rows with no reflections", () => {
     // "zzz" sorts after the ledger pattern, so only the append order can put it first.
     addReflections(world, "zzz-pattern", 3);
     writeLedger(world, [promoted("aaa-pattern", 9)]);
-    writeScorecards(world, [card("aaa-pattern", "refine", "misfires")]);
-    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 })));
+    const cards = cardRows([card("aaa-pattern", "refine", "misfires")]);
+    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 }), { cards }));
     expect(a["zzz-pattern"]!.action).toBe("promote");
     expect(a["aaa-pattern"]!.action).toBe("over-cap");
   });
@@ -326,8 +330,8 @@ describe("scorecard proposals for rows with no reflections", () => {
   test("a promoted row with no reflections and a retire card is a retire-candidate that spends no cap", () => {
     addReflections(world, "zzz-pattern", 3);
     writeLedger(world, [promoted("aaa-pattern", 9)]);
-    writeScorecards(world, [card("aaa-pattern", "retire-candidate", "no use in 60 days")]);
-    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 })));
+    const cards = cardRows([card("aaa-pattern", "retire-candidate", "no use in 60 days")]);
+    const a = actions(plan(world, makeCfg({ threshold: 3, per_run_cap: 1 }), { cards }));
     expect(a["aaa-pattern"]!.action).toBe("retire-candidate");
     expect(a["aaa-pattern"]!.sources).toEqual([]);
     expect(a["zzz-pattern"]!.action).toBe("promote");
@@ -335,8 +339,8 @@ describe("scorecard proposals for rows with no reflections", () => {
 
   test("a keep card on a row with no reflections adds no row", () => {
     writeLedger(world, [promoted(PATTERN, 9)]);
-    writeScorecards(world, [card(PATTERN, "keep")]);
-    expect(plan(world, makeCfg({ threshold: 3 })).actions).toEqual([]);
+    const cards = cardRows([card(PATTERN, "keep")]);
+    expect(plan(world, makeCfg({ threshold: 3 }), { cards }).actions).toEqual([]);
   });
 });
 
@@ -373,6 +377,43 @@ describe("a scorecard refine by recurrence", () => {
     expect(action.watermark).toBe(181);
     expect([...action.sources].sort()).toEqual([...ids].sort());
     expect(action.reason).toBe("served 5 times, failure reflected 3 times since promotion");
+  });
+
+  test("a new reflection with no artifact-ref events still updates recurrence the planner sees", () => {
+    // A reflection alone touches no usage, critic or human event file, so a
+    // staleness check keyed on those files' mtimes never notices it. The
+    // planner must still see the new recurrence in the same pass.
+    const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        promoted_at_count: 181,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+        last_updated: day(20),
+        promoted_at: day(20),
+      }),
+    ]);
+    const cfg = makeCfg({ threshold: 3 });
+    for (let i = 0; i < 5; i++) {
+      fsx.appendJsonl(paths.usageEventsFile(), { ts: day(i), session_id: `s${i}`, world: world.name, kind: "rule", ref: `rule:${PATTERN}` });
+    }
+    feedback.rebuild(world, cfg);
+    // A "keep" proposal on a row with no reflections surfaces no action at all.
+    expect(actions(plan(world, cfg))[PATTERN]).toBeUndefined();
+
+    // New reflections only: no event file changes, so an mtime-based cache
+    // would still look fresh.
+    const ids = [4, 3, 2].map((n, i) => {
+      const id = `recur-${i}`;
+      writeReflection(world.name, { id, created: day(n) }, reflectionBody(PATTERN, day(n).slice(0, 10)));
+      return id;
+    });
+
+    const action = actions(plan(world, cfg))[PATTERN]!;
+    expect(action.action).toBe("refine");
+    expect([...action.sources].sort()).toEqual([...ids].sort());
   });
 });
 

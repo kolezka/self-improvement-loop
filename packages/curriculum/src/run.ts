@@ -318,7 +318,7 @@ async function stageOne(
     // With no reflections the complaints are the evidence. Grounding in the live
     // artifact would pass any redraft that kept its old vocabulary.
     const ref = ctx.cards.get(pattern)?.ref ?? null;
-    const said = ref ? feedback.complaints(world, ref, prior?.promoted_at ?? null) : [];
+    const said = ref ? feedback.complaints(world, cfg, ref, prior?.promoted_at ?? null) : [];
     if (said.length === 0) {
       report.gated_out[pattern] = "no complaint text to ground a refine in";
       return;

@@ -6,7 +6,7 @@ import { deps } from "../deps.ts";
 
 export function artifactsScorecards(args: WorldArgs) {
   const [cfg, world] = cfgWorld(args.world);
-  return deps.feedback.load(world, cfg);
+  return deps.feedback.scorecards(world, cfg);
 }
 
 export function artifactsRebuild(args: WorldArgs) {

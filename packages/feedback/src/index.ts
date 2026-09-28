@@ -44,21 +44,31 @@ export function listHuman(world?: string): HumanFeedback[] {
 }
 
 /** What people said was wrong with one artifact: critic misfire reasons and
- * the notes on bad human votes, oldest first, optionally only after `since`. */
-export function complaints(world: World, ref: string, since?: string | null): string[] {
+ * the notes on bad human votes, oldest first, optionally only after `since`.
+ *
+ * A critic misfire line may carry a legacy bare ref ("name", no "type:"
+ * prefix). It is resolved against this world's own installed artifacts, the
+ * same rule the scorecard itself folds bare refs under, so a card that counts
+ * the misfire is not left with no text to explain it. */
+export function complaints(world: World, cfg: Config, ref: string, since?: string | null): string[] {
   const out: { ts: string; text: string }[] = [];
-  const collect = (ev: Record<string, unknown>, key: string): void => {
-    if (ev["world"] !== world.name || ev["ref"] !== ref) return;
-    const ts = String(ev["ts"] ?? "");
-    if (since && !(ts > since)) return;
-    const text = String(ev[key] ?? "").trim();
-    if (text) out.push({ ts, text });
+  const push = (ts: unknown, text: unknown): void => {
+    const tsStr = String(ts ?? "");
+    if (since && !(tsStr > since)) return;
+    const t = String(text ?? "").trim();
+    if (t) out.push({ ts: tsStr, text: t });
   };
+
+  const known = new Set(installedArtifacts(world, cfg));
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
-    if (ev["verdict"] === "misfired") collect(ev, "reason");
+    if (ev["verdict"] !== "misfired" || ev["world"] !== world.name) continue;
+    const rawRef = ev["ref"];
+    if (!rawRef || resolveBareRef(String(rawRef), known) !== ref) continue;
+    push(ev["ts"], ev["reason"]);
   }
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.humanFeedbackFile())) {
-    if (ev["vote"] === "bad") collect(ev, "note");
+    if (ev["vote"] !== "bad" || ev["world"] !== world.name || ev["ref"] !== ref) continue;
+    push(ev["ts"], ev["note"]);
   }
   return out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0)).map((c) => c.text);
 }
@@ -70,7 +80,12 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   const retireCutoff = new Date(now.getTime() - cfg.promotion.retire_after_days * 86_400_000);
 
   const ledger = loadLedgerSafe(world);
-  const refs = new Set<string>(installedArtifacts(world, cfg));
+  // Frozen before usage, fires or human feedback add anything: a bare critic
+  // ref may only resolve against this world's own installed artifacts, never
+  // against a ref merely seen in an event log. Nudge fires carry no world at
+  // all, so that set can leak a name from a different world's hook.
+  const installedRefs = new Set<string>(installedArtifacts(world, cfg));
+  const refs = new Set<string>(installedRefs);
 
   const usesByRef = new Map<string, number>();
   const firesByRef = new Map<string, number>();
@@ -130,7 +145,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     }
     const rawRef = ev["ref"];
     if (!rawRef) continue;
-    const r = resolveBareRef(String(rawRef), refs);
+    const r = resolveBareRef(String(rawRef), installedRefs);
     if (r === null) {
       unresolvedCriticRefs += 1;
       continue;
@@ -360,30 +375,15 @@ export function rebuild(world: World, cfg: Config): string {
   return path;
 }
 
-/** True when the scorecards file on disk predates an event source it is
- * built from: the worker writes it on its own cadence, and a usage, nudge,
- * critic or human-feedback line appended since then means the cached counts
- * (uses_30d chief among them) no longer match what happened. A missing file
- * is not "stale": `load` already reads that as no scorecards yet, same as
- * before this check existed. */
-function scorecardsFileStale(scorecardsPath: string): boolean {
-  const cacheMtime = fsx.mtimeMs(scorecardsPath);
-  if (cacheMtime === null) return false;
-  const sources = [paths.usageEventsFile(), paths.nudgeFiresFile(), paths.criticFeedbackFile(), paths.humanFeedbackFile()];
-  return sources.some((p) => {
-    const m = fsx.mtimeMs(p);
-    return m !== null && m > cacheMtime;
-  });
-}
-
-/** Scorecards for a world: freshly computed from the event files when the
- * cached scorecards.json predates one of them, otherwise read straight off
- * disk. Every reader that decides from scorecards (the curriculum planner,
- * the CLI, the server API) goes through this, so none of them acts on a
- * stale `uses_30d` just because nothing has called `rebuild` since. */
+/** Scorecards exactly as last written to scorecards.json, for display or
+ * export only. Never recomputed here: a cached row can go stale from a write
+ * no fixed list of source files can watch for (a reflection with no usage,
+ * critic or human event; an alias change; a promotion). Every reader that
+ * DECIDES from a scorecard (the curriculum planner and run, the review
+ * reject path, the ops/server artifacts handler, the CLI) calls
+ * `scorecards()` instead, live, every time. */
 export function load(world: World, cfg: Config): Scorecard[] {
   const path = paths.scorecardsFile(world.name);
-  if (scorecardsFileStale(path)) return scorecards(world, cfg);
   const raw = fsx.readJsonOr<unknown>(path, null);
   if (!Array.isArray(raw)) return [];
   const out: Scorecard[] = [];

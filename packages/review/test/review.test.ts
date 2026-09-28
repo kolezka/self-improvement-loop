@@ -733,7 +733,11 @@ describe("reject", () => {
     const world = makeWorld();
     const repo = await accepted(world);
     const ledger = loadLedger(ledgerPath(world));
-    ledger.entries[PATTERN] = { ...ledger.entries[PATTERN]!, rejected_at_count: 181 };
+    // Backdated past the 7 day "new" window and the refine cooldown: a
+    // promotion from moments ago (what `accepted()` leaves behind) would
+    // propose "new" from live signal, not "refine", and never reach stage.
+    const oldPromotedAt = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    ledger.entries[PATTERN] = { ...ledger.entries[PATTERN]!, rejected_at_count: 181, promoted_at: oldPromotedAt };
     saveLedger(ledgerPath(world), ledger);
     git.git(repo, ["commit", "-q", "-am", "chore: a high mark"]);
     // A stale scorecards file says 1; the events say 4. Reject must stamp what is true now.
@@ -743,6 +747,9 @@ describe("reject", () => {
     for (let i = 0; i < 4; i++) {
       fsx.appendJsonl(paths.criticFeedbackFile(), { ref: `skill:${PATTERN}`, verdict: "misfired", reason: "noise", reflection_id: `r${i}`, ts: new Date().toISOString(), world: world.name });
     }
+    // At least one use keeps the live proposal off the unused-artifact
+    // retire-candidate branch, so the misfire count reaches the refine branch.
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: new Date().toISOString(), session_id: "s1", world: world.name, kind: "skill", ref: `skill:${PATTERN}` });
     const stale = Scorecard.parse({ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, misfired: 1, proposal: "refine", reason: "misfires" });
     mkdirSync(join(paths.scorecardsFile(world.name), ".."), { recursive: true });
     writeFileSync(paths.scorecardsFile(world.name), JSON.stringify([stale]));

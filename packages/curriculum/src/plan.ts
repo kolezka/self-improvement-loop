@@ -200,11 +200,12 @@ export function loadPayloadCorpus(world?: World | null): Record<string, unknown>
   return out;
 }
 
-/** Artifact scorecards, freshly recomputed when the cached file predates an
- * event source, or none when the feedback half is not installed. */
+/** Artifact scorecards, computed live every call, or none when the feedback
+ * half is not installed. The planner decides from these, so it never acts on
+ * a scorecards.json cache that a reflection or promotion made stale. */
 export function scorecards(world: World, cfg: Config): Scorecard[] {
   try {
-    return [...feedback.load(world, cfg)];
+    return [...feedback.scorecards(world, cfg)];
   } catch {
     // A missing scorecard is no proposal, not a crash.
     return [];

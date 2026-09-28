@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type World } from "@sil/core";
@@ -327,6 +327,23 @@ describe("critic feedback ref resolution", () => {
     expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
   });
 
+  test("a hook fire does not make a bare critic ref of the same name resolve", () => {
+    // Nudge fire records carry no world field at all (dispatch-core.ts), so a
+    // fire for "foo" could be this world's or any other's. The fire itself
+    // still yields a hook:foo row (that is unrelated, existing behavior this
+    // PR does not touch), but "foo" is not installed here (no ledger row, no
+    // artifact directory), so a bare critic ref of the same name must stay
+    // unresolved, not silently fold its verdict into that row just because a
+    // hook happened to fire with that pattern.
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(1)), pattern: "foo", session: "s-other-world", event: "PreToolUse" });
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "foo", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("hook:foo")!.helpful).toBe(0);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+
   test("a line the critic already flagged as ref_unresolved is counted, not turned into a row", () => {
     const { w, c } = buildWorldAndLedger();
     fsx.appendJsonl(paths.criticFeedbackFile(), { ref_unresolved: "outline", verdict: "used", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
@@ -337,35 +354,23 @@ describe("critic feedback ref resolution", () => {
   });
 });
 
-describe("load freshness", () => {
-  test("an event appended after the scorecards cache goes stale is reflected by load", () => {
+describe("load", () => {
+  test("reads exactly what rebuild last wrote, never recomputed from a later event", () => {
+    // A cached row can go stale from a write no fixed list of source files
+    // can watch for, so load() no longer tries: it is a pure disk read.
+    // Deciding readers call scorecards() instead, live, every time.
     const { w, c } = buildWorldAndLedger();
     seedSignals();
     rebuild(w, c);
     const before = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
     expect(before.uses_30d).toBe(2);
 
-    // Backdate the cache so any later write to a source file counts as newer,
-    // deterministically, without depending on filesystem mtime resolution.
-    utimesSync(paths.scorecardsFile(w.name), new Date(0), new Date(0));
     fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s9", world: "default", kind: "skill", ref: "skill:steady-thing" });
 
     const after = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
-    expect(after.uses_30d).toBe(3);
-  });
-
-  test("a fresh cache is read straight off disk, not recomputed", () => {
-    const { w, c } = buildWorldAndLedger();
-    seedSignals();
-    rebuild(w, c);
-    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s9", world: "default", kind: "skill", ref: "skill:steady-thing" });
-    // Force the cache unambiguously newer than every source, regardless of how
-    // close together the writes above land on the filesystem's clock.
-    const future = new Date(Date.now() + 60_000);
-    utimesSync(paths.scorecardsFile(w.name), future, future);
-
-    const card = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
-    expect(card.uses_30d).toBe(2);
+    expect(after.uses_30d).toBe(2);
+    const live = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(live.uses_30d).toBe(3);
   });
 });
 
@@ -475,6 +480,7 @@ describe("critic verdicts and the refine snapshot", () => {
 
   test("complaints are misfire reasons and bad-vote notes, oldest first, after since", () => {
     const w = world();
+    const c = cfg(w);
     fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: "misfired", reason: "fired on a docs-only change", ts: iso(daysAgo(5)), world: "default" });
     fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: "helpful", reason: "not a complaint", ts: iso(daysAgo(4)), world: "default" });
     fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:other", verdict: "misfired", reason: "another artifact", ts: iso(daysAgo(4)), world: "default" });
@@ -482,8 +488,20 @@ describe("critic verdicts and the refine snapshot", () => {
     recordHuman({ ts: iso(daysAgo(3)), world: "default", ref: "skill:judged", vote: "bad", note: "too long to read", session_id: null });
     recordHuman({ ts: iso(daysAgo(2)), world: "default", ref: "skill:judged", vote: "good", note: "praise", session_id: null });
     recordHuman({ ts: iso(daysAgo(1)), world: "default", ref: "skill:judged", vote: "bad", note: "", session_id: null });
-    expect(complaints(w, "skill:judged")).toEqual(["fired on a docs-only change", "too long to read"]);
-    expect(complaints(w, "skill:judged", iso(daysAgo(4)))).toEqual(["too long to read"]);
+    expect(complaints(w, c, "skill:judged")).toEqual(["fired on a docs-only change", "too long to read"]);
+    expect(complaints(w, c, "skill:judged", iso(daysAgo(4)))).toEqual(["too long to read"]);
+  });
+
+  test("a legacy bare-ref misfire resolves through the same rule as the scorecard", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), {
+      ref: "new-thing",
+      verdict: "misfired",
+      reason: "flagged a docs-only change",
+      ts: iso(daysAgo(1)),
+      world: "default",
+    });
+    expect(complaints(w, c, "skill:new-thing")).toEqual(["flagged a docs-only change"]);
   });
 
   test("refine counts only complaints past the snapshot", () => {

@@ -199,3 +199,11 @@ C, D and E start after A and B publish their op signatures (types in
   the normal headers instead, so the guard stays unchanged. No query-string
   token.
 - Proposal history begins at upgrade; older activity will not appear.
+
+## Changes made while planning (2026-09-29)
+
+- `nudge_fires` dropped from `history.series`: the fire record has no `world` field, so it cannot be filtered per world.
+- `worker_runs` needs a new `{"action":"run"}` line in `worker.log` per worker pass; none existed.
+- The ledger has no single funnel above `saveLedger` (six callers, run on tree copies). Proposal events are appended at five explicit call sites (stage, accept, reject, rehome, retire) plus revise, each tested.
+- The stream route sits in `apps/server/src/main.ts` before the `/api/` 404 branch and calls `guard()` itself.
+- Revise commits on top of the staged branch (base is the branch) and does not touch the ledger. The human instruction is included in the lint grounding text.

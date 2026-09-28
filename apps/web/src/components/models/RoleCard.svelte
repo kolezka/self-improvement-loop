@@ -17,10 +17,8 @@
 
   let { role, label, endpoints, activeName, selected, status, model, local, loading, onApply }: Props = $props();
 
-  let draftValue = $state(selected);
-  $effect(() => {
-    draftValue = selected;
-  });
+  // Writable derived: follows `selected`, and the select may override it until the prop changes.
+  let draftValue = $derived(selected);
 
   const reach = $derived(status ? reachOf(status.reachable) : null);
 </script>

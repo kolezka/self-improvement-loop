@@ -2,46 +2,10 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
-
-  type Role = "critic" | "drafter" | "judge";
-  const ROLES: Role[] = ["critic", "drafter", "judge"];
-  const ROLE_LABEL: Record<Role, string> = { critic: "Critic", drafter: "Drafter", judge: "Judge" };
-
-  interface EndpointCfg {
-    name: string;
-    kind: string;
-    base_url: string | null;
-    api_key_env: string | null;
-    timeout_s: number;
-    models: Partial<Record<Role, string>>;
-    extra_body: Record<string, unknown>;
-  }
-
-  interface LlmCfg {
-    endpoints: EndpointCfg[];
-    active: string | null;
-    role_endpoints: Partial<Record<Role, string>>;
-    local_models: string[];
-    models: Partial<Record<Role, string>>;
-  }
-
-  interface EndpointStatus {
-    name: string;
-    kind: string;
-    base_url: string | null;
-    active: boolean;
-    roles: Role[];
-    models: Partial<Record<Role, string>>;
-    reachable: boolean | null;
-    error: string | null;
-  }
-
-  interface ProviderStatus {
-    endpoint: string | null;
-    models: Record<string, string | null>;
-    endpoints: EndpointStatus[];
-    error: string | null;
-  }
+  import Skeleton from "../components/Skeleton.svelte";
+  import RoleCard from "../components/models/RoleCard.svelte";
+  import EndpointRow from "../components/models/EndpointRow.svelte";
+  import { addressOf, reachOf, ROLE_LABEL, ROLES, type EndpointStatus, type LlmCfg, type ProviderStatus, type Role } from "../components/models/types.ts";
 
   interface WorldStatus {
     world: string;
@@ -49,19 +13,13 @@
     error: string | null;
   }
 
-  /** One reachability reading rendered three ways: dot, text colour, wording. */
-  interface Reach {
-    dot: string;
-    tone: string;
-    text: string;
-  }
-
   let llm = $state<LlmCfg | null>(null);
   let providerStatus = $state<ProviderStatus | null>(null);
+  let loading = $state(true);
   let editorText = $state("");
   let statuses = $state<WorldStatus[]>([]);
-  let dirty = $state(false);
   let checkingAll = $state(false);
+  let probingNames = $state<Set<string>>(new Set());
 
   const endpoints = $derived(llm?.endpoints ?? []);
   const activeName = $derived(llm?.active ?? null);
@@ -79,16 +37,18 @@
   }
 
   async function load() {
+    loading = true;
     try {
       const raw = (await call("llm.get", {})) as LlmCfg;
       llm = normalize(raw);
       editorText = JSON.stringify(raw, null, 2);
-      dirty = false;
     } catch (e) {
       toast(`Could not load llm.yaml: ${(e as Error).message}`);
+      loading = false;
       return;
     }
     await checkEndpoints();
+    loading = false;
   }
 
   async function checkEndpoints() {
@@ -100,41 +60,41 @@
     }
   }
 
+  /** Re-probes every endpoint (there is no single-endpoint probe op) but
+   * tracks which row asked for it, so only that row's button shows the
+   * spinner while the shared request is in flight. */
+  async function probe(name: string) {
+    probingNames = new Set(probingNames).add(name);
+    try {
+      await checkEndpoints();
+    } finally {
+      const next = new Set(probingNames);
+      next.delete(name);
+      probingNames = next;
+    }
+  }
+
   function statusOf(name: string): EndpointStatus | null {
     return providerStatus?.endpoints.find((e) => e.name === name) ?? null;
   }
 
-  function reachOf(reachable: boolean | null): Reach {
-    if (reachable === null) return { dot: "warn", tone: "warn-text", text: "Unknown" };
-    if (reachable) return { dot: "ok", tone: "ok-text", text: "Reachable" };
-    return { dot: "err", tone: "error-text", text: "Unreachable" };
+  /** The endpoint status that actually serves a role, straight from
+   * llm.status, so the role card agrees with the endpoint table. */
+  function ownerFor(role: Role): EndpointStatus | null {
+    return providerStatus?.endpoints.find((e) => e.roles.includes(role)) ?? null;
   }
 
-  /** Same reading as reachOf, plus the not yet checked case. The failure detail
-   *  stays out of this text so a long error cannot stretch the panel head. */
-  function endpointReach(name: string): Reach {
-    const s = statusOf(name);
-    if (!s) return { dot: "", tone: "muted", text: "Not checked yet" };
-    return reachOf(s.reachable);
+  function modelFor(role: Role): string | null {
+    return providerStatus?.models[role] ?? null;
   }
 
-  /** What the engine would actually call for a role, straight from llm.status. */
-  function resolvedFor(role: Role): string | null {
-    if (!providerStatus) return null;
-    const owner = providerStatus.endpoints.find((e) => e.roles.includes(role));
-    const model = providerStatus.models[role];
-    if (!owner || !model) return null;
-    return `${owner.name}: ${model}`;
-  }
-
-  function setModel(name: string, role: Role, value: string) {
-    const endpoint = llm?.endpoints.find((e) => e.name === name);
-    if (!endpoint) return;
-    const models = { ...endpoint.models };
-    if (value.trim() === "") delete models[role];
-    else models[role] = value.trim();
-    endpoint.models = models;
-    dirty = true;
+  /** Local vs hosted per the same rule the engine enforces: the resolved
+   * model name must appear in llm.yaml's local_models list. Null while the
+   * model or the config has not loaded yet. */
+  function localFor(role: Role): boolean | null {
+    const model = modelFor(role);
+    if (!model || !llm) return null;
+    return llm.local_models.includes(model);
   }
 
   async function saveLlm(next: LlmCfg, message: string) {
@@ -147,11 +107,6 @@
     }
   }
 
-  async function saveEndpoints() {
-    if (!llm) return;
-    await saveLlm(llm, "Models saved");
-  }
-
   async function useForAllRoles(name: string) {
     try {
       await call("llm.use", { endpoint: name });
@@ -162,13 +117,25 @@
     }
   }
 
-  async function setRoleEndpoint(role: Role, value: string) {
-    if (!llm) return;
-    const role_endpoints = { ...llm.role_endpoints };
-    if (value === "") delete role_endpoints[role];
-    else role_endpoints[role] = value;
-    const message = value === "" ? `${ROLE_LABEL[role]} follows the active endpoint` : `${ROLE_LABEL[role]} now routes to ${value}`;
-    await saveLlm({ ...llm, role_endpoints }, message);
+  /** "Follow the active endpoint" has no llm.use spelling (it takes a
+   * mandatory endpoint name), so clearing the override still goes through
+   * llm.set. Picking a real endpoint goes through llm.use, which also runs
+   * the kind guard (a system-one endpoint cannot serve critic or drafter). */
+  async function applyRoleEndpoint(role: Role, value: string) {
+    if (value === "") {
+      if (!llm) return;
+      const role_endpoints = { ...llm.role_endpoints };
+      delete role_endpoints[role];
+      await saveLlm({ ...llm, role_endpoints }, `${ROLE_LABEL[role]} follows the active endpoint`);
+      return;
+    }
+    try {
+      await call("llm.use", { endpoint: value, role });
+      toast(`${ROLE_LABEL[role]} now routes to ${value}`, "ok");
+      await load();
+    } catch (e) {
+      toast(`Could not switch ${ROLE_LABEL[role]} to ${value}: ${(e as Error).message}`);
+    }
   }
 
   async function saveRaw() {
@@ -211,18 +178,12 @@
     return status.endpoints.find((e) => e.active) ?? status.endpoints.find((e) => e.name === status.endpoint) ?? null;
   }
 
-  function addressOf(ep: { kind: string; base_url: string | null }): string {
-    return ep.kind === "claude-cli" ? "claude -p" : (ep.base_url ?? "no base_url set");
-  }
-
   onMount(load);
 </script>
 
 <div class="toolbar">
   <button onclick={load}>Reload</button>
   <button onclick={checkEndpoints}>Check endpoints</button>
-  <button class="primary" onclick={saveEndpoints} disabled={!dirty}>Save models</button>
-  {#if dirty}<span class="chip warn">Unsaved model names</span>{/if}
 </div>
 
 <p class="section-note">
@@ -230,108 +191,61 @@
   only the name of the environment variable that holds a key, never the key value itself.
 </p>
 
-<h3 class="section-title">Endpoints</h3>
+<h3 class="section-title">Roles</h3>
+<div class="grid role-cards">
+  {#each ROLES as role (role)}
+    <RoleCard
+      {role}
+      label={ROLE_LABEL[role]}
+      {endpoints}
+      {activeName}
+      selected={roleEndpoints[role] ?? ""}
+      status={ownerFor(role)}
+      model={modelFor(role)}
+      local={localFor(role)}
+      {loading}
+      onApply={(value) => applyRoleEndpoint(role, value)}
+    />
+  {/each}
+</div>
 
-{#each endpoints as ep (ep.name)}
-  {@const reach = endpointReach(ep.name)}
-  {@const checked = statusOf(ep.name)}
-  <div class="panel">
-    <div class="panel__head">
-      <h4>{ep.name}</h4>
-      <span class="chip">{ep.kind}</span>
-      {#if ep.name === activeName}<span class="badge accent">active</span>{/if}
-      <span class="spacer"></span>
-      <span class="reach">
-        <span class="dot {reach.dot}"></span>
-        <span class={reach.tone}>{reach.text}</span>
-      </span>
-    </div>
-    <div class="panel__body">
-      {#if checked?.error}
-        <p class="notice {checked.reachable === false ? 'error' : 'warn'}">Last check: {checked.error}</p>
-      {/if}
-      <p class="meta">
-        <span class="mono">{addressOf(ep)}</span>
-        {#if ep.api_key_env}
-          <span>Key from <span class="mono">{ep.api_key_env}</span></span>
-        {:else}
-          <span>No key needed</span>
-        {/if}
-        <span>Timeout {ep.timeout_s} s</span>
-      </p>
-      <div class="grid models">
-        {#each ROLES as role (role)}
-          <div class="field">
-            <label for={`model-${ep.name}-${role}`}>{ROLE_LABEL[role]} model</label>
-            <input
-              id={`model-${ep.name}-${role}`}
-              class="mono"
-              value={ep.models[role] ?? ""}
-              placeholder="No model set"
-              onchange={(e) => setModel(ep.name, role, e.currentTarget.value)}
-            />
-          </div>
-        {/each}
-      </div>
-      <div class="toolbar">
-        <button onclick={() => useForAllRoles(ep.name)}>Use for every role</button>
-      </div>
-    </div>
-  </div>
-{:else}
+<h3 class="section-title">Endpoints</h3>
+{#if loading}
+  <Skeleton height="10rem" />
+{:else if endpoints.length === 0}
   <div class="empty">
     <strong>llm.yaml defines no endpoints.</strong>
     Run <code>sil init</code> to write a starter file, then reload this pane.
   </div>
-{/each}
-
-<h3 class="section-title">Role routing</h3>
-<div class="panel">
-  <div class="panel__head">
-    <h4>Which endpoint serves each role</h4>
-    <span class="spacer"></span>
-    <span class="muted">Active endpoint: {activeName ?? "none"}</span>
-  </div>
-  <div class="panel__body">
-    {#each ROLES as role (role)}
-      {@const target = resolvedFor(role)}
-      <div class="role-row">
-        <label for={`role-${role}`}>{ROLE_LABEL[role]}</label>
-        <select id={`role-${role}`} value={roleEndpoints[role] ?? ""} onchange={(e) => setRoleEndpoint(role, e.currentTarget.value)}>
-          <option value="">Follow the active endpoint ({activeName ?? "none"})</option>
+{:else}
+  <div class="panel">
+    <div class="panel__body table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Endpoint</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Base URL</th>
+            <th scope="col">Key</th>
+            <th scope="col">Roles</th>
+            <th scope="col">Reachable</th>
+            <th scope="col">Probe</th>
+          </tr>
+        </thead>
+        <tbody>
           {#each endpoints as ep (ep.name)}
-            <option value={ep.name}>{ep.name}</option>
+            <EndpointRow {ep} status={statusOf(ep.name)} {activeName} probing={probingNames.has(ep.name)} onProbe={() => probe(ep.name)} />
           {/each}
-        </select>
-        {#if target}
-          <span class="muted mono">{target}</span>
-        {:else}
-          <span class="muted">Not resolved, check the endpoints first</span>
-        {/if}
-      </div>
-    {/each}
-  </div>
-</div>
-
-<h3 class="section-title">Raw llm.yaml</h3>
-<div class="panel">
-  <div class="panel__head">
-    <h4>llm.yaml</h4>
-    <span class="spacer"></span>
-    <span class="muted">Applies to every world</span>
-  </div>
-  <div class="panel__body">
-    <div class="field editor">
-      <label for="llm-editor">Endpoints and routing, JSON view</label>
-      <textarea id="llm-editor" spellcheck="false" bind:value={editorText}></textarea>
-      <span class="hint">Edited as JSON. It is parsed and validated before it is written back to llm.yaml.</span>
+        </tbody>
+      </table>
     </div>
-    <div class="toolbar">
-      <button onclick={load}>Reload</button>
-      <button class="primary" onclick={saveRaw}>Save raw llm.yaml</button>
+    <div class="panel__body endpoint-actions">
+      {#each endpoints as ep (ep.name)}
+        <button onclick={() => useForAllRoles(ep.name)}>Use {ep.name} for every role</button>
+      {/each}
     </div>
   </div>
-</div>
+{/if}
 
 <h3 class="section-title">Provider status by world</h3>
 <div class="toolbar">
@@ -377,7 +291,7 @@
         {#if s.status.endpoints.length === 0}
           <div class="empty">
             <strong>This world has no endpoints.</strong>
-            Add one in the raw editor above, then check again.
+            Add one in the advanced editor below, then check again.
           </div>
         {:else}
           <div class="table-wrap">
@@ -388,9 +302,6 @@
                   <th scope="col">Kind</th>
                   <th scope="col">Address</th>
                   <th scope="col">Roles</th>
-                  <th scope="col">Critic</th>
-                  <th scope="col">Drafter</th>
-                  <th scope="col">Judge</th>
                   <th scope="col">Reachable</th>
                 </tr>
               </thead>
@@ -407,11 +318,6 @@
                     <td>
                       {#each ep.roles as role (role)}<span class="chip">{ROLE_LABEL[role]}</span>{:else}<span class="muted">none</span>{/each}
                     </td>
-                    {#each ROLES as role (role)}
-                      <td class="mono">
-                        {#if ep.models[role]}{ep.models[role]}{:else}<span class="muted">-</span>{/if}
-                      </td>
-                    {/each}
                     <td>
                       <span class="reach">
                         <span class="dot {reach.dot}"></span>
@@ -429,7 +335,23 @@
   </div>
 {/each}
 
+<details class="panel advanced-editor">
+  <summary>Advanced: edit llm.yaml</summary>
+  <div class="panel__body">
+    <div class="field editor">
+      <label for="llm-editor">Endpoints and routing, JSON view</label>
+      <textarea id="llm-editor" spellcheck="false" bind:value={editorText}></textarea>
+      <span class="hint">Edited as JSON. It is parsed and validated before it is written back to llm.yaml.</span>
+    </div>
+    <div class="toolbar">
+      <button onclick={load}>Reload</button>
+      <button class="primary" onclick={saveRaw}>Save raw llm.yaml</button>
+    </div>
+  </div>
+</details>
+
 <style>
+  /* models */
   .reach {
     display: inline-flex;
     align-items: center;
@@ -437,34 +359,26 @@
     font-size: var(--fs-xs);
   }
 
-  /* Three short model names fit far tighter than the shared card grid. */
-  .grid.models {
-    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-    gap: 0.75rem;
-    margin-top: 0.7rem;
+  .role-cards {
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    margin-bottom: 1.1rem;
   }
 
-  .grid.models .field {
-    max-width: none;
-    margin-bottom: 0;
+  .endpoint-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    border-top: 1px solid var(--border);
   }
 
-  .role-row {
-    display: grid;
-    grid-template-columns: 5rem minmax(10rem, 15rem) minmax(0, 1fr);
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.4rem 0;
-    border-bottom: 1px solid var(--border);
+  .advanced-editor {
+    margin-top: 1.1rem;
   }
 
-  .role-row:last-child {
-    border-bottom: none;
-  }
-
-  .role-row label {
-    color: var(--muted);
-    font-size: var(--fs-xs);
+  .advanced-editor summary {
+    cursor: pointer;
+    padding: 0.6rem 0.9rem;
+    font-weight: 600;
   }
 
   /* The editor is the content of its panel, so it drops the .field measure. */
@@ -476,12 +390,5 @@
     width: 100%;
     min-height: 22rem;
     resize: vertical;
-  }
-
-  @media (max-width: 40rem) {
-    .role-row {
-      grid-template-columns: minmax(0, 1fr);
-      gap: 0.3rem;
-    }
   }
 </style>

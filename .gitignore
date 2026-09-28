@@ -12,3 +12,5 @@ dist/
 
 # Agent worktree checkouts, never source.
 .claude/worktrees/
+.codegraph/
+graphify-out/cache/

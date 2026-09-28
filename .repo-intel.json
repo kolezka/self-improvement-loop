@@ -1,0 +1,6 @@
+{
+  "llm": {
+    "backend": "litellm",
+    "model": "deepseek/deepseek-flash-nothink"
+  }
+}

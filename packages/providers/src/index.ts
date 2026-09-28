@@ -448,9 +448,10 @@ async function probeSystemOne(endpoint: Endpoint): Promise<Probe> {
  * interactive shell's: those can differ (see schedule.ts, PR #48). */
 export function probeClaudeCli(envPath?: string): Probe {
   try {
-    const opts: { timeout: number; env?: Record<string, string | undefined> } = { timeout: 5000 };
-    if (envPath !== undefined) opts.env = { ...process.env, PATH: envPath };
-    const r = spawnSyncImpl.run(["claude", "--version"], opts);
+    // Always pass env: Bun resolves the binary against the env it is given,
+    // and without one it uses the PATH from process start, not the current one.
+    const env = envPath === undefined ? { ...process.env } : { ...process.env, PATH: envPath };
+    const r = spawnSyncImpl.run(["claude", "--version"], { timeout: 5000, env });
     if (r.exitedDueToTimeout) return { reachable: false, error: "claude --version timed out after 5s" };
     if (!r.success) return { reachable: false, error: `claude --version exited ${r.exitCode}: ${r.stderr.toString("utf8").slice(0, 200)}` };
     return { reachable: true, error: null };

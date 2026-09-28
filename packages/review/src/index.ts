@@ -32,7 +32,7 @@ import {
   type World,
 } from "@sil/core";
 import { artifacts, branchName, git, loadLedger, reflections, scorecardByPattern, scorecards } from "@sil/curriculum";
-import { loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
+import { appendProposalEvent, loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
 import * as feedback from "@sil/feedback";
 import * as worker from "@sil/worker";
 import { publish, type RemoteOps, setRemoteOps } from "./remote.ts";
@@ -403,6 +403,7 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
   // Past this line the artifact is on the default branch. Nothing below may
   // report a hard failure: an error here would contradict a repo that already
   // carries it. Every remaining step records its own problem instead.
+  appendProposalEvent(world.name, pattern, "accepted");
   const out: AcceptResult = {
     merged: true,
     status: retiring ? "retired" : "promoted",
@@ -598,6 +599,7 @@ function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOpt
   });
 
   git.git(repo, ["branch", "-q", "-D", snap.branch], { check: false });
+  appendProposalEvent(world.name, pattern, "rejected");
   return {
     pattern,
     deleted: snap.branch,
@@ -730,6 +732,7 @@ function rehomeInner(world: World, _cfg: Config, pattern: string, artifactType: 
     return [touched, `feat(${artifactType}): re-home ${pattern} (auto, gated)`];
   });
 
+  appendProposalEvent(world.name, pattern, "rehomed");
   return { branch, pattern, artifact_type: artifactType, path: newRel };
 }
 
@@ -770,6 +773,7 @@ function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
     return [[...(removed ? [removed] : []), rel], `feat(${oldType}): retire ${pattern} (auto, gated)`];
   });
 
+  appendProposalEvent(world.name, pattern, "retired");
   return { branch, pattern, removed };
 }
 

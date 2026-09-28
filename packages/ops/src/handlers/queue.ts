@@ -1,22 +1,124 @@
-import { listQueue, type Bucket } from "@sil/store";
-import type { NoArgs, SessionArgs, WorldArgs } from "../args.ts";
+import { existsSync } from "node:fs";
+import { fsx, ValidationError } from "@sil/core";
+import { isHidden, listQueue, listReflections, loadEntry, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
+import { iterEvidenceRecords } from "@sil/transcript";
+import type { ClearArgs, NoArgs, SessionArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
 import { spawnCli } from "../spawn.ts";
 
 const QUEUE_LIST_CAP = 200;
 
+function byLastStopDesc(a: { last_stop: string }, b: { last_stop: string }): number {
+  return a.last_stop < b.last_stop ? 1 : a.last_stop > b.last_stop ? -1 : 0;
+}
+
 function capped(bucket: Bucket) {
-  const entries = [...listQueue(bucket)].sort((a, b) => (a.last_stop < b.last_stop ? 1 : a.last_stop > b.last_stop ? -1 : 0));
-  return entries.slice(0, QUEUE_LIST_CAP);
+  return [...listQueue(bucket)].sort(byLastStopDesc).slice(0, QUEUE_LIST_CAP);
+}
+
+// web console: history and queue ops
+/** Entries not hidden by the bucket's clear cutoff, capped after hiding: the
+ * cap bounds what the console renders, hidden counts the whole bucket. */
+function visibleCapped(bucket: Bucket, clearedBefore: string | null): { visible: ReturnType<typeof listQueue>; hidden: number } {
+  const all = listQueue(bucket);
+  const shown = all.filter((e) => !isHidden(e, clearedBefore));
+  return { visible: shown.sort(byLastStopDesc).slice(0, QUEUE_LIST_CAP), hidden: all.length - shown.length };
 }
 
 export function queueList(_args: NoArgs) {
-  return { pending: capped("pending"), done: capped("done"), failed: capped("failed") };
+  const cleared = loadQueueCleared();
+  const done = visibleCapped("done", cleared.done);
+  const failed = visibleCapped("failed", cleared.failed);
+  return {
+    pending: capped("pending"),
+    done: done.visible,
+    failed: failed.visible,
+    hidden: { done: done.hidden, failed: failed.hidden },
+    cleared,
+  };
 }
+
+export function queueClear(args: ClearArgs) {
+  return setQueueCleared(args.bucket, fsx.nowIso());
+}
+
+export function queueUnclear(args: ClearArgs) {
+  return setQueueCleared(args.bucket, null);
+}
+// end: web console: history and queue ops
 
 export function queueSkip(args: SessionArgs) {
   return { session_id: args.session_id, skipped: deps.worker.skipSession(args.session_id) };
+}
+
+const TRANSCRIPT_MESSAGE_LIMIT = 40;
+const TRANSCRIPT_TEXT_MAX_CHARS = 2000;
+const DETAIL_BUCKETS: Bucket[] = ["pending", "done", "failed"];
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+/** Readable text for one transcript record: joined text blocks, plus a short
+ * marker for a tool use or its result so the preview is not just prose. */
+function messageText(rec: Record<string, unknown>): string {
+  const message = asRecord(rec["message"]) ?? {};
+  const content = message["content"];
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    const b = asRecord(block);
+    if (!b) continue;
+    if (b["type"] === "text") parts.push(String(b["text"] ?? ""));
+    else if (b["type"] === "tool_use") parts.push(`[tool_use: ${String(b["name"] ?? "")}]`);
+    else if (b["type"] === "tool_result") {
+      const c = b["content"];
+      const text = typeof c === "string"
+        ? c
+        : Array.isArray(c)
+          ? c.map((x) => (asRecord(x)?.["type"] === "text" ? String(asRecord(x)?.["text"] ?? "") : "")).join("\n")
+          : "";
+      parts.push(`[tool_result${b["is_error"] ? " error" : ""}] ${text}`);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+/** The last `limit` user/assistant messages with actual text: hook
+ * attachments, ai-title lines and empty tool-only turns are not a message. */
+function transcriptMessages(path: string, limit: number, maxChars: number): { role: string; text: string; ts: string | null }[] {
+  const out: { role: string; text: string; ts: string | null }[] = [];
+  for (const rec of iterEvidenceRecords(path)) {
+    if (rec["type"] !== "user" && rec["type"] !== "assistant") continue;
+    const text = messageText(rec).trim();
+    if (!text) continue;
+    const message = asRecord(rec["message"]) ?? {};
+    const role = typeof message["role"] === "string" ? (message["role"] as string) : String(rec["type"]);
+    const ts = typeof rec["timestamp"] === "string" ? (rec["timestamp"] as string) : null;
+    out.push({ role, text: text.length > maxChars ? text.slice(0, maxChars) : text, ts });
+  }
+  return out.slice(-limit);
+}
+
+export function queueDetail(args: SessionArgs) {
+  for (const bucket of DETAIL_BUCKETS) {
+    const entry = loadEntry(bucket, args.session_id);
+    if (!entry) continue;
+    const reflectionIds = listReflections(entry.world)
+      .filter((r) => r.session_id === entry.session_id)
+      .map((r) => r.id);
+    const hasTranscript = existsSync(entry.transcript_path);
+    return {
+      bucket,
+      entry,
+      reflection_ids: reflectionIds,
+      transcript: hasTranscript ? transcriptMessages(entry.transcript_path, TRANSCRIPT_MESSAGE_LIMIT, TRANSCRIPT_TEXT_MAX_CHARS) : null,
+      transcript_reason: hasTranscript ? null : "transcript not persisted",
+    };
+  }
+  throw new ValidationError(`unknown session: ${JSON.stringify(args.session_id)}`);
 }
 
 export function workerStatus(_args: NoArgs) {

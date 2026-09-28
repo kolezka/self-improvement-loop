@@ -143,6 +143,7 @@
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
         "@sil/store": "workspace:*",
+        "@sil/transcript": "workspace:*",
         "@sil/worker": "workspace:*",
         "zod": "^4.6.5",
       },
@@ -172,6 +173,7 @@
       "dependencies": {
         "@sil/core": "workspace:*",
         "yaml": "^2.9.1",
+        "zod": "^4.6.5",
       },
     },
     "packages/transcript": {

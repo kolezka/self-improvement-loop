@@ -14,6 +14,10 @@ export interface Deps {
   providers: typeof providersMod;
   review: typeof reviewMod;
   curriculum: typeof curriculumMod;
+  /** Defaults to `process.platform`. Overridable so status's native-unit
+   * selection (systemd vs launchd) can be tested for both platforms without
+   * depending on the host running the test. */
+  platform?: string;
 }
 
 export const defaultDeps: Deps = {

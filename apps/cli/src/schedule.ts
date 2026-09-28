@@ -53,7 +53,9 @@ export function launchdDir(): string {
 
 // launchd and systemd both start a job with this minimal PATH (verified on
 // macOS): no bun, no claude, whatever else a login shell's profile adds.
-const MINIMAL_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+// Exported so status.ts can probe a pre-PR-48 unit (one with no baked PATH)
+// under the same PATH the OS actually gives it, instead of duplicating this.
+export const MINIMAL_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 
 // Binaries MINIMAL_PATH does not carry; git already lives in /usr/bin. Each
 // install resolves claude/bun's dir from whatever PATH ran it, not a guess.

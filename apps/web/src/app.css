@@ -1239,3 +1239,63 @@ pre.diff .hunk {
   overflow: auto;
   padding: 1rem;
 }
+
+/* charts */
+.chart {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.chart__title {
+  margin: 0 0 0.6rem;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg-soft);
+}
+
+.chart__svg {
+  display: block;
+  width: 100%;
+}
+
+.chart__empty {
+  display: grid;
+  place-items: center;
+  min-height: 80px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.chart__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.chart__legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chart__legend strong {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart__swatch {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 2px;
+  flex: none;
+}

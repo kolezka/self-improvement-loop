@@ -1,7 +1,18 @@
 import { existsSync } from "node:fs";
 import { fsx, ValidationError } from "@sil/core";
+import { SECRET_RE } from "@sil/curriculum";
 import { isHidden, listQueue, listReflections, loadEntry, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
 import { iterEvidenceRecords } from "@sil/transcript";
+
+// SECRET_RE has no "g" flag (it is used as a one-shot test elsewhere), so a
+// global copy is needed here to replace every match, not just the first.
+const SECRET_RE_GLOBAL = new RegExp(SECRET_RE.source, SECRET_RE.flags.includes("g") ? SECRET_RE.flags : `${SECRET_RE.flags}g`);
+
+/** A transcript preview can carry raw command output; redact anything that
+ * looks like a key, token or password before it leaves the server. */
+function redactSecrets(text: string): string {
+  return text.replace(SECRET_RE_GLOBAL, "[redacted]");
+}
 import type { ClearArgs, NoArgs, SessionArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
@@ -65,7 +76,7 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 function messageText(rec: Record<string, unknown>): string {
   const message = asRecord(rec["message"]) ?? {};
   const content = message["content"];
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return redactSecrets(content);
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const block of content) {
@@ -83,7 +94,7 @@ function messageText(rec: Record<string, unknown>): string {
       parts.push(`[tool_result${b["is_error"] ? " error" : ""}] ${text}`);
     }
   }
-  return parts.join("\n").trim();
+  return redactSecrets(parts.join("\n").trim());
 }
 
 /** The last `limit` user/assistant messages with actual text: hook

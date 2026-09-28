@@ -102,6 +102,40 @@ describe("queue.detail", () => {
     await expect(invoke("queue.detail", { session_id: "no-such-session" })).rejects.toThrow(/unknown session/);
   });
 
+  test("redacts a secret in a tool_result transcript preview", async () => {
+    const sessionId = "sess-with-secret";
+    const e = entry(sessionId);
+    const fakeKey = "AKIAABCD1234EFGH5678";
+    const records: Record<string, unknown>[] = [
+      {
+        type: "assistant",
+        sessionId,
+        timestamp: "2026-09-14T10:00:00.000Z",
+        message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", id: "t1" }] },
+      },
+      {
+        type: "user",
+        sessionId,
+        timestamp: "2026-09-14T10:00:01.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: `export AWS_KEY=${fakeKey}\n` }],
+        },
+      },
+    ];
+    mkdirSync(join(e.transcript_path, ".."), { recursive: true });
+    writeFileSync(e.transcript_path, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    writeEntry("done", e);
+
+    const out = (await invoke("queue.detail", { session_id: sessionId })) as {
+      transcript: { role: string; text: string }[] | null;
+    };
+
+    const joined = out.transcript!.map((m) => m.text).join("\n");
+    expect(joined).not.toContain(fakeKey);
+    expect(joined).toContain("[redacted]");
+  });
+
   test("finds reflections that reference the session's session_id", async () => {
     const sessionId = "sess-with-reflection";
     const e = entry(sessionId);

@@ -17,6 +17,7 @@ import {
   fsx,
   type Ledger,
   ledgerPath,
+  servedType,
   type PlanAction,
   type PlanActionKind,
   type PlanReport,
@@ -200,21 +201,31 @@ export function loadPayloadCorpus(world?: World | null): Record<string, unknown>
   return out;
 }
 
-/** Artifact scorecards, or none when the feedback half is not installed. */
-export function scorecards(world: World): Scorecard[] {
+/** Artifact scorecards, computed live every call, or none when the feedback
+ * half is not installed. The planner decides from these, so it never acts on
+ * a scorecards.json cache that a reflection or promotion made stale. */
+export function scorecards(world: World, cfg: Config): Scorecard[] {
   try {
-    return [...feedback.load(world)];
+    return [...feedback.scorecards(world, cfg)];
   } catch {
     // A missing scorecard is no proposal, not a crash.
     return [];
   }
 }
 
-export function scorecardByPattern(cards: Scorecard[]): Map<string, Scorecard> {
+/** One card per pattern. When the ledger records the pattern's artifact type,
+ * the card of that type wins: a worldless nudge fire can give any world a
+ * `hook:<name>` row, and it must not shadow the promoted skill's card. */
+export function scorecardByPattern(cards: Scorecard[], entries: Readonly<Record<string, PromotionEntry>> = {}): Map<string, Scorecard> {
   const out = new Map<string, Scorecard>();
   for (const card of cards) {
     const name = card.name || (card.ref ? card.ref.split(":").slice(-1)[0]! : "");
-    if (name && !out.has(name)) out.set(name, card);
+    // A none: card describes no artifact, so it can never ground a proposal.
+    if (!name || card.ref.startsWith("none:")) continue;
+    const entry = Object.hasOwn(entries, name) ? entries[name] : undefined;
+    const type = entry ? servedType(entry) : "none";
+    if (type !== "none" && card.ref === `${type}:${name}`) out.set(name, card);
+    else if (!out.has(name)) out.set(name, card);
   }
   return out;
 }
@@ -304,7 +315,7 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
   const cap = cfg.promotion.per_run_cap;
   const ledger = loadLedger(world);
   const groups = cluster(opts.items ?? reflections(world, opts.extraDirs ?? []));
-  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world));
+  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world, cfg), ledger.entries);
   const placeholders = placeholderPatterns(world);
 
   const actions: PlanAction[] = [];

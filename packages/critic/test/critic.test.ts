@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, paths, SECTIONS, type Config, type LlmConfig, type QueueEntry, type World } from "@sil/core";
-import { listLessons } from "@sil/store";
+import { listLessons, listReflections } from "@sil/store";
 import type { ChatMessage } from "@sil/providers";
 import { installedArtifacts, parseAnswer, reflectSession } from "../src/index.ts";
 import { setSilDirs, restoreEnv, writeSampleTranscript } from "../../transcript/test/fixture.ts";
@@ -254,6 +254,37 @@ describe("installedArtifacts", () => {
     expect(refs).toContain("skill:good-skill");
     expect(refs).not.toContain("skill:staged-thing");
   });
+
+  test("a promoted entry served by another artifact is keyed by the served type", async () => {
+    const w = world();
+    const c = cfg(w);
+    const { saveLedger } = await import("@sil/store");
+    const { ledgerPath } = await import("@sil/core");
+    const ledger = {
+      version: 1,
+      entries: {
+        rehomed: { pattern: "rehomed", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "none" as const, served_by: { type: "skill" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
+      },
+    };
+    saveLedger(ledgerPath(w), ledger);
+
+    const refs = installedArtifacts(w, c);
+    expect(refs).toContain("skill:rehomed");
+    expect(refs).not.toContain("none:rehomed");
+  });
+
+  test("a served_by of none is not an artifact: no none:<name> ref", async () => {
+    const w = world();
+    const c = cfg(w);
+    const { saveLedger } = await import("@sil/store");
+    const { ledgerPath } = await import("@sil/core");
+    const row = (pattern: string, artifact_type: "skill" | "none") => ({ pattern, promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type, served_by: { type: "none" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null });
+    saveLedger(ledgerPath(w), { version: 1, entries: { drafted: row("drafted", "skill"), empty: row("empty", "none") } });
+
+    const refs = installedArtifacts(w, c);
+    expect(refs).toContain("skill:drafted");
+    expect(refs.some((r) => r.startsWith("none:"))).toBe(false);
+  });
 });
 
 describe("reflectSession feedback refs and lesson repo", () => {
@@ -290,5 +321,64 @@ describe("reflectSession feedback refs and lesson repo", () => {
     const lessons = listLessons("default");
     expect(lessons).toHaveLength(1);
     expect(lessons[0]!.repo).toBe(require("node:fs").realpathSync(main));
+  });
+});
+
+// --- bare artifact ref normalization -----------------------------------------
+
+describe("reflectSession normalizes bare artifact refs", () => {
+  test("a bare ref matching exactly one installed artifact is written as type:name", async () => {
+    const w = world();
+    const c = cfg(w);
+    const { saveLedger } = await import("@sil/store");
+    const { ledgerPath } = await import("@sil/core");
+    saveLedger(ledgerPath(w), {
+      version: 1,
+      entries: {
+        "concurrent-worktree-mutation": {
+          pattern: "concurrent-worktree-mutation",
+          promoted_at_count: 3,
+          rejected_at_count: 0,
+          status: "promoted",
+          artifact_type: "skill",
+          served_by: null,
+          last_updated: "2026-09-14T10:00:00Z",
+          promoted_at: null,
+          commit: null,
+          feedback: null,
+        },
+      },
+    });
+
+    const answer = { ...JSON.parse(goodAnswer()), artifacts_used: ["concurrent-worktree-mutation"], artifacts_helpful: ["concurrent-worktree-mutation"], artifacts_misfired: [] };
+    const fakeChat = async () => JSON.stringify(answer);
+
+    const result = await reflectSession(entry(), { cfg: c, world: w, llm: llm(), chat: fakeChat });
+
+    expect(result.recorded).toBe(true);
+    const lines = fsx.readJsonl<{ ref: string; verdict: string }>(paths.criticFeedbackFile());
+    const refs = lines.map((l) => `${l.ref}:${l.verdict}`);
+    expect(refs).toContain("skill:concurrent-worktree-mutation:used");
+    expect(refs).toContain("skill:concurrent-worktree-mutation:helpful");
+    expect(refs.some((r) => r.startsWith("concurrent-worktree-mutation:"))).toBe(false);
+  });
+
+  // The ref comes from model output, and sessions use skills the loop did not
+  // make (e.g. a user skill "outline"). One unknown name must not cost the
+  // reflection; it is kept out of `ref` so it cannot become a phantom row.
+  test("an unresolved bare ref still records the reflection and flags the feedback line", async () => {
+    const w = world();
+    const c = cfg(w);
+    const answer = { ...JSON.parse(goodAnswer()), artifacts_used: ["totally-unknown-thing"], artifacts_helpful: [], artifacts_misfired: [] };
+    const fakeChat = async () => JSON.stringify(answer);
+
+    const result = await reflectSession(entry(), { cfg: c, world: w, llm: llm(), chat: fakeChat });
+
+    expect(result.recorded).toBe(true);
+    expect(listReflections("default")).toHaveLength(1);
+    const lines = fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile());
+    const flagged = lines.filter((l) => l["ref_unresolved"] === "totally-unknown-thing");
+    expect(flagged).toHaveLength(1);
+    expect(Object.hasOwn(flagged[0]!, "ref")).toBe(false);
   });
 });

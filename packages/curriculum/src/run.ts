@@ -129,7 +129,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // attempts. Spending it while planning would burn slots on patterns that later
   // gate out (a lint or judge refusal), stranding viable ones at over-cap and
   // staging nothing. The cap is enforced below, on successes.
-  const cards = opts.cards ?? scorecards(world);
+  const cards = opts.cards ?? scorecards(world, cfg);
   const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards, items, enforceCap: false });
   const cap = cfg.promotion.per_run_cap;
 
@@ -176,7 +176,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // Read once: the map is a property of the world, not of the cluster being
   // drafted, and rebuilding it per pattern would re-read every artifact file.
   const knowledge = context.worldKnowledge(world, items, ledger);
-  const cardsByPattern = scorecardByPattern(cards);
+  const cardsByPattern = scorecardByPattern(cards, ledger.entries);
   const attempts = loadAttempts(world);
   let attemptsChanged = false;
 
@@ -318,7 +318,7 @@ async function stageOne(
     // With no reflections the complaints are the evidence. Grounding in the live
     // artifact would pass any redraft that kept its old vocabulary.
     const ref = ctx.cards.get(pattern)?.ref ?? null;
-    const said = ref ? feedback.complaints(world, ref, prior?.promoted_at ?? null) : [];
+    const said = ref ? feedback.complaints(world, cfg, ref, prior?.promoted_at ?? null) : [];
     if (said.length === 0) {
       report.gated_out[pattern] = "no complaint text to ground a refine in";
       return;

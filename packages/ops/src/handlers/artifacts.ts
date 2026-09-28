@@ -5,8 +5,8 @@ import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
 
 export function artifactsScorecards(args: WorldArgs) {
-  const [, world] = cfgWorld(args.world);
-  return deps.feedback.load(world);
+  const [cfg, world] = cfgWorld(args.world);
+  return deps.feedback.scorecards(world, cfg);
 }
 
 export function artifactsRebuild(args: WorldArgs) {

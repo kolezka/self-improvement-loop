@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type World } from "@sil/core";
 import { saveAliases, saveLedger, writeReflection } from "@sil/store";
-import { complaints, compactUsageEvents, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecards } from "../src/index.ts";
+import { complaints, compactUsageEvents, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecardDiagnostics, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -288,9 +288,89 @@ describe("rebuild and load", () => {
     const { w, c } = buildWorldAndLedger();
     seedSignals();
     rebuild(w, c);
-    const loaded = new Map(load(w).map((s) => [s.ref, s]));
+    const loaded = new Map(load(w, c).map((s) => [s.ref, s]));
     expect(loaded.has("agent:dead-thing")).toBe(true);
     expect(loaded.get("agent:dead-thing")!.proposal).toBe("retire-candidate");
+  });
+});
+
+describe("critic feedback ref resolution", () => {
+  test("a bare ref for a known skill folds into skill:<name>, not a phantom row", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "new-thing", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("skill:new-thing")!.helpful).toBe(1);
+    expect(cards.has("new-thing")).toBe(false);
+  });
+
+  test("an ambiguous bare ref creates no row and is counted, not silently dropped", () => {
+    const { w, c } = buildWorldAndLedger();
+    // Two installed artifacts share the bare name "dup-thing" across types.
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "skill", ref: "skill:dup-thing" });
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(1)), pattern: "dup-thing", session: "s1", event: "PreToolUse" });
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "dup-thing", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.has("dup-thing")).toBe(false);
+    expect(cards.get("skill:dup-thing")!.helpful).toBe(0);
+    expect(cards.get("hook:dup-thing")!.helpful).toBe(0);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+
+  test("an unknown bare ref creates no row and is counted", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "never-installed-thing", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = scorecards(w, c, { now: NOW });
+    expect(cards.some((card) => card.ref === "never-installed-thing" || card.name === "never-installed-thing")).toBe(false);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+
+  test("a hook fire does not make a bare critic ref of the same name resolve", () => {
+    // Nudge fire records carry no world field at all (dispatch-core.ts), so a
+    // fire for "foo" could be this world's or any other's. The fire itself
+    // still yields a hook:foo row (that is unrelated, existing behavior this
+    // PR does not touch), but "foo" is not installed here (no ledger row, no
+    // artifact directory), so a bare critic ref of the same name must stay
+    // unresolved, not silently fold its verdict into that row just because a
+    // hook happened to fire with that pattern.
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(1)), pattern: "foo", session: "s-other-world", event: "PreToolUse" });
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "foo", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("hook:foo")!.helpful).toBe(0);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+
+  test("a line the critic already flagged as ref_unresolved is counted, not turned into a row", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref_unresolved: "outline", verdict: "used", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = scorecards(w, c, { now: NOW });
+    expect(cards.some((card) => card.name === "outline")).toBe(false);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+});
+
+describe("load", () => {
+  test("reads exactly what rebuild last wrote, never recomputed from a later event", () => {
+    // A cached row can go stale from a write no fixed list of source files
+    // can watch for, so load() no longer tries: it is a pure disk read.
+    // Deciding readers call scorecards() instead, live, every time.
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    rebuild(w, c);
+    const before = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(before.uses_30d).toBe(2);
+
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s9", world: "default", kind: "skill", ref: "skill:steady-thing" });
+
+    const after = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(after.uses_30d).toBe(2);
+    const live = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(live.uses_30d).toBe(3);
   });
 });
 
@@ -400,6 +480,7 @@ describe("critic verdicts and the refine snapshot", () => {
 
   test("complaints are misfire reasons and bad-vote notes, oldest first, after since", () => {
     const w = world();
+    const c = cfg(w);
     fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: "misfired", reason: "fired on a docs-only change", ts: iso(daysAgo(5)), world: "default" });
     fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:judged", verdict: "helpful", reason: "not a complaint", ts: iso(daysAgo(4)), world: "default" });
     fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "skill:other", verdict: "misfired", reason: "another artifact", ts: iso(daysAgo(4)), world: "default" });
@@ -407,8 +488,20 @@ describe("critic verdicts and the refine snapshot", () => {
     recordHuman({ ts: iso(daysAgo(3)), world: "default", ref: "skill:judged", vote: "bad", note: "too long to read", session_id: null });
     recordHuman({ ts: iso(daysAgo(2)), world: "default", ref: "skill:judged", vote: "good", note: "praise", session_id: null });
     recordHuman({ ts: iso(daysAgo(1)), world: "default", ref: "skill:judged", vote: "bad", note: "", session_id: null });
-    expect(complaints(w, "skill:judged")).toEqual(["fired on a docs-only change", "too long to read"]);
-    expect(complaints(w, "skill:judged", iso(daysAgo(4)))).toEqual(["too long to read"]);
+    expect(complaints(w, c, "skill:judged")).toEqual(["fired on a docs-only change", "too long to read"]);
+    expect(complaints(w, c, "skill:judged", iso(daysAgo(4)))).toEqual(["too long to read"]);
+  });
+
+  test("a legacy bare-ref misfire resolves through the same rule as the scorecard", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), {
+      ref: "new-thing",
+      verdict: "misfired",
+      reason: "flagged a docs-only change",
+      ts: iso(daysAgo(1)),
+      world: "default",
+    });
+    expect(complaints(w, c, "skill:new-thing")).toEqual(["flagged a docs-only change"]);
   });
 
   test("refine counts only complaints past the snapshot", () => {
@@ -531,7 +624,7 @@ describe("recurrence since promotion", () => {
     use();
     reflect(2);
     rebuild(world(), cfg(world()));
-    expect(load(world()).find((c) => c.ref === "rule:recurring")).toMatchObject({ recurrence_30d: 1, snapshot_at: null });
+    expect(load(world(), cfg(world())).find((c) => c.ref === "rule:recurring")).toMatchObject({ recurrence_30d: 1, snapshot_at: null });
   });
 });
 

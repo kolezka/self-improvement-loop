@@ -802,6 +802,28 @@ describe("a scorecard refine with no reflections", () => {
     expect(chat.calls).toEqual([]);
   });
 
+  test("a legacy bare-ref misfire still grounds a redraft", async () => {
+    // The critic used to write a bare name, no "type:" prefix, to
+    // critic.jsonl. complaints() must resolve it the same way the scorecard
+    // does, or a refine it counts has no text to ground the redraft in.
+    const { world } = seedLive({ complaint: null });
+    fsx.appendJsonl(paths.criticFeedbackFile(), {
+      ref: PATTERN,
+      verdict: "misfired",
+      reason: COMPLAINT,
+      reflection_id: "r1",
+      ts: "2026-09-20T00:00:00Z",
+      world: world.name,
+    });
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(report.gated_out[PATTERN]).toBeUndefined();
+    expect(report.staged).toEqual([PATTERN]);
+    expect(chat.promptsFor("drafter")[0]).toContain(COMPLAINT);
+  });
+
   test("a redraft that only keeps the old wording is not grounded", async () => {
     // Grounded in the live artifact, keeping its vocabulary passed the lint by
     // construction. The complaints say something else, so this draft must fail.

@@ -241,7 +241,7 @@ describe("reflections to staged branch to accept and relink", () => {
     expect(rows[0]!.status).toBe("promoted");
 
     feedback.rebuild(world, cfg);
-    const cards = Object.fromEntries(feedback.load(world).map((c) => [c.ref, c]));
+    const cards = Object.fromEntries(feedback.load(world, cfg).map((c) => [c.ref, c]));
     expect(cards[`skill:${PATTERN}`]?.proposal).toBe("new");
 
     const again = await curriculum.run(world, cfg, { apply: true, chat: fakeChat });

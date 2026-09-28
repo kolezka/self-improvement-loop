@@ -9,6 +9,7 @@ import {
   isSlug,
   loadLlm,
   ledgerPath,
+  servedType,
   modelFor,
   paths,
   SECTIONS,
@@ -48,7 +49,8 @@ export function installedArtifacts(world: World, _cfg: Config): string[] {
   try {
     const ledger = loadLedger(ledgerPath(world));
     for (const entry of Object.values(ledger.entries)) {
-      if (entry.status === "promoted") refs.add(`${entry.artifact_type}:${entry.pattern}`);
+      const type = servedType(entry);
+      if (entry.status === "promoted" && type !== "none") refs.add(`${type}:${entry.pattern}`);
     }
   } catch {
     // a corrupt or missing ledger contributes nothing
@@ -83,6 +85,17 @@ export function installedArtifacts(world: World, _cfg: Config): string[] {
   }
 
   return [...refs].sort();
+}
+
+/** Fold a critic-reported ref into "type:name". A ref that already carries a
+ * type passes through unchanged. A bare name (the model often copies one
+ * straight from the evidence pack's skills_used) resolves only when exactly
+ * one installed artifact carries that name. Otherwise null: unknown or
+ * ambiguous names are never guessed into a type. */
+export function resolveArtifactRef(ref: string, installed: readonly string[]): string | null {
+  if (ref.includes(":")) return ref;
+  const matches = installed.filter((r) => r.slice(r.indexOf(":") + 1) === ref);
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 function listDir(dir: string): string[] {
@@ -292,6 +305,15 @@ export async function reflectSession(entry: QueueEntry, opts: ReflectOptions): P
   }
 
   const pattern = answer.pattern;
+  // These refs are model output. Sessions also use skills the loop did not
+  // make, so an unknown name is normal and must not cost the reflection.
+  const resolve = (ref: string): ArtifactRef => {
+    const r = resolveArtifactRef(ref, artifacts);
+    return r === null ? { ref: null, raw: ref } : { ref: r, raw: ref };
+  };
+  const resolvedUsed = answer.artifacts_used.map(resolve);
+  const resolvedHelpful = answer.artifacts_helpful.map(resolve);
+  const resolvedMisfired = answer.artifacts_misfired.map((m) => ({ ...resolve(m.ref), reason: m.reason }));
   const body = renderBody(pattern, answer);
   const headNow = pack.git.head_now;
   const revision = entry.git_head && headNow ? `${entry.git_head}..${headNow}` : null;
@@ -300,16 +322,16 @@ export async function reflectSession(entry: QueueEntry, opts: ReflectOptions): P
     cwd: entry.cwd,
     revision,
     model,
-    artifacts_used: answer.artifacts_used,
-    artifacts_helpful: answer.artifacts_helpful,
-    artifacts_misfired: answer.artifacts_misfired.map((m) => m.ref),
+    artifacts_used: resolvedUsed.map((a) => a.ref ?? a.raw),
+    artifacts_helpful: resolvedHelpful.map((a) => a.ref ?? a.raw),
+    artifacts_misfired: resolvedMisfired.map((a) => a.ref ?? a.raw),
     confidence: answer.confidence,
   };
   const path = writeReflection(opts.world.name, meta, body);
   const reflectionId = path.split("/").pop()!.replace(/\.md$/, "");
 
   const ts = fsx.nowIso();
-  appendFeedbackEvents(opts.world.name, reflectionId, answer, ts);
+  appendFeedbackEvents(opts.world.name, reflectionId, ts, resolvedUsed, resolvedHelpful, resolvedMisfired, answer.rules_relevant);
 
   if (answer.lesson_short && answer.confidence >= 0.5) {
     putLesson({
@@ -349,13 +371,29 @@ function renderBody(pattern: string, answer: CriticAnswer): string {
   );
 }
 
-function appendFeedbackEvents(world: string, reflectionId: string, answer: CriticAnswer, ts: string): void {
+interface ArtifactRef {
+  ref: string | null;
+  raw: string;
+}
+
+function appendFeedbackEvents(
+  world: string,
+  reflectionId: string,
+  ts: string,
+  used: ArtifactRef[],
+  helpful: ArtifactRef[],
+  misfired: Array<ArtifactRef & { reason: string }>,
+  rulesRelevant: string[],
+): void {
   const lines: Record<string, unknown>[] = [];
-  for (const ref of answer.artifacts_used) lines.push({ ref, verdict: "used", reflection_id: reflectionId, ts, world });
-  for (const ref of answer.artifacts_helpful) lines.push({ ref, verdict: "helpful", reflection_id: reflectionId, ts, world });
-  for (const m of answer.artifacts_misfired) lines.push({ ref: m.ref, verdict: "misfired", reflection_id: reflectionId, ts, world, reason: m.reason });
+  // An unresolved name goes under `ref_unresolved`, never `ref`, so it stays
+  // visible without becoming a phantom scorecard row.
+  const refField = (a: ArtifactRef): Record<string, string> => (a.ref === null ? { ref_unresolved: a.raw } : { ref: a.ref });
+  for (const a of used) lines.push({ ...refField(a), verdict: "used", reflection_id: reflectionId, ts, world });
+  for (const a of helpful) lines.push({ ...refField(a), verdict: "helpful", reflection_id: reflectionId, ts, world });
+  for (const m of misfired) lines.push({ ...refField(m), verdict: "misfired", reflection_id: reflectionId, ts, world, reason: m.reason });
   // The model often names a rule by its slug alone; scorecards join on `rule:<slug>`.
-  for (const ref of answer.rules_relevant) lines.push({ ref: ref.includes(":") ? ref : `rule:${ref}`, verdict: "relevant", reflection_id: reflectionId, ts, world });
+  for (const ref of rulesRelevant) lines.push({ ref: ref.includes(":") ? ref : `rule:${ref}`, verdict: "relevant", reflection_id: reflectionId, ts, world });
   if (lines.length === 0) return;
   const path = paths.criticFeedbackFile();
   for (const line of lines) fsx.appendJsonl(path, line);

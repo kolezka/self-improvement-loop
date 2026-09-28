@@ -7,6 +7,39 @@ import { installedArtifacts } from "@sil/critic";
 
 export interface ScorecardOptions { now?: Date; windowDays?: number }
 
+/** Diagnostics alongside a scorecard build: signal that would otherwise be
+ * silently dropped. Not part of `Scorecard[]` itself, so every existing
+ * reader keeps its return type; call `scorecardDiagnostics` for this. */
+export interface ScorecardDiagnostics {
+  /** critic.jsonl lines for this world with a bare (unprefixed) ref that did
+   * not resolve to exactly one installed artifact: unknown or ambiguous.
+   * Excluded from every scorecard row rather than guessed into one. */
+  unresolved_critic_refs: number;
+}
+
+/** Fold a bare critic-feedback ref ("name", no "type:" prefix) into its
+ * "type:name" row when exactly one ref already known to this world carries
+ * that name. Returns null, never a guess, when it is unknown or ambiguous;
+ * the caller counts that in diagnostics instead of adding a phantom row. */
+function resolveBareRef(ref: string, byName: ReadonlyMap<string, readonly string[]>): string | null {
+  if (ref.includes(":")) return ref;
+  const matches = byName.get(ref) ?? [];
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+/** name to every "type:name" ref carrying it, built once per read so bare-ref
+ * resolution stays linear in the number of feedback lines. */
+function refsByName(refs: Iterable<string>): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const r of refs) {
+    const name = r.slice(r.indexOf(":") + 1);
+    const list = out.get(name);
+    if (list) list.push(r);
+    else out.set(name, [r]);
+  }
+  return out;
+}
+
 /** Days after a refine was staged or refused before recurrence may propose it again. */
 export const REFINE_COOLDOWN_DAYS = 7;
 
@@ -26,33 +59,49 @@ export function listHuman(world?: string): HumanFeedback[] {
 }
 
 /** What people said was wrong with one artifact: critic misfire reasons and
- * the notes on bad human votes, oldest first, optionally only after `since`. */
-export function complaints(world: World, ref: string, since?: string | null): string[] {
+ * the notes on bad human votes, oldest first, optionally only after `since`.
+ *
+ * A critic misfire line may carry a legacy bare ref ("name", no "type:"
+ * prefix). It is resolved against this world's own installed artifacts, the
+ * same rule the scorecard itself folds bare refs under, so a card that counts
+ * the misfire is not left with no text to explain it. */
+export function complaints(world: World, cfg: Config, ref: string, since?: string | null): string[] {
   const out: { ts: string; text: string }[] = [];
-  const collect = (ev: Record<string, unknown>, key: string): void => {
-    if (ev["world"] !== world.name || ev["ref"] !== ref) return;
-    const ts = String(ev["ts"] ?? "");
-    if (since && !(ts > since)) return;
-    const text = String(ev[key] ?? "").trim();
-    if (text) out.push({ ts, text });
+  const push = (ts: unknown, text: unknown): void => {
+    const tsStr = String(ts ?? "");
+    if (since && !(tsStr > since)) return;
+    const t = String(text ?? "").trim();
+    if (t) out.push({ ts: tsStr, text: t });
   };
+
+  const known = refsByName(installedArtifacts(world, cfg));
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
-    if (ev["verdict"] === "misfired") collect(ev, "reason");
+    if (ev["verdict"] !== "misfired" || ev["world"] !== world.name) continue;
+    const rawRef = ev["ref"];
+    if (!rawRef || resolveBareRef(String(rawRef), known) !== ref) continue;
+    push(ev["ts"], ev["reason"]);
   }
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.humanFeedbackFile())) {
-    if (ev["vote"] === "bad") collect(ev, "note");
+    if (ev["vote"] !== "bad" || ev["world"] !== world.name || ev["ref"] !== ref) continue;
+    push(ev["ts"], ev["note"]);
   }
   return out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0)).map((c) => c.text);
 }
 
-export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {}): Scorecard[] {
+function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {}): { cards: Scorecard[]; diagnostics: ScorecardDiagnostics } {
   const now = opts.now ?? new Date();
   const windowDays = opts.windowDays ?? 30;
   const windowStart = new Date(now.getTime() - windowDays * 86_400_000);
   const retireCutoff = new Date(now.getTime() - cfg.promotion.retire_after_days * 86_400_000);
 
   const ledger = loadLedgerSafe(world);
-  const refs = new Set<string>(installedArtifacts(world, cfg));
+  // Frozen before usage, fires or human feedback add anything: a bare critic
+  // ref may only resolve against this world's own installed artifacts, never
+  // against a ref merely seen in an event log. Nudge fires carry no world at
+  // all, so that set can leak a name from a different world's hook.
+  const installedRefs = new Set<string>(installedArtifacts(world, cfg));
+  const refs = new Set<string>(installedRefs);
+  const installedByName = refsByName(installedRefs);
 
   const usesByRef = new Map<string, number>();
   const firesByRef = new Map<string, number>();
@@ -101,11 +150,22 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
     }
   }
 
+  // World filter first, name resolution after (design rule 6): a bare ref is
+  // only ever matched against this world's own refs, never across worlds.
+  let unresolvedCriticRefs = 0;
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
     if (ev["world"] !== world.name) continue;
-    const ref = ev["ref"];
-    if (!ref) continue;
-    const r = String(ref);
+    if (ev["ref_unresolved"]) {
+      unresolvedCriticRefs += 1;
+      continue;
+    }
+    const rawRef = ev["ref"];
+    if (!rawRef) continue;
+    const r = resolveBareRef(String(rawRef), installedByName);
+    if (r === null) {
+      unresolvedCriticRefs += 1;
+      continue;
+    }
     refs.add(r);
     // A critic verdict judges a past session and is not a use, so it leaves
     // last_used alone. Counting it kept every judged artifact from going stale.
@@ -166,7 +226,16 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
       snapshot_at: null,
     });
   }
-  return out;
+  return { cards: out, diagnostics: { unresolved_critic_refs: unresolvedCriticRefs } };
+}
+
+export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {}): Scorecard[] {
+  return buildScorecards(world, cfg, opts).cards;
+}
+
+/** Signal `scorecards` drops rather than guesses at: see `ScorecardDiagnostics`. */
+export function scorecardDiagnostics(world: World, cfg: Config, opts: ScorecardOptions = {}): ScorecardDiagnostics {
+  return buildScorecards(world, cfg, opts).diagnostics;
 }
 
 /** Reflections in the window created on or after the promotion day. With no
@@ -322,7 +391,14 @@ export function rebuild(world: World, cfg: Config): string {
   return path;
 }
 
-export function load(world: World): Scorecard[] {
+/** Scorecards exactly as last written to scorecards.json, for display or
+ * export only. Never recomputed here: a cached row can go stale from a write
+ * no fixed list of source files can watch for (a reflection with no usage,
+ * critic or human event; an alias change; a promotion). Every reader that
+ * DECIDES from a scorecard (the curriculum planner and run, the review
+ * reject path, the ops/server artifacts handler, the CLI) calls
+ * `scorecards()` instead, live, every time. */
+export function load(world: World, cfg: Config): Scorecard[] {
   const path = paths.scorecardsFile(world.name);
   const raw = fsx.readJsonOr<unknown>(path, null);
   if (!Array.isArray(raw)) return [];

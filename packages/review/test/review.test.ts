@@ -22,7 +22,7 @@ import {
 } from "@sil/core";
 import { branchName, git, plan, run, type RunOptions } from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
-import { loadLedger, parseLedger, saveLedger } from "@sil/store";
+import { loadLedger, parseLedger, readProposalEvents, saveLedger } from "@sil/store";
 import { Lock } from "@sil/worker";
 import * as review from "../src/index.ts";
 import { foreignChanges } from "../src/snapshot.ts";
@@ -291,6 +291,10 @@ describe("accept", () => {
     // The sibling a human refused keeps its watermark and its status.
     expect(ledger.entries[SIBLING]!.status).toBe("rejected");
     expect(ledger.entries[SIBLING]!.rejected_at_count).toBe(7);
+
+    // stage() already wrote a "staged" event; accept appends its own.
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "accepted" });
   });
 
   test("it deletes the branch", async () => {
@@ -655,6 +659,9 @@ describe("reject", () => {
     expect(existsSync(join(repo, "skills", PATTERN))).toBe(false);
     // And no forced route survives to re-impose the shape a human refused.
     expect(entry.served_by).toBeNull();
+
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "rejected" });
   });
 
   test("it counts the extra reflection roots plan() reads", async () => {
@@ -952,6 +959,9 @@ describe("rehome and retire", () => {
     expect(entry.served_by!.type).toBe("hook");
     // A re-home preserves the evidence level.
     expect(entry.promoted_at_count).toBe(3);
+
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "rehomed" });
   });
 
   test("rehome refuses the type that already serves the pattern", async () => {
@@ -979,6 +989,9 @@ describe("rehome and retire", () => {
     expect(entry.served_by).toBeNull();
     // Stages only, exactly like rehome.
     expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(true);
+
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "retired" });
   });
 
   test("retiring twice is refused", async () => {

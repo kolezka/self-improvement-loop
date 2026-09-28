@@ -4,3 +4,4 @@ export * from "./alias-suggest.ts";
 export * from "./ledger.ts";
 export * from "./inbox.ts";
 export * from "./queue.ts";
+export * from "./proposal-events.ts";

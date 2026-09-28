@@ -94,6 +94,10 @@ export const criticFeedbackFile = (): string => join(stateDir(), "feedback", "cr
 // not pay for the same refused draft again.
 export const refineAttemptsFile = (world: string): string =>
   join(stateDir(), "curriculum", "refine-attempts", `${safeComponent(world)}.json`);
+// Append-only history of staged/revised/accepted/rejected/retired/rehomed
+// transitions. The ledger keeps only the latest state per pattern, so this is
+// the only place that history can be read back from.
+export const proposalEventsFile = (): string => join(stateDir(), "curriculum", "proposal-events.jsonl");
 export const inboxDir = (world: string): string => current().inboxDir(world);
 export const sessionDir = (sessionId: string): string => current().sessionDir(sessionId);
 export const workerLockFile = (): string => current().workerLockFile();

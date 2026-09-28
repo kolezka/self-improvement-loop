@@ -725,6 +725,36 @@ describe("served_by suppression", () => {
   });
 });
 
+describe("cross-type redraft cleanup", () => {
+  test("a redraft that changes type removes the old artifact", async () => {
+    // A ledger row missing `served_by` parses as null while `artifact_type` still
+    // names the real, live artifact, so `stageOne` free routes with no forced type.
+    const world = worldWith();
+    const repo = initTarget(world);
+    commitFile(
+      repo,
+      "RULES.md",
+      `# Learned rules\n\nPromoted by the loop. Edit outside the markers only.\n\n${RULE_START}\n- old wording ${ruleTag(PATTERN)}\n${RULE_END}\n`,
+      "chore: rules",
+    );
+    writeLedger(world, [entry({ pattern: PATTERN, status: "promoted", artifact_type: "rule", served_by: null })]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+
+    const chat = new FakeChat({ draft: hookDraft(PATTERN) });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]!.type).toBe("hook");
+    const branch = branchName(world.name, PATTERN);
+    const hook = git.show(repo, branch, `nudges/${PATTERN}.json`);
+    expect(hook.found).toBe(true);
+    // Exactly one artifact serves the pattern: the old rule bullet is gone.
+    const rules = git.show(repo, branch, "RULES.md");
+    expect(rules.found).toBe(true);
+    expect(rules.text).not.toContain(ruleTag(PATTERN));
+  });
+});
+
 describe("redraft after a route change", () => {
   test("a route change redrafts once in the selected shape", async () => {
     const world = worldWith();

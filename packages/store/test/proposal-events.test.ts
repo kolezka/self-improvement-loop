@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
-import { appendProposalEvent, readProposalEvents } from "../src/index.ts";
+import { appendProposalEvent, readProposalEvents, recordProposalEvent } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -44,5 +44,34 @@ describe("proposal events", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ world: "koleżka", pattern: "verify-callsites", event: "revised" });
     expect(typeof events[0]!.ts).toBe("string");
+  });
+});
+
+describe("recordProposalEvent", () => {
+  test("on success, returns null and records the event", () => {
+    const result = recordProposalEvent("default", "p-one", "staged");
+    expect(result).toBeNull();
+    expect(readProposalEvents().events).toMatchObject([{ world: "default", pattern: "p-one", event: "staged" }]);
+  });
+
+  test("on a write failure, does not throw: logs to curriculum.log and returns the message", () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+
+    // Create the events directory first so chmod has something to lock down;
+    // appendJsonl's own mkdirSync(recursive) would otherwise just no-op past
+    // a missing dir without ever touching a permission check.
+    const eventsDir = dirname(paths.proposalEventsFile());
+    mkdirSync(eventsDir, { recursive: true });
+    chmodSync(eventsDir, 0o000);
+    try {
+      const result = recordProposalEvent("default", "p-one", "accepted");
+      expect(result).not.toBeNull();
+      expect(result).toContain("EACCES");
+
+      const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
+      expect(curriculumLog).toContain("ERROR proposal event accepted default/p-one");
+    } finally {
+      chmodSync(eventsDir, 0o755);
+    }
   });
 });

@@ -12,7 +12,7 @@ import { type Config, ReviewError, type ReviewDetail, targetRoot, type World } f
 import { artifacts, draftCaps, git, lint, prompts, sameArtifact } from "@sil/curriculum";
 import * as providers from "@sil/providers";
 import type { ChatFn } from "@sil/providers";
-import { appendProposalEvent, listReflections } from "@sil/store";
+import { listReflections, recordProposalEvent } from "@sil/store";
 import { detail, diff } from "./index.ts";
 import { snapshot } from "./snapshot.ts";
 
@@ -102,7 +102,7 @@ export async function revise(
     git.git(tree, ["commit", "-q", "-m", message]);
   });
 
-  appendProposalEvent(world.name, pattern, "revised");
+  recordProposalEvent(world.name, pattern, "revised");
 
   const freshDetail = detail(world, cfg, pattern);
   const freshDiff = diff(world, cfg, pattern);

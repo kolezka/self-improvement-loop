@@ -32,7 +32,7 @@ import {
 import * as feedback from "@sil/feedback";
 import * as providers from "@sil/providers";
 import type { ChatFn, DecideFn } from "@sil/providers";
-import { appendProposalEvent, loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
+import { loadLedger as loadLedgerFile, parseLedger, recordProposalEvent, saveLedger } from "@sil/store";
 import * as artifacts from "./artifacts.ts";
 import * as context from "./context.ts";
 import type { GateRunner } from "./deps.ts";
@@ -562,7 +562,7 @@ async function stageOne(
   // would read that watermark and skip the pattern forever.
   ctx.ledger.entries[pattern] = entry;
   report.staged.push(pattern);
-  appendProposalEvent(world.name, pattern, "staged");
+  recordProposalEvent(world.name, pattern, "staged");
 
   if (autoMerge) autoMergeBranch(report, ctx.target, ctx.defaultRef, branch, pattern);
 }

@@ -25,6 +25,22 @@ export function appendProposalEvent(world: string, pattern: string, event: Propo
   fsx.appendJsonl(paths.proposalEventsFile(), { ts: fsx.nowIso(), world, pattern, event });
 }
 
+/** appendProposalEvent runs after a commit (stage, accept, reject, rehome,
+ * retire, revise) already landed. That history is for charts, not the
+ * commit's own correctness: losing one event must not fail an operation the
+ * repository already carried out. A write failure here logs to the
+ * curriculum log and returns its message instead of throwing. */
+export function recordProposalEvent(world: string, pattern: string, event: ProposalEventKind): string | null {
+  try {
+    appendProposalEvent(world, pattern, event);
+    return null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fsx.appendLine(paths.logFile("curriculum"), `${fsx.nowIso()} ERROR proposal event ${event} ${world}/${pattern}: ${message}`);
+    return message;
+  }
+}
+
 /** Every recorded event, oldest first. A line that fails to parse or match the
  * schema is data loss for one record, not for the file: it is counted in
  * `skipped`, never silently dropped from the count. */

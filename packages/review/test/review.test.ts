@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type Ledger,
@@ -295,6 +295,27 @@ describe("accept", () => {
     // stage() already wrote a "staged" event; accept appends its own.
     const events = readProposalEvents().events;
     expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "accepted" });
+  });
+
+  test("an unwritable proposal-events log does not fail a merge that already landed", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const world = makeWorld();
+    const repo = seed(world);
+    await stage(world);
+    const detail = review.detail(world, cfg(), PATTERN);
+
+    const eventsDir = join(paths.stateDir(), "curriculum");
+    chmodSync(eventsDir, 0o000);
+    try {
+      const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+      expect(out.merged).toBe(true);
+      expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(true);
+
+      const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
+      expect(curriculumLog).toContain("ERROR proposal event accepted");
+    } finally {
+      chmodSync(eventsDir, 0o755);
+    }
   });
 
   test("it deletes the branch", async () => {

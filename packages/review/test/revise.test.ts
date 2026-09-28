@@ -4,7 +4,9 @@
 // reviewed_state refuses before the drafter is ever called).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { ReviewError, targetRoot, type World } from "@sil/core";
+import { chmodSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { paths, ReviewError, targetRoot, type World } from "@sil/core";
 import { git, run, type RunOptions } from "@sil/curriculum";
 import { readProposalEvents } from "@sil/store";
 import * as review from "../src/index.ts";
@@ -151,5 +153,27 @@ describe("revise", () => {
     expect(() => review.accept(world, cfg(), PATTERN, before.reviewed_state)).toThrow(ReviewError);
     const accepted = review.accept(world, cfg(), PATTERN, result.reviewed_state);
     expect(accepted.merged).toBe(true);
+  });
+
+  test("an unwritable proposal-events log does not fail a revise that already committed", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+    const before = review.detail(world, cfg(), PATTERN);
+    const newQuote = "run `rg -n` across every call site and cross check the graphify inventory before merging";
+    const fake = new FakeChat({ draft: skillDraft(PATTERN, newQuote) });
+
+    const eventsDir = join(paths.stateDir(), "curriculum");
+    chmodSync(eventsDir, 0o000);
+    try {
+      const result = await review.revise(world, cfg(), PATTERN, before.reviewed_state, "use rg -n", { chat: fake.fn });
+      expect(result.reviewed_state).not.toBe(before.reviewed_state);
+
+      const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
+      expect(curriculumLog).toContain("ERROR proposal event revised");
+    } finally {
+      chmodSync(eventsDir, 0o755);
+    }
   });
 });

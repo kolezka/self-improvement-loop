@@ -98,7 +98,14 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
         exists = false;
       }
       if (exists) {
-        for (const line of tailLines(path, initialLines, undefined, size)) send(sseLine(line));
+        const tail = tailLines(path, initialLines, undefined, size);
+        // tailLines splits on "\n" and only drops a trailing empty segment,
+        // so a file not ending in a newline leaves a partial line as the
+        // last entry. Sending it as a full line now, then the remainder as a
+        // second line once the newline lands, tears one line into two.
+        const endsInNewline = size === 0 || readRange(path, size - 1, size) === "\n";
+        if (!endsInNewline && tail.length > 0) pending = tail.pop() ?? "";
+        for (const line of tail) send(sseLine(line));
         offset = size;
         identity = initialStat ? { dev: initialStat.dev, ino: initialStat.ino } : null;
       } else {

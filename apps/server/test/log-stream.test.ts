@@ -154,6 +154,25 @@ describe("GET /api/logs/stream", () => {
     }
   });
 
+  test("an initial tail not ending in a newline buffers its last line as partial", async () => {
+    const path = seedLog("worker", "x\nhal");
+    const res = await fetch(`${base()}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+    const reader = res.body!.getReader();
+    try {
+      // The initial tail flush is synchronous inside the route, so it has
+      // already run by the time fetch() resolves: appending right away is
+      // safe and keeps every event in one accumulated read.
+      appendFileSync(path, "f done\n@@END@@\n");
+      // A sentinel line after the remainder bounds the wait regardless of
+      // whether the bug (which would split "hal" and "f done" apart) fires.
+      const grown = await readUntil(reader, "@@END@@");
+      const lineEvents = [...grown.matchAll(/data: (\{"line":"[^}]*"\})/g)].map((m) => JSON.parse(m[1]!).line as string);
+      expect(lineEvents).toEqual(["x", "half done", "@@END@@"]);
+    } finally {
+      await reader.cancel();
+    }
+  });
+
   test("a partial line is buffered until its newline arrives: exactly one event", async () => {
     const path = seedLog("worker", "");
     const res = await fetch(`${base()}/api/logs/stream?name=worker`, { headers: goodHeaders() });

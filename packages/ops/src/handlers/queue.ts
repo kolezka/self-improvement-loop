@@ -3,6 +3,10 @@ import { fsx, ValidationError } from "@sil/core";
 import { SECRET_RE } from "@sil/curriculum";
 import { isHidden, listQueue, listReflections, loadEntry, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
 import { iterEvidenceRecords } from "@sil/transcript";
+import type { ClearArgs, NoArgs, SessionArgs, WorldArgs } from "../args.ts";
+import { cfgWorld } from "../cfg-world.ts";
+import { deps } from "../deps.ts";
+import { spawnCli } from "../spawn.ts";
 
 // SECRET_RE has no "g" flag (it is used as a one-shot test elsewhere), so a
 // global copy is needed here to replace every match, not just the first.
@@ -13,10 +17,6 @@ const SECRET_RE_GLOBAL = new RegExp(SECRET_RE.source, SECRET_RE.flags.includes("
 function redactSecrets(text: string): string {
   return text.replace(SECRET_RE_GLOBAL, "[redacted]");
 }
-import type { ClearArgs, NoArgs, SessionArgs, WorldArgs } from "../args.ts";
-import { cfgWorld } from "../cfg-world.ts";
-import { deps } from "../deps.ts";
-import { spawnCli } from "../spawn.ts";
 
 const QUEUE_LIST_CAP = 200;
 
@@ -85,13 +85,15 @@ function messageText(rec: Record<string, unknown>): string {
     if (b["type"] === "text") parts.push(String(b["text"] ?? ""));
     else if (b["type"] === "tool_use") parts.push(`[tool_use: ${String(b["name"] ?? "")}]`);
     else if (b["type"] === "tool_result") {
+      // Command output can carry anything, secrets included, and is not
+      // useful as a queue preview anyway: report its size, never its text.
       const c = b["content"];
       const text = typeof c === "string"
         ? c
         : Array.isArray(c)
           ? c.map((x) => (asRecord(x)?.["type"] === "text" ? String(asRecord(x)?.["text"] ?? "") : "")).join("\n")
           : "";
-      parts.push(`[tool_result${b["is_error"] ? " error" : ""}] ${text}`);
+      parts.push(`[tool_result: ${text.length} chars${b["is_error"] ? " error" : ""}]`);
     }
   }
   return redactSecrets(parts.join("\n").trim());

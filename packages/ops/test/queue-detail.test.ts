@@ -122,10 +122,11 @@ describe("queue.detail", () => {
     await expect(invoke("queue.detail", { session_id: "no-such-session" })).rejects.toThrow(/unknown session/);
   });
 
-  test("redacts a secret in a tool_result transcript preview", async () => {
-    const sessionId = "sess-with-secret";
+  test("tool_result text never appears in a transcript preview, only its size", async () => {
+    const sessionId = "sess-with-tool-result";
     const e = entry(sessionId);
     const fakeKey = "AKIAABCD1234EFGH5678";
+    const rawResult = `export AWS_KEY=${fakeKey}\nsome other command output here\n`;
     const records: Record<string, unknown>[] = [
       {
         type: "assistant",
@@ -139,8 +140,35 @@ describe("queue.detail", () => {
         timestamp: "2026-09-14T10:00:01.000Z",
         message: {
           role: "user",
-          content: [{ type: "tool_result", tool_use_id: "t1", content: `export AWS_KEY=${fakeKey}\n` }],
+          content: [{ type: "tool_result", tool_use_id: "t1", content: rawResult, is_error: true }],
         },
+      },
+    ];
+    mkdirSync(join(e.transcript_path, ".."), { recursive: true });
+    writeFileSync(e.transcript_path, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    writeEntry("done", e);
+
+    const out = (await invoke("queue.detail", { session_id: sessionId })) as {
+      transcript: { role: string; text: string }[] | null;
+    };
+
+    const joined = out.transcript!.map((m) => m.text).join("\n");
+    expect(joined).not.toContain(fakeKey);
+    expect(joined).not.toContain("some other command output");
+    expect(joined).not.toContain(rawResult);
+    expect(joined).toContain(`[tool_result: ${rawResult.length} chars error]`);
+  });
+
+  test("redacts a secret in an assistant text message", async () => {
+    const sessionId = "sess-with-assistant-secret";
+    const e = entry(sessionId);
+    const fakeKey = "AKIAABCD1234EFGH5678";
+    const records: Record<string, unknown>[] = [
+      {
+        type: "assistant",
+        sessionId,
+        timestamp: "2026-09-14T10:00:00.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: `set AWS_KEY=${fakeKey} in the env` }] },
       },
     ];
     mkdirSync(join(e.transcript_path, ".."), { recursive: true });

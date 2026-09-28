@@ -45,6 +45,8 @@ export type SessionArgs = z.infer<typeof SessionArgs>;
 // web console: history and queue ops
 export const ClearArgs = z.object({ bucket: z.enum(["done", "failed"]) });
 export type ClearArgs = z.infer<typeof ClearArgs>;
+export const HistoryArgs = WorldArgs.extend({ days: z.coerce.number().int().min(1).max(90).default(30) });
+export type HistoryArgs = z.infer<typeof HistoryArgs>;
 // end: web console: history and queue ops
 
 export const FeedbackArgs = z.object({

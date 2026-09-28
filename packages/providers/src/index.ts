@@ -549,7 +549,22 @@ async function chatClaudeCli(endpoint: Endpoint, model: string, messages: ChatMe
   const systemParts = messages.filter((m) => m.role === "system").map((m) => m.content);
   const userParts = messages.filter((m) => m.role !== "system").map((m) => m.content);
 
-  const cmd = ["claude", "-p", "--model", model, "--output-format", "json"];
+  const cmd = [
+    "claude",
+    "-p",
+    "--model",
+    model,
+    "--output-format",
+    "json",
+    // Nested runs should not touch the parent session, its tools or its MCP
+    // servers: they only need to answer a prompt. --no-session-persistence
+    // also keeps the hook from later reflecting on the critic's own runs.
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "--tools",
+    "",
+  ];
+  if (endpoint.effort) cmd.push("--effort", endpoint.effort);
   if (systemParts.length > 0) cmd.push("--append-system-prompt", systemParts.join("\n\n"));
 
   let result: SpawnSyncResult;
@@ -575,10 +590,23 @@ async function chatClaudeCli(endpoint: Endpoint, model: string, messages: ChatMe
   } catch {
     throw new ProviderError(`claude -p returned non-JSON output: ${JSON.stringify(stdoutText.slice(0, 300))}`);
   }
-  const obj = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
-  const resultField = obj ? obj["result"] : undefined;
-  if (resultField === undefined || resultField === null) {
-    throw new ProviderError(`claude -p reply has no 'result' field: ${JSON.stringify(String(data).slice(0, 300))}`);
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    const shape = Array.isArray(data) ? "array" : data === null ? "null" : typeof data;
+    throw new ProviderError(`claude -p reply is ${shape}, not an object: ${JSON.stringify(stdoutText.slice(0, 300))}`);
   }
-  return String(resultField);
+  const obj = data as Record<string, unknown>;
+  const resultField = obj["result"];
+  const isError = obj["is_error"] === true;
+  if (isError || resultField === undefined || resultField === null) {
+    const subtype = typeof obj["subtype"] === "string" ? obj["subtype"] : "unknown";
+    const errors = Object.hasOwn(obj, "errors") ? obj["errors"] : [];
+    const reason = isError ? "is_error: true" : "no 'result' field";
+    throw new ProviderError(
+      `claude -p reply has ${reason} (subtype ${JSON.stringify(subtype)}, errors ${JSON.stringify(errors).slice(0, 300)})`,
+    );
+  }
+  if (typeof resultField !== "string") {
+    throw new ProviderError(`claude -p result is ${typeof resultField}, not a string: ${JSON.stringify(resultField).slice(0, 300)}`);
+  }
+  return resultField;
 }

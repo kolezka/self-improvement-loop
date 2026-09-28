@@ -367,6 +367,16 @@ endpoints:
 critic call burned 3994 reasoning tokens and returned nothing after 110 s; with
 `reasoning_effort: low` the same call answers in a few seconds.
 
+A `claude-cli` endpoint has no `extra_body` (that only reaches an `openai`
+endpoint's request body). Its own reasoning knob is the endpoint's `effort`
+field (`low`, `medium`, `high`, `xhigh` or `max`), passed as `--effort <level>`. A
+nested `claude -p` call spends 10k to 22k output tokens on hidden thinking at
+around 100 tokens/s and can exceed `timeout_s` before it ever answers; setting
+`effort: low` cuts that budget. Every `claude-cli` call also runs with
+`--no-session-persistence`, `--strict-mcp-config` and `--tools ""`, so a
+nested run does not load the parent's tools or MCP servers and the hook does
+not later reflect on the critic's own session.
+
 ### The proxy answers HTTP 524 or the call takes longer than 100 s
 
 A Cloudflare tunnel in front of LiteLLM cuts requests at 100 s. Pick a model

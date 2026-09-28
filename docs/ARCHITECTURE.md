@@ -162,6 +162,7 @@ endpoints:
       critic: sonnet
       drafter: sonnet
       judge: sonnet
+    effort: low                    # optional; passed as `--effort <level>`, unset means the CLI's own default
   - name: jev
     kind: system-one                # POST /v1/systemone; typed decisions, so only judge can run here
     base_url: https://api.typesafe.ai

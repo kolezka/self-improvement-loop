@@ -18,7 +18,7 @@ function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
 }
 
 function endpoint(overrides: Partial<Endpoint> = {}): Endpoint {
-  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, models: {}, extra_body: {}, decision_threshold: 0.5, ...overrides };
+  return { name: "e1", kind: "openai", base_url: null, api_key_env: null, timeout_s: 240, models: {}, extra_body: {}, decision_threshold: 0.5, effort: null, ...overrides };
 }
 
 function fakeResponse(body: unknown, init: { status?: number } = {}): Response {
@@ -203,6 +203,81 @@ describe("chat claude-cli kind", () => {
     const llm = llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } });
 
     await expect(chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm })).rejects.toBeInstanceOf(ProviderTimeout);
+  });
+
+  test("on an execution error with no result field, names the subtype and errors instead of [object Object]", async () => {
+    spawnSyncImpl.run = () =>
+      fakeResult({
+        stdout: Buffer.from(
+          JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, errors: ["tool denied"] }),
+        ),
+      });
+    const ep = endpoint({ name: "cli", kind: "claude-cli" });
+    const llm = llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } });
+
+    let caught: unknown;
+    try {
+      await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    const message = (caught as Error).message;
+    expect(message).toContain("error_during_execution");
+    expect(message).toContain("tool denied");
+    expect(message).not.toContain("[object Object]");
+  });
+
+  test.each([
+    ["an object result", { type: "result", subtype: "success", result: { message: "ok" } }, "result is object"],
+    ["a JSON array", [], "reply is array"],
+    ["a JSON string", "wrong-shape", "reply is string"],
+  ])("rejects %s with its actual shape instead of stringifying it", async (_label, reply, expected) => {
+    spawnSyncImpl.run = () => fakeResult({ stdout: Buffer.from(JSON.stringify(reply)) });
+    const ep = endpoint({ name: "cli", kind: "claude-cli" });
+    const llm = llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } });
+
+    const err = await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as Error).message).toContain(expected);
+    expect((err as Error).message).not.toContain("[object Object]");
+  });
+
+  test("hardens argv with --no-session-persistence, --strict-mcp-config and disabled tools", async () => {
+    const calls: string[][] = [];
+    spawnSyncImpl.run = (cmd) => {
+      calls.push(cmd);
+      return fakeResult({ stdout: Buffer.from(JSON.stringify({ result: "ok" })) });
+    };
+    const ep = endpoint({ name: "cli", kind: "claude-cli" });
+    const llm = llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } });
+
+    await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm });
+
+    const chatCall = calls.find((c) => c.includes("-p"))!;
+    expect(chatCall).toContain("--no-session-persistence");
+    expect(chatCall).toContain("--strict-mcp-config");
+    const toolsIdx = chatCall.indexOf("--tools");
+    expect(toolsIdx).toBeGreaterThanOrEqual(0);
+    expect(chatCall[toolsIdx + 1]).toBe("");
+    expect(chatCall).not.toContain("--effort");
+  });
+
+  test("passes --effort only when the endpoint sets one", async () => {
+    const calls: string[][] = [];
+    spawnSyncImpl.run = (cmd) => {
+      calls.push(cmd);
+      return fakeResult({ stdout: Buffer.from(JSON.stringify({ result: "ok" })) });
+    };
+    const ep = endpoint({ name: "cli", kind: "claude-cli", effort: "medium" });
+    const llm = llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } });
+
+    await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm });
+
+    const chatCall = calls.find((c) => c.includes("-p"))!;
+    const effortIdx = chatCall.indexOf("--effort");
+    expect(effortIdx).toBeGreaterThanOrEqual(0);
+    expect(chatCall[effortIdx + 1]).toBe("medium");
   });
 });
 

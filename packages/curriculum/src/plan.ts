@@ -220,7 +220,8 @@ export function scorecardByPattern(cards: Scorecard[], entries: Readonly<Record<
   const out = new Map<string, Scorecard>();
   for (const card of cards) {
     const name = card.name || (card.ref ? card.ref.split(":").slice(-1)[0]! : "");
-    if (!name) continue;
+    // A none: card describes no artifact, so it can never ground a proposal.
+    if (!name || card.ref.startsWith("none:")) continue;
     const entry = Object.hasOwn(entries, name) ? entries[name] : undefined;
     const type = entry ? servedType(entry) : "none";
     if (type !== "none" && card.ref === `${type}:${name}`) out.set(name, card);

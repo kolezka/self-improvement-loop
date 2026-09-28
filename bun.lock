@@ -143,6 +143,7 @@
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
         "@sil/store": "workspace:*",
+        "@sil/transcript": "workspace:*",
         "@sil/worker": "workspace:*",
         "zod": "^4.6.5",
       },

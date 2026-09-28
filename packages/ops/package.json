@@ -15,6 +15,7 @@
     "@sil/review": "workspace:*",
     "@sil/curriculum": "workspace:*",
     "@sil/critic": "workspace:*",
+    "@sil/transcript": "workspace:*",
     "zod": "^4.6.5"
   }
 }

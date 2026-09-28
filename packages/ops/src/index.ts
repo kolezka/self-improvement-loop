@@ -31,6 +31,7 @@ register({ name: "queue.skip", tier: "local", gate: "none", args: Args.SessionAr
 register({ name: "queue.clear", tier: "local", gate: "none", args: Args.ClearArgs, fn: queue.queueClear, doc: "Hide done or failed sessions up to now; reversible with queue.unclear." });
 register({ name: "queue.unclear", tier: "local", gate: "none", args: Args.ClearArgs, fn: queue.queueUnclear, doc: "Show the sessions queue.clear hid for one bucket." });
 register({ name: "history.series", tier: "read", gate: "none", args: Args.HistoryArgs, fn: history.historySeries, doc: "Per-day activity counts across sessions, reflections, feedback and proposals." });
+register({ name: "queue.detail", tier: "read", gate: "none", args: Args.SessionArgs, fn: queue.queueDetail, doc: "One queue entry with its reflections and a transcript excerpt." });
 // end: web console: history and queue ops
 register({ name: "worker.status", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.workerStatus, doc: "Worker lock/last-run status." });
 register({ name: "loop.run", tier: "local", gate: "none", args: Args.WorldArgs, fn: queue.loopRun, doc: "Spawn a detached worker --once run." });

@@ -82,3 +82,7 @@ export const ReflectionListArgs = WorldArgs.extend({
   limit: z.coerce.number().int().min(1).max(2000).default(200),
 });
 export type ReflectionListArgs = z.infer<typeof ReflectionListArgs>;
+
+// web console: live logs and revise
+export const ReviseArgs = AcceptArgs.extend({ instruction: z.string().trim().min(1).max(4000) });
+export type ReviseArgs = z.infer<typeof ReviseArgs>;

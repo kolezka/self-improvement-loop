@@ -162,6 +162,39 @@ describe("router.retire", () => {
   });
 });
 
+describe("review.revise", () => {
+  test("passes world, pattern, reviewed_state and instruction through to review.revise", async () => {
+    const seen: { world: unknown; pattern: string; reviewedState: string; instruction: string }[] = [];
+    const restore = setDeps({
+      review: {
+        ...deps.review,
+        revise: async (world: World, _cfg, pattern: string, reviewedState: string, instruction: string) => {
+          seen.push({ world, pattern, reviewedState, instruction });
+          return { detail: {} as never, diff: "diff text", reviewed_state: "b".repeat(64) } as never;
+        },
+      },
+    });
+    try {
+      const digest = "a".repeat(64);
+      const result = (await invoke("review.revise", {
+        world: "default",
+        pattern: "foo-bar",
+        reviewed_state: digest,
+        instruction: "make it shorter",
+      })) as { diff: string };
+      expect(seen).toHaveLength(1);
+      const call = seen[0]!;
+      expect((call.world as World).name).toBe("default");
+      expect(call.pattern).toBe("foo-bar");
+      expect(call.reviewedState).toBe(digest);
+      expect(call.instruction).toBe("make it shorter");
+      expect(result.diff).toBe("diff text");
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("router.rehome", () => {
   // Re-homing to "none" deletes the artifact. It went through with no
   // confirmation at all, while the op that does the same thing under its own

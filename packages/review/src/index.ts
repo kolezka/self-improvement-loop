@@ -48,6 +48,7 @@ import {
 } from "./snapshot.ts";
 
 export { DIGEST_PREFIX, type Snapshot, snapshot };
+export { revise, type ReviseOptions, type ReviseResult } from "./revise.ts";
 export { type RemoteOps, setRemoteOps };
 
 // --- injectable seams --------------------------------------------------------

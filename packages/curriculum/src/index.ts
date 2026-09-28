@@ -90,5 +90,5 @@ export {
   verdictFor,
 } from "./alias-semantic.ts";
 export { branchName } from "./git.ts";
-export { run, type RunOptions } from "./run.ts";
+export { draftCaps, run, type RunOptions, sameArtifact } from "./run.ts";
 export { type GateCorpusResult, type GateRunner, type NudgeAdapter, setNudgeAdapter } from "./deps.ts";

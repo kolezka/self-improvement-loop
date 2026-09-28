@@ -176,7 +176,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // Read once: the map is a property of the world, not of the cluster being
   // drafted, and rebuilding it per pattern would re-read every artifact file.
   const knowledge = context.worldKnowledge(world, items, ledger);
-  const cardsByPattern = scorecardByPattern(cards);
+  const cardsByPattern = scorecardByPattern(cards, ledger.entries);
   const attempts = loadAttempts(world);
   let attemptsChanged = false;
 

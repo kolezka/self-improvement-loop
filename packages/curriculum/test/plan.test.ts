@@ -29,6 +29,7 @@ import {
   placeholderBody,
   plan,
   reflections,
+  scorecardByPattern,
   scorecards,
   sourcesText,
   substantiveQuote,
@@ -97,6 +98,25 @@ function writeLedger(w: World, entries: PromotionEntry[]): string {
 function cardRows(rows: Partial<Scorecard>[]): Scorecard[] {
   return rows.map((r) => ScorecardSchema.parse(r));
 }
+
+describe("scorecardByPattern", () => {
+  // A worldless nudge fire can give any world a hook:<name> row. The card the
+  // planner reads must be the one of the type the ledger promoted, not
+  // whichever sorts first.
+  test("picks the card whose type the ledger entry records, not the first by name", () => {
+    const cards = cardRows([
+      { ref: "hook:foo", type: "hook", name: "foo", proposal: "keep" },
+      { ref: "skill:foo", type: "skill", name: "foo", proposal: "refine" },
+    ]);
+    const entries = { foo: { artifact_type: "skill" } } as unknown as Record<string, PromotionEntry>;
+    expect(scorecardByPattern(cards, entries).get("foo")?.ref).toBe("skill:foo");
+  });
+
+  test("without a ledger entry it keeps the first card by name", () => {
+    const cards = cardRows([{ ref: "hook:bar", type: "hook", name: "bar", proposal: "keep" }]);
+    expect(scorecardByPattern(cards, {}).get("bar")?.ref).toBe("hook:bar");
+  });
+});
 
 describe("clustering and aliases", () => {
   test("reflections are clustered by pattern, oldest first", () => {

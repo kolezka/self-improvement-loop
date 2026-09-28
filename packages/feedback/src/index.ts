@@ -3,7 +3,7 @@
 
 import { fsx, ledgerPath, paths, type Config, type HumanFeedback, type Ledger, type Scorecard, type UsageEvent, type World } from "@sil/core";
 import { listReflections, loadAliases, loadLedger } from "@sil/store";
-import { installedArtifacts, resolveArtifactRef } from "@sil/critic";
+import { installedArtifacts } from "@sil/critic";
 
 export interface ScorecardOptions { now?: Date; windowDays?: number }
 
@@ -21,8 +21,23 @@ export interface ScorecardDiagnostics {
  * "type:name" row when exactly one ref already known to this world carries
  * that name. Returns null, never a guess, when it is unknown or ambiguous;
  * the caller counts that in diagnostics instead of adding a phantom row. */
-function resolveBareRef(ref: string, known: ReadonlySet<string>): string | null {
-  return resolveArtifactRef(ref, [...known]);
+function resolveBareRef(ref: string, byName: ReadonlyMap<string, readonly string[]>): string | null {
+  if (ref.includes(":")) return ref;
+  const matches = byName.get(ref) ?? [];
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+/** name to every "type:name" ref carrying it, built once per read so bare-ref
+ * resolution stays linear in the number of feedback lines. */
+function refsByName(refs: Iterable<string>): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const r of refs) {
+    const name = r.slice(r.indexOf(":") + 1);
+    const list = out.get(name);
+    if (list) list.push(r);
+    else out.set(name, [r]);
+  }
+  return out;
 }
 
 /** Days after a refine was staged or refused before recurrence may propose it again. */
@@ -59,7 +74,7 @@ export function complaints(world: World, cfg: Config, ref: string, since?: strin
     if (t) out.push({ ts: tsStr, text: t });
   };
 
-  const known = new Set(installedArtifacts(world, cfg));
+  const known = refsByName(installedArtifacts(world, cfg));
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
     if (ev["verdict"] !== "misfired" || ev["world"] !== world.name) continue;
     const rawRef = ev["ref"];
@@ -86,6 +101,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   // all, so that set can leak a name from a different world's hook.
   const installedRefs = new Set<string>(installedArtifacts(world, cfg));
   const refs = new Set<string>(installedRefs);
+  const installedByName = refsByName(installedRefs);
 
   const usesByRef = new Map<string, number>();
   const firesByRef = new Map<string, number>();
@@ -145,7 +161,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     }
     const rawRef = ev["ref"];
     if (!rawRef) continue;
-    const r = resolveBareRef(String(rawRef), installedRefs);
+    const r = resolveBareRef(String(rawRef), installedByName);
     if (r === null) {
       unresolvedCriticRefs += 1;
       continue;

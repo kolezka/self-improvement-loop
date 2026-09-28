@@ -259,7 +259,7 @@ export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): 
   for (const reflection of reflections(world, opts.extraDirs ?? [])) {
     counts.set(reflection.pattern, (counts.get(reflection.pattern) ?? 0) + 1);
   }
-  const cards = scorecardByPattern(scorecards(world, cfg));
+  const cards = scorecardByPattern(scorecards(world, cfg), ledger.entries);
   const rows: RouterRow[] = [];
   for (const pattern of Object.keys(ledger.entries).sort()) {
     const entry = ledger.entries[pattern]!;
@@ -559,7 +559,7 @@ function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOpt
   const rel = ledgerRel(world);
   // The complaints this refusal answered; only new ones may propose a refine
   // again. Computed fresh, since the scorecards file is only as new as the last rebuild.
-  const fresh = scorecardByPattern(feedback.scorecards(world, cfg)).get(pattern);
+  const fresh = scorecardByPattern(feedback.scorecards(world, cfg), loadLedger(world).entries).get(pattern);
   const card = fresh ? { ...fresh, snapshot_at: fsx.nowIso() } : null;
   let recorded = at;
 

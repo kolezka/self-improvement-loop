@@ -212,11 +212,17 @@ export function scorecards(world: World, cfg: Config): Scorecard[] {
   }
 }
 
-export function scorecardByPattern(cards: Scorecard[]): Map<string, Scorecard> {
+/** One card per pattern. When the ledger records the pattern's artifact type,
+ * the card of that type wins: a worldless nudge fire can give any world a
+ * `hook:<name>` row, and it must not shadow the promoted skill's card. */
+export function scorecardByPattern(cards: Scorecard[], entries: Readonly<Record<string, PromotionEntry>> = {}): Map<string, Scorecard> {
   const out = new Map<string, Scorecard>();
   for (const card of cards) {
     const name = card.name || (card.ref ? card.ref.split(":").slice(-1)[0]! : "");
-    if (name && !out.has(name)) out.set(name, card);
+    if (!name) continue;
+    const entry = Object.hasOwn(entries, name) ? entries[name] : undefined;
+    if (entry && card.ref === `${entry.artifact_type}:${name}`) out.set(name, card);
+    else if (!out.has(name)) out.set(name, card);
   }
   return out;
 }
@@ -306,7 +312,7 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
   const cap = cfg.promotion.per_run_cap;
   const ledger = loadLedger(world);
   const groups = cluster(opts.items ?? reflections(world, opts.extraDirs ?? []));
-  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world, cfg));
+  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world, cfg), ledger.entries);
   const placeholders = placeholderPatterns(world);
 
   const actions: PlanAction[] = [];

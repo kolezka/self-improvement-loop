@@ -14,6 +14,11 @@ export interface OpMeta {
 
 let opsMeta: Map<string, OpMeta> | null = null;
 
+/** Headers every /api request needs; the server guard refuses anything else. */
+export function authHeaders(): Record<string, string> {
+  return { "X-SIL-Local": "1", "X-SIL-Token": token };
+}
+
 /** The token in a URL fragment, or "" when the fragment is a route.
  *
  * The same fragment carries both: the server prints `#<token>` once, and the
@@ -75,7 +80,7 @@ export function dropReloadParam(): void {
 async function loadOpsMeta(): Promise<Map<string, OpMeta>> {
   if (opsMeta) return opsMeta;
   const res = await fetch("/api/ops", {
-    headers: { "X-SIL-Local": "1", "X-SIL-Token": token },
+    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`could not load /api/ops: HTTP ${res.status}`);
   const list = (await res.json()) as OpMeta[];
@@ -99,7 +104,7 @@ export async function call(name: string, payload: Record<string, unknown> = {}):
   const op = meta.get(name);
   if (!op) throw new Error(`unknown op: ${name}`);
 
-  const headers: Record<string, string> = { "X-SIL-Local": "1", "X-SIL-Token": token };
+  const headers = authHeaders();
   let res: Response;
   if (op.tier === "read") {
     const url = new URL(pathFor(name), window.location.origin);

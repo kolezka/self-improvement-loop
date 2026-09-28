@@ -36,6 +36,8 @@ beforeEach(() => {
     "/dist",
     "--exclude",
     "/.venv",
+    "--exclude",
+    "/.claude/worktrees",
     `${REPO_ROOT}/`,
     `${copyRoot}/`,
   ]);

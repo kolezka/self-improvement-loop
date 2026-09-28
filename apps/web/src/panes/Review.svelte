@@ -3,10 +3,11 @@
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { formatTime, plural } from "../lib/format.ts";
-  import { instructionTitle, summariseSources } from "../lib/review.ts";
+  import { actionTarget, instructionTitle, summariseSources } from "../lib/review.ts";
   import type { ReviewDetail, ReviseResult } from "../lib/api-types.ts";
   import DiffView from "../components/DiffView.svelte";
   import MarkdownBody from "../components/MarkdownBody.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
 
   const ARTIFACT_TYPES = ["skill", "hook", "rule", "agent", "none"] as const;
   const MAX_INSTRUCTION = 4000;
@@ -36,6 +37,14 @@
   let reviewedState = $state<string | null>(null);
   let statesMismatch = $state(false);
   let rehomeType = $state<string>("skill");
+  // Loading covers the window between picking a pattern and its detail
+  // landing; loadError is the pattern the load failed for, so a failure on
+  // one selection does not stick around once another is opened.
+  let loadingDetail = $state(false);
+  let loadError = $state<{ pattern: string; message: string } | null>(null);
+  // The full instruction from the last successful revise, shown as a note
+  // until the operator dismisses it, opens another proposal, or acts again.
+  let reviseNote = $state<string | null>(null);
   // Guards against a slow response landing after the operator has already
   // moved on to a different pattern.
   let seq = 0;
@@ -81,11 +90,18 @@
 
   async function openPattern(pattern: string) {
     if (revising) return;
+    // Clear the old proposal immediately: leaving it on screen while the new
+    // one loads let the operator reject or rehome the wrong pattern.
     selectedPattern = pattern;
+    detail = null;
+    diffText = "";
     reviewedState = null;
+    loadError = null;
+    loadingDetail = true;
     activeTab = "proposal";
     sourcesOpen = false;
     showRevise = false;
+    reviseNote = null;
     const mySeq = ++seq;
 
     let d: ReviewDetail;
@@ -96,6 +112,10 @@
         call("review.diff", { world: appState.world, pattern }),
       ])) as [ReviewDetail, Diff];
     } catch (e) {
+      if (mySeq === seq) {
+        loadError = { pattern, message: (e as Error).message };
+        loadingDetail = false;
+      }
       toast(`could not load proposal: ${(e as Error).message}`);
       return;
     }
@@ -107,6 +127,7 @@
     detail = d;
     diffText = df.diff;
     rehomeType = d.artifact_type;
+    loadingDetail = false;
   }
 
   function selectByIndex(index: number) {
@@ -142,12 +163,13 @@
     selectedPattern = null;
     detail = null;
     showRevise = false;
+    reviseNote = null;
     await loadQueue();
     appState.statusSeq += 1;
   }
 
   function accept() {
-    const pattern = selectedPattern;
+    const pattern = actionTarget(selectedPattern, detail);
     if (!pattern) return;
     // Accepting a retirement is an accept as well, and saying "accepted" for it
     // read as "the artifact is live now", which is the opposite of what landed.
@@ -160,13 +182,13 @@
   }
 
   function reject() {
-    const pattern = selectedPattern;
+    const pattern = actionTarget(selectedPattern, detail);
     if (!pattern) return;
     void act(() => call("skill.reject", { world: appState.world, pattern }), "rejected");
   }
 
   function rehome() {
-    const pattern = selectedPattern;
+    const pattern = actionTarget(selectedPattern, detail);
     if (!pattern) return;
     // Staged only, exactly like retire: the old artifact keeps serving until
     // the branch is accepted.
@@ -179,6 +201,10 @@
 
   function openRevise() {
     showRevise = true;
+  }
+
+  function dismissReviseNote() {
+    reviseNote = null;
   }
 
   function cancelRevise() {
@@ -207,6 +233,7 @@
         activeTab = "diff";
         showRevise = false;
         instruction = "";
+        reviseNote = text;
       }
       toast(`Revised: ${instructionTitle(text)}`, "ok");
     } catch (e) {
@@ -219,10 +246,15 @@
     }
   }
 
+  // The pattern Accept, Reject, Apply and Request changes may act on. Null
+  // while the detail is still loading, failed to load, or is stale for the
+  // current selection.
+  const target = $derived(actionTarget(selectedPattern, detail));
+
   // Whether the proposal is ready to accept, independent of a revise in
   // flight: revising disables the button but must not make the state chip
   // read as "Loading" when nothing is loading.
-  const readyToAccept = $derived(reviewedState !== null && !detail?.accept_blocked);
+  const readyToAccept = $derived(target !== null && reviewedState !== null && !detail?.accept_blocked);
   const canAccept = $derived(readyToAccept && !revising);
 
   const stateInfo = $derived.by((): { cls: string; label: string } => {
@@ -296,7 +328,24 @@
   </div>
 
   <div class="detail">
-    {#if detail}
+    {#if loadingDetail}
+      <div class="panel">
+        <div class="panel__body">
+          <div class="skeleton-stack">
+            <Skeleton width="40%" height="1.4rem" />
+            <Skeleton height="1rem" />
+            <Skeleton height="1rem" />
+            <Skeleton width="70%" height="1rem" />
+          </div>
+        </div>
+      </div>
+    {:else if loadError}
+      <div class="panel">
+        <div class="panel__body">
+          <div class="notice error">Could not load {loadError.pattern}: {loadError.message}</div>
+        </div>
+      </div>
+    {:else if detail}
       <div class="panel">
         <div class="panel__head">
           <h3>{detail.pattern}</h3>
@@ -337,6 +386,13 @@
                   {/each}
                 </div>
               {/if}
+            </div>
+          {/if}
+
+          {#if reviseNote}
+            <div class="notice revise-note">
+              <span class="grow">Requested: {reviseNote}</span>
+              <button class="ghost" onclick={dismissReviseNote} aria-label="Dismiss requested-changes note">Dismiss</button>
             </div>
           {/if}
 
@@ -391,13 +447,17 @@
             {detail.status === "retired" ? "Accept retirement" : "Accept proposal"}
           </button>
           <button
-            disabled={revising || reviewedState === null}
-            title={reviewedState === null ? "Refresh this proposal before requesting changes." : undefined}
+            disabled={revising || reviewedState === null || target === null || detail.status === "retired"}
+            title={detail.status === "retired"
+              ? "A retirement has no artifact to revise; reject it or rehome instead."
+              : reviewedState === null
+                ? "Refresh this proposal before requesting changes."
+                : undefined}
             onclick={openRevise}
           >
             Request changes
           </button>
-          <button class="danger" disabled={revising} onclick={reject}>Reject proposal</button>
+          <button class="danger" disabled={revising || target === null} onclick={reject}>Reject proposal</button>
           <span class="toolbar__spacer"></span>
           <label class="control">
             <span>Move to</span>
@@ -407,7 +467,7 @@
               {/each}
             </select>
           </label>
-          <button disabled={revising} onclick={rehome}>Apply</button>
+          <button disabled={revising || target === null} onclick={rehome}>Apply</button>
         </div>
       </div>
     {:else}
@@ -444,6 +504,17 @@
     display: flex;
     flex-direction: column;
     gap: 1.1rem;
+  }
+
+  .skeleton-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .revise-note {
+    align-items: center;
+    background: var(--panel);
   }
 
   .detail-scroll {

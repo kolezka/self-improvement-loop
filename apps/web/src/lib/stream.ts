@@ -30,6 +30,8 @@ export interface StreamHandlers {
   onReset?: () => void;
   /** The log file does not exist yet; the server keeps polling for it. */
   onMissing?: () => void;
+  /** A poll on the server hit a read error; the stream keeps running. */
+  onError?: (detail: string) => void;
 }
 
 /** Streams one engine log. Resolves when the server ends the stream, rejects on
@@ -43,6 +45,7 @@ export async function streamLog(name: string, handlers: StreamHandlers, signal: 
     if (event === "line") handlers.onLine((JSON.parse(data) as { line: string }).line);
     else if (event === "reset") handlers.onReset?.();
     else if (event === "missing") handlers.onMissing?.();
+    else if (event === "error") handlers.onError?.((JSON.parse(data) as { detail: string }).detail);
   });
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   for (;;) {

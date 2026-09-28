@@ -74,6 +74,7 @@
         onLine: (raw) => {
           if (controller !== active) return;
           missing = false;
+          error = null;
           appendLine(raw, source);
         },
         onReset: () => {
@@ -84,6 +85,9 @@
         },
         onMissing: () => {
           if (controller === active) missing = true;
+        },
+        onError: (detail) => {
+          if (controller === active) error = detail;
         },
       },
       active.signal,

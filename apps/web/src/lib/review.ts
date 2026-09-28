@@ -37,3 +37,12 @@ export function instructionTitle(text: string): string {
   const line = (text ?? "").split("\n")[0]!.trim();
   return line.length > 60 ? `${line.slice(0, 57)}...` : line;
 }
+
+/** The pattern that Accept, Reject, Apply and Request changes may act on.
+ * Returns it only when the selected list item and the loaded detail agree,
+ * so a stale detail from a previous selection (still on screen while the
+ * next one loads, or forever after a failed load) can never be acted on. */
+export function actionTarget(selected: string | null, detail: { pattern: string } | null): string | null {
+  if (selected === null || detail === null) return null;
+  return selected === detail.pattern ? selected : null;
+}

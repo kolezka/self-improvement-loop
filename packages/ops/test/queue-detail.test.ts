@@ -2,7 +2,7 @@
 // its session_id, and previews the last 40 transcript messages.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueEntry } from "@sil/core";
@@ -98,8 +98,90 @@ describe("queue.detail", () => {
     expect(out.transcript_reason).toBe("transcript not persisted");
   });
 
+  test("an unreadable transcript is an error, not a silent empty preview", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const sessionId = "sess-unreadable";
+    const e = entry(sessionId);
+    writeFiftyMessageTranscript(e.transcript_path, sessionId);
+    writeEntry("done", e);
+
+    chmodSync(e.transcript_path, 0o000);
+    try {
+      const out = (await invoke("queue.detail", { session_id: sessionId })) as {
+        transcript: unknown;
+        transcript_reason: string | null;
+      };
+      expect(out.transcript).toBeNull();
+      expect(out.transcript_reason).toMatch(/^transcript unreadable: /);
+    } finally {
+      chmodSync(e.transcript_path, 0o644);
+    }
+  });
+
   test("an unknown session id is a validation error", async () => {
     await expect(invoke("queue.detail", { session_id: "no-such-session" })).rejects.toThrow(/unknown session/);
+  });
+
+  test("tool_result text never appears in a transcript preview, only its size", async () => {
+    const sessionId = "sess-with-tool-result";
+    const e = entry(sessionId);
+    const fakeKey = "AKIAABCD1234EFGH5678";
+    const rawResult = `export AWS_KEY=${fakeKey}\nsome other command output here\n`;
+    const records: Record<string, unknown>[] = [
+      {
+        type: "assistant",
+        sessionId,
+        timestamp: "2026-09-14T10:00:00.000Z",
+        message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", id: "t1" }] },
+      },
+      {
+        type: "user",
+        sessionId,
+        timestamp: "2026-09-14T10:00:01.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: rawResult, is_error: true }],
+        },
+      },
+    ];
+    mkdirSync(join(e.transcript_path, ".."), { recursive: true });
+    writeFileSync(e.transcript_path, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    writeEntry("done", e);
+
+    const out = (await invoke("queue.detail", { session_id: sessionId })) as {
+      transcript: { role: string; text: string }[] | null;
+    };
+
+    const joined = out.transcript!.map((m) => m.text).join("\n");
+    expect(joined).not.toContain(fakeKey);
+    expect(joined).not.toContain("some other command output");
+    expect(joined).not.toContain(rawResult);
+    expect(joined).toContain(`[tool_result: ${rawResult.length} chars error]`);
+  });
+
+  test("redacts a secret in an assistant text message", async () => {
+    const sessionId = "sess-with-assistant-secret";
+    const e = entry(sessionId);
+    const fakeKey = "AKIAABCD1234EFGH5678";
+    const records: Record<string, unknown>[] = [
+      {
+        type: "assistant",
+        sessionId,
+        timestamp: "2026-09-14T10:00:00.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: `set AWS_KEY=${fakeKey} in the env` }] },
+      },
+    ];
+    mkdirSync(join(e.transcript_path, ".."), { recursive: true });
+    writeFileSync(e.transcript_path, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    writeEntry("done", e);
+
+    const out = (await invoke("queue.detail", { session_id: sessionId })) as {
+      transcript: { role: string; text: string }[] | null;
+    };
+
+    const joined = out.transcript!.map((m) => m.text).join("\n");
+    expect(joined).not.toContain(fakeKey);
+    expect(joined).toContain("[redacted]");
   });
 
   test("finds reflections that reference the session's session_id", async () => {

@@ -4,6 +4,7 @@
   import type { HistorySeries, WorkerRun } from "../lib/api-types.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { formatTime } from "../lib/format.ts";
+  import { runAdvanced } from "../lib/loop.ts";
   import WorkerStatus from "../components/WorkerStatus.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import LineChart from "../components/charts/LineChart.svelte";
@@ -16,6 +17,7 @@
     action: string;
     sources: string[];
     reason: string;
+    feedback: string | null;
   }
 
   interface PlanReport {
@@ -140,13 +142,13 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function pollUntilRun(): Promise<void> {
+  async function pollUntilRun(before: string | null): Promise<void> {
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     while (Date.now() < deadline && !destroyed) {
       await sleep(POLL_INTERVAL_MS);
       if (destroyed) return;
       await refresh();
-      if (status?.last_run) {
+      if (runAdvanced(before, status?.last_run ?? null)) {
         await Promise.all([loadRecentRuns(), loadHistory()]);
         return;
       }
@@ -155,10 +157,14 @@
 
   async function runOnceNow() {
     runningOnce = true;
+    // Captured before the worker starts: an earlier run can already have set
+    // status.last_run, so a plain non-null check would stop the poll before
+    // the new run lands.
+    const before = status?.last_run ?? null;
     try {
       const res = (await call("loop.run", { world: appState.world })) as { pid: number; log: string };
       toast(`worker started (pid ${res.pid}), log at ${res.log}`, "ok");
-      await pollUntilRun();
+      await pollUntilRun(before);
     } catch (e) {
       toast(`could not start worker: ${(e as Error).message}`);
     } finally {
@@ -313,6 +319,7 @@
                 <span class="chip">watermark <strong>{a.watermark}</strong></span>
               </div>
               {#if a.reason}<div class="muted">{a.reason}</div>{/if}
+              {#if a.feedback}<div class="muted">Feedback: {a.feedback}</div>{/if}
             </li>
           {/each}
         </ul>

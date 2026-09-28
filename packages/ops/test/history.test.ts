@@ -4,7 +4,7 @@
 // a zero, never missing from the array.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { QueueEntry } from "@sil/core";
@@ -73,6 +73,22 @@ describe("history.series", () => {
     await expect(invoke("history.series", { world: "default", days: 91 })).rejects.toThrow();
   });
 
+  test("a missing feedback file yields zeros; an unreadable one rejects", async () => {
+    const zeros = (await invoke("history.series", { world: "default", days: 1 })) as HistorySeries;
+    expect(zeros.series.votes_good[0]!.count).toBe(0);
+    expect(zeros.skipped.votes_good).toBe(0);
+
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const path = paths.humanFeedbackFile();
+    appendLine(path, { ts: new Date().toISOString(), world: "default", ref: "skill:a", vote: "good", note: "" });
+    chmodSync(path, 0o000);
+    try {
+      await expect(invoke("history.series", { world: "default", days: 1 })).rejects.toThrow();
+    } finally {
+      chmodSync(path, 0o644);
+    }
+  });
+
   test("sessions_done excludes another world and a session queue.clear hid", async () => {
     const entry = (sessionId: string, world: string, lastStop: string): QueueEntry => ({
       session_id: sessionId,
@@ -98,6 +114,17 @@ describe("history.series", () => {
 
     const out = (await invoke("history.series", { world: "default", days: 1 })) as HistorySeries;
     expect(out.series.sessions_done[0]!.count).toBe(1);
+  });
+
+  test("since compares timestamps by instant, not by string", async () => {
+    const path = paths.humanFeedbackFile();
+    // By instant, the +02:00 record (2026-09-27T23:00:00Z) is earlier than
+    // the Z record (2026-09-27T23:30:00Z), even though its string sorts later.
+    appendLine(path, { ts: "2026-09-28T01:00:00+02:00", world: "default", ref: "skill:a", vote: "good", note: "" });
+    appendLine(path, { ts: "2026-09-27T23:30:00Z", world: "default", ref: "skill:a", vote: "good", note: "" });
+
+    const out = (await invoke("history.series", { world: "default", days: 90 })) as HistorySeries;
+    expect(out.since.votes_good).toBe("2026-09-28T01:00:00+02:00");
   });
 
   test("proposals draw from the append-only log; worker_runs stays global", async () => {

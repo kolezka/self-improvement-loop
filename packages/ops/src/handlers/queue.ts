@@ -1,11 +1,22 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fsx, ValidationError } from "@sil/core";
+import { SECRET_RE } from "@sil/curriculum";
 import { isHidden, listQueue, listReflections, loadEntry, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
 import { iterEvidenceRecords } from "@sil/transcript";
 import type { ClearArgs, NoArgs, SessionArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
 import { spawnCli } from "../spawn.ts";
+
+// SECRET_RE has no "g" flag (it is used as a one-shot test elsewhere), so a
+// global copy is needed here to replace every match, not just the first.
+const SECRET_RE_GLOBAL = new RegExp(SECRET_RE.source, SECRET_RE.flags.includes("g") ? SECRET_RE.flags : `${SECRET_RE.flags}g`);
+
+/** A transcript preview can carry raw command output; redact anything that
+ * looks like a key, token or password before it leaves the server. */
+function redactSecrets(text: string): string {
+  return text.replace(SECRET_RE_GLOBAL, "[redacted]");
+}
 
 const QUEUE_LIST_CAP = 200;
 
@@ -65,7 +76,7 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 function messageText(rec: Record<string, unknown>): string {
   const message = asRecord(rec["message"]) ?? {};
   const content = message["content"];
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return redactSecrets(content);
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const block of content) {
@@ -74,16 +85,18 @@ function messageText(rec: Record<string, unknown>): string {
     if (b["type"] === "text") parts.push(String(b["text"] ?? ""));
     else if (b["type"] === "tool_use") parts.push(`[tool_use: ${String(b["name"] ?? "")}]`);
     else if (b["type"] === "tool_result") {
+      // Command output can carry anything, secrets included, and is not
+      // useful as a queue preview anyway: report its size, never its text.
       const c = b["content"];
       const text = typeof c === "string"
         ? c
         : Array.isArray(c)
           ? c.map((x) => (asRecord(x)?.["type"] === "text" ? String(asRecord(x)?.["text"] ?? "") : "")).join("\n")
           : "";
-      parts.push(`[tool_result${b["is_error"] ? " error" : ""}] ${text}`);
+      parts.push(`[tool_result: ${text.length} chars${b["is_error"] ? " error" : ""}]`);
     }
   }
-  return parts.join("\n").trim();
+  return redactSecrets(parts.join("\n").trim());
 }
 
 /** The last `limit` user/assistant messages with actual text: hook
@@ -102,6 +115,21 @@ function transcriptMessages(path: string, limit: number, maxChars: number): { ro
   return out.slice(-limit);
 }
 
+/** iterEvidenceRecords swallows a read failure (EACCES, a race) into an
+ * empty generator, which would otherwise surface as an empty transcript
+ * instead of the error it actually is. A direct read first tells them apart:
+ * missing is "not persisted", anything else is a real failure to report. */
+function transcriptStatus(path: string): { ok: true } | { ok: false; reason: string } {
+  if (!existsSync(path)) return { ok: false, reason: "transcript not persisted" };
+  try {
+    readFileSync(path, "utf8");
+    return { ok: true };
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : String(err);
+    return { ok: false, reason: `transcript unreadable: ${code}` };
+  }
+}
+
 export function queueDetail(args: SessionArgs) {
   for (const bucket of DETAIL_BUCKETS) {
     const entry = loadEntry(bucket, args.session_id);
@@ -109,13 +137,13 @@ export function queueDetail(args: SessionArgs) {
     const reflectionIds = listReflections(entry.world)
       .filter((r) => r.session_id === entry.session_id)
       .map((r) => r.id);
-    const hasTranscript = existsSync(entry.transcript_path);
+    const status = transcriptStatus(entry.transcript_path);
     return {
       bucket,
       entry,
       reflection_ids: reflectionIds,
-      transcript: hasTranscript ? transcriptMessages(entry.transcript_path, TRANSCRIPT_MESSAGE_LIMIT, TRANSCRIPT_TEXT_MAX_CHARS) : null,
-      transcript_reason: hasTranscript ? null : "transcript not persisted",
+      transcript: status.ok ? transcriptMessages(entry.transcript_path, TRANSCRIPT_MESSAGE_LIMIT, TRANSCRIPT_TEXT_MAX_CHARS) : null,
+      transcript_reason: status.ok ? null : status.reason,
     };
   }
   throw new ValidationError(`unknown session: ${JSON.stringify(args.session_id)}`);

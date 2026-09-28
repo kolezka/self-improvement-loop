@@ -277,10 +277,12 @@ export const PromotionEntry = z.object({
 export type PromotionEntry = z.infer<typeof PromotionEntry>;
 
 /** The type of the artifact that actually serves a ledger row: a re-home's
- * `served_by` wins over the drafted `artifact_type`. The one place this rule
- * lives, so the planner, the critic and the curriculum cannot disagree. */
+ * `served_by` wins over the drafted `artifact_type`, except `served_by` of
+ * "none", which means "not served" (same rule as review's entryType). The
+ * result is "none" when nothing serves the row. */
 export function servedType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): string {
-  return entry.served_by ? entry.served_by.type : entry.artifact_type;
+  if (entry.served_by && entry.served_by.type !== "none") return entry.served_by.type;
+  return entry.artifact_type;
 }
 
 export const Ledger = z.object({

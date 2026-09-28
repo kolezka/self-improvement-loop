@@ -20,7 +20,6 @@ import {
   type ArtifactType,
   type Config,
   fsx,
-  servedType,
   GitError,
   paths,
   type PromotionEntry,
@@ -92,7 +91,8 @@ function servedBy(staged: PromotionEntry | null, prior: PromotionEntry | null): 
 }
 
 function rowType(entry: PromotionEntry | null): string | null {
-  return entry ? servedType(entry) : null;
+  if (!entry) return null;
+  return entry.served_by ? entry.served_by.type : entry.artifact_type;
 }
 
 /** Whether the branch carries a type change the default branch does not know.

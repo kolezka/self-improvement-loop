@@ -272,6 +272,19 @@ describe("installedArtifacts", () => {
     expect(refs).toContain("skill:rehomed");
     expect(refs).not.toContain("none:rehomed");
   });
+
+  test("a served_by of none is not an artifact: no none:<name> ref", async () => {
+    const w = world();
+    const c = cfg(w);
+    const { saveLedger } = await import("@sil/store");
+    const { ledgerPath } = await import("@sil/core");
+    const row = (pattern: string, artifact_type: "skill" | "none") => ({ pattern, promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type, served_by: { type: "none" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null });
+    saveLedger(ledgerPath(w), { version: 1, entries: { drafted: row("drafted", "skill"), empty: row("empty", "none") } });
+
+    const refs = installedArtifacts(w, c);
+    expect(refs).toContain("skill:drafted");
+    expect(refs.some((r) => r.startsWith("none:"))).toBe(false);
+  });
 });
 
 describe("reflectSession feedback refs and lesson repo", () => {

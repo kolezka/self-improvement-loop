@@ -222,7 +222,8 @@ export function scorecardByPattern(cards: Scorecard[], entries: Readonly<Record<
     const name = card.name || (card.ref ? card.ref.split(":").slice(-1)[0]! : "");
     if (!name) continue;
     const entry = Object.hasOwn(entries, name) ? entries[name] : undefined;
-    if (entry && card.ref === `${servedType(entry)}:${name}`) out.set(name, card);
+    const type = entry ? servedType(entry) : "none";
+    if (type !== "none" && card.ref === `${type}:${name}`) out.set(name, card);
     else if (!out.has(name)) out.set(name, card);
   }
   return out;

@@ -49,7 +49,8 @@ export function installedArtifacts(world: World, _cfg: Config): string[] {
   try {
     const ledger = loadLedger(ledgerPath(world));
     for (const entry of Object.values(ledger.entries)) {
-      if (entry.status === "promoted") refs.add(`${servedType(entry)}:${entry.pattern}`);
+      const type = servedType(entry);
+      if (entry.status === "promoted" && type !== "none") refs.add(`${type}:${entry.pattern}`);
     }
   } catch {
     // a corrupt or missing ledger contributes nothing

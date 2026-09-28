@@ -49,6 +49,9 @@ register({ name: "feedback.add", tier: "local", gate: "none", args: Args.Feedbac
 register({ name: "lessons.list", tier: "read", gate: "none", args: Args.WorldArgs, fn: artifacts.lessonsList, doc: "Inbox lessons for a world." });
 register({ name: "logs.tail", tier: "read", gate: "none", args: Args.LogArgs, fn: logs.logsTail, doc: "Last N lines of one engine log." });
 
+// web console: live logs and revise
+export { tailLines } from "./handlers/logs.ts";
+
 export * from "./registry.ts";
 export * as opsArgs from "./args.ts";
 export { deps, setDeps, type Deps } from "./deps.ts";

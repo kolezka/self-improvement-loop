@@ -90,9 +90,11 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "feedback.add": ["local", "none"],
   "lessons.list": ["read", "none"],
   "logs.tail": ["read", "none"],
+  // web console: live logs and revise
+  "review.revise": ["local", "reviewed_state"],
 };
 
-describe("the 33 real ops", () => {
+describe("the 34 real ops", () => {
   test("registry has exactly the expected op names", () => {
     expect(new Set(REGISTRY.keys())).toEqual(new Set(Object.keys(EXPECTED)));
   });

@@ -249,6 +249,13 @@ interface StageContext {
   judgeThreshold: number;
 }
 
+/** One field feeds both the budget the drafter is told and the cap the lint
+ * checks, so a staging draft and a human-requested revision read the same
+ * limit. Exported for `review.revise`, which drafts outside a run. */
+export function draftCaps(cfg: Config): { maxRuleChars: number } {
+  return { maxRuleChars: cfg.promotion.max_rule_chars };
+}
+
 async function stageOne(
   world: World,
   cfg: Config,
@@ -267,8 +274,7 @@ async function stageOne(
   // conclusions it checks the artifact against.
   const drafting = draftingTexts(items);
   const lessons = lessonTexts(items);
-  // One field feeds both the budget the drafter is told and the cap the lint checks.
-  const caps = { maxRuleChars: cfg.promotion.max_rule_chars };
+  const caps = draftCaps(cfg);
   if (action.feedback) {
     // The misfire reasons travel with the evidence, so the redraft is told what
     // was wrong with the artifact it is replacing.
@@ -649,7 +655,7 @@ function ruleProblem(world: World): string | null {
  * changes what the artifact does. Anything beyond that counts as a change and
  * goes to the judge: this gate exists to stop identical redrafts, not to decide
  * whether two different wordings mean the same thing. */
-function sameArtifact(body: unknown, existing: string): boolean {
+export function sameArtifact(body: unknown, existing: string): boolean {
   const flat = (text: string): string => text.replace(/\s+/g, " ").trim();
   if (body !== null && typeof body === "object" && !Array.isArray(body)) {
     let stored: unknown;

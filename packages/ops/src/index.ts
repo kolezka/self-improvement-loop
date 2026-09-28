@@ -58,6 +58,7 @@ register({ name: "logs.tail", tier: "read", gate: "none", args: Args.LogArgs, fn
 
 // web console: live logs and revise
 export { tailLines } from "./handlers/logs.ts";
+register({ name: "review.revise", tier: "local", gate: "reviewed_state", args: Args.ReviseArgs, fn: review.reviewRevise, doc: "Ask the drafter to revise a staged proposal from a human instruction; reviewed_state must match." });
 
 export * from "./registry.ts";
 export * as opsArgs from "./args.ts";

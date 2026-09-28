@@ -22,6 +22,26 @@ export function listHuman(world?: string): HumanFeedback[] {
   return world === undefined ? all : all.filter((f) => f.world === world);
 }
 
+/** What people said was wrong with one artifact: critic misfire reasons and
+ * the notes on bad human votes, oldest first, optionally only after `since`. */
+export function complaints(world: World, ref: string, since?: string | null): string[] {
+  const out: { ts: string; text: string }[] = [];
+  const collect = (ev: Record<string, unknown>, key: string): void => {
+    if (ev["world"] !== world.name || ev["ref"] !== ref) return;
+    const ts = String(ev["ts"] ?? "");
+    if (since && !(ts > since)) return;
+    const text = String(ev[key] ?? "").trim();
+    if (text) out.push({ ts, text });
+  };
+  for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
+    if (ev["verdict"] === "misfired") collect(ev, "reason");
+  }
+  for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.humanFeedbackFile())) {
+    if (ev["vote"] === "bad") collect(ev, "note");
+  }
+  return out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0)).map((c) => c.text);
+}
+
 export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {}): Scorecard[] {
   const now = opts.now ?? new Date();
   const windowDays = opts.windowDays ?? 30;
@@ -84,7 +104,8 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
     if (!ref) continue;
     const r = String(ref);
     refs.add(r);
-    noteTs(r, ev["ts"]);
+    // A critic verdict judges a past session and is not a use, so it leaves
+    // last_used alone. Counting it kept every judged artifact from going stale.
     if (ev["verdict"] === "helpful") bump(helpfulByRef, r);
     else if (ev["verdict"] === "misfired") bump(misfiredByRef, r);
   }
@@ -148,16 +169,20 @@ function propose(
   // Both clocks below run from the promotion, not from the last write to the
   // row: reject, re-home and retire all bump last_updated, and a refused
   // redraft is neither a new promotion nor evidence of use. Rows written
-  // before promoted_at existed fall back to the old approximation.
+  // before promoted_at existed fall back to the old approximation for the
+  // retire clock only.
   const promotedTs = entry === undefined ? null : (entry.promoted_at ?? entry.last_updated);
   const promotedDt = parseTs(promotedTs);
+  // No fallback here: a reject bumps last_updated, and read as a promotion it
+  // hid a migrated row behind `new` for a week.
+  const newDt = parseTs(entry?.promoted_at ?? null);
 
-  if (promotedDt !== null && promotedDt.getTime() >= now.getTime() - 7 * 86_400_000) {
-    const days = Math.floor((now.getTime() - promotedDt.getTime()) / 86_400_000);
+  if (newDt !== null && newDt.getTime() >= now.getTime() - 7 * 86_400_000) {
+    const days = Math.floor((now.getTime() - newDt.getTime()) / 86_400_000);
     return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
 
-  if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0) {
+  if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0 && helpful === 0) {
     const lastDt = parseTs(lastUsed);
     const basisDt = lastDt ?? promotedDt;
     const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();
@@ -173,7 +198,10 @@ function propose(
     }
   }
 
-  if (misfired + humanBad >= 2 && misfired + humanBad > helpful + humanGood) {
+  // Counted past the snapshot stamped at the last stage or reject, so complaints
+  // a human already answered do not propose the same refine again.
+  const seen = entry?.feedback ? entry.feedback.misfired + entry.feedback.human_bad : 0;
+  if (misfired + humanBad - seen >= 2 && misfired + humanBad > helpful + humanGood) {
     return ["refine", `misfired+human_bad=${misfired + humanBad} exceeds helpful+human_good=${helpful + humanGood}`];
   }
 

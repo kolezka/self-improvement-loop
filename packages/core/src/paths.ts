@@ -90,6 +90,10 @@ export const payloadSamplesFile = (world: string): string => current().payloadSa
 export const nudgeFiresFile = (): string => current().nudgeFiresFile();
 export const humanFeedbackFile = (): string => join(stateDir(), "feedback", "human.jsonl");
 export const criticFeedbackFile = (): string => join(stateDir(), "feedback", "critic.jsonl");
+// Scorecards whose ledger-only refine already gated out, so the next tick does
+// not pay for the same refused draft again.
+export const refineAttemptsFile = (world: string): string =>
+  join(stateDir(), "curriculum", "refine-attempts", `${safeComponent(world)}.json`);
 export const inboxDir = (world: string): string => current().inboxDir(world);
 export const sessionDir = (sessionId: string): string => current().sessionDir(sessionId);
 export const workerLockFile = (): string => current().workerLockFile();

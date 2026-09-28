@@ -29,6 +29,7 @@ import {
   targetRoot,
   type World,
 } from "@sil/core";
+import * as feedback from "@sil/feedback";
 import * as providers from "@sil/providers";
 import type { ChatFn, DecideFn } from "@sil/providers";
 import { loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
@@ -37,7 +38,19 @@ import * as context from "./context.ts";
 import type { GateRunner } from "./deps.ts";
 import * as git from "./git.ts";
 import { lint } from "./lint.ts";
-import { branchEntry, cluster, draftingTexts, lessonTexts, loadLedger, loadPayloadCorpus, plan, reflections, sourcesText } from "./plan.ts";
+import {
+  branchEntry,
+  cluster,
+  draftingTexts,
+  lessonTexts,
+  loadLedger,
+  loadPayloadCorpus,
+  plan,
+  reflections,
+  scorecardByPattern,
+  scorecards,
+  sourcesText,
+} from "./plan.ts";
 import * as prompts from "./prompts.ts";
 import { type RouteAnswer, route } from "./router.ts";
 
@@ -116,7 +129,8 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // attempts. Spending it while planning would burn slots on patterns that later
   // gate out (a lint or judge refusal), stranding viable ones at over-cap and
   // staging nothing. The cap is enforced below, on successes.
-  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards: opts.cards, items, enforceCap: false });
+  const cards = opts.cards ?? scorecards(world);
+  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards, items, enforceCap: false });
   const cap = cfg.promotion.per_run_cap;
 
   const actionable = [];
@@ -130,7 +144,8 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   if (!opts.apply) {
     // A dry run cannot know which drafts will pass their gates, so it forecasts
     // like the plan: the first `cap` in sorted order would stage, the rest are
-    // over the cap.
+    // over the cap. Like the other gates, the staged-refine and refused-refine
+    // skips are not forecast.
     report.staged = actionable.slice(0, cap).map((a) => a.pattern);
     for (const a of actionable.slice(cap)) report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
     report.finished = fsx.nowIso();
@@ -161,8 +176,18 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // Read once: the map is a property of the world, not of the cluster being
   // drafted, and rebuilding it per pattern would re-read every artifact file.
   const knowledge = context.worldKnowledge(world, items, ledger);
+  const cardsByPattern = scorecardByPattern(cards);
+  const attempts = loadAttempts(world);
+  let attemptsChanged = false;
 
   for (const action of actionable) {
+    const ledgerOnly = action.sources.length === 0;
+    const card = cardsByPattern.get(action.pattern) ?? null;
+    // Before the cap check on purpose: a skipped refine must not look over-cap.
+    if (ledgerOnly && card && Object.hasOwn(attempts, action.pattern) && attempts[action.pattern] === attemptKey(card)) {
+      report.gated_out[action.pattern] = "the last refine at this scorecard was gated out; waiting for new feedback";
+      continue;
+    }
     // The cap bounds successful stages, so it is checked against report.staged,
     // which only a real stage grows. A pattern that gated out above passed its
     // slot to the next candidate rather than wasting it.
@@ -170,14 +195,16 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
       continue;
     }
+    const attempt = { drafted: false, transient: false };
     try {
-      await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat, {
+      await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat, attempt, {
         target,
         defaultRef,
         payloads,
         ledger,
         ledgerRel,
         knowledge,
+        cards: cardsByPattern,
         gateRunner: opts.gateRunner,
         decide,
         typedJudge: judgeEndpoint !== null,
@@ -186,8 +213,19 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
     } catch (e) {
       // One pattern's failure is not the run's.
       report.gated_out[action.pattern] = `staging failed: ${describe(e)}`;
+      attempt.transient = true;
+    }
+    if (ledgerOnly && card) {
+      if (report.staged.includes(action.pattern) && Object.hasOwn(attempts, action.pattern)) {
+        delete attempts[action.pattern];
+        attemptsChanged = true;
+      } else if (!report.staged.includes(action.pattern) && attempt.drafted && !attempt.transient) {
+        attempts[action.pattern] = attemptKey(card);
+        attemptsChanged = true;
+      }
     }
   }
+  if (attemptsChanged) saveAttempts(world, attempts);
 
   report.finished = fsx.nowIso();
   return report;
@@ -200,6 +238,8 @@ interface StageContext {
   ledger: { version: number; entries: Record<string, PromotionEntry> };
   ledgerRel: string;
   knowledge: context.KnowledgeRow[];
+  /** The scorecards this run planned from, stamped on each staged row. */
+  cards: Map<string, Scorecard>;
   gateRunner?: GateRunner;
   /** Set when the judge runs on a System One endpoint: the gate then asks for
    * a probability per reject rule instead of a JSON verdict. */
@@ -212,25 +252,30 @@ async function stageOne(
   world: World,
   cfg: Config,
   report: RunReport,
-  action: { pattern: string; action: string; count: number; reason: string },
+  action: { pattern: string; action: string; count: number; reason: string; sources: string[]; feedback: string | null },
   items: Reflection[],
   chat: ChatFn,
+  /** `drafted` once a draft came back; `transient` when a provider or staging
+   * failure ended it, which says nothing about the draft and is not cached. */
+  attempt: { drafted: boolean; transient: boolean },
   ctx: StageContext,
 ): Promise<void> {
   const pattern = action.pattern;
-  const sources = sourcesText(items);
+  let sources = sourcesText(items);
   // The drafter reads what failed and how it was verified; the judge reads the
   // conclusions it checks the artifact against.
   const drafting = draftingTexts(items);
   const lessons = lessonTexts(items);
   // One field feeds both the budget the drafter is told and the cap the lint checks.
   const caps = { maxRuleChars: cfg.promotion.max_rule_chars };
-  if (action.action === "refine" && action.reason) {
+  if (action.feedback) {
     // The misfire reasons travel with the evidence, so the redraft is told what
     // was wrong with the artifact it is replacing.
-    drafting.push(`Artifact feedback: ${action.reason}`);
-    lessons.push(`Artifact feedback: ${action.reason}`);
+    drafting.push(`Artifact feedback: ${action.feedback}`);
+    lessons.push(`Artifact feedback: ${action.feedback}`);
   }
+  // A scorecard refine of a row with no reflections on disk.
+  const ledgerOnly = action.sources.length === 0;
 
   const branch = git.branchName(world.name, pattern);
   const prior = ctx.ledger.entries[pattern] ?? null;
@@ -241,6 +286,12 @@ async function stageOne(
   // the operator accepts a promotion of the thing they asked to retire.
   if (stagedEntry && stagedEntry.status === "retired") {
     report.gated_out[pattern] = `a retirement is staged on ${branch} and waits for review`;
+    return;
+  }
+  // Nothing new to say since the last draft, so a redraft would only reset the
+  // branch a human may be reading and spend model calls every tick.
+  if (ledgerOnly && stagedEntry && stagedEntry.status === "staged") {
+    report.gated_out[pattern] = "a refine is staged and waits for review";
     return;
   }
   const served = servedBy(stagedEntry, prior);
@@ -260,6 +311,20 @@ async function stageOne(
     // flips to "refine" and the drafter keeps the structural keys it was given,
     // so a placeholder's always-fire gate silently becomes the real one.
     existing = null;
+  }
+
+  if (ledgerOnly) {
+    // With no reflections the complaints are the evidence. Grounding in the live
+    // artifact would pass any redraft that kept its old vocabulary.
+    const ref = ctx.cards.get(pattern)?.ref ?? null;
+    const said = ref ? feedback.complaints(world, ref, prior?.promoted_at ?? null) : [];
+    if (said.length === 0) {
+      report.gated_out[pattern] = "no complaint text to ground a refine in";
+      return;
+    }
+    sources = said.join("\n\n");
+    drafting.push(...said);
+    lessons.push(...said);
   }
 
   // A forced rule is the one case where the type is known before drafting, so
@@ -292,8 +357,10 @@ async function stageOne(
   } catch (e) {
     // A provider failure gates one pattern.
     report.gated_out[pattern] = `draft failed: ${describe(e)}`;
+    attempt.transient = true;
     return;
   }
+  attempt.drafted = true;
   let [body, answer] = prompts.parseDraft(raw, { forcedType });
 
   let routedType: string;
@@ -340,6 +407,7 @@ async function stageOne(
       // Isolate the provider failure again.
       report.gated_out[pattern] =
         `redraft failed after the router selected ${routedType} (${routedReason}): ${describe(e)}`;
+      attempt.transient = true;
       return;
     }
     [body] = prompts.parseDraft(raw, { forcedType: routedType });
@@ -387,6 +455,7 @@ async function stageOne(
     } catch (e) {
       // A provider failure is not an approval.
       report.gated_out[pattern] = `judge failed: ${describe(e)}`;
+      attempt.transient = true;
       return;
     }
     [passed, why] = prompts.verdictFromNouls(answers, ctx.judgeThreshold);
@@ -400,6 +469,7 @@ async function stageOne(
     } catch (e) {
       // A provider failure is not an approval.
       report.gated_out[pattern] = `judge failed: ${describe(e)}`;
+      attempt.transient = true;
       return;
     }
     [passed, why] = prompts.parseVerdict(verdictRaw);
@@ -413,7 +483,8 @@ async function stageOne(
   const autoMerge = cfg.promotion.auto_merge && world.llm !== "local";
   const entry: PromotionEntry = {
     pattern,
-    promoted_at_count: action.count,
+    // A ledger-only refine counts nothing new, so the watermark must not drop.
+    promoted_at_count: Math.max(action.count, prior?.promoted_at_count ?? 0),
     rejected_at_count: prior ? prior.rejected_at_count : 0,
     status: autoMerge ? "promoted" : "staged",
     artifact_type: routedType as ArtifactType,
@@ -426,7 +497,9 @@ async function stageOne(
       ? ((prior?.status === "promoted" ? prior.promoted_at : null) ?? fsx.nowIso())
       : (prior?.promoted_at ?? null),
     commit: null,
-    feedback: null,
+    // The scorecard as the drafter saw it: a refine proposal counts only new
+    // complaints past this snapshot.
+    feedback: ctx.cards.get(pattern) ?? null,
   };
 
   // An ordinary redraft resets its branch onto the default branch, so a staged
@@ -484,6 +557,26 @@ async function stageOne(
   report.staged.push(pattern);
 
   if (autoMerge) autoMergeBranch(report, ctx.target, ctx.defaultRef, branch, pattern);
+}
+
+type Attempts = Record<string, string>;
+
+/** The scorecard fields a refine answers. uses_30d and last_used drift daily and
+ * say nothing new about what is wrong, so they would re-open every refused draft. */
+function attemptKey(card: Scorecard): string {
+  return JSON.stringify([card.misfired, card.human_bad, card.helpful, card.human_good]);
+}
+
+function loadAttempts(world: World): Attempts {
+  const raw = fsx.readJsonOr<unknown>(paths.refineAttemptsFile(world.name), {});
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Attempts = {};
+  for (const [k, v] of Object.entries(raw)) if (typeof v === "string") out[k] = v;
+  return out;
+}
+
+function saveAttempts(world: World, attempts: Attempts): void {
+  fsx.writeJson(paths.refineAttemptsFile(world.name), attempts);
 }
 
 /** Fast-forward the staged branch into the default branch, in the live repo.

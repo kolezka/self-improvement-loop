@@ -6,14 +6,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  fsx,
   type Ledger,
   ledgerPath,
   LlmConfig,
+  paths,
   type PromotionEntry,
   RULE_END,
   RULE_START,
   ruleTag,
   saveLlm,
+  Scorecard,
   targetRoot,
   type World,
 } from "@sil/core";
@@ -722,6 +725,143 @@ describe("served_by suppression", () => {
     expect(prompt).toContain("Write a");
     expect(prompt).not.toContain("Refine the existing");
     expect(prompt).not.toContain("awaiting a real draft");
+  });
+});
+
+describe("a scorecard refine with no reflections", () => {
+  // V1 rows were migrated without reflections; for them the complaints are the
+  // only evidence, so they are what the redraft is grounded in.
+  const REASON = "misfired+human_bad=4 exceeds helpful+human_good=1";
+  const COMPLAINT = "It let me call the change safe before I ran rg over the changed symbol and read the graphify inventory.";
+  const card = (misfired = 3) =>
+    Scorecard.parse({ ref: `rule:${PATTERN}`, type: "rule", name: PATTERN, misfired, human_bad: 1, helpful: 1, proposal: "refine", reason: REASON });
+
+  function complain(world: World, reason: string): void {
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: `rule:${PATTERN}`, verdict: "misfired", reason, reflection_id: "r1", ts: "2026-09-20T00:00:00Z", world: world.name });
+  }
+
+  function seedLive(opts: { complaint?: string | null } = {}): { world: World; repo: string } {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const old = `- Run \`rg\` over the changed symbol before calling the change safe; the graphify inventory misses consumers. ${ruleTag(PATTERN)}`;
+    commitFile(repo, "RULES.md", `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        promoted_at_count: 17,
+        rejected_at_count: 20,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+    const complaint = opts.complaint === undefined ? COMPLAINT : opts.complaint;
+    if (complaint !== null) complain(world, complaint);
+    return { world, repo };
+  }
+
+  test("it redrafts with the feedback and never lowers the watermark", async () => {
+    const { world, repo } = seedLive();
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(report.gated_out).toEqual({});
+    expect(report.staged).toEqual([PATTERN]);
+    expect(chat.promptsFor("drafter")[0]).toContain(`Artifact feedback: ${REASON}`);
+    expect(chat.promptsFor("drafter")[0]).toContain(COMPLAINT);
+    expect(chat.promptsFor("judge")[0]).toContain(COMPLAINT);
+    const branch = branchName(world.name, PATTERN);
+    expect(git.git(repo, ["log", "-1", "--format=%s", branch])).toBe(`feat(rule): refine ${PATTERN} (auto, gated)`);
+    const row = parseLedger(git.show(repo, branch, "promotions.json").text).entries[PATTERN]!;
+    expect(row.promoted_at_count).toBe(17);
+    expect(row.rejected_at_count).toBe(20);
+    expect(row.feedback).toEqual(card());
+  });
+
+  test("a refine with fewer reflections than the mark keeps the mark", async () => {
+    const { world, repo } = seedLive();
+    addReflections(world, PATTERN, 2);
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    const row = parseLedger(git.show(repo, branchName(world.name, PATTERN), "promotions.json").text).entries[PATTERN]!;
+    expect(row.promoted_at_count).toBe(17);
+  });
+
+  test("with no complaint text there is nothing to ground in and no model call", async () => {
+    const { world } = seedLive({ complaint: null });
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(report.gated_out[PATTERN]).toBe("no complaint text to ground a refine in");
+    expect(chat.calls).toEqual([]);
+  });
+
+  test("a redraft that only keeps the old wording is not grounded", async () => {
+    // Grounded in the live artifact, keeping its vocabulary passed the lint by
+    // construction. The complaints say something else, so this draft must fail.
+    const { world } = seedLive({ complaint: "It interrupted a docs-only markdown session repeatedly." });
+    const kept = "- Run `rg` over the changed symbol before calling the change safe; the graphify inventory misses wrapped consumers.";
+    const chat = new FakeChat({ draft: { artifact: kept } });
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("not grounded");
+  });
+
+  test("a refused refine is not redrafted until the scorecard changes", async () => {
+    const { world } = seedLive();
+    const chat = new FakeChat({ draft: { artifact: ruleBody() }, verdict: false, reason: "rule 3" });
+
+    const first = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+    expect(first.gated_out[PATTERN]).toBe("judge: rule 3");
+    const second = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(second.gated_out[PATTERN]).toContain("waiting for new feedback");
+    expect(chat.roles.filter((r) => r === "drafter")).toHaveLength(1);
+
+    complain(world, COMPLAINT);
+    await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card(4)] }));
+    expect(chat.roles.filter((r) => r === "drafter")).toHaveLength(2);
+  });
+
+  test("a provider failure is not cached: the next tick drafts again", async () => {
+    const { world } = seedLive();
+    let drafts = 0;
+    const failing: ChatFn = async () => {
+      drafts += 1;
+      throw new Error("provider down");
+    };
+    const first = await run(world, makeCfg(), opts({ apply: true, chat: failing, cards: [card()] }));
+    expect(first.gated_out[PATTERN]).toContain("draft failed");
+
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const second = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(drafts).toBe(1);
+    expect(chat.roles.filter((r) => r === "drafter")).toHaveLength(1);
+    expect(second.staged).toEqual([PATTERN]);
+  });
+
+  test("a second tick while the refine is staged makes no model call", async () => {
+    const { world, repo } = seedLive();
+    await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: { artifact: ruleBody() } }).fn, cards: [card()] }));
+    const branch = branchName(world.name, PATTERN);
+    const first = git.git(repo, ["rev-parse", branch]);
+
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toBe("a refine is staged and waits for review");
+    expect(chat.calls).toEqual([]);
+    expect(git.git(repo, ["rev-parse", branch])).toBe(first);
   });
 });
 

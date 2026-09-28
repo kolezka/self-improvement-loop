@@ -289,7 +289,8 @@ export function watermark(ledger: Ledger, pattern: string): number {
   return Math.max(entry.promoted_at_count, entry.rejected_at_count);
 }
 
-/** What this world would do next, deterministic and sorted by pattern.
+/** What this world would do next, deterministic: clustered patterns sorted by
+ * pattern, then ledger-only scorecard proposals sorted by pattern.
  *
  * Actions:
  *   promote          new evidence past the watermark, inside the per-run cap
@@ -316,9 +317,14 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
 
     let action: PlanActionKind = "below-threshold";
     let reason = "";
+    let feedback: string | null = null;
     if (count - mark >= threshold) {
       action = "promote";
       reason = `${count - mark} new reflection(s) past the watermark ${mark}`;
+      // New evidence wins the action, but the redraft still hears the complaint.
+      if (entry && entry.status === "promoted" && card && card.proposal === "refine") {
+        feedback = card.reason || "scorecard proposes a refine";
+      }
     } else if (placeholders.has(pattern)) {
       action = "promote";
       reason = "a re-homed placeholder is staged with no real draft yet";
@@ -326,6 +332,7 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
       if (card.proposal === "refine") {
         action = "refine";
         reason = card.reason || "scorecard proposes a refine";
+        feedback = reason;
       } else if (card.proposal === "retire-candidate") {
         action = "retire-candidate";
         reason = card.reason || "scorecard proposes retirement";
@@ -340,10 +347,28 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
       reason = `${count} reflection(s); the threshold is ${threshold}`;
     }
 
-    actions.push({ pattern, count, watermark: mark, action, sources, reason });
+    actions.push({ pattern, count, watermark: mark, action, sources, reason, feedback });
   }
 
-  // Only actionable work spends the budget, in sorted-pattern order, so the
+  // Promoted rows with no reflections (V1 migrated none) reach refine only here,
+  // after the clusters so new evidence takes the cap first.
+  const clustered = new Set(groups.map((g) => g.pattern));
+  for (const pattern of Object.keys(ledger.entries).sort()) {
+    const entry = ledger.entries[pattern]!;
+    if (clustered.has(pattern) || entry.status !== "promoted") continue;
+    const card = byPattern.get(pattern);
+    if (!card) continue;
+    const mark = watermark(ledger, pattern);
+    if (card.proposal === "refine") {
+      const reason = card.reason || "scorecard proposes a refine";
+      actions.push({ pattern, count: entry.promoted_at_count, watermark: mark, action: "refine", sources: [], reason, feedback: reason });
+    } else if (card.proposal === "retire-candidate") {
+      const reason = card.reason || "scorecard proposes retirement";
+      actions.push({ pattern, count: entry.promoted_at_count, watermark: mark, action: "retire-candidate", sources: [], reason, feedback: null });
+    }
+  }
+
+  // Only actionable work spends the budget, in the order above, so the
   // forecast is reproducible. `retire-candidate` is informational and costs
   // nothing. This is a prediction: `run()` re-enforces the cap on real successes,
   // so it disables this pass (`enforceCap: false`) and never strands a pattern

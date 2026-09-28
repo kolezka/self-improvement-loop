@@ -4,7 +4,7 @@
 // a zero, never missing from the array.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { QueueEntry } from "@sil/core";
@@ -71,6 +71,22 @@ describe("history.series", () => {
 
   test("rejects days out of range", async () => {
     await expect(invoke("history.series", { world: "default", days: 91 })).rejects.toThrow();
+  });
+
+  test("a missing feedback file yields zeros; an unreadable one rejects", async () => {
+    const zeros = (await invoke("history.series", { world: "default", days: 1 })) as HistorySeries;
+    expect(zeros.series.votes_good[0]!.count).toBe(0);
+    expect(zeros.skipped.votes_good).toBe(0);
+
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const path = paths.humanFeedbackFile();
+    appendLine(path, { ts: new Date().toISOString(), world: "default", ref: "skill:a", vote: "good", note: "" });
+    chmodSync(path, 0o000);
+    try {
+      await expect(invoke("history.series", { world: "default", days: 1 })).rejects.toThrow();
+    } finally {
+      chmodSync(path, 0o644);
+    }
   });
 
   test("sessions_done excludes another world and a session queue.clear hid", async () => {

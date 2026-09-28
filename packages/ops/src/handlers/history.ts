@@ -80,8 +80,13 @@ export function readJsonl(path: string, world: string | null): { records: Record
   let text: string;
   try {
     text = fsx.readText(path);
-  } catch {
-    return { records: [], skipped: 0 };
+  } catch (err) {
+    // Missing is "no records yet". Anything else (permission denied, a
+    // directory in the way) is a real failure and must not read as empty.
+    if (err && typeof err === "object" && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { records: [], skipped: 0 };
+    }
+    throw err;
   }
   const records: Record<string, unknown>[] = [];
   let skipped = 0;

@@ -2,7 +2,7 @@
 // Covers INVARIANT 2 (promotion and rejection cost the same watermark).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   fsx,
@@ -261,8 +261,21 @@ describe("scorecards", () => {
   test("no scorecards at all yields no proposals", () => {
     addReflections(world, PATTERN, 4);
     writeLedger(world, [entry({ pattern: PATTERN, promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
-    expect(scorecards(world)).toEqual([]);
+    expect(scorecards(world, makeCfg({ threshold: 3 }))).toEqual([]);
     expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
+  });
+
+  test("the planner sees an event appended after the cache went stale, without an explicit rebuild", () => {
+    addReflections(world, PATTERN, 4);
+    writeLedger(world, [entry({ pattern: PATTERN, promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
+    const cfg = makeCfg({ threshold: 3 });
+    feedback.rebuild(world, cfg);
+    // Backdate the cache so the usage event appended below counts as newer.
+    utimesSync(paths.scorecardsFile(world.name), new Date(0), new Date(0));
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: new Date().toISOString(), session_id: "s1", world: world.name, kind: "skill", ref: `skill:${PATTERN}` });
+
+    const cards = scorecards(world, cfg);
+    expect(cards.find((c) => c.ref === `skill:${PATTERN}`)!.uses_30d).toBe(1);
   });
 });
 

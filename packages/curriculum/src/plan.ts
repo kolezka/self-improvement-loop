@@ -200,10 +200,11 @@ export function loadPayloadCorpus(world?: World | null): Record<string, unknown>
   return out;
 }
 
-/** Artifact scorecards, or none when the feedback half is not installed. */
-export function scorecards(world: World): Scorecard[] {
+/** Artifact scorecards, freshly recomputed when the cached file predates an
+ * event source, or none when the feedback half is not installed. */
+export function scorecards(world: World, cfg: Config): Scorecard[] {
   try {
-    return [...feedback.load(world)];
+    return [...feedback.load(world, cfg)];
   } catch {
     // A missing scorecard is no proposal, not a crash.
     return [];
@@ -304,7 +305,7 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
   const cap = cfg.promotion.per_run_cap;
   const ledger = loadLedger(world);
   const groups = cluster(opts.items ?? reflections(world, opts.extraDirs ?? []));
-  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world));
+  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world, cfg));
   const placeholders = placeholderPatterns(world);
 
   const actions: PlanAction[] = [];

@@ -3,9 +3,27 @@
 
 import { fsx, ledgerPath, paths, type Config, type HumanFeedback, type Ledger, type Scorecard, type UsageEvent, type World } from "@sil/core";
 import { listReflections, loadAliases, loadLedger } from "@sil/store";
-import { installedArtifacts } from "@sil/critic";
+import { installedArtifacts, resolveArtifactRef } from "@sil/critic";
 
 export interface ScorecardOptions { now?: Date; windowDays?: number }
+
+/** Diagnostics alongside a scorecard build: signal that would otherwise be
+ * silently dropped. Not part of `Scorecard[]` itself, so every existing
+ * reader keeps its return type; call `scorecardDiagnostics` for this. */
+export interface ScorecardDiagnostics {
+  /** critic.jsonl lines for this world with a bare (unprefixed) ref that did
+   * not resolve to exactly one installed artifact: unknown or ambiguous.
+   * Excluded from every scorecard row rather than guessed into one. */
+  unresolved_critic_refs: number;
+}
+
+/** Fold a bare critic-feedback ref ("name", no "type:" prefix) into its
+ * "type:name" row when exactly one ref already known to this world carries
+ * that name. Returns null, never a guess, when it is unknown or ambiguous;
+ * the caller counts that in diagnostics instead of adding a phantom row. */
+function resolveBareRef(ref: string, known: ReadonlySet<string>): string | null {
+  return resolveArtifactRef(ref, [...known]);
+}
 
 /** Days after a refine was staged or refused before recurrence may propose it again. */
 export const REFINE_COOLDOWN_DAYS = 7;
@@ -45,7 +63,7 @@ export function complaints(world: World, ref: string, since?: string | null): st
   return out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0)).map((c) => c.text);
 }
 
-export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {}): Scorecard[] {
+function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {}): { cards: Scorecard[]; diagnostics: ScorecardDiagnostics } {
   const now = opts.now ?? new Date();
   const windowDays = opts.windowDays ?? 30;
   const windowStart = new Date(now.getTime() - windowDays * 86_400_000);
@@ -101,11 +119,22 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
     }
   }
 
+  // World filter first, name resolution after (design rule 6): a bare ref is
+  // only ever matched against this world's own refs, never across worlds.
+  let unresolvedCriticRefs = 0;
   for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
     if (ev["world"] !== world.name) continue;
-    const ref = ev["ref"];
-    if (!ref) continue;
-    const r = String(ref);
+    if (ev["ref_unresolved"]) {
+      unresolvedCriticRefs += 1;
+      continue;
+    }
+    const rawRef = ev["ref"];
+    if (!rawRef) continue;
+    const r = resolveBareRef(String(rawRef), refs);
+    if (r === null) {
+      unresolvedCriticRefs += 1;
+      continue;
+    }
     refs.add(r);
     // A critic verdict judges a past session and is not a use, so it leaves
     // last_used alone. Counting it kept every judged artifact from going stale.
@@ -166,7 +195,16 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
       snapshot_at: null,
     });
   }
-  return out;
+  return { cards: out, diagnostics: { unresolved_critic_refs: unresolvedCriticRefs } };
+}
+
+export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {}): Scorecard[] {
+  return buildScorecards(world, cfg, opts).cards;
+}
+
+/** Signal `scorecards` drops rather than guesses at: see `ScorecardDiagnostics`. */
+export function scorecardDiagnostics(world: World, cfg: Config, opts: ScorecardOptions = {}): ScorecardDiagnostics {
+  return buildScorecards(world, cfg, opts).diagnostics;
 }
 
 /** Reflections in the window created on or after the promotion day. With no
@@ -322,8 +360,30 @@ export function rebuild(world: World, cfg: Config): string {
   return path;
 }
 
-export function load(world: World): Scorecard[] {
+/** True when the scorecards file on disk predates an event source it is
+ * built from: the worker writes it on its own cadence, and a usage, nudge,
+ * critic or human-feedback line appended since then means the cached counts
+ * (uses_30d chief among them) no longer match what happened. A missing file
+ * is not "stale": `load` already reads that as no scorecards yet, same as
+ * before this check existed. */
+function scorecardsFileStale(scorecardsPath: string): boolean {
+  const cacheMtime = fsx.mtimeMs(scorecardsPath);
+  if (cacheMtime === null) return false;
+  const sources = [paths.usageEventsFile(), paths.nudgeFiresFile(), paths.criticFeedbackFile(), paths.humanFeedbackFile()];
+  return sources.some((p) => {
+    const m = fsx.mtimeMs(p);
+    return m !== null && m > cacheMtime;
+  });
+}
+
+/** Scorecards for a world: freshly computed from the event files when the
+ * cached scorecards.json predates one of them, otherwise read straight off
+ * disk. Every reader that decides from scorecards (the curriculum planner,
+ * the CLI, the server API) goes through this, so none of them acts on a
+ * stale `uses_30d` just because nothing has called `rebuild` since. */
+export function load(world: World, cfg: Config): Scorecard[] {
   const path = paths.scorecardsFile(world.name);
+  if (scorecardsFileStale(path)) return scorecards(world, cfg);
   const raw = fsx.readJsonOr<unknown>(path, null);
   if (!Array.isArray(raw)) return [];
   const out: Scorecard[] = [];

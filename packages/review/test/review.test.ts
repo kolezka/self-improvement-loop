@@ -737,12 +737,15 @@ describe("reject", () => {
     saveLedger(ledgerPath(world), ledger);
     git.git(repo, ["commit", "-q", "-am", "chore: a high mark"]);
     // A stale scorecards file says 1; the events say 4. Reject must stamp what is true now.
-    const stale = Scorecard.parse({ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, misfired: 1, proposal: "refine", reason: "misfires" });
-    mkdirSync(join(paths.scorecardsFile(world.name), ".."), { recursive: true });
-    writeFileSync(paths.scorecardsFile(world.name), JSON.stringify([stale]));
+    // Events land first, then the stale file, so the file's own mtime stays the
+    // newer one: load() must not see it as stale just from this setup, only
+    // reject()'s own direct, unconditional scorecards() read matters here.
     for (let i = 0; i < 4; i++) {
       fsx.appendJsonl(paths.criticFeedbackFile(), { ref: `skill:${PATTERN}`, verdict: "misfired", reason: "noise", reflection_id: `r${i}`, ts: new Date().toISOString(), world: world.name });
     }
+    const stale = Scorecard.parse({ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, misfired: 1, proposal: "refine", reason: "misfires" });
+    mkdirSync(join(paths.scorecardsFile(world.name), ".."), { recursive: true });
+    writeFileSync(paths.scorecardsFile(world.name), JSON.stringify([stale]));
     await stage(world, PATTERN, [], `${QUOTE}, and re-run it after every rebase`);
     expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(true);
 

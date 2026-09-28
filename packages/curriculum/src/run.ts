@@ -129,7 +129,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // attempts. Spending it while planning would burn slots on patterns that later
   // gate out (a lint or judge refusal), stranding viable ones at over-cap and
   // staging nothing. The cap is enforced below, on successes.
-  const cards = opts.cards ?? scorecards(world);
+  const cards = opts.cards ?? scorecards(world, cfg);
   const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards, items, enforceCap: false });
   const cap = cfg.promotion.per_run_cap;
 

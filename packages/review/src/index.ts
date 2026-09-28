@@ -253,13 +253,13 @@ export function diff(world: World, _cfg: Config, pattern: string): ReviewDiff {
 }
 
 /** Every pattern the ledger knows, joined with live counts and scorecards. */
-export function inventory(world: World, _cfg: Config, opts: ReviewOptions = {}): RouterRow[] {
+export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): RouterRow[] {
   const ledger = loadLedger(world);
   const counts = new Map<string, number>();
   for (const reflection of reflections(world, opts.extraDirs ?? [])) {
     counts.set(reflection.pattern, (counts.get(reflection.pattern) ?? 0) + 1);
   }
-  const cards = scorecardByPattern(scorecards(world));
+  const cards = scorecardByPattern(scorecards(world, cfg));
   const rows: RouterRow[] = [];
   for (const pattern of Object.keys(ledger.entries).sort()) {
     const entry = ledger.entries[pattern]!;

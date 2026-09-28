@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type World } from "@sil/core";
 import { saveAliases, saveLedger, writeReflection } from "@sil/store";
-import { complaints, compactUsageEvents, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecards } from "../src/index.ts";
+import { complaints, compactUsageEvents, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecardDiagnostics, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -288,9 +288,84 @@ describe("rebuild and load", () => {
     const { w, c } = buildWorldAndLedger();
     seedSignals();
     rebuild(w, c);
-    const loaded = new Map(load(w).map((s) => [s.ref, s]));
+    const loaded = new Map(load(w, c).map((s) => [s.ref, s]));
     expect(loaded.has("agent:dead-thing")).toBe(true);
     expect(loaded.get("agent:dead-thing")!.proposal).toBe("retire-candidate");
+  });
+});
+
+describe("critic feedback ref resolution", () => {
+  test("a bare ref for a known skill folds into skill:<name>, not a phantom row", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "new-thing", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.get("skill:new-thing")!.helpful).toBe(1);
+    expect(cards.has("new-thing")).toBe(false);
+  });
+
+  test("an ambiguous bare ref creates no row and is counted, not silently dropped", () => {
+    const { w, c } = buildWorldAndLedger();
+    // Two installed artifacts share the bare name "dup-thing" across types.
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "skill", ref: "skill:dup-thing" });
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(1)), pattern: "dup-thing", session: "s1", event: "PreToolUse" });
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "dup-thing", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s]));
+    expect(cards.has("dup-thing")).toBe(false);
+    expect(cards.get("skill:dup-thing")!.helpful).toBe(0);
+    expect(cards.get("hook:dup-thing")!.helpful).toBe(0);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+
+  test("an unknown bare ref creates no row and is counted", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref: "never-installed-thing", verdict: "helpful", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = scorecards(w, c, { now: NOW });
+    expect(cards.some((card) => card.ref === "never-installed-thing" || card.name === "never-installed-thing")).toBe(false);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+
+  test("a line the critic already flagged as ref_unresolved is counted, not turned into a row", () => {
+    const { w, c } = buildWorldAndLedger();
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ref_unresolved: "outline", verdict: "used", reflection_id: "r1", ts: iso(daysAgo(1)), world: "default" });
+
+    const cards = scorecards(w, c, { now: NOW });
+    expect(cards.some((card) => card.name === "outline")).toBe(false);
+    expect(scorecardDiagnostics(w, c, { now: NOW }).unresolved_critic_refs).toBe(1);
+  });
+});
+
+describe("load freshness", () => {
+  test("an event appended after the scorecards cache goes stale is reflected by load", () => {
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    rebuild(w, c);
+    const before = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(before.uses_30d).toBe(2);
+
+    // Backdate the cache so any later write to a source file counts as newer,
+    // deterministically, without depending on filesystem mtime resolution.
+    utimesSync(paths.scorecardsFile(w.name), new Date(0), new Date(0));
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s9", world: "default", kind: "skill", ref: "skill:steady-thing" });
+
+    const after = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(after.uses_30d).toBe(3);
+  });
+
+  test("a fresh cache is read straight off disk, not recomputed", () => {
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    rebuild(w, c);
+    fsx.appendJsonl(paths.usageEventsFile(), { ts: iso(daysAgo(1)), session_id: "s9", world: "default", kind: "skill", ref: "skill:steady-thing" });
+    // Force the cache unambiguously newer than every source, regardless of how
+    // close together the writes above land on the filesystem's clock.
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(paths.scorecardsFile(w.name), future, future);
+
+    const card = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
+    expect(card.uses_30d).toBe(2);
   });
 });
 
@@ -531,7 +606,7 @@ describe("recurrence since promotion", () => {
     use();
     reflect(2);
     rebuild(world(), cfg(world()));
-    expect(load(world()).find((c) => c.ref === "rule:recurring")).toMatchObject({ recurrence_30d: 1, snapshot_at: null });
+    expect(load(world(), cfg(world())).find((c) => c.ref === "rule:recurring")).toMatchObject({ recurrence_30d: 1, snapshot_at: null });
   });
 });
 

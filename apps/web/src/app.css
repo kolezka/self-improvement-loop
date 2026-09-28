@@ -1365,3 +1365,29 @@ button.queue-row:hover:not(:disabled) {
 .transcript-list pre {
   margin: 0.4rem 0 0;
 }
+
+/* lessons */
+.lesson-text {
+  margin: 0.15rem 0 0;
+  max-width: 78ch;
+}
+
+.lesson-text--clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.lessons-card__body {
+  max-height: 34rem;
+  overflow-y: auto;
+}
+
+.lessons-search {
+  margin-bottom: 0.75rem;
+}
+
+.lessons-actions {
+  margin: 0.75rem 0 0;
+}

@@ -19,6 +19,10 @@ export interface LogStreamOptions {
   /** Cap on the buffered partial line; past this it is flushed as a line of
    * its own rather than growing forever while no newline arrives. */
   pendingCapBytes?: number;
+  /** Test-only override for the range reader, letting a test force a read
+   * failure (a file removed or replaced between stat and read) without
+   * racing a real file system. */
+  readRange?: (path: string, from: number, to: number) => string;
 }
 
 const DEFAULT_POLL_MS = 500;
@@ -77,6 +81,7 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
   const initialLines = opts.initialLines ?? DEFAULT_INITIAL_LINES;
   const readCapBytes = opts.readCapBytes ?? DEFAULT_READ_CAP_BYTES;
   const pendingCapBytes = opts.pendingCapBytes ?? DEFAULT_PENDING_CAP_BYTES;
+  const readRangeFn = opts.readRange ?? readRange;
   const encoder = new TextEncoder();
 
   let offset = 0;
@@ -118,7 +123,7 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
         // so a file not ending in a newline leaves a partial line as the
         // last entry. Sending it as a full line now, then the remainder as a
         // second line once the newline lands, tears one line into two.
-        const endsInNewline = size === 0 || readRange(path, size - 1, size) === "\n";
+        const endsInNewline = size === 0 || readRangeFn(path, size - 1, size) === "\n";
         if (!endsInNewline && tail.length > 0) pending = tail.pop() ?? "";
         for (const line of tail) send(sseLine(line));
         offset = size;
@@ -163,7 +168,22 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
           // A delta bigger than the cap continues on the next tick instead
           // of one unbounded allocation for a burst of writes.
           const to = range.to - from > readCapBytes ? from + readCapBytes : range.to;
-          const chunk = readRange(path, from, to);
+          let chunk: string;
+          try {
+            chunk = readRangeFn(path, from, to);
+          } catch (err) {
+            const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : undefined;
+            if (code !== "ENOENT") throw err; // a real problem, handled below
+            // The file was removed or replaced between stat and read: a
+            // rotation race, not a real error. Forget the old position and
+            // identity so the next poll's stat rediscovers the truth,
+            // whether that is "still missing" or a fresh file from 0.
+            send(SSE_RESET);
+            offset = 0;
+            pending = "";
+            identity = null;
+            return;
+          }
           if (chunk) {
             pending += chunk;
             const lines = pending.split("\n");

@@ -128,10 +128,56 @@ describe("GET /api/logs/stream", () => {
     } finally {
       await reader.cancel();
     }
-    // A truncation mid-poll must never throw inside the stream; the web log
-    // would carry the trace if handleLogStream let a stat/read error escape.
-    expect(existsWebError(tmp)).toBe(false);
   });
+
+  test("a read failing between stat and read is a rotation race, not an error loop", async () => {
+    const path = seedLog("worker", "one\n");
+    // existsWebError(tmp) === false is not evidence of "no exception": it is
+    // also true whenever web.log was never created. Prove liveness directly
+    // instead, by forcing the exact race (a readRange call failing right
+    // after a successful stat) and checking a later line still arrives.
+    let inject = false;
+    let failedOnce = false;
+    const flaky = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      token: TOKEN,
+      logStream: {
+        pollMs: 20,
+        heartbeatMs: 100,
+        readRange: (p, from, to) => {
+          if (inject && !failedOnce && to > from) {
+            failedOnce = true;
+            const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+            err.code = "ENOENT";
+            throw err;
+          }
+          return readFileSync(p, "utf8").slice(from, to);
+        },
+      },
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${flaky.port}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+      const reader = res.body!.getReader();
+      try {
+        await readUntil(reader, '"line":"one"}');
+
+        // Only after the initial tail: the forced failure must hit the poll
+        // reading "two", not the initial tail's own byte-0 newline check.
+        inject = true;
+        appendFileSync(path, "two\n");
+
+        const grown = await readUntil(reader, '"line":"two"}', 3000);
+        expect(failedOnce).toBe(true);
+        expect(grown.match(/event: error/g)).toBeNull();
+        expect(existsWebError(tmp)).toBe(false);
+      } finally {
+        await reader.cancel();
+      }
+    } finally {
+      flaky.stop(true);
+    }
+  }, 5000);
 
   test("a rename-away-and-recreate at equal or larger size resets, no dropped bytes", async () => {
     const path = seedLog("worker", "a\nb\n");

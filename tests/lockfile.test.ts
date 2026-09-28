@@ -24,10 +24,11 @@ function workspacePackages(): { name: string; version: string }[] {
       try {
         raw = readFileSync(file, "utf8");
       } catch (e) {
-        // A directory without a manifest is not a workspace. Anything else,
-        // a permission error for instance, is a real problem and must not
-        // shrink the list this test walks.
-        if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+        // A directory without a manifest or a non-directory entry is not a
+        // workspace. Anything else, a permission error for instance, is a real
+        // problem and must not shrink the list this test walks.
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") continue;
         throw e;
       }
       const pkg = JSON.parse(raw) as { name?: string; version?: string };

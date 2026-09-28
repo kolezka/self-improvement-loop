@@ -1,371 +1,163 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { call } from "../lib/api.ts";
-  import { toast } from "../lib/state.svelte.ts";
-  import { formatTime } from "../lib/format.ts";
-  import { highlight, matchesFilter, parseLogLines, sizeText, type LogLine } from "../lib/logs.ts";
+  import { onDestroy, onMount } from "svelte";
+  import LogViewer from "../vendor/svelte-log-viewer/LogViewer.svelte";
+  import type { LogLine as ViewerLine } from "../vendor/svelte-log-viewer/index.ts";
+  import { streamLog } from "../lib/stream.ts";
+  import { toViewerLine } from "../lib/logs.ts";
 
   const LOG_NAMES = ["hook", "worker", "web", "curriculum"] as const;
-  const LINE_CHOICES = [100, 200, 500, 1000, 2000] as const;
-  const FOLLOW_INTERVAL_MS = 3000;
-  // Re-rendering 2000 rows on every keystroke is visible; one short pause is not.
-  const FILTER_DEBOUNCE_MS = 120;
-  // Treat anything within this many pixels of the end as "at the bottom", so a
-  // sub-pixel scroll height does not unpin the view.
-  const BOTTOM_SLACK_PX = 24;
+  const RETRY_DELAYS_MS = [1000, 2000, 5000, 10_000];
+  const MAX_LINES = 20_000;
 
-  interface TailResult {
-    name: string;
-    path: string;
-    exists: boolean;
-    size: number;
-    lines: string[];
+  type LogName = (typeof LOG_NAMES)[number];
+
+  let name = $state<LogName>("worker");
+  let lines = $state.raw<ViewerLine[]>([]);
+  let live = $state(false);
+  let reconnecting = $state(false);
+  let capped = $state(false);
+  let missing = $state(false);
+  let error = $state<string | null>(null);
+  let follow = $state(true);
+  let controller: AbortController | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryIndex = 0;
+  let nextSequence = 1;
+
+  function clearRetryTimer() {
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    retryTimer = null;
   }
 
-  // worker.log is the first log that exists on any machine that has run the
-  // worker once; hook.log only appears once the hook has something to log.
-  let name = $state<string>("worker");
-  let lines = $state(200);
-  let path = $state("");
-  let exists = $state(true);
-  let size = $state(0);
-  // Raw state: the array is always replaced whole, never mutated, so the deep
-  // proxy would build thousands of sources per poll for nothing.
-  let rows = $state.raw<LogLine[]>([]);
-  let typedFilter = $state("");
-  let filter = $state("");
-  let follow = $state(false);
-  let wrap = $state(true);
-  let loaded = $state(false);
-  let loadError = $state<string | null>(null);
-  let lastLoad = $state<string | null>(null);
-  let pinned = $state(true);
-  let consoleEl = $state<HTMLDivElement | null>(null);
-  let loading = false;
+  function stopStream() {
+    clearRetryTimer();
+    controller?.abort();
+    controller = null;
+    live = false;
+    reconnecting = false;
+  }
 
-  const visible = $derived(rows.filter((row) => matchesFilter(row, filter)));
-
-  async function load() {
-    // A tail slower than the follow interval would otherwise stack requests
-    // that can resolve out of order and paint an older tail.
-    if (loading) return;
-    loading = true;
-    const wanted = name;
-    try {
-      const result = (await call("logs.tail", { name: wanted, lines })) as TailResult;
-      // The user may have switched logs while this was in flight.
-      if (result.name !== name) return;
-      path = result.path;
-      exists = result.exists;
-      size = result.size;
-      rows = parseLogLines(result.lines);
-      lastLoad = new Date().toISOString();
-      loadError = null;
-      loaded = true;
-    } catch (e) {
-      const message = (e as Error).message;
-      loadError = message;
-      loaded = true;
-      if (follow) {
-        // A failing poll every 3s would otherwise toast forever; show it once
-        // and stop following instead.
-        follow = false;
-        toast(`log polling failed, follow turned off: ${message}`);
-      } else {
-        toast(`could not load log: ${message}`);
-      }
-    } finally {
-      loading = false;
+  function appendLine(raw: string, source: LogName) {
+    const next = [...lines, toViewerLine(raw, nextSequence, source)];
+    nextSequence += 1;
+    if (next.length > MAX_LINES) {
+      lines = next.slice(next.length - MAX_LINES);
+      capped = true;
+    } else {
+      lines = next;
     }
+    retryIndex = 0;
   }
 
-  /** A different log or tail size is a fresh read; start at the newest line. */
-  function reload() {
-    pinned = true;
-    load();
+  function scheduleReconnect() {
+    const delay = RETRY_DELAYS_MS[Math.min(retryIndex, RETRY_DELAYS_MS.length - 1)]!;
+    retryIndex += 1;
+    reconnecting = true;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      startStream();
+    }, delay);
   }
 
-  function onScroll() {
-    if (!consoleEl) return;
-    pinned = consoleEl.scrollHeight - consoleEl.scrollTop - consoleEl.clientHeight < BOTTOM_SLACK_PX;
+  function startStream() {
+    clearRetryTimer();
+    const source = name;
+    const active = new AbortController();
+    controller = active;
+    live = true;
+    reconnecting = false;
+    error = null;
+
+    void streamLog(
+      source,
+      {
+        onLine: (raw) => {
+          if (controller !== active) return;
+          missing = false;
+          appendLine(raw, source);
+        },
+        onReset: () => {
+          if (controller !== active) return;
+          lines = [];
+          capped = false;
+          nextSequence = 1;
+        },
+        onMissing: () => {
+          if (controller === active) missing = true;
+        },
+      },
+      active.signal,
+    )
+      .then(() => {
+        if (controller !== active || active.signal.aborted) return;
+        live = false;
+        scheduleReconnect();
+      })
+      .catch((cause: unknown) => {
+        if (controller !== active || active.signal.aborted) return;
+        live = false;
+        error = cause instanceof Error ? cause.message : String(cause);
+        scheduleReconnect();
+      });
   }
 
-  function scrollToLatest() {
-    if (!consoleEl) return;
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-    pinned = true;
+  function selectLog(next: LogName) {
+    if (next === name) return;
+    stopStream();
+    name = next;
+    lines = [];
+    capped = false;
+    missing = false;
+    error = null;
+    nextSequence = 1;
+    retryIndex = 0;
+    startStream();
   }
 
-  function visibleText(): string {
-    return visible.map((row) => row.raw).join("\n");
-  }
-
-  async function copyVisible() {
-    try {
-      await navigator.clipboard.writeText(visibleText());
-      toast(`copied ${visible.length} lines`, "ok");
-    } catch {
-      // http on a LAN address is not a secure context, so there is no
-      // clipboard API there; the download button still works.
-      toast("clipboard is not available here, use Download");
-    }
-  }
-
-  function download() {
-    const url = URL.createObjectURL(new Blob([visibleText()], { type: "text/plain" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${name}.log`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    // Revoking in the same task can cancel the download outside Chrome.
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
-
-  $effect(() => {
-    const next = typedFilter;
-    const timer = setTimeout(() => {
-      filter = next;
-    }, FILTER_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  });
-
-  $effect(() => {
-    if (!follow) return;
-    const timer = setInterval(load, FOLLOW_INTERVAL_MS);
-    return () => clearInterval(timer);
-  });
-
-  // Runs after the console has re-rendered with the new lines, so scrollHeight
-  // already reflects them. Only follows the tail while the view is pinned to
-  // the bottom, so reading older lines is not interrupted by a poll. Wrap is a
-  // dependency because turning it on makes the content taller without firing a
-  // scroll event, which would strand a pinned view above the tail.
-  $effect(() => {
-    void visible;
-    void wrap;
-    if (consoleEl && pinned) consoleEl.scrollTop = consoleEl.scrollHeight;
-  });
-
-  onMount(load);
+  onMount(startStream);
+  onDestroy(stopStream);
 </script>
 
-<div class="toolbar">
-  <label class="control">
-    <span>log</span>
-    <select bind:value={name} onchange={reload}>
-      {#each LOG_NAMES as n}
-        <option value={n}>{n}</option>
-      {/each}
-    </select>
-  </label>
-  <label class="control">
-    <span>lines</span>
-    <select bind:value={lines} onchange={reload}>
-      {#each LINE_CHOICES as n}
-        <option value={n}>{n}</option>
-      {/each}
-    </select>
-  </label>
-  <input class="filter" type="search" placeholder="filter lines" bind:value={typedFilter} aria-label="filter lines" />
-  <button onclick={load}>Refresh</button>
-  <label class="control toggle">
-    <input type="checkbox" bind:checked={follow} />
-    <span>Follow</span>
-  </label>
-  <label class="control toggle">
-    <input type="checkbox" bind:checked={wrap} />
-    <span>Wrap</span>
-  </label>
-  <button onclick={copyVisible} disabled={visible.length === 0}>Copy</button>
-  <button onclick={download} disabled={visible.length === 0}>Download</button>
+<div class="toolbar log-toolbar">
+  <div class="segmented log-picker" role="group" aria-label="Log source">
+    {#each LOG_NAMES as option}
+      <button type="button" aria-pressed={name === option} onclick={() => selectLog(option)}>{option}</button>
+    {/each}
+  </div>
+  <span class="toolbar__spacer"></span>
+  {#if reconnecting}
+    <span class="chip warn">Reconnecting</span>
+  {:else if live}
+    <span class="chip ok">Live</span>
+  {/if}
+  {#if missing}
+    <span class="muted">Waiting for this log file.</span>
+  {/if}
 </div>
 
-<p class="meta muted">
-  <code>{path}</code>
-  {#if loaded && exists && !loadError}
-    <span>{sizeText(size)}</span>
-    <span>{filter.trim() ? `${visible.length} of ${rows.length} lines` : `${rows.length} lines`}</span>
-    <span>read {formatTime(lastLoad)}</span>
-    {#if follow}<span class="live">live</span>{/if}
-  {/if}
-</p>
-
-{#if loadError}
-  <p class="error-text">could not load this log: {loadError}</p>
-{:else if !loaded}
-  <p class="muted">loading&hellip;</p>
-{:else if !exists}
-  <p class="muted">
-    This log has not been written yet.
-    {#if name === "hook"}The hook writes it on the first session event.{/if}
-  </p>
-{:else if rows.length === 0}
-  <p class="muted">log is empty</p>
-{:else}
-  <div class="console-wrap">
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <!-- tabindex keeps the log scrollable from the keyboard: Firefox and
-         Safari do not focus a scroll container on their own. -->
-    <div
-      class="console"
-      class:nowrap={!wrap}
-      bind:this={consoleEl}
-      onscroll={onScroll}
-      role="log"
-      aria-live="off"
-      aria-label={`${name} log`}
-      tabindex="0"
-    >
-      {#if visible.length === 0}
-        <p class="empty muted">no line matches "{filter.trim()}"</p>
-      {:else}
-        {#each visible as row}
-          <div class={`line ${row.level}`}>
-            <span class="gutter">{row.index}</span>
-            <span class="time" title={row.iso}>{row.time}</span>
-            <span class="msg"
-              >{#each highlight(row.text, filter) as seg}{#if seg.hit}<mark>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span
-            >
-          </div>
-        {/each}
-      {/if}
-    </div>
-    {#if !pinned}
-      <button class="jump" onclick={scrollToLatest}>Jump to latest</button>
-    {/if}
-  </div>
+{#if error}
+  <p class="error-text">Log stream error: {error}</p>
 {/if}
 
+<LogViewer
+  {lines}
+  {live}
+  bind:follow
+  {capped}
+  height="min(64vh, 720px)"
+  emptyTitle="No output yet"
+  emptyDescription="Lines appear here as soon as this log writes them."
+/>
+
 <style>
-  .control {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    color: var(--muted);
-    font-size: 0.85rem;
+  .log-toolbar {
+    margin-bottom: 0.75rem;
   }
 
-  .filter {
-    min-width: 14rem;
-  }
-
-  .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    align-items: center;
-    font-size: 0.8rem;
-    margin: 0 0 0.5rem;
-  }
-
-  .meta code {
-    font-size: 0.8rem;
-    overflow-wrap: anywhere;
-  }
-
-  .live {
-    color: var(--ok);
-  }
-
-  .live::before {
-    content: "";
-    display: inline-block;
-    width: 0.45rem;
-    height: 0.45rem;
-    margin-right: 0.3rem;
-    border-radius: 999px;
-    background: var(--ok);
-  }
-
-  .console-wrap {
-    position: relative;
-  }
-
-  .console {
-    /* Fills what the header, toolbar and status line leave, so the console
-       scrolls instead of pushing the page into a second scrollbar. */
-    height: clamp(16rem, calc(100vh - 20rem), 60rem);
-    resize: vertical;
-    overflow: auto;
-    padding: 0.4rem 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--panel);
-    font: 12px/1.6 ui-monospace, monospace;
-  }
-
-  .line {
-    display: grid;
-    grid-template-columns: 3.5rem 5.5rem minmax(0, 1fr);
-    gap: 0.6rem;
-    padding: 0 0.7rem;
-    border-left: 2px solid transparent;
-  }
-
-  .line:hover {
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-  }
-
-  .console.nowrap .line {
-    width: max-content;
-    min-width: 100%;
-  }
-
-  .console.nowrap .msg {
-    white-space: pre;
-    overflow-wrap: normal;
-  }
-
-  .gutter {
-    text-align: right;
-    color: var(--muted);
-    opacity: 0.6;
-    user-select: none;
-  }
-
-  .time {
-    color: var(--muted);
-    white-space: nowrap;
-  }
-
-  .msg {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
-  .line.error {
-    border-left-color: var(--err);
-  }
-
-  .line.error .msg {
-    color: var(--err);
-  }
-
-  .line.warn {
-    border-left-color: var(--warn);
-  }
-
-  .line.warn .msg {
-    color: var(--warn);
-  }
-
-  mark {
-    background: var(--accent);
-    color: var(--bg);
-    border-radius: 3px;
-  }
-
-  .empty {
-    padding: 0.6rem 0.7rem;
-  }
-
-  .jump {
-    position: absolute;
-    right: 1rem;
-    bottom: 1rem;
-    font-size: 0.8rem;
-    box-shadow: 0 1px 6px rgb(0 0 0 / 0.25);
+  .log-picker button {
+    width: auto;
+    min-width: 4.5rem;
+    padding: 0 0.55rem;
+    text-transform: capitalize;
   }
 </style>

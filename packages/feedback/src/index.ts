@@ -2,10 +2,13 @@
 // feedback folded into one record the planner and web UI read.
 
 import { fsx, ledgerPath, paths, type Config, type HumanFeedback, type Ledger, type Scorecard, type UsageEvent, type World } from "@sil/core";
-import { loadLedger } from "@sil/store";
+import { listReflections, loadAliases, loadLedger } from "@sil/store";
 import { installedArtifacts } from "@sil/critic";
 
 export interface ScorecardOptions { now?: Date; windowDays?: number }
+
+/** Days after a refine was staged or refused before recurrence may propose it again. */
+export const REFINE_COOLDOWN_DAYS = 7;
 
 export function appendUsage(event: UsageEvent): void {
   fsx.appendJsonl(paths.usageEventsFile(), event);
@@ -121,6 +124,16 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
     else if (ev["vote"] === "bad") bump(humanBadByRef, r);
   }
 
+  const createdByPattern = new Map<string, string[]>();
+  const aliases = loadAliases(world.name);
+  for (const r of listReflections(world.name)) {
+    if (!within(r.created, windowStart, now)) continue;
+    const pattern = aliases[r.pattern] ?? r.pattern;
+    const bucket = createdByPattern.get(pattern);
+    if (bucket) bucket.push(r.created);
+    else createdByPattern.set(pattern, [r.created]);
+  }
+
   const out: Scorecard[] = [];
   for (const ref of [...refs].sort()) {
     const sep = ref.indexOf(":");
@@ -134,7 +147,8 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
     const humanBad = humanBadByRef.get(ref) ?? 0;
     const lastUsed = lastTsByRef.get(ref) ?? null;
     const entry = ledger.entries[name];
-    const [proposal, reason] = propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, lastUsed, now, retireCutoff, cfg.promotion.retire_after_days);
+    const recurrence = recurrenceSince(entry, createdByPattern.get(name) ?? []);
+    const [proposal, reason] = propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, recurrence, lastUsed, now, retireCutoff, cfg);
     out.push({
       ref,
       type: atype,
@@ -145,12 +159,25 @@ export function scorecards(world: World, cfg: Config, opts: ScorecardOptions = {
       misfired,
       human_good: humanGood,
       human_bad: humanBad,
+      recurrence_30d: recurrence,
       last_used: lastUsed,
       proposal,
       reason,
+      snapshot_at: null,
     });
   }
   return out;
+}
+
+/** Reflections in the window created on or after the promotion day. With no
+ * promoted_at the whole window counts: a reject bumps last_updated, and read as
+ * the clock it zeroed the count while the snapshot kept the old one. */
+function recurrenceSince(entry: Ledger["entries"][string] | undefined, created: string[]): number {
+  if (entry === undefined) return 0;
+  if (parseTs(entry.promoted_at ?? null) === null) return created.length;
+  // By day, since `created` is date-only; counting the promotion day in full errs high.
+  const day = entry.promoted_at!.slice(0, 10);
+  return created.filter((c) => c >= day).length;
 }
 
 function propose(
@@ -161,11 +188,13 @@ function propose(
   misfired: number,
   humanGood: number,
   humanBad: number,
+  recurrence: number,
   lastUsed: string | null,
   now: Date,
   retireCutoff: Date,
-  retireDays: number,
+  cfg: Config,
 ): [Scorecard["proposal"], string] {
+  const retireDays = cfg.promotion.retire_after_days;
   // Both clocks below run from the promotion, not from the last write to the
   // row: reject, re-home and retire all bump last_updated, and a refused
   // redraft is neither a new promotion nor evidence of use. Rows written
@@ -195,6 +224,20 @@ function propose(
             ? `${used}, promoted ${promotedTs}, older than ${retireDays}d`
             : "no parsable date to judge staleness from";
       return ["retire-candidate", `no uses or fires in the last window, ${basis}`];
+    }
+  }
+
+  // Served and still failing: the artifact is not preventing what it was promoted
+  // for. Only growth past the last snapshot counts, and half the snapshot again
+  // at least, so a steady rate does not refine once a week for ever.
+  if (entry !== undefined && entry.status === "promoted" && uses > 0) {
+    const snapRecurrence = entry.feedback?.recurrence_30d ?? 0;
+    const need = Math.max(cfg.promotion.threshold, Math.ceil(0.5 * snapRecurrence));
+    const snapDt = parseTs(entry.feedback?.snapshot_at ?? null);
+    const cooling = snapDt !== null && snapDt.getTime() > now.getTime() - REFINE_COOLDOWN_DAYS * 86_400_000;
+    if (!cooling && recurrence - snapRecurrence >= need) {
+      const span = entry.promoted_at ? "since promotion" : "in the last 30 days";
+      return ["refine", `served ${uses} times, failure reflected ${recurrence} times ${span}`];
     }
   }
 
@@ -305,9 +348,11 @@ function validateScorecard(item: unknown): Scorecard | null {
     misfired: Number(o["misfired"] ?? 0),
     human_good: Number(o["human_good"] ?? 0),
     human_bad: Number(o["human_bad"] ?? 0),
+    recurrence_30d: Number(o["recurrence_30d"] ?? 0),
     last_used: o["last_used"] ? String(o["last_used"]) : null,
     proposal: (o["proposal"] as Scorecard["proposal"]) ?? "keep",
     reason: o["reason"] ? String(o["reason"]) : "",
+    snapshot_at: o["snapshot_at"] ? String(o["snapshot_at"]) : null,
   };
 }
 

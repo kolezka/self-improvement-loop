@@ -427,7 +427,13 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 | relevance | critic marks a rule as relevant to the session | rule |
 
 Scorecard fields: `uses_30d`, `fires_30d`, `helpful`, `misfired`, `human_good`,
-`human_bad`, `last_used`, `proposal` (`keep | refine | retire-candidate`).
+`human_bad`, `recurrence_30d`, `last_used`, `proposal` (`keep | refine | retire-candidate`).
+
+`recurrence_30d` counts this pattern's reflections (alias-resolved) created after
+`promoted_at` inside the window, or the whole window when `promoted_at` is null.
+A used artifact whose failure keeps being reflected proposes `refine` once the
+count grows past the ledger snapshot by `max(threshold, half the snapshot)`, and
+not within 7 days of the snapshot's `snapshot_at`, which stage and reject stamp.
 
 `uses_30d` counts every way an artifact is served: skill and agent invocations,
 rule injections, and hook fires. `fires_30d` keeps the hook-only count, so a

@@ -199,9 +199,13 @@ export const Scorecard = z.object({
   misfired: z.number().int().default(0),
   human_good: z.number().int().default(0),
   human_bad: z.number().int().default(0),
+  // Reflections of this pattern written since its promotion, inside the window.
+  recurrence_30d: z.number().int().default(0),
   last_used: isoTs.nullable().default(null),
   proposal: Proposal.default("keep"),
   reason: z.string().default(""),
+  // Set only on the copy a ledger row keeps: when a stage or reject took it.
+  snapshot_at: isoTs.nullable().default(null),
 });
 export type Scorecard = z.infer<typeof Scorecard>;
 

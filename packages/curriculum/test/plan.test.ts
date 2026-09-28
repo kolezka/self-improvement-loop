@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  fsx,
   type Ledger,
   ledgerPath,
   paths,
@@ -34,7 +35,8 @@ import {
   watermark,
   withoutSections,
 } from "@sil/curriculum";
-import { loadLedger, saveAliases, saveLedger } from "@sil/store";
+import * as feedback from "@sil/feedback";
+import { loadLedger, saveAliases, saveLedger, writeReflection } from "@sil/store";
 import {
   addReflections,
   agentBody,
@@ -44,6 +46,7 @@ import {
   LESSON,
   makeCfg,
   makeWorld,
+  reflectionBody,
   silEnv,
   type TestEnv,
 } from "./fixtures.ts";
@@ -321,6 +324,42 @@ describe("scorecard proposals for rows with no reflections", () => {
     writeLedger(world, [promoted(PATTERN, 9)]);
     writeScorecards(world, [card(PATTERN, "keep")]);
     expect(plan(world, makeCfg({ threshold: 3 })).actions).toEqual([]);
+  });
+});
+
+describe("a scorecard refine by recurrence", () => {
+  test("a promoted row below its watermark refines from its recurring reflections", () => {
+    // Live shape: a row marked at 181 with fewer files on disk, used daily, and
+    // its failure still reflected. Promote never fires below the mark.
+    const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        promoted_at_count: 181,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+        last_updated: day(20),
+        promoted_at: day(20),
+      }),
+    ]);
+    const ids = [25, 4, 3, 2].map((n, i) => {
+      const id = `recur-${i}`;
+      writeReflection(world.name, { id, created: day(n) }, reflectionBody(PATTERN, day(n).slice(0, 10)));
+      return id;
+    });
+    const cfg = makeCfg({ threshold: 3 });
+    for (let i = 0; i < 5; i++) {
+      fsx.appendJsonl(paths.usageEventsFile(), { ts: day(i), session_id: `s${i}`, world: world.name, kind: "rule", ref: `rule:${PATTERN}` });
+    }
+    feedback.rebuild(world, cfg);
+
+    const action = actions(plan(world, cfg))[PATTERN]!;
+    expect(action.action).toBe("refine");
+    expect(action.count).toBe(4);
+    expect(action.watermark).toBe(181);
+    expect([...action.sources].sort()).toEqual([...ids].sort());
+    expect(action.reason).toBe("served 5 times, failure reflected 3 times since promotion");
   });
 });
 

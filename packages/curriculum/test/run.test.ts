@@ -777,7 +777,7 @@ describe("a scorecard refine with no reflections", () => {
     const row = parseLedger(git.show(repo, branch, "promotions.json").text).entries[PATTERN]!;
     expect(row.promoted_at_count).toBe(17);
     expect(row.rejected_at_count).toBe(20);
-    expect(row.feedback).toEqual(card());
+    expect(row.feedback).toEqual({ ...card(), snapshot_at: expect.any(String) });
   });
 
   test("a refine with fewer reflections than the mark keeps the mark", async () => {
@@ -862,6 +862,110 @@ describe("a scorecard refine with no reflections", () => {
     expect(report.gated_out[PATTERN]).toBe("a refine is staged and waits for review");
     expect(chat.calls).toEqual([]);
     expect(git.git(repo, ["rev-parse", branch])).toBe(first);
+  });
+});
+
+describe("a cluster refine by recurrence", () => {
+  // Reflections on disk but below the mark, so the refine comes from the cluster
+  // loop with those reflections as sources, not from the ledger-only pass.
+  const card = (recurrence = 3) =>
+    Scorecard.parse({
+      ref: `rule:${PATTERN}`,
+      type: "rule",
+      name: PATTERN,
+      uses_30d: 40,
+      recurrence_30d: recurrence,
+      proposal: "refine",
+      reason: `served 40 times, failure reflected ${recurrence} times since promotion`,
+    });
+
+  function seedLive(): { world: World; repo: string } {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const old = `- Check the call sites before you ship. ${ruleTag(PATTERN)}`;
+    commitFile(repo, "RULES.md", `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        promoted_at_count: 17,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+    addReflections(world, PATTERN, 3);
+    return { world, repo };
+  }
+
+  test("a second tick while the refine is staged makes no model call", async () => {
+    const { world, repo } = seedLive();
+    const first = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: { artifact: ruleBody() } }).fn, cards: [card()] }));
+    expect(first.staged).toEqual([PATTERN]);
+    const branch = branchName(world.name, PATTERN);
+    const sha = git.git(repo, ["rev-parse", branch]);
+
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toBe("a refine is staged and waits for review");
+    expect(chat.calls).toEqual([]);
+    expect(git.git(repo, ["rev-parse", branch])).toBe(sha);
+  });
+
+  test("a refused refine waits until recurrence grows", async () => {
+    const { world } = seedLive();
+    const chat = new FakeChat({ draft: { artifact: ruleBody() }, verdict: false, reason: "rule 3" });
+
+    const first = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+    expect(first.gated_out[PATTERN]).toBe("judge: rule 3");
+    const second = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+
+    expect(second.gated_out[PATTERN]).toContain("waiting for new feedback");
+    expect(chat.roles.filter((r) => r === "drafter")).toHaveLength(1);
+
+    await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card(6)] }));
+    expect(chat.roles.filter((r) => r === "drafter")).toHaveLength(2);
+  });
+
+  test("a refused refine stays refused when reflections age out of the window", async () => {
+    const { world } = seedLive();
+    const chat = new FakeChat({ draft: { artifact: ruleBody() }, verdict: false, reason: "rule 3" });
+
+    await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card(6)] }));
+    const second = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card(5)] }));
+
+    expect(second.gated_out[PATTERN]).toContain("waiting for new feedback");
+    expect(chat.roles.filter((r) => r === "drafter")).toHaveLength(1);
+  });
+
+  test("a promote that stages clears a cached refine refusal", async () => {
+    const { world } = seedLive();
+    const refused = new FakeChat({ draft: { artifact: ruleBody() }, verdict: false, reason: "rule 3" });
+    await run(world, makeCfg(), opts({ apply: true, chat: refused.fn, cards: [card()] }));
+    expect(Object.keys(fsx.readJsonOr<Record<string, string>>(paths.refineAttemptsFile(world.name), {}))).toEqual([PATTERN]);
+
+    // Past the mark of 17, so the plan promotes instead of refining.
+    addReflections(world, PATTERN, 17, { startDay: 4 });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: { artifact: ruleBody() } }).fn, cards: [card()] }));
+
+    expect(report.gated_out).toEqual({});
+    expect(report.staged).toEqual([PATTERN]);
+    expect(fsx.readJsonOr<Record<string, string>>(paths.refineAttemptsFile(world.name), {})).toEqual({});
+  });
+
+  test("a provider failure on a cluster refine is not cached", async () => {
+    const { world } = seedLive();
+    const failing: ChatFn = async () => {
+      throw new Error("provider down");
+    };
+    const first = await run(world, makeCfg(), opts({ apply: true, chat: failing, cards: [card()] }));
+    expect(first.gated_out[PATTERN]).toContain("draft failed");
+
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const second = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
+    expect(second.staged).toEqual([PATTERN]);
   });
 });
 

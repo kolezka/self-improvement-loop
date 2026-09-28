@@ -181,10 +181,10 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   let attemptsChanged = false;
 
   for (const action of actionable) {
-    const ledgerOnly = action.sources.length === 0;
+    const isRefine = action.action === "refine";
     const card = cardsByPattern.get(action.pattern) ?? null;
     // Before the cap check on purpose: a skipped refine must not look over-cap.
-    if (ledgerOnly && card && Object.hasOwn(attempts, action.pattern) && attempts[action.pattern] === attemptKey(card)) {
+    if (isRefine && card && Object.hasOwn(attempts, action.pattern) && stillRefused(attempts[action.pattern]!, attemptKey(card, ledger.entries[action.pattern] ?? null))) {
       report.gated_out[action.pattern] = "the last refine at this scorecard was gated out; waiting for new feedback";
       continue;
     }
@@ -215,14 +215,15 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = `staging failed: ${describe(e)}`;
       attempt.transient = true;
     }
-    if (ledgerOnly && card) {
-      if (report.staged.includes(action.pattern) && Object.hasOwn(attempts, action.pattern)) {
+    // Any stage answers a cached refusal, a promote included.
+    if (report.staged.includes(action.pattern)) {
+      if (Object.hasOwn(attempts, action.pattern)) {
         delete attempts[action.pattern];
         attemptsChanged = true;
-      } else if (!report.staged.includes(action.pattern) && attempt.drafted && !attempt.transient) {
-        attempts[action.pattern] = attemptKey(card);
-        attemptsChanged = true;
       }
+    } else if (isRefine && card && attempt.drafted && !attempt.transient) {
+      attempts[action.pattern] = attemptKey(card, ledger.entries[action.pattern] ?? null);
+      attemptsChanged = true;
     }
   }
   if (attemptsChanged) saveAttempts(world, attempts);
@@ -288,9 +289,9 @@ async function stageOne(
     report.gated_out[pattern] = `a retirement is staged on ${branch} and waits for review`;
     return;
   }
-  // Nothing new to say since the last draft, so a redraft would only reset the
-  // branch a human may be reading and spend model calls every tick.
-  if (ledgerOnly && stagedEntry && stagedEntry.status === "staged") {
+  // A refine's scorecard does not move until that branch is answered, so a
+  // redraft would only reset the branch a human may be reading, every tick.
+  if (action.action === "refine" && stagedEntry && stagedEntry.status === "staged") {
     report.gated_out[pattern] = "a refine is staged and waits for review";
     return;
   }
@@ -498,8 +499,8 @@ async function stageOne(
       : (prior?.promoted_at ?? null),
     commit: null,
     // The scorecard as the drafter saw it: a refine proposal counts only new
-    // complaints past this snapshot.
-    feedback: ctx.cards.get(pattern) ?? null,
+    // complaints past this snapshot, and recurrence waits out a cooldown from it.
+    feedback: snapshotOf(ctx.cards.get(pattern)),
   };
 
   // An ordinary redraft resets its branch onto the default branch, so a staged
@@ -559,12 +560,30 @@ async function stageOne(
   if (autoMerge) autoMergeBranch(report, ctx.target, ctx.defaultRef, branch, pattern);
 }
 
+function snapshotOf(card: Scorecard | undefined): Scorecard | null {
+  return card ? { ...card, snapshot_at: fsx.nowIso() } : null;
+}
+
 type Attempts = Record<string, string>;
 
 /** The scorecard fields a refine answers. uses_30d and last_used drift daily and
  * say nothing new about what is wrong, so they would re-open every refused draft. */
-function attemptKey(card: Scorecard): string {
-  return JSON.stringify([card.misfired, card.human_bad, card.helpful, card.human_good]);
+function attemptKey(card: Scorecard, prior: PromotionEntry | null): string {
+  const delta = Math.max(0, card.recurrence_30d - (prior?.feedback?.recurrence_30d ?? 0));
+  return JSON.stringify([card.misfired, card.human_bad, card.helpful, card.human_good, delta]);
+}
+
+/** Recurrence is compared, not matched: a reflection aging out of the window
+ * lowers it without answering anything, so only growth reopens a refusal. */
+function stillRefused(cached: string, current: string): boolean {
+  try {
+    const was: unknown = JSON.parse(cached);
+    const now: unknown = JSON.parse(current);
+    if (!Array.isArray(was) || !Array.isArray(now)) return false;
+    return was.slice(0, 4).every((v, i) => v === now[i]) && Number(now[4]) <= Number(was[4] ?? 0);
+  } catch {
+    return false;
+  }
 }
 
 function loadAttempts(world: World): Attempts {

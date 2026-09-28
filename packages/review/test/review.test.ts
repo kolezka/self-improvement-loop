@@ -820,6 +820,96 @@ describe("a scorecard refine end to end", () => {
   });
 });
 
+describe("a recurrence refine end to end", () => {
+  // A V1 row marked at 181 with fewer files on disk: used, never voted on, and
+  // its failure still reflected. Real scorecards, plan, run and review.
+  const day = (n: number, from = Date.now()) => new Date(from - n * 86_400_000).toISOString();
+  let seq = 0;
+  const reflect = (world: World, n: number): string => {
+    const id = `recur-${seq++}`;
+    const created = day(n);
+    fsx.atomicWrite(
+      join(paths.reflectionsDir(world.name), PATTERN, `${id}.md`),
+      `---\nid: ${id}\nworld: ${world.name}\npattern: ${PATTERN}\ncreated: ${created}\n---\n${reflectionBody(PATTERN, created.slice(0, 10))}`,
+    );
+    return id;
+  };
+  function setup(): { world: World; repo: string; ids: string[] } {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const old = `- Check the call sites before you ship. ${ruleTag(PATTERN)}`;
+    commitFile(repo, RULES, `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    saveLedger(ledgerPath(world), {
+      version: 1,
+      entries: {
+        [PATTERN]: {
+          pattern: PATTERN,
+          promoted_at_count: 181,
+          rejected_at_count: 0,
+          status: "promoted",
+          artifact_type: "rule",
+          served_by: { type: "rule", path: RULES },
+          last_updated: day(20),
+          promoted_at: null,
+          commit: null,
+          feedback: null,
+        },
+      },
+    });
+    git.git(repo, ["add", "--", "promotions.json"]);
+    git.git(repo, ["commit", "-q", "-m", "chore: a migrated row"]);
+    for (let i = 0; i < 4; i++) {
+      fsx.appendJsonl(paths.usageEventsFile(), { ts: day(i), session_id: `s${i}`, world: world.name, kind: "rule", ref: `rule:${PATTERN}` });
+    }
+    const ids = [3, 2, 1].map((n) => reflect(world, n));
+    return { world, repo, ids };
+  }
+  const rowFor = (world: World, cards?: Scorecard[]) => plan(world, cfg(), { cards }).actions.find((a) => a.pattern === PATTERN);
+  const stageRefine = async (world: World) => {
+    const report = await run(world, cfg(), { apply: true, chat: new FakeChat({ draft: ruleDraft() }).fn, gateRunner: fakeGateRunner });
+    expect(report.gated_out).toEqual({});
+    expect(report.staged).toEqual([PATTERN]);
+  };
+
+  test("recurring reflections refine the rule, and accepting settles it", async () => {
+    const { world, repo, ids } = setup();
+    feedback.rebuild(world, cfg());
+    const planned = rowFor(world)!;
+    expect(planned).toMatchObject({ action: "refine", count: 3, watermark: 181 });
+    expect([...planned.sources].sort()).toEqual([...ids].sort());
+
+    await stageRefine(world);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(readFileSync(join(repo, RULES), "utf8")).toContain(ruleBody());
+    const live = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(live.promoted_at_count).toBe(181);
+    expect(live.feedback!.recurrence_30d).toBe(3);
+    expect(live.feedback!.snapshot_at).not.toBeNull();
+
+    feedback.rebuild(world, cfg());
+    expect(rowFor(world)?.action).not.toBe("refine");
+  });
+
+  test("a refused refine waits out the cooldown before new recurrence proposes it again", async () => {
+    const { world } = setup();
+    feedback.rebuild(world, cfg());
+    await stageRefine(world);
+    review.reject(world, cfg(), PATTERN);
+    const live = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(live.feedback!.recurrence_30d).toBe(3);
+    expect(live.feedback!.snapshot_at).not.toBeNull();
+
+    // Three more reflections clear the delta, but the refusal is fresh.
+    for (const n of [0.3, 0.2, 0.1]) reflect(world, n);
+    feedback.rebuild(world, cfg());
+    expect(rowFor(world)?.action).not.toBe("refine");
+
+    const later = new Date(Date.now() + 8 * 86_400_000);
+    const cards = feedback.scorecards(world, cfg(), { now: later });
+    expect(rowFor(world, cards)).toMatchObject({ action: "refine", reason: "served 4 times, failure reflected 6 times in the last 30 days" });
+  });
+});
+
 // --- rehome and retire --------------------------------------------------------
 
 describe("rehome and retire", () => {

@@ -17,6 +17,7 @@
     action: string;
     sources: string[];
     reason: string;
+    feedback: string | null;
   }
 
   interface PlanReport {
@@ -318,6 +319,7 @@
                 <span class="chip">watermark <strong>{a.watermark}</strong></span>
               </div>
               {#if a.reason}<div class="muted">{a.reason}</div>{/if}
+              {#if a.feedback}<div class="muted">Feedback: {a.feedback}</div>{/if}
             </li>
           {/each}
         </ul>

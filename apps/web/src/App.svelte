@@ -52,6 +52,7 @@
     return PANES[name] ? name : "overview";
   }
 
+
   let hash = $state(currentHash());
   // Only matters under 45rem, where the rail becomes an overlay.
   let navOpen = $state(false);
@@ -88,7 +89,16 @@
   const newBuild = $derived(diskBuild !== null && diskBuild !== loadedBuild);
 
   function onHashChange() {
-    hash = currentHash();
+    const next = currentHash();
+    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduced && typeof document.startViewTransition === "function") {
+      document.startViewTransition(() => {
+        hash = next;
+        return tick();
+      });
+    } else {
+      hash = next;
+    }
     navOpen = false;
   }
 
@@ -289,9 +299,11 @@
         <h1>{pane.title}</h1>
         <p>{pane.blurb}</p>
       </div>
-      {#key `${hash}:${appState.world}`}
-        <ActivePane />
-      {/key}
+      <div class="pane-transition">
+        {#key `${hash}:${appState.world}`}
+          <ActivePane />
+        {/key}
+      </div>
     </main>
   </div>
 </div>

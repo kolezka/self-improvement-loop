@@ -159,6 +159,50 @@ describe("queue.detail", () => {
     expect(joined).toContain(`[tool_result: ${rawResult.length} chars error]`);
   });
 
+  test("counts a multi-block tool_result the same as joining its text blocks with newlines", async () => {
+    const sessionId = "sess-with-multi-block-result";
+    const e = entry(sessionId);
+    // A non-text block (image) contributes nothing but still counts toward
+    // a separator, exactly like an empty string would in the old join.
+    const blockA = "first block of output";
+    const blockB = "second block, after an image";
+    const expectedLength = `${blockA}\n\n${blockB}`.length;
+    const records: Record<string, unknown>[] = [
+      {
+        type: "assistant",
+        sessionId,
+        timestamp: "2026-09-14T10:00:00.000Z",
+        message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", id: "t1" }] },
+      },
+      {
+        type: "user",
+        sessionId,
+        timestamp: "2026-09-14T10:00:01.000Z",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: [{ type: "text", text: blockA }, { type: "image" }, { type: "text", text: blockB }],
+            },
+          ],
+        },
+      },
+    ];
+    mkdirSync(join(e.transcript_path, ".."), { recursive: true });
+    writeFileSync(e.transcript_path, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    writeEntry("done", e);
+
+    const out = (await invoke("queue.detail", { session_id: sessionId })) as {
+      transcript: { role: string; text: string }[] | null;
+    };
+
+    const joined = out.transcript!.map((m) => m.text).join("\n");
+    expect(joined).not.toContain(blockA);
+    expect(joined).toContain(`[tool_result: ${expectedLength} chars]`);
+  });
+
   test("redacts a secret in an assistant text message", async () => {
     const sessionId = "sess-with-assistant-secret";
     const e = entry(sessionId);

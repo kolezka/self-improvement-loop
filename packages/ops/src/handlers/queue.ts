@@ -71,6 +71,17 @@ function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
+/** The length a tool_result's text would have if built the way messageText
+ * used to (each text block joined with "\n"), without ever building that
+ * string: a large tool result is only ever measured here, never copied. */
+function toolResultCharCount(content: unknown): number {
+  if (typeof content === "string") return content.length;
+  if (!Array.isArray(content)) return 0;
+  const lengths = content.map((x) => (asRecord(x)?.["type"] === "text" ? String(asRecord(x)?.["text"] ?? "").length : 0));
+  const separators = Math.max(0, lengths.length - 1); // one "\n" between each block
+  return lengths.reduce((sum, n) => sum + n, 0) + separators;
+}
+
 /** Readable text for one transcript record: joined text blocks, plus a short
  * marker for a tool use or its result so the preview is not just prose. */
 function messageText(rec: Record<string, unknown>): string {
@@ -87,13 +98,9 @@ function messageText(rec: Record<string, unknown>): string {
     else if (b["type"] === "tool_result") {
       // Command output can carry anything, secrets included, and is not
       // useful as a queue preview anyway: report its size, never its text.
-      const c = b["content"];
-      const text = typeof c === "string"
-        ? c
-        : Array.isArray(c)
-          ? c.map((x) => (asRecord(x)?.["type"] === "text" ? String(asRecord(x)?.["text"] ?? "") : "")).join("\n")
-          : "";
-      parts.push(`[tool_result: ${text.length} chars${b["is_error"] ? " error" : ""}]`);
+      // Summed directly rather than joined into one string just to measure
+      // it: a large tool result should not cost a second full copy here.
+      parts.push(`[tool_result: ${toolResultCharCount(b["content"])} chars${b["is_error"] ? " error" : ""}]`);
     }
   }
   return redactSecrets(parts.join("\n").trim());

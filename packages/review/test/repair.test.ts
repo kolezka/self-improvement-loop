@@ -264,10 +264,10 @@ describe("applyRepair", () => {
 
     const repaired = applyRepair(ledger, rows);
     // "q" was never promoted, so it comes back byte for byte.
-    expect(repaired.entries["q"]).toEqual(ledger.entries["q"]);
+    expect(repaired.entries["q"]).toEqual(qRow);
     // "p" gets its three repaired fields, and nothing else moves.
     expect(repaired.entries["p"]).toEqual({
-      ...ledger.entries["p"],
+      ...pAtC3,
       promoted_at: "2026-01-01T00:00:00.000Z",
       revised_at: "2026-01-10T00:00:00.000Z",
       revisions: 1,

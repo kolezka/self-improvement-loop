@@ -31,7 +31,7 @@ export interface LogStreamOptions {
   /** Test-only hook fired at the end of every poll tick, letting a test
    * observe offset and whether the tick skipped its read for backpressure
    * without depending on timing. */
-  onPollTick?: (info: { skipped: boolean; offset: number }) => void;
+  onPollTick?: (info: { skipped: boolean; offset: number; desiredSize: number | null }) => void;
 }
 
 const DEFAULT_POLL_MS = 500;
@@ -190,7 +190,7 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
           // Skip this tick without advancing offset; the same range is
           // still there to read once desiredSize recovers.
           if ((controller.desiredSize ?? 0) <= 0) {
-            onPollTick?.({ skipped: true, offset });
+            onPollTick?.({ skipped: true, offset, desiredSize: controller.desiredSize });
             return;
           }
           let stat: { size: number; dev: number; ino: number };
@@ -244,18 +244,21 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
             pending += chunk;
             const lines = pending.split("\n");
             pending = lines.pop() ?? "";
-            for (const line of lines) send(sseLine(line));
+            // One chunk per read, not one per line: the queue counts chunks,
+            // so per-line enqueues let a single read queue tens of thousands.
+            const events = lines.map(sseLine);
             // No newline in sight for a very long time: flush what is held
             // rather than growing pending without bound.
             if (Buffer.byteLength(pending, "utf8") > pendingCapBytes) {
-              send(sseLine(pending));
+              events.push(sseLine(pending));
               pending = "";
             }
+            if (events.length > 0) send(events.join(""));
           }
           offset = to;
           identity = { dev: stat.dev, ino: stat.ino };
           errorSent = false;
-          onPollTick?.({ skipped: false, offset });
+          onPollTick?.({ skipped: false, offset, desiredSize: controller.desiredSize });
         } catch (err) {
           const e = err instanceof Error ? err : new Error(String(err));
           const trace = e.stack ?? `${e.name}: ${e.message}`;
@@ -277,7 +280,10 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
       };
 
       pollTimer = setInterval(poll, pollMs);
-      hbTimer = setInterval(() => send(SSE_HEARTBEAT), heartbeatMs);
+      // A client that is not reading gains nothing from more heartbeats.
+      hbTimer = setInterval(() => {
+        if ((controller.desiredSize ?? 0) > 0) send(SSE_HEARTBEAT);
+      }, heartbeatMs);
 
       request.signal.addEventListener("abort", () => {
         stop();

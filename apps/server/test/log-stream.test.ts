@@ -481,6 +481,46 @@ describe("GET /api/logs/stream", () => {
   }, 5000);
 });
 
+describe("log stream queue bound", () => {
+  // Counts queued chunks through desiredSize (highWaterMark minus queued
+  // chunks). Direct handleLogStream call, reader never touched; see above.
+  async function runUndrained(append: string, opts: { heartbeatMs: number; waitMs: number }) {
+    const path = seedLog("worker", "start\n");
+    const ticks: { skipped: boolean; offset: number; desiredSize: number | null }[] = [];
+    const abort = new AbortController();
+    const url = new URL("http://x/api/logs/stream?name=worker");
+    handleLogStream(new Request(url, { signal: abort.signal }), url, {
+      pollMs: 15,
+      heartbeatMs: opts.heartbeatMs,
+      queueHighWaterMark: 3,
+      onPollTick: (info) => ticks.push(info),
+    });
+    try {
+      if (append) appendFileSync(path, append);
+      await new Promise((r) => setTimeout(r, opts.waitMs));
+      return ticks;
+    } finally {
+      abort.abort();
+    }
+  }
+
+  test("one read of many short lines queues one chunk, not one per line", async () => {
+    let many = "";
+    while (many.length < 512 * 1024) many += `l${many.length}\n`;
+    const ticks = await runUndrained(many, { heartbeatMs: 60_000, waitMs: 200 });
+    const lowest = Math.min(...ticks.map((t) => t.desiredSize ?? 0));
+    // Connect heartbeat, initial tail and one batch: a handful of chunks,
+    // not the ~70k line events this read contains.
+    expect(lowest).toBeGreaterThan(-5);
+  }, 5000);
+
+  test("heartbeats stop queueing while the client is not reading", async () => {
+    const ticks = await runUndrained("", { heartbeatMs: 5, waitMs: 300 });
+    const lowest = Math.min(...ticks.map((t) => t.desiredSize ?? 0));
+    expect(lowest).toBeGreaterThan(-5);
+  }, 5000);
+});
+
 function existsWebError(root: string): boolean {
   try {
     const text = readFileSync(join(root, "sil_state_dir", "logs", "web.log"), "utf8");

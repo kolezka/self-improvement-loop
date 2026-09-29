@@ -97,10 +97,11 @@ export async function revise(
   // The digest check above ran before the drafter call, which can take
   // seconds. Another revise, a restage or a rehome can move this branch in
   // that window, so the write half takes the same lock accept uses and
-  // rechecks the digest before touching anything: fail fast, then anchor the
-  // worktree to the exact commit that check just verified, not the branch
-  // name, so a move landing between the recheck and the checkout itself is
-  // still caught rather than silently building on top of it.
+  // rechecks the digest before touching anything: fail fast. The checkout
+  // below still names the branch, so it resolves to whatever it currently
+  // points at; the explicit HEAD-vs-recheck.branch_sha compare inside the
+  // worktree is the real guard, catching a move landing between the recheck
+  // and the checkout itself instead of silently building on top of it.
   withWorkerLock(() => {
     const recheck = snapshot(world, repo, defaultRef, pattern);
     if (recheck.reviewed_state !== reviewedState) {

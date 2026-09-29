@@ -108,12 +108,27 @@ const STATUS_OUTCOME: Record<string, string> = {
  * planner has evidence but the ledger has not caught up. With neither a
  * ledger row nor a plan action, there is no evidence at all, which reads the
  * same as below threshold. */
-export function reflectionOutcome(pattern: string, routerRows: RouterStatusRow[], planActions: CurriculumPlanAction[]): string {
+export function reflectionOutcome(
+  pattern: string,
+  routerRows: RouterStatusRow[],
+  planActions: CurriculumPlanAction[],
+  reviewItems: ReviewQueueItem[] = [],
+): string {
+  // A staged proposal's ledger row sits on its branch, which router.inventory
+  // does not read, so the review queue decides first.
+  const review = reviewItems.find((r) => r.pattern === pattern);
+  if (review) return review.status === "retired" ? "Retirement staged" : "Staged";
   const row = routerRows.find((r) => r.pattern === pattern);
   if (row) return STATUS_OUTCOME[row.status] ?? row.status;
   const action = planActions.find((a) => a.pattern === pattern);
   if (!action || action.action === "below-threshold") return "Below threshold";
   return "No proposal yet";
+}
+
+/** Minimal shape of a `review.queue` item: a proposal branch waiting for a human. */
+export interface ReviewQueueItem {
+  pattern: string;
+  status: string;
 }
 
 export interface SankeyFlowLike {
@@ -131,6 +146,7 @@ export function buildPatternOutcomeFlows<T extends { pattern: string }>(
   routerRows: RouterStatusRow[],
   planActions: CurriculumPlanAction[],
   topN: number,
+  reviewItems: ReviewQueueItem[] = [],
 ): SankeyFlowLike[] {
   const counts = patternCounts(items);
   const top = counts.slice(0, topN);
@@ -138,13 +154,13 @@ export function buildPatternOutcomeFlows<T extends { pattern: string }>(
 
   const flows: SankeyFlowLike[] = top.map((c) => ({
     source: c.pattern,
-    target: reflectionOutcome(c.pattern, routerRows, planActions),
+    target: reflectionOutcome(c.pattern, routerRows, planActions, reviewItems),
     value: c.count,
   }));
 
   const otherTotals = new Map<string, number>();
   for (const c of rest) {
-    const outcome = reflectionOutcome(c.pattern, routerRows, planActions);
+    const outcome = reflectionOutcome(c.pattern, routerRows, planActions, reviewItems);
     otherTotals.set(outcome, (otherTotals.get(outcome) ?? 0) + c.count);
   }
   for (const [outcome, value] of otherTotals) flows.push({ source: OTHER_PATTERNS, target: outcome, value });

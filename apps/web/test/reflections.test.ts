@@ -170,3 +170,20 @@ describe("reflectionSections", () => {
     expect(reflectionSections("")).toEqual([]);
   });
 });
+
+describe("reflectionOutcome with the review queue", () => {
+  // A staged proposal's ledger row lives on its branch, not on the default
+  // branch router.inventory reads, so the review queue is what knows about it.
+  test("a pattern waiting in review is Staged even with no ledger row", () => {
+    const plan = [{ pattern: "p", action: "promote" }];
+    expect(reflectionOutcome("p", [], plan, [{ pattern: "p", status: "staged" }])).toBe("Staged");
+  });
+
+  test("a staged retirement reads as its own outcome", () => {
+    expect(reflectionOutcome("p", [{ pattern: "p", status: "promoted" }], [], [{ pattern: "p", status: "retired" }])).toBe("Retirement staged");
+  });
+
+  test("a refine waiting in review wins over an older accepted row", () => {
+    expect(reflectionOutcome("p", [{ pattern: "p", status: "promoted" }], [], [{ pattern: "p", status: "staged" }])).toBe("Staged");
+  });
+});

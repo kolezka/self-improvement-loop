@@ -5,6 +5,7 @@
   import { formatTime, plural } from "../lib/format.ts";
   import {
     buildPatternOutcomeFlows,
+    type ReviewQueueItem,
     groupByDay,
     OTHER_PATTERNS,
     patternCounts,
@@ -54,10 +55,11 @@
   // Patterns with a proposal currently staged, so the reader's pattern chip
   // can link to Review only when there is somewhere for it to go.
   let stagedPatterns = $state<Set<string>>(new Set());
+  let reviewItems = $state<ReviewQueueItem[]>([]);
 
   const patternOptions = $derived(patternCounts(allItems));
   const topIds = $derived(topPatternIds(allItems, TOP_PATTERNS));
-  const flows = $derived(buildPatternOutcomeFlows(allItems, routerRows, planActions, TOP_PATTERNS));
+  const flows = $derived(buildPatternOutcomeFlows(allItems, routerRows, planActions, TOP_PATTERNS, reviewItems));
 
   const activeFilterLabel = $derived.by(() => {
     if (patternFilter) return `Pattern: ${patternFilter}`;
@@ -153,13 +155,15 @@
 
   async function loadStaged() {
     try {
-      const q = (await call("review.queue", { world: appState.world })) as { pattern: string }[];
+      const q = (await call("review.queue", { world: appState.world })) as ReviewQueueItem[];
+      reviewItems = q;
       stagedPatterns = new Set(q.map((i) => i.pattern));
     } catch {
       // Decorative only: a failed fetch just means the reader's pattern chip
       // does not link out. The reflections list above still loads and toasts
       // its own failure independently.
       stagedPatterns = new Set();
+      reviewItems = [];
     }
   }
 

@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Ledger, ledgerPath, type PromotionEntry, type Reflection, ruleTag, type World } from "@sil/core";
+import { type Ledger, ledgerPath, type PromotionEntry, type Reflection, ruleTag, Scorecard, type World } from "@sil/core";
 import type { ChatFn } from "@sil/providers";
 import {
   artifacts,
@@ -87,6 +87,8 @@ function entry(fields: Partial<PromotionEntry> & { pattern: string }): Promotion
     served_by: null,
     last_updated: "2026-09-01",
     promoted_at: null,
+    revised_at: null,
+    revisions: 0,
     commit: null,
     feedback: null,
     ...fields,
@@ -244,6 +246,17 @@ describe("the drafting prompt", () => {
 // --- the churn this exists to stop ------------------------------------------
 
 describe("a refine that says nothing new", () => {
+  // Past observe_min_sessions, so a promote here is not read as "too few
+  // sessions on the live text yet" (`observing`): these tests are about the
+  // no-change gate, not the new redraft policy.
+  const observed = Scorecard.parse({
+    ref: `rule:${PATTERN}`,
+    type: "rule",
+    name: PATTERN,
+    rate_since_revision: { sessions: 999, hits: 0, rate: 0 },
+    rate_since_promotion: { sessions: 999, hits: 0, rate: 0 },
+  });
+
   /** A world with `pattern` already promoted as a rule, and new evidence. */
   function servedWorld(): { world: World; repo: string } {
     const world = makeWorld();
@@ -273,7 +286,7 @@ describe("a refine that says nothing new", () => {
       return JSON.stringify({ artifact: `${ruleBody()} Re-run the check after a rebase.` });
     };
 
-    const report = await run(world, makeCfg(), opts({ apply: true, chat }));
+    const report = await run(world, makeCfg(), opts({ apply: true, chat, cards: [observed] }));
 
     expect(report.staged).toEqual([PATTERN]);
     expect(prompts[0]).toContain("Existing artifact to refine");
@@ -290,7 +303,7 @@ describe("a refine that says nothing new", () => {
       return JSON.stringify({ artifact: ruleBody() });
     };
 
-    const report = await run(world, makeCfg(), opts({ apply: true, chat }));
+    const report = await run(world, makeCfg(), opts({ apply: true, chat, cards: [observed] }));
 
     expect(report.staged).toEqual([]);
     expect(report.gated_out[PATTERN]).toContain("no change");

@@ -58,6 +58,19 @@ import {
 const PATTERN = "verify-callsites";
 const QUOTE = "run `rg` over every call site of the changed symbol and read the graphify inventory";
 
+/** A scorecard past observe_min_sessions for `pattern`, so a redraft of an
+ * already-promoted row is not read as "too few sessions on the live text
+ * yet" (`observing`) by a test that is not about the new redraft policy. */
+function observedCard(pattern: string, type = "rule"): Scorecard {
+  return Scorecard.parse({
+    ref: `${type}:${pattern}`,
+    type,
+    name: pattern,
+    rate_since_revision: { sessions: 999, hits: 0, rate: 0 },
+    rate_since_promotion: { sessions: 999, hits: 0, rate: 0 },
+  });
+}
+
 /** The pattern a prompt is about, from its own task line.
  *
  * Substring matching on the bare slug stopped working when the prompt gained
@@ -107,6 +120,8 @@ function entry(fields: Partial<PromotionEntry> & { pattern: string }): Promotion
     served_by: null,
     last_updated: "2026-09-01T00:00:00Z",
     promoted_at: null,
+    revised_at: null,
+    revisions: 0,
     commit: null,
     feedback: null,
     ...fields,
@@ -368,7 +383,7 @@ describe("gates", () => {
     commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
     const chat = new FakeChat({ draft: { artifact: `${ruleBody()} ${ruleTag(PATTERN)}` } });
 
-    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
 
     expect(report.gated_out).toEqual({});
     expect(report.staged).toEqual([PATTERN]);
@@ -695,6 +710,7 @@ describe("served_by suppression", () => {
         gateRunner: () => {
           throw new Error("route() was consulted for an already-served pattern");
         },
+        cards: [observedCard(PATTERN)],
       }),
     );
 
@@ -904,6 +920,10 @@ describe("a cluster refine by recurrence", () => {
       recurrence_30d: recurrence,
       proposal: "refine",
       reason: `served 40 times, failure reflected ${recurrence} times since promotion`,
+      // Past observe_min_sessions, so a promote action here is not read as
+      // "too few sessions on the live text yet" (`observing`).
+      rate_since_revision: { sessions: 999, hits: recurrence, rate: recurrence / 999 },
+      rate_since_promotion: { sessions: 999, hits: recurrence, rate: recurrence / 999 },
     });
 
   function seedLive(): { world: World; repo: string } {
@@ -1012,7 +1032,7 @@ describe("cross-type redraft cleanup", () => {
     commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
 
     const chat = new FakeChat({ draft: hookDraft(PATTERN) });
-    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
 
     expect(report.staged).toEqual([PATTERN]);
     expect(report.routed[PATTERN]!.type).toBe("hook");

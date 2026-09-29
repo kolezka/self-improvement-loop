@@ -78,6 +78,8 @@ function entry(fields: Partial<PromotionEntry> & { pattern: string }): Promotion
     served_by: null,
     last_updated: "2026-09-01T00:00:00Z",
     promoted_at: null,
+    revised_at: null,
+    revisions: 0,
     commit: null,
     feedback: null,
     ...fields,
@@ -193,7 +195,10 @@ describe("the watermark", () => {
     expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
 
     addReflections(world, PATTERN, 2, { startDay: 20 });
-    const action = actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!;
+    // Past observe_min_sessions: this test is about the watermark, not the
+    // new redraft policy (covered in its own describe block below).
+    const cards = cardRows([{ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, rate_since_revision: { sessions: 999, hits: 0, rate: 0 }, rate_since_promotion: { sessions: 999, hits: 0, rate: 0 } }]);
+    const action = actions(plan(world, makeCfg({ threshold: 3 }), { cards }))[PATTERN]!;
     expect(action.action).toBe("promote");
     expect([action.count, action.watermark]).toEqual([7, 4]);
   });
@@ -339,8 +344,20 @@ describe("scorecard proposals for rows with no reflections", () => {
       artifact_type: "skill",
       served_by: { type: "skill", path: `skills/${pattern}/SKILL.md` },
     });
+  // rate_since_revision/rate_since_promotion past observe_min_sessions, so a
+  // promote here is not read as "too few sessions on the live text yet"
+  // (`observing`): this describe block is about proposal handling, not the
+  // new redraft policy (covered in its own describe block below).
   const card = (pattern: string, proposal: Scorecard["proposal"], reason = "") =>
-    ({ ref: `skill:${pattern}`, type: "skill", name: pattern, proposal, reason }) as Partial<Scorecard>;
+    ({
+      ref: `skill:${pattern}`,
+      type: "skill",
+      name: pattern,
+      proposal,
+      reason,
+      rate_since_revision: { sessions: 999, hits: 0, rate: 0 },
+      rate_since_promotion: { sessions: 999, hits: 0, rate: 0 },
+    }) as Partial<Scorecard>;
 
   test("a promoted row with no reflections and a refine card comes back as refine", () => {
     writeLedger(world, [promoted(PATTERN, 17)]);
@@ -664,5 +681,96 @@ describe("the ledger", () => {
     writeFileSync(path, "{ not json at all", "utf8");
     expect(() => loadLedger(path)).toThrow(path);
     expect(() => plan(world, makeCfg())).toThrow(/unreadable ledger/);
+  });
+});
+
+// --- the redraft policy, end to end: real scorecards() feeding real plan() --
+
+/** A reflection of `pattern`, tied to a real session id so it counts toward
+ * both the rate denominator (any reflected session) and this pattern's hits
+ * (`buildScorecards` only counts a reflection as a hit when it carries a
+ * session_id: plain `addReflections` rows do not, by design, since most of
+ * this file is not about the rate). */
+function writeSessionReflection(w: World, pattern: string, day: string, sessionId: string): void {
+  writeReflection(w.name, { id: `${day}-${pattern}-${sessionId}`, created: day, session_id: sessionId }, reflectionBody(pattern, day));
+}
+
+/** `n` distinct reflected sessions on `day`, none of them this pattern: padding
+ * for the rate denominator via the reflect-runs log (source 2), the same log
+ * `recordReflectRun` writes in the worker. */
+function writeFillerSessions(w: World, day: string, n: number, startAt: number): void {
+  for (let i = 0; i < n; i++) {
+    fsx.appendJsonl(paths.reflectRunsFile(), {
+      ts: `${day}T00:00:00Z`,
+      world: w.name,
+      session_id: `filler-${startAt + i}`,
+      recorded: false,
+      pattern: null,
+    });
+  }
+}
+
+describe("observing and escalate", () => {
+  test("too few reflected sessions since the live text keeps a redraft observing, not refined", () => {
+    // Promoted long ago, revised recently; the 3 new reflections below carry
+    // no session_id (same as the rest of this file), so the live text has
+    // seen 0 reflected sessions, well under observe_min_sessions (20).
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "skill",
+        served_by: { type: "skill", path: `skills/${PATTERN}/SKILL.md` },
+        promoted_at: "2026-08-01T00:00:00Z",
+        revised_at: "2026-09-01T00:00:00Z",
+        revisions: 1,
+      }),
+    ]);
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+
+    const cards = feedback.scorecards(world, makeCfg({ threshold: 3 }));
+    const card = cards.find((c) => c.name === PATTERN);
+    expect(card?.rate_since_revision).toEqual({ sessions: 0, hits: 0, rate: null });
+
+    const report = plan(world, makeCfg({ threshold: 3 }), { cards });
+    expect(actions(report)[PATTERN]).toMatchObject({ action: "observing" });
+    expect(actions(report)[PATTERN]!.reason).toContain("0/20");
+  });
+
+  test("a redraft that spent its budget and is still recurring almost as often escalates", () => {
+    // promoted_at equals revised_at here on purpose: with no session between
+    // them, rate_since_promotion and rate_since_revision cover the exact same
+    // data, so their rates are equal, which is "no rate drop" by construction
+    // rather than by coincidence.
+    const REVISED = "2026-08-01T00:00:00Z";
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "skill",
+        served_by: { type: "skill", path: `skills/${PATTERN}/SKILL.md` },
+        promoted_at: REVISED,
+        revised_at: REVISED,
+        revisions: 2,
+      }),
+    ]);
+    // 3 real hits on the pattern, past the watermark of 0 (threshold 3), each
+    // its own reflected session.
+    writeSessionReflection(world, PATTERN, "2026-08-02", "hit-1");
+    writeSessionReflection(world, PATTERN, "2026-08-03", "hit-2");
+    writeSessionReflection(world, PATTERN, "2026-08-04", "hit-3");
+    // 17 more reflected sessions, no pattern of theirs, to bring the total to
+    // observe_min_sessions (20) without adding another hit.
+    writeFillerSessions(world, "2026-08-05", 17, 0);
+
+    const cfg = makeCfg({ threshold: 3 });
+    const cards = feedback.scorecards(world, cfg);
+    const card = cards.find((c) => c.name === PATTERN);
+    expect(card?.rate_since_revision).toEqual({ sessions: 20, hits: 3, rate: 3 / 20 });
+    expect(card?.rate_since_promotion).toEqual(card?.rate_since_revision);
+
+    const report = plan(world, cfg, { cards });
+    expect(actions(report)[PATTERN]).toMatchObject({ action: "escalate" });
+    expect(actions(report)[PATTERN]!.reason).toContain("revised 2 time(s)");
   });
 });

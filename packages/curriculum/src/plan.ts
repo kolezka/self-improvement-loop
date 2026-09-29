@@ -300,12 +300,48 @@ export function watermark(ledger: Ledger, pattern: string): number {
   return Math.max(entry.promoted_at_count, entry.rejected_at_count);
 }
 
+/** For an already-promoted pattern that would otherwise redraft on new
+ * evidence: whether its live text has been seen by too few sessions to trust
+ * a rate yet (`observing`), or has used up its redraft budget while still
+ * recurring nearly as often as before promotion (`escalate`). Null means
+ * redraft as today.
+ *
+ * Both are proposals, exactly like `retire-candidate`: surfaced for a human,
+ * never executed, and neither spends the per-run cap. */
+export function redraftPolicy(
+  entry: PromotionEntry,
+  card: Scorecard | undefined,
+  cfg: Config,
+): { action: "observing" | "escalate"; reason: string } | null {
+  const minSessions = cfg.promotion.observe_min_sessions;
+  const sinceRevision = card?.rate_since_revision ?? null;
+  const sinceRevisionSessions = sinceRevision?.sessions ?? 0;
+  if (sinceRevisionSessions < minSessions) {
+    return { action: "observing", reason: `current version seen in ${sinceRevisionSessions}/${minSessions} reflected sessions` };
+  }
+  const sincePromotion = card?.rate_since_promotion ?? null;
+  const revisionRate = sinceRevision!.rate;
+  const promotionRate = sincePromotion?.rate ?? null;
+  if (entry.revisions >= cfg.promotion.max_rewords && revisionRate !== null && promotionRate !== null && revisionRate >= cfg.promotion.escalate_ratio * promotionRate) {
+    const pct = (n: number): string => `${Math.round(n * 100)}%`;
+    return {
+      action: "escalate",
+      reason:
+        `revised ${entry.revisions} time(s) and still recurring in ${pct(revisionRate)} of reflected sessions, ` +
+        `against ${pct(promotionRate)} since promotion; change the artifact type or split the pattern`,
+    };
+  }
+  return null;
+}
+
 /** What this world would do next, deterministic: clustered patterns sorted by
  * pattern, then ledger-only scorecard proposals sorted by pattern.
  *
  * Actions:
  *   promote          new evidence past the watermark, inside the per-run cap
  *   refine           a promoted artifact its scorecard says is misfiring
+ *   observing        promoted, new evidence, too few sessions on the live text yet
+ *   escalate         promoted, redraft budget spent, still recurring almost as often
  *   over-cap         actionable, but the per-run budget is spent
  *   below-threshold  not enough evidence yet, and never promoted
  *   done             in the ledger, no new evidence since its watermark
@@ -330,11 +366,17 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
     let reason = "";
     let feedback: string | null = null;
     if (count - mark >= threshold) {
-      action = "promote";
-      reason = `${count - mark} new reflection(s) past the watermark ${mark}`;
-      // New evidence wins the action, but the redraft still hears the complaint.
-      if (entry && entry.status === "promoted" && card && card.proposal === "refine") {
-        feedback = card.reason || "scorecard proposes a refine";
+      const redraft = entry && entry.status === "promoted" ? redraftPolicy(entry, card, cfg) : null;
+      if (redraft) {
+        action = redraft.action;
+        reason = redraft.reason;
+      } else {
+        action = "promote";
+        reason = `${count - mark} new reflection(s) past the watermark ${mark}`;
+        // New evidence wins the action, but the redraft still hears the complaint.
+        if (entry && entry.status === "promoted" && card && card.proposal === "refine") {
+          feedback = card.reason || "scorecard proposes a refine";
+        }
       }
     } else if (placeholders.has(pattern)) {
       action = "promote";

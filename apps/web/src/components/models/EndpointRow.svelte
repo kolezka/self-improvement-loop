@@ -60,4 +60,13 @@
     color: var(--err);
     font-size: var(--fs-xs);
   }
+
+  /* Scoped styles do not reach here from Models.svelte; without this the dot
+     is a zero-width inline span. Same fix as RoleCard. */
+  .reach {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: var(--fs-xs);
+  }
 </style>

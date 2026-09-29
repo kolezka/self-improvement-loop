@@ -1,7 +1,7 @@
 // Unit tests for the chart scale and label helpers.
 
 import { describe, expect, test } from "bun:test";
-import { dayLabel, niceMax, scaleY, total } from "../src/lib/chart.ts";
+import { dayLabel, niceMax, scaleY, total, yTicks } from "../src/lib/chart.ts";
 
 describe("niceMax", () => {
   test("returns 1 for an empty or all-zero window", () => {
@@ -59,5 +59,23 @@ describe("total", () => {
 
   test("returns 0 for an empty series", () => {
     expect(total([])).toBe(0);
+  });
+});
+
+describe("yTicks", () => {
+  test("splits 0 to max into count evenly spaced ticks", () => {
+    expect(yTicks(12, 4)).toEqual([0, 4, 8, 12]);
+  });
+
+  test("always starts at 0", () => {
+    expect(yTicks(9, 3)[0]).toBe(0);
+  });
+
+  test("always ends at max", () => {
+    expect(yTicks(9, 3).at(-1)).toBe(9);
+  });
+
+  test("returns just 0 when max is 0", () => {
+    expect(yTicks(0, 4)).toEqual([0, 0, 0, 0]);
   });
 });

@@ -54,3 +54,10 @@ export function dayLabel(day: string): string {
 export function total(points: SeriesPoint[]): number {
   return points.reduce((sum, p) => sum + p.count, 0);
 }
+
+/** `count` evenly spaced axis ticks from 0 up to max, 0 always included. */
+export function yTicks(max: number, count: number): number[] {
+  if (count <= 1) return [0];
+  const step = max / (count - 1);
+  return Array.from({ length: count }, (_, i) => step * i);
+}

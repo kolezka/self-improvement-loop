@@ -44,6 +44,9 @@ export interface PlanOptions {
    * not spend a slot and strand a viable one. Default true, so the plan and
    * dry-run forecast still show over-cap. */
   enforceCap?: boolean;
+  /** Injectable clock for `redraftPolicy`'s low-traffic stall check. Tests
+   * only; production leaves it at the real clock. */
+  now?: Date;
 }
 
 export interface Cluster {
@@ -300,6 +303,11 @@ export function watermark(ledger: Ledger, pattern: string): number {
   return Math.max(entry.promoted_at_count, entry.rejected_at_count);
 }
 
+/** Days since an ISO timestamp, against `now`. */
+function daysSince(iso: string, now: Date): number {
+  return (now.getTime() - new Date(iso).getTime()) / 86_400_000;
+}
+
 /** For an already-promoted pattern that would otherwise redraft on new
  * evidence: whether its live text has been seen by too few sessions to trust
  * a rate yet (`observing`), or has used up its redraft budget while still
@@ -307,22 +315,44 @@ export function watermark(ledger: Ledger, pattern: string): number {
  * redraft as today.
  *
  * Both are proposals, exactly like `retire-candidate`: surfaced for a human,
- * never executed, and neither spends the per-run cap. */
+ * never executed, and neither spends the per-run cap.
+ *
+ * `now` is injectable for tests; production leaves it at the real clock. */
 export function redraftPolicy(
   entry: PromotionEntry,
   card: Scorecard | undefined,
   cfg: Config,
+  now: Date = new Date(),
 ): { action: "observing" | "escalate"; reason: string } | null {
   const minSessions = cfg.promotion.observe_min_sessions;
   const sinceRevision = card?.rate_since_revision ?? null;
   const sinceRevisionSessions = sinceRevision?.sessions ?? 0;
   if (sinceRevisionSessions < minSessions) {
-    return { action: "observing", reason: `current version seen in ${sinceRevisionSessions}/${minSessions} reflected sessions` };
+    // Low-traffic patterns never fill the session window on their own: past
+    // observe_max_days since the live text last changed, keep waiting no
+    // longer and fall through to a normal redraft instead.
+    const anchor = entry.revised_at ?? entry.promoted_at;
+    const stalled = anchor !== null && daysSince(anchor, now) > cfg.promotion.observe_max_days;
+    if (!stalled) {
+      return { action: "observing", reason: `current version seen in ${sinceRevisionSessions}/${minSessions} reflected sessions` };
+    }
+    return null;
   }
   const sincePromotion = card?.rate_since_promotion ?? null;
   const revisionRate = sinceRevision!.rate;
   const promotionRate = sincePromotion?.rate ?? null;
-  if (entry.revisions >= cfg.promotion.max_rewords && revisionRate !== null && promotionRate !== null && revisionRate >= cfg.promotion.escalate_ratio * promotionRate) {
+  const promotionHits = sincePromotion?.hits ?? 0;
+  // A promotion rate of 0 (no recurrence at all since promotion) can never be
+  // "still recurring almost as often": without this, 0 >= escalate_ratio * 0
+  // escalated a pattern that has never once recurred.
+  if (
+    entry.revisions >= cfg.promotion.max_rewords &&
+    revisionRate !== null &&
+    promotionRate !== null &&
+    promotionRate > 0 &&
+    promotionHits > 0 &&
+    revisionRate >= cfg.promotion.escalate_ratio * promotionRate
+  ) {
     const pct = (n: number): string => `${Math.round(n * 100)}%`;
     return {
       action: "escalate",
@@ -366,10 +396,18 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
     let reason = "";
     let feedback: string | null = null;
     if (count - mark >= threshold) {
-      const redraft = entry && entry.status === "promoted" ? redraftPolicy(entry, card, cfg) : null;
+      const redraft = entry && entry.status === "promoted" ? redraftPolicy(entry, card, cfg, opts.now) : null;
       if (redraft) {
         action = redraft.action;
         reason = redraft.reason;
+        // Observing still hears a scorecard complaint: it is holding new
+        // evidence back, not clearing an existing one, so a refine proposal
+        // must not go dark while it waits.
+        if (redraft.action === "observing" && card && card.proposal === "refine") {
+          const refineReason = card.reason || "scorecard proposes a refine";
+          reason = `${redraft.reason}; ${refineReason}`;
+          feedback = refineReason;
+        }
       } else {
         action = "promote";
         reason = `${count - mark} new reflection(s) past the watermark ${mark}`;

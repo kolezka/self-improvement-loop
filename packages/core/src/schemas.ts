@@ -60,6 +60,11 @@ export const Promotion = z.object({
   // promoted_at with no revision yet) before its recurrence rate is trusted
   // enough to plan from. Below this the planner reports `observing`.
   observe_min_sessions: z.number().int().min(1).default(20),
+  // A pattern stuck below observe_min_sessions this many days after its live
+  // text last changed stops reporting `observing`: low traffic will never
+  // fill the window, so the planner falls through to a normal redraft
+  // instead of holding new evidence back forever.
+  observe_max_days: z.number().int().min(1).default(14),
   // Accepted redrafts of an already-promoted row allowed before a still-high
   // rate escalates instead of redrafting again.
   max_rewords: z.number().int().min(0).default(2),

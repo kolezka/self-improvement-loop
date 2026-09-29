@@ -38,6 +38,7 @@ import {
 } from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
 import { loadLedger, saveAliases, saveLedger, writeReflection } from "@sil/store";
+import { redraftPolicy } from "../src/plan.ts";
 import {
   addReflections,
   agentBody,
@@ -732,7 +733,9 @@ describe("observing and escalate", () => {
     const card = cards.find((c) => c.name === PATTERN);
     expect(card?.rate_since_revision).toEqual({ sessions: 0, hits: 0, rate: null });
 
-    const report = plan(world, makeCfg({ threshold: 3 }), { cards });
+    // Pinned close to revised_at: this test is about the session count, not
+    // the separate low-traffic stall timeout (observe_max_days).
+    const report = plan(world, makeCfg({ threshold: 3 }), { cards, now: new Date("2026-09-05T00:00:00Z") });
     expect(actions(report)[PATTERN]).toMatchObject({ action: "observing" });
     expect(actions(report)[PATTERN]!.reason).toContain("0/20");
   });
@@ -772,5 +775,96 @@ describe("observing and escalate", () => {
     const report = plan(world, cfg, { cards });
     expect(actions(report)[PATTERN]).toMatchObject({ action: "escalate" });
     expect(actions(report)[PATTERN]!.reason).toContain("revised 2 time(s)");
+  });
+
+  test("no recurrence at all, before or after the revision, does not escalate", () => {
+    // The bug: 0 hits since promotion and 0 hits since the revision read as
+    // "still recurring just as often" (0 >= escalate_ratio * 0), escalating a
+    // pattern that has never once recurred.
+    const REVISED = "2026-08-01T00:00:00Z";
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "skill",
+        served_by: { type: "skill", path: `skills/${PATTERN}/SKILL.md` },
+        promoted_at: REVISED,
+        revised_at: REVISED,
+        revisions: 2,
+      }),
+    ]);
+    // New evidence past the watermark, but none of it tied to a session, so
+    // it never counts as a "hit" in the rate windows below.
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    // 20 reflected sessions padding the denominator to observe_min_sessions,
+    // none of them this pattern's.
+    writeFillerSessions(world, "2026-08-02", 20, 0);
+
+    const cfg = makeCfg({ threshold: 3 });
+    const cards = feedback.scorecards(world, cfg);
+    const card = cards.find((c) => c.name === PATTERN);
+    expect(card?.rate_since_revision).toEqual({ sessions: 20, hits: 0, rate: 0 });
+    expect(card?.rate_since_promotion).toEqual({ sessions: 20, hits: 0, rate: 0 });
+
+    const report = plan(world, cfg, { cards });
+    expect(actions(report)[PATTERN]!.action).not.toBe("escalate");
+    expect(actions(report)[PATTERN]!.action).toBe("promote");
+  });
+
+  test("observing keeps a scorecard refine complaint visible instead of dropping it", () => {
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "skill",
+        served_by: { type: "skill", path: `skills/${PATTERN}/SKILL.md` },
+        promoted_at: "2026-08-01T00:00:00Z",
+        revised_at: "2026-09-01T00:00:00Z",
+        revisions: 1,
+      }),
+    ]);
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    const cards = cardRows([
+      {
+        ref: `skill:${PATTERN}`,
+        type: "skill",
+        name: PATTERN,
+        proposal: "refine",
+        reason: "misfired twice this week",
+        rate_since_revision: { sessions: 0, hits: 0, rate: null },
+      },
+    ]);
+
+    const report = plan(world, makeCfg({ threshold: 3 }), { cards, now: new Date("2026-09-05T00:00:00Z") });
+    const action = actions(report)[PATTERN]!;
+    expect(action.action).toBe("observing");
+    expect(action.reason).toContain("0/20");
+    expect(action.reason).toContain("misfired twice this week");
+    expect(action.feedback).toBe("misfired twice this week");
+  });
+
+  describe("low-traffic stall (observe_max_days)", () => {
+    const NOW = new Date("2026-09-29T00:00:00Z");
+    const zeroSessionCard = (): Scorecard => ScorecardSchema.parse({ ref: `skill:${PATTERN}`, type: "skill", name: PATTERN, rate_since_revision: { sessions: 0, hits: 0, rate: null } });
+
+    test("still within observe_max_days (14 days) stays observing", () => {
+      const e = entry({
+        pattern: PATTERN,
+        status: "promoted",
+        promoted_at: "2026-01-01T00:00:00Z",
+        revised_at: new Date(NOW.getTime() - 14 * 86_400_000).toISOString(),
+      });
+      expect(redraftPolicy(e, zeroSessionCard(), makeCfg(), NOW)).toMatchObject({ action: "observing" });
+    });
+
+    test("past observe_max_days (15 days) falls through to a normal redraft instead of observing", () => {
+      const e = entry({
+        pattern: PATTERN,
+        status: "promoted",
+        promoted_at: "2026-01-01T00:00:00Z",
+        revised_at: new Date(NOW.getTime() - 15 * 86_400_000).toISOString(),
+      });
+      expect(redraftPolicy(e, zeroSessionCard(), makeCfg(), NOW)).toBeNull();
+    });
   });
 });

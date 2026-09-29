@@ -41,7 +41,7 @@ describe("streamLog", () => {
     });
     const originalFetch = globalThis.fetch;
     const originalWindow = (globalThis as { window?: unknown }).window;
-    (globalThis as { window?: unknown }).window = { location: { origin: "http://test.local" } };
+    (globalThis as { window?: unknown }).window = { location: { origin: "http://test.local", hash: "", pathname: "/", search: "" } };
     globalThis.fetch = (async () => new Response(body, { status: 200 })) as typeof fetch;
     try {
       const errors: string[] = [];

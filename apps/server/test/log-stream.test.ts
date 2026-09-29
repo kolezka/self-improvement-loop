@@ -179,6 +179,48 @@ describe("GET /api/logs/stream", () => {
     }
   }, 5000);
 
+  test("a rotation during the initial connect does not crash the stream", async () => {
+    const path = seedLog("worker", "one\n");
+    let calls = 0;
+    const flaky = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      token: TOKEN,
+      logStream: {
+        pollMs: 20,
+        heartbeatMs: 100,
+        readRange: (p, from, to) => {
+          calls += 1;
+          // Fails the very first call: the initial tail's own byte-0
+          // newline check, run before any poll timer exists.
+          if (calls === 1) {
+            const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+            err.code = "ENOENT";
+            throw err;
+          }
+          return readFileSync(p).subarray(from, to);
+        },
+      },
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${flaky.port}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+      expect(res.status).toBe(200);
+      const reader = res.body!.getReader();
+      try {
+        // The connect-time read failed and was swallowed; the next poll
+        // rediscovers the file from scratch and the stream keeps working.
+        appendFileSync(path, "two\n");
+        const grown = await readUntil(reader, '"line":"two"}', 2000);
+        expect(grown).toContain('"line":"one"}');
+        expect(grown).toContain('"line":"two"}');
+      } finally {
+        await reader.cancel();
+      }
+    } finally {
+      flaky.stop(true);
+    }
+  }, 4000);
+
   test("a rename-away-and-recreate at equal or larger size resets, no dropped bytes", async () => {
     const path = seedLog("worker", "a\nb\n");
     const res = await fetch(`${base()}/api/logs/stream?name=worker`, { headers: goodHeaders() });

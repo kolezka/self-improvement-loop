@@ -141,19 +141,36 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
         exists = false;
       }
       if (exists) {
-        const tail = tailLines(path, initialLines, undefined, size);
-        // tailLines splits on "\n" and only drops a trailing empty segment,
-        // so a file not ending in a newline leaves a partial line as the
-        // last entry. Sending it as a full line now, then the remainder as a
-        // second line once the newline lands, tears one line into two.
-        // A raw byte compare, not run through the stream decoder: this is a
-        // one-off peek unrelated to the main decode stream, and feeding it
-        // through would risk consuming a byte the real read still needs.
-        const endsInNewline = size === 0 || readRangeFn(path, size - 1, size)[0] === 0x0a;
-        if (!endsInNewline && tail.length > 0) pending = tail.pop() ?? "";
-        for (const line of tail) send(sseLine(line));
-        offset = size;
-        identity = initialStat ? { dev: initialStat.dev, ino: initialStat.ino } : null;
+        // Runs before any poll timer exists, so a rotation landing between
+        // the stat above and this read has nowhere else to be caught: left
+        // unguarded it would escape start() itself and take the whole
+        // response down with it, not just one tick.
+        try {
+          const tail = tailLines(path, initialLines, undefined, size);
+          // tailLines splits on "\n" and only drops a trailing empty
+          // segment, so a file not ending in a newline leaves a partial
+          // line as the last entry. Sending it as a full line now, then the
+          // remainder as a second line once the newline lands, tears one
+          // line into two.
+          // A raw byte compare, not run through the stream decoder: this is
+          // a one-off peek unrelated to the main decode stream, and feeding
+          // it through would risk consuming a byte the real read still
+          // needs.
+          const endsInNewline = size === 0 || readRangeFn(path, size - 1, size)[0] === 0x0a;
+          if (!endsInNewline && tail.length > 0) pending = tail.pop() ?? "";
+          for (const line of tail) send(sseLine(line));
+          offset = size;
+          identity = initialStat ? { dev: initialStat.dev, ino: initialStat.ino } : null;
+        } catch {
+          // The file was rotated or removed between the stat and this read:
+          // the same race poll() already tolerates, not a real error. Start
+          // clean from 0; the first poll tick's own stat rediscovers the
+          // truth (still missing, or a fresh file) and reports anything
+          // that is a genuine problem through its own error handling.
+          offset = 0;
+          pending = "";
+          identity = null;
+        }
       } else {
         send(SSE_MISSING);
         missingSent = true;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { nextVersion, renderChangelog } from "../scripts/release-notes.ts";
+import { assertAboveTag, nextVersion, renderChangelog } from "../scripts/release-notes.ts";
 
 describe("nextVersion", () => {
   test("each bump moves exactly one step", () => {
@@ -11,6 +11,10 @@ describe("nextVersion", () => {
   test("refuses anything but the three bump kinds", () => {
     expect(() => nextVersion("0.3.10", "0.4.0")).toThrow();
     expect(() => nextVersion("0.3.10", "Major")).toThrow();
+  });
+
+  test("refuses a component too large to add one to exactly", () => {
+    expect(() => nextVersion("1.0.9007199254740993", "patch")).toThrow();
   });
 
   test("refuses a current version that is not x.y.z", () => {
@@ -56,5 +60,22 @@ describe("renderChangelog", () => {
     const md = renderChangelog("v1.0.0", "1.0.1", [{ sha: "fffffff", subject: "chore: bump version to 1.0.0" }]);
     expect(md).toContain("No changes since v1.0.0.");
     expect(md).not.toContain("###");
+  });
+});
+
+describe("assertAboveTag", () => {
+  test("a version below or equal to the newest tag is refused", () => {
+    // A run from a stale branch: package.json 0.3.10 while v1.0.0 exists.
+    expect(() => assertAboveTag("0.3.11", "v1.0.0")).toThrow(/v1.0.0/);
+    expect(() => assertAboveTag("1.0.0", "v1.0.0")).toThrow();
+  });
+
+  test("compares numerically, not as text", () => {
+    expect(() => assertAboveTag("0.10.0", "v0.9.0")).not.toThrow();
+    expect(() => assertAboveTag("0.9.1", "v0.10.0")).toThrow();
+  });
+
+  test("no tag yet allows any version", () => {
+    expect(() => assertAboveTag("0.1.0", null)).not.toThrow();
   });
 });

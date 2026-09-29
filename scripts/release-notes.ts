@@ -24,10 +24,31 @@ export function nextVersion(current: string, bump: string): string {
   const match = SEMVER.exec(current);
   if (!match) throw new Error(`current version ${JSON.stringify(current)} is not x.y.z`);
   const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (![major, minor, patch].every(Number.isSafeInteger)) {
+    throw new Error(`current version ${JSON.stringify(current)} has a component too large to raise exactly`);
+  }
   if (bump === "major") return `${major + 1}.0.0`;
   if (bump === "minor") return `${major}.${minor + 1}.0`;
   if (bump === "patch") return `${major}.${minor}.${patch + 1}`;
   throw new Error(`bump must be patch, minor or major, got ${JSON.stringify(bump)}`);
+}
+
+function parts(version: string): number[] {
+  const match = SEMVER.exec(version);
+  if (!match) throw new Error(`${JSON.stringify(version)} is not x.y.z`);
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** Refuses a version that does not sort above the newest release tag. A run
+ * from a stale branch would otherwise force `release` backward. */
+export function assertAboveTag(version: string, tag: string | null): void {
+  if (tag === null) return;
+  const [a, b] = [parts(version), parts(tag.slice(1))];
+  for (let i = 0; i < 3; i++) {
+    if (a[i]! > b[i]!) return;
+    if (a[i]! < b[i]!) break;
+  }
+  throw new Error(`new version ${version} is not above the newest release tag ${tag}; run the release from an up to date main`);
 }
 
 function entry(c: Commit, scope: string | undefined, text: string): string {
@@ -94,7 +115,9 @@ if (import.meta.main) {
   const [cmd, arg] = process.argv.slice(2);
   if (cmd === "version" && arg) {
     const current = (await Bun.file(new URL("../package.json", import.meta.url)).json()).version as string;
-    console.log(nextVersion(current, arg));
+    const version = nextVersion(current, arg);
+    assertAboveTag(version, previousTag());
+    console.log(version);
   } else if (cmd === "changelog" && arg) {
     const tag = previousTag();
     process.stdout.write(renderChangelog(tag, arg, commitsSince(tag)));

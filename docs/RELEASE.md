@@ -9,7 +9,8 @@ is what produces it.
 Actions > `release` > Run workflow. Pick `bump` from the dropdown: `patch`,
 `minor` or `major`. Each raises that part of the version by one, from
 `package.json`: `0.3.10` becomes `0.3.11`, `0.4.0` or `1.0.0`. There is no free
-text version.
+text version. The run fails if the new version is not above the newest `v*`
+tag, which is what a run from a stale branch would produce.
 
 `dry_run` is checked by default. A dry run computes the new version and the
 changelog, shows both in the run summary, and stops: nothing is committed,

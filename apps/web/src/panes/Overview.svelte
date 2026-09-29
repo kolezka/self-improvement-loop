@@ -283,7 +283,6 @@
       <Skeleton height="120px" />
       <Skeleton height="120px" />
       <Skeleton height="120px" />
-      <Skeleton height="120px" />
     </div>
   {:else if history.status === "error"}
     <p class="notice error">Could not load the history charts: {history.error}</p>
@@ -311,13 +310,6 @@
           <p class="meta">{proposalsSinceNote}</p>
         {/if}
       </div>
-      <BarChart
-        title="Votes"
-        series={[
-          { label: "Good", tone: "ok", points: history.data.series.votes_good },
-          { label: "Bad", tone: "err", points: history.data.series.votes_bad },
-        ]}
-      />
     </div>
   {/if}
 </section>

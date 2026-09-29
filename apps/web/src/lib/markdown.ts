@@ -9,16 +9,16 @@ export type MdBlock =
   | { type: "list"; items: string[] }
   | { type: "paragraph"; text: string };
 
-// Splits a leading YAML-ish front matter block ("---" ... "---") from the
-// rest of the text, so the caller can render it as a key/value list instead
-// of feeding "---" and "name: ..." lines through the paragraph renderer.
+// Splits a leading YAML front matter block ("---" ... "---") from the rest of
+// the text, so the caller shows it verbatim instead of feeding "---" and
+// "name: ..." lines through the paragraph renderer.
 // Only a fence on the very first line counts: a "---" later in the body is
 // just body text, and an unclosed leading fence is not front matter either.
-export function splitFrontMatter(text: string): { meta: [string, string][]; body: string } {
+export function splitFrontMatter(text: string): { frontMatter: string | null; body: string } {
   const src = text || "";
   const lines = src.split("\n");
   if (lines[0]?.trim() !== "---") {
-    return { meta: [], body: src };
+    return { frontMatter: null, body: src };
   }
 
   let closingIndex = -1;
@@ -29,20 +29,18 @@ export function splitFrontMatter(text: string): { meta: [string, string][]; body
     }
   }
   if (closingIndex === -1) {
-    return { meta: [], body: src };
+    return { frontMatter: null, body: src };
   }
 
-  const meta: [string, string][] = [];
-  for (let i = 1; i < closingIndex; i++) {
-    const match = lines[i]!.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (match) meta.push([match[1]!, match[2]!]);
-  }
+  // Kept verbatim: a reviewer accepts from this view, and a nested value such
+  // as an agent's tools list is a permission that must not be hidden.
+  const frontMatter = lines.slice(1, closingIndex).join("\n");
 
   const body = lines
     .slice(closingIndex + 1)
     .join("\n")
     .replace(/^\n+/, "");
-  return { meta, body };
+  return { frontMatter, body };
 }
 
 export function parseMarkdown(text: string): MdBlock[] {

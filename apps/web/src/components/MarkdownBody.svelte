@@ -7,15 +7,8 @@
 </script>
 
 <div class="body-doc">
-  {#if split.meta.length > 0}
-    <dl class="front-matter">
-      {#each split.meta as [key, value] (key)}
-        <div class="front-matter__row">
-          <dt>{key}</dt>
-          <dd>{value}</dd>
-        </div>
-      {/each}
-    </dl>
+  {#if split.frontMatter !== null}
+    <pre class="front-matter"><code>{split.frontMatter}</code></pre>
   {/if}
   {#each blocks as block}
     {#if block.type === "heading"}
@@ -53,30 +46,14 @@
   }
 
   .front-matter {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
     margin: 0 0 1rem;
     padding: 0.6rem 0.75rem;
     border: 1px solid var(--border);
     border-radius: var(--r-md);
     background: var(--panel);
+    font-family: var(--font-mono);
     font-size: var(--fs-sm);
-  }
-
-  .front-matter__row {
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  .front-matter__row dt {
-    flex: 0 0 auto;
-    color: var(--muted);
-    font-weight: 600;
-  }
-
-  .front-matter__row dd {
-    margin: 0;
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
 </style>

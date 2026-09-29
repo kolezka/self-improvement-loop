@@ -223,7 +223,16 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
         } catch (err) {
           const e = err instanceof Error ? err : new Error(String(err));
           const trace = e.stack ?? `${e.name}: ${e.message}`;
-          fsx.appendLine(paths.logFile("web"), `${fsx.nowIso()} ERROR ${trace}`);
+          try {
+            // Best-effort: when the streamed log IS web.log and it is what
+            // just failed, this write targets the exact same broken file. A
+            // rethrow here would escape the interval uncaught; the client
+            // still gets the error event below regardless of whether the
+            // trace made it to disk.
+            fsx.appendLine(paths.logFile("web"), `${fsx.nowIso()} ERROR ${trace}`);
+          } catch {
+            // Nowhere left to report this; the SSE error event is the record.
+          }
           if (!errorSent) {
             send(sseError(e.message));
             errorSent = true;

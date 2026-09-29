@@ -323,6 +323,44 @@ describe("GET /api/logs/stream", () => {
     }
   }, 6000);
 
+  test("a broken web.log (the trace target itself) does not crash the stream it is tracing", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    // Streaming "web" and breaking web.log itself makes the mapError-style
+    // trace write inside the catch target the exact file that is already
+    // failing: a rethrow there would escape the interval uncaught.
+    const capped = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      token: TOKEN,
+      logStream: { pollMs: 20, heartbeatMs: 100 },
+    });
+    try {
+      const path = seedLog("web", "a\n");
+      const res = await fetch(`http://127.0.0.1:${capped.port}/api/logs/stream?name=web`, { headers: goodHeaders() });
+      const reader = res.body!.getReader();
+      try {
+        await readUntil(reader, '"line":"a"}', 2000);
+
+        appendFileSync(path, "b\n");
+        chmodSync(path, 0o000);
+        let errored: string;
+        try {
+          errored = await readUntil(reader, "event: error", 2000);
+        } finally {
+          chmodSync(path, 0o644);
+        }
+        expect(errored).toContain('"detail"');
+
+        const recovered = await readUntil(reader, '"line":"b"}', 2000);
+        expect(recovered.match(/event: error/g)).toBeNull();
+      } finally {
+        await reader.cancel();
+      }
+    } finally {
+      capped.stop(true);
+    }
+  }, 6000);
+
   test("a reader that never drains does not let the stream read the whole file into memory", async () => {
     // Calls handleLogStream directly rather than through a real HTTP round
     // trip: Bun's own socket layer pulls from the response stream to fill

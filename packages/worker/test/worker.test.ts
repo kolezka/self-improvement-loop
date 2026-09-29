@@ -246,6 +246,37 @@ describe("runOnce status file", () => {
   });
 });
 
+describe("runOnce run marker", () => {
+  // worker_runs (history.series) reads this line to chart worker activity over
+  // time; worker-status.json only ever holds the latest pass.
+  test("logs exactly one action=run line per pass, counts matching worker-status.json", async () => {
+    prepareEnv();
+    writePending("sess-good", { ended: true });
+    writePending("sess-no-transcript", { ended: true, transcriptOk: false });
+
+    await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
+
+    const lines = readFileSync(paths.logFile("worker"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const runLines = lines.filter((l) => l["action"] === "run");
+    expect(runLines).toHaveLength(1);
+
+    const status = JSON.parse(readFileSync(join(paths.stateDir(), "worker-status.json"), "utf8")) as {
+      last_summary: { counts: { reflected: number; failed: number; skipped: number } };
+    };
+    expect(runLines[0]).toMatchObject({
+      action: "run",
+      reflected: status.last_summary.counts.reflected,
+      failed: status.last_summary.counts.failed,
+      skipped: status.last_summary.counts.skipped,
+    });
+    expect(status.last_summary.counts.reflected).toBe(1);
+    expect(status.last_summary.counts.skipped).toBe(1);
+  });
+});
+
 describe("runOnce usage events", () => {
   // The legacy file here held 15.4 MB, 89% of it hook_run lines that no
   // scorecard reads, and every rebuild parsed all of it.

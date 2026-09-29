@@ -1,11 +1,15 @@
 <script lang="ts">
-  import { parseMarkdown } from "../lib/markdown.ts";
+  import { parseMarkdown, splitFrontMatter } from "../lib/markdown.ts";
 
   let { text = "" }: { text?: string } = $props();
-  const blocks = $derived(parseMarkdown(text));
+  const split = $derived(splitFrontMatter(text));
+  const blocks = $derived(parseMarkdown(split.body));
 </script>
 
 <div class="body-doc">
+  {#if split.frontMatter !== null}
+    <pre class="front-matter"><code>{split.frontMatter}</code></pre>
+  {/if}
   {#each blocks as block}
     {#if block.type === "heading"}
       {#if block.level === 1}
@@ -39,6 +43,18 @@
 
   .body-doc > :last-child {
     margin-bottom: 0;
+  }
+
+  .front-matter {
+    margin: 0 0 1rem;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--panel);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 </style>
 

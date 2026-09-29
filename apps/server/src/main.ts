@@ -3,6 +3,7 @@
 
 import { networkInterfaces } from "node:os";
 import { guard, isPrivateAddress } from "./guard.ts";
+import { handleLogStream, type LogStreamOptions } from "./log-stream.ts";
 import { buildRoutes, handleOp, handleOps } from "./routes.ts";
 import { serveStatic } from "./static.ts";
 import { loadOrCreateToken } from "./token.ts";
@@ -12,6 +13,11 @@ export interface CreateServerOptions {
   host?: string;
   token: string | null;
   allowedHosts?: readonly string[];
+  // web console: live logs and revise
+  /** Poll and heartbeat interval for GET /api/logs/stream. Production takes
+   * the route's own defaults; a test shortens pollMs to avoid a real 500 ms
+   * wait per assertion. */
+  logStream?: LogStreamOptions;
 }
 
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "*"]);
@@ -55,6 +61,19 @@ export function createServer(opts: CreateServerOptions): Bun.Server<undefined> {
           });
         }
         return handleOp(request, route, url);
+      }
+
+      // web console: live logs and revise
+      if (pathname === "/api/logs/stream") {
+        const denied = guard(request, { port: server.port ?? opts.port, token: opts.token, allowedHosts: opts.allowedHosts });
+        if (denied) return denied;
+        if (request.method !== "GET") {
+          return new Response(JSON.stringify({ detail: "method not allowed" }), {
+            status: 405,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return handleLogStream(request, url, opts.logStream ?? {});
       }
 
       if (pathname.startsWith("/api/")) {

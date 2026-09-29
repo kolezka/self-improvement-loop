@@ -82,6 +82,9 @@ export const llmFile = (): string => join(configDir(), "llm.yaml");
 
 export type QueueBucket = "pending" | "done" | "failed";
 export const queueDir = (bucket: QueueBucket): string => current().queueDir(bucket);
+// The reversible "Clear done"/"Clear failed" cutoff. Never moves or deletes a
+// queue file; queue.list just hides entries at or before it.
+export const queueClearedFile = (): string => join(stateDir(), "queue", "cleared.json");
 export const usageEventsFile = (): string => current().usageEventsFile();
 // hook_run lines live apart from the artifact uses: they are about 90% of the
 // volume and no scorecard reads them, so every rebuild parsed and dropped them.
@@ -94,6 +97,10 @@ export const criticFeedbackFile = (): string => join(stateDir(), "feedback", "cr
 // not pay for the same refused draft again.
 export const refineAttemptsFile = (world: string): string =>
   join(stateDir(), "curriculum", "refine-attempts", `${safeComponent(world)}.json`);
+// Append-only history of staged/revised/accepted/rejected/retired/rehomed
+// transitions. The ledger keeps only the latest state per pattern, so this is
+// the only place that history can be read back from.
+export const proposalEventsFile = (): string => join(stateDir(), "curriculum", "proposal-events.jsonl");
 export const inboxDir = (world: string): string => current().inboxDir(world);
 export const sessionDir = (sessionId: string): string => current().sessionDir(sessionId);
 export const workerLockFile = (): string => current().workerLockFile();

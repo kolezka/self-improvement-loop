@@ -1,11 +1,16 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
-  import { formatTime } from "../lib/format.ts";
+  import { formatTime, plural } from "../lib/format.ts";
+  import { actionTarget, instructionTitle, summariseSources } from "../lib/review.ts";
+  import type { ReviewDetail, ReviseResult } from "../lib/api-types.ts";
   import DiffView from "../components/DiffView.svelte";
+  import MarkdownBody from "../components/MarkdownBody.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
 
   const ARTIFACT_TYPES = ["skill", "hook", "rule", "agent", "none"] as const;
+  const MAX_INSTRUCTION = 4000;
 
   interface QueueItem {
     pattern: string;
@@ -14,17 +19,7 @@
     // artifact, which otherwise looks like a promotion with an empty body.
     status?: string;
     staged_at?: string | null;
-  }
-
-  interface Detail {
-    pattern: string;
-    artifact_type: string;
-    status?: string;
-    artifact_path?: string | null;
-    reviewed_state: string;
-    accept_blocked?: string | null;
-    sources?: string[];
-    body: string;
+    count?: number;
   }
 
   interface Diff {
@@ -33,7 +28,7 @@
   }
 
   let items = $state<QueueItem[]>([]);
-  let detail = $state<Detail | null>(null);
+  let detail = $state<ReviewDetail | null>(null);
   let diffText = $state("");
   let selectedPattern = $state<string | null>(null);
   // The digest of the proposal actually shown below. Any reload (queue
@@ -42,9 +37,47 @@
   let reviewedState = $state<string | null>(null);
   let statesMismatch = $state(false);
   let rehomeType = $state<string>("skill");
+  // Loading covers the window between picking a pattern and its detail
+  // landing; loadError is the pattern the load failed for, so a failure on
+  // one selection does not stick around once another is opened.
+  let loadingDetail = $state(false);
+  let loadError = $state<{ pattern: string; message: string } | null>(null);
+  // The full instruction from the last successful revise, shown as a note
+  // until the operator dismisses it, opens another proposal, or acts again.
+  let reviseNote = $state<string | null>(null);
   // Guards against a slow response landing after the operator has already
   // moved on to a different pattern.
   let seq = 0;
+
+  let activeTab = $state<"proposal" | "diff">("proposal");
+  let sourcesOpen = $state(false);
+
+  let showRevise = $state(false);
+  let instruction = $state("");
+  let revising = $state(false);
+  let reviseStartedAt = $state<number | null>(null);
+  let elapsedSeconds = $state(0);
+  let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+  // Bound to the sticky footer's rendered height, so the scrollable proposal
+  // body gets exactly enough bottom padding to clear it: the screenshot bug
+  // was the action bar covering the last lines of the diff.
+  let footerHeight = $state(64);
+
+  function startElapsedTimer() {
+    reviseStartedAt = Date.now();
+    elapsedSeconds = 0;
+    elapsedTimer = setInterval(() => {
+      elapsedSeconds = Math.floor((Date.now() - (reviseStartedAt ?? Date.now())) / 1000);
+    }, 1000);
+  }
+
+  function stopElapsedTimer() {
+    if (elapsedTimer) clearInterval(elapsedTimer);
+    elapsedTimer = null;
+    reviseStartedAt = null;
+  }
+
+  onDestroy(stopElapsedTimer);
 
   async function loadQueue() {
     reviewedState = null;
@@ -56,19 +89,35 @@
   }
 
   async function openPattern(pattern: string) {
+    if (revising) return;
+    // Clear the old proposal immediately: leaving it on screen while the new
+    // one loads let the operator reject or rehome the wrong pattern.
     selectedPattern = pattern;
+    detail = null;
+    diffText = "";
     reviewedState = null;
+    loadError = null;
+    loadingDetail = true;
+    activeTab = "proposal";
+    sourcesOpen = false;
+    showRevise = false;
+    reviseNote = null;
     const mySeq = ++seq;
 
-    let d: Detail;
+    let d: ReviewDetail;
     let df: Diff;
     try {
       [d, df] = (await Promise.all([
         call("review.detail", { world: appState.world, pattern }),
         call("review.diff", { world: appState.world, pattern }),
-      ])) as [Detail, Diff];
+      ])) as [ReviewDetail, Diff];
     } catch (e) {
-      toast(`could not load proposal: ${(e as Error).message}`);
+      // A failure for a proposal the operator already left is not news.
+      if (mySeq === seq) {
+        loadError = { pattern, message: (e as Error).message };
+        loadingDetail = false;
+        toast(`could not load proposal: ${(e as Error).message}`);
+      }
       return;
     }
     if (mySeq !== seq) return;
@@ -79,6 +128,23 @@
     detail = d;
     diffText = df.diff;
     rehomeType = d.artifact_type;
+    loadingDetail = false;
+  }
+
+  function selectByIndex(index: number) {
+    if (index < 0 || index >= items.length) return;
+    void openPattern(items[index]!.pattern);
+  }
+
+  // Up/down moves the selection without leaving the list, so reviewing a
+  // long queue does not need a pointer for every item.
+  function onListKeydown(event: KeyboardEvent) {
+    if (revising || items.length === 0) return;
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const index = items.findIndex((i) => i.pattern === selectedPattern);
+    if (event.key === "ArrowDown") selectByIndex(index === -1 ? 0 : Math.min(index + 1, items.length - 1));
+    else selectByIndex(index === -1 ? 0 : Math.max(index - 1, 0));
   }
 
   // Captures the reviewed_state digest before clearing it, so the accept
@@ -97,12 +163,14 @@
     }
     selectedPattern = null;
     detail = null;
+    showRevise = false;
+    reviseNote = null;
     await loadQueue();
     appState.statusSeq += 1;
   }
 
   function accept() {
-    const pattern = selectedPattern;
+    const pattern = actionTarget(selectedPattern, detail);
     if (!pattern) return;
     // Accepting a retirement is an accept as well, and saying "accepted" for it
     // read as "the artifact is live now", which is the opposite of what landed.
@@ -115,13 +183,13 @@
   }
 
   function reject() {
-    const pattern = selectedPattern;
+    const pattern = actionTarget(selectedPattern, detail);
     if (!pattern) return;
     void act(() => call("skill.reject", { world: appState.world, pattern }), "rejected");
   }
 
   function rehome() {
-    const pattern = selectedPattern;
+    const pattern = actionTarget(selectedPattern, detail);
     if (!pattern) return;
     // Staged only, exactly like retire: the old artifact keeps serving until
     // the branch is accepted.
@@ -132,31 +200,88 @@
     void act(() => call("router.rehome", { world: appState.world, pattern, artifact_type: rehomeType, confirm }), verb);
   }
 
-  const canAccept = $derived(reviewedState !== null && !detail?.accept_blocked);
+  function openRevise() {
+    showRevise = true;
+  }
 
-  // Display-only summary of where the proposal stands, derived from the same
-  // signals canAccept already uses. Never consulted by act()/accept().
+  function dismissReviseNote() {
+    reviseNote = null;
+  }
+
+  function cancelRevise() {
+    showRevise = false;
+    instruction = "";
+  }
+
+  async function submitRevise() {
+    const pattern = selectedPattern;
+    const text = instruction.trim();
+    if (!pattern || !detail || reviewedState === null || text.length === 0) return;
+    revising = true;
+    startElapsedTimer();
+    try {
+      const res = (await call("review.revise", {
+        world: appState.world,
+        pattern,
+        reviewed_state: reviewedState,
+        instruction: text,
+      })) as ReviseResult;
+      if (selectedPattern === pattern) {
+        detail = res.detail;
+        diffText = res.diff;
+        reviewedState = res.reviewed_state;
+        statesMismatch = false;
+        activeTab = "diff";
+        showRevise = false;
+        instruction = "";
+        reviseNote = text;
+      }
+      toast(`Revised: ${instructionTitle(text)}`, "ok");
+    } catch (e) {
+      toast(`could not revise ${pattern}: ${(e as Error).message}`);
+      // The instruction stays in the box: a failed revise (stale lint, a
+      // timeout) must not cost the operator their typing.
+    } finally {
+      revising = false;
+      stopElapsedTimer();
+    }
+  }
+
+  // The pattern Accept, Reject, Apply and Request changes may act on. Null
+  // while the detail is still loading, failed to load, or is stale for the
+  // current selection.
+  const target = $derived(actionTarget(selectedPattern, detail));
+
+  // Whether the proposal is ready to accept, independent of a revise in
+  // flight: revising disables the button but must not make the state chip
+  // read as "Loading" when nothing is loading.
+  const readyToAccept = $derived(target !== null && reviewedState !== null && !detail?.accept_blocked);
+  const canAccept = $derived(readyToAccept && !revising);
+
   const stateInfo = $derived.by((): { cls: string; label: string } => {
     if (!detail) return { cls: "", label: "" };
     if (detail.accept_blocked) return { cls: "err", label: "Accept blocked" };
     if (statesMismatch) return { cls: "warn", label: "Out of sync" };
-    if (canAccept) return { cls: "ok", label: "Ready to accept" };
+    if (readyToAccept) return { cls: "ok", label: "Ready to accept" };
     return { cls: "warn", label: "Loading" };
   });
 
   // Explains a disabled Accept button. Display only, never read by accept().
   const acceptDisabledReason = $derived.by((): string => {
     if (canAccept) return "";
+    if (revising) return "Wait for the revision to finish.";
     if (detail?.accept_blocked) return `Accept is blocked: ${detail.accept_blocked}`;
     if (statesMismatch) return "This proposal changed after it was opened. Press Refresh, then open it again.";
     return "Loading the proposal, one moment.";
   });
 
+  const sourcesSummary = $derived(summariseSources(detail?.sources ?? []));
+
   onMount(loadQueue);
 </script>
 
 <div class="toolbar">
-  <button onclick={loadQueue}>Refresh</button>
+  <button onclick={loadQueue} disabled={revising}>Refresh</button>
 </div>
 
 <div class="split">
@@ -172,16 +297,27 @@
           Run curriculum from the Loop pane to look for patterns that reached the threshold.
         </div>
       {:else}
-        <ul class="list scroll-list">
+        <ul class="list scroll-list" role="listbox" aria-label="Staged proposals" onkeydown={onListKeydown}>
           {#each items as item (item.pattern)}
             <li>
-              <button class="row" class:selected={item.pattern === selectedPattern} onclick={() => openPattern(item.pattern)}>
-                <div class="row__title"><span class="grow">{item.pattern}</span></div>
+              <button
+                class="row"
+                role="option"
+                aria-selected={item.pattern === selectedPattern}
+                class:selected={item.pattern === selectedPattern}
+                disabled={revising}
+                onclick={() => openPattern(item.pattern)}
+              >
+                <div class="row__title">
+                  <span class="dot {item.status === 'retired' ? 'warn' : 'ok'}" aria-hidden="true"></span>
+                  <span class="grow">{item.pattern}</span>
+                </div>
                 <div class="meta">
-                  <span class="badge">{item.artifact_type}</span>
+                  <span class="chip">{item.artifact_type}</span>
                   {#if item.status === "retired"}
-                    <span class="badge">retirement</span>
+                    <span class="chip warn">retirement</span>
                   {/if}
+                  <span class="chip">{plural(item.count ?? 0, "source")}</span>
                   <span>{formatTime(item.staged_at ?? null)}</span>
                 </div>
               </button>
@@ -193,18 +329,35 @@
   </div>
 
   <div class="detail">
-    {#if detail}
+    {#if loadingDetail}
+      <div class="panel">
+        <div class="panel__body">
+          <div class="skeleton-stack">
+            <Skeleton width="40%" height="1.4rem" />
+            <Skeleton height="1rem" />
+            <Skeleton height="1rem" />
+            <Skeleton width="70%" height="1rem" />
+          </div>
+        </div>
+      </div>
+    {:else if loadError}
+      <div class="panel">
+        <div class="panel__body">
+          <div class="notice error">Could not load {loadError.pattern}: {loadError.message}</div>
+        </div>
+      </div>
+    {:else if detail}
       <div class="panel">
         <div class="panel__head">
           <h3>{detail.pattern}</h3>
-          <span class="badge">{detail.artifact_type}</span>
+          <span class="chip">{detail.artifact_type}</span>
           {#if detail.artifact_path}
-            <span class="badge">{detail.artifact_path}</span>
+            <span class="badge mono">{detail.artifact_path}</span>
           {/if}
           <span class="spacer"></span>
           <span class="chip {stateInfo.cls}">{stateInfo.label}</span>
         </div>
-        <div class="panel__body">
+        <div class="panel__body detail-scroll" style:padding-bottom={`${footerHeight}px`}>
           {#if detail.status === "retired"}
             <div class="notice">
               This branch retires {detail.pattern}. Accepting it deletes the {detail.artifact_type} and records the pattern as
@@ -219,40 +372,104 @@
               This proposal changed after it was opened. Press Refresh, then open it again before acting.
             </div>
           {/if}
-          {#if detail.sources?.length}
-            <div class="meta">Sources: {detail.sources.join(", ")}</div>
+          {#if sourcesSummary.count > 0}
+            <div class="sources">
+              <button class="ghost sources__toggle" aria-expanded={sourcesOpen} onclick={() => (sourcesOpen = !sourcesOpen)}>
+                {sourcesOpen ? "Hide" : "Show"} {plural(sourcesSummary.count, "source")}
+              </button>
+              {#if sourcesOpen}
+                <div class="sources__panel">
+                  {#each sourcesSummary.days as d (d.day)}
+                    <div class="sources__day">
+                      <span class="chip">{d.day}</span>
+                      <span class="muted">{plural(d.count, "reflection")}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           {/if}
-          <!-- Shown verbatim, not as rendered markdown: this is the file that
-               gets committed, and frontmatter and line breaks are part of what
-               the reviewer has to judge. -->
-          <pre class="file">{detail.body}</pre>
+
+          {#if reviseNote}
+            <div class="notice revise-note">
+              <span class="grow">Requested: {reviseNote}</span>
+              <button class="ghost" onclick={dismissReviseNote} aria-label="Dismiss requested-changes note">Dismiss</button>
+            </div>
+          {/if}
+
+          <div class="tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={activeTab === "proposal"} class:active={activeTab === "proposal"} onclick={() => (activeTab = "proposal")}>
+              Proposal
+            </button>
+            <button type="button" role="tab" aria-selected={activeTab === "diff"} class:active={activeTab === "diff"} onclick={() => (activeTab = "diff")}>
+              Diff
+            </button>
+          </div>
+
+          {#if activeTab === "proposal"}
+            {#if detail.artifact_type === "rule"}
+              <!-- Shown verbatim, not as rendered markdown: a rule bullet's line
+                   breaks and its rule tag are part of what the reviewer judges. -->
+              <pre class="file">{detail.body}</pre>
+            {:else}
+              <MarkdownBody text={detail.body} />
+            {/if}
+          {:else}
+            <DiffView text={diffText} />
+          {/if}
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel__head">
-          <h3>Diff</h3>
+      <div class="detail-footer" bind:clientHeight={footerHeight}>
+        {#if showRevise}
+          <div class="revise-panel">
+            <label for="revise-instruction">Request changes</label>
+            <textarea
+              id="revise-instruction"
+              maxlength={MAX_INSTRUCTION}
+              placeholder="Describe what should change. The drafter will rewrite the proposal and keep the rest."
+              bind:value={instruction}
+              disabled={revising}
+            ></textarea>
+            <div class="revise-panel__foot">
+              <span class="muted">{instruction.length} / {MAX_INSTRUCTION}</span>
+              <span class="spacer"></span>
+              {#if revising}
+                <span class="muted">Drafter is revising... {elapsedSeconds}s</span>
+              {:else}
+                <button onclick={cancelRevise}>Cancel</button>
+                <button class="primary" disabled={instruction.trim().length === 0} onclick={submitRevise}>Submit</button>
+              {/if}
+            </div>
+          </div>
+        {/if}
+        <div class="action-bar">
+          <button class="primary" disabled={!canAccept} title={canAccept ? undefined : acceptDisabledReason} onclick={accept}>
+            {detail.status === "retired" ? "Accept retirement" : "Accept proposal"}
+          </button>
+          <button
+            disabled={revising || reviewedState === null || target === null || detail.status === "retired"}
+            title={detail.status === "retired"
+              ? "A retirement has no artifact to revise; reject it or rehome instead."
+              : reviewedState === null
+                ? "Refresh this proposal before requesting changes."
+                : undefined}
+            onclick={openRevise}
+          >
+            Request changes
+          </button>
+          <button class="danger" disabled={revising || target === null} onclick={reject}>Reject proposal</button>
+          <span class="toolbar__spacer"></span>
+          <label class="control">
+            <span>Move to</span>
+            <select bind:value={rehomeType} disabled={revising}>
+              {#each ARTIFACT_TYPES as t}
+                <option value={t}>{t}</option>
+              {/each}
+            </select>
+          </label>
+          <button disabled={revising || target === null} onclick={rehome}>Apply</button>
         </div>
-        <div class="panel__body">
-          <DiffView text={diffText} />
-        </div>
-      </div>
-
-      <div class="action-bar">
-        <button class="primary" disabled={!canAccept} title={canAccept ? undefined : acceptDisabledReason} onclick={accept}>
-          {detail.status === "retired" ? "Accept retirement" : "Accept proposal"}
-        </button>
-        <button class="danger" onclick={reject}>Reject proposal</button>
-        <span class="toolbar__spacer"></span>
-        <label class="control">
-          <span>Move to</span>
-          <select bind:value={rehomeType}>
-            {#each ARTIFACT_TYPES as t}
-              <option value={t}>{t}</option>
-            {/each}
-          </select>
-        </label>
-        <button onclick={rehome}>Apply</button>
       </div>
     {:else}
       <div class="panel">
@@ -268,6 +485,7 @@
 </div>
 
 <style>
+  /* review */
   .file {
     max-height: 26rem;
     margin: 0;
@@ -289,15 +507,160 @@
     gap: 1.1rem;
   }
 
-  .action-bar {
+  .skeleton-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .revise-note {
+    align-items: center;
+    background: var(--panel);
+  }
+
+  .detail-scroll {
+    scroll-margin-bottom: 1rem;
+  }
+
+  .sources {
+    margin: 0 0 0.9rem;
+  }
+
+  .sources__toggle {
+    font-size: var(--fs-xs);
+    padding: 0.2rem 0.5rem;
+  }
+
+  .sources__panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.6rem;
+    margin-top: 0.5rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--panel);
+  }
+
+  .sources__day {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: var(--fs-xs);
+  }
+
+  .tabs {
+    display: flex;
+    gap: 0.3rem;
+    margin: 0 0 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tabs button {
+    background: none;
+    border: none;
+    border-radius: 0;
+    border-bottom: 2px solid transparent;
+    padding: 0.4rem 0.2rem;
+    margin-right: 0.9rem;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  .tabs button.active {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+  }
+
+  /* The footer (revise panel plus action bar) sticks as one unit; the panel
+     body above gets padding-bottom bound to this element's rendered height,
+     so the sticky footer never covers the last lines of the proposal. */
+  .detail-footer {
     position: sticky;
     bottom: 0;
     display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-    padding: 0.75rem 0.9rem;
+    flex-direction: column;
     background: var(--surface);
     border-top: 1px solid var(--border);
+    /* Lets .action-bar query its own rendered width below, since the detail
+       column's width depends on the rail and list panel next to it, not the
+       viewport. */
+    container-type: inline-size;
+  }
+
+  .action-bar {
+    display: grid;
+    grid-template-columns: auto auto auto 1fr auto auto;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.75rem 0.9rem;
+  }
+
+  /* Below this width the six-item row no longer fits. Wrapping each item on
+     its own stranded Apply alone on its own line. Put Move to and Apply on
+     one grid row instead, so they always wrap or stay together as a pair. */
+  @container (max-width: 34rem) {
+    .action-bar {
+      grid-template-columns: 1fr 1fr;
+      row-gap: 0.5rem;
+    }
+
+    .action-bar > :nth-child(1) {
+      grid-column: 1 / -1;
+    }
+
+    .action-bar > :nth-child(2) {
+      grid-column: 1;
+    }
+
+    .action-bar > :nth-child(3) {
+      grid-column: 2;
+    }
+
+    .action-bar > :nth-child(4) {
+      display: none;
+    }
+
+    .action-bar > :nth-child(5) {
+      grid-column: 1;
+    }
+
+    .action-bar > :nth-child(6) {
+      grid-column: 2;
+    }
+
+    .action-bar .control {
+      min-width: 0;
+    }
+
+    .action-bar select {
+      min-width: 0;
+      width: 100%;
+    }
+  }
+
+  .revise-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.75rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .revise-panel label {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+  }
+
+  .revise-panel textarea {
+    min-height: 5.5rem;
+    resize: vertical;
+  }
+
+  .revise-panel__foot {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: var(--fs-xs);
   }
 </style>

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
+  import Drawer from "../components/Drawer.svelte";
+  import { filterLessons, groupByPattern } from "../lib/lessons.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
 
   interface Scorecard {
@@ -38,8 +40,13 @@
   let refInput = $state("");
   let noteInput = $state("");
   let vote = $state<"good" | "bad">("good");
+  let lessonQuery = $state("");
+  let allLessonsOpen = $state(false);
 
   const liveCount = $derived(rows.filter((row) => LIVE_STATUSES.includes(row.status)).length);
+  const filteredLessons = $derived(filterLessons(lessons, lessonQuery));
+  const lessonGroups = $derived(groupByPattern(filteredLessons));
+  const visibleLessonGroups = $derived(lessonGroups.slice(0, 8));
 
   function statusChipClass(status: string): string {
     if (LIVE_STATUSES.includes(status)) return "chip ok";
@@ -62,8 +69,8 @@
     }
     try {
       lessons = (await call("lessons.list", { world: appState.world })) as Lesson[];
-    } catch {
-      lessons = [];
+    } catch (e) {
+      toast(`Could not load lessons: ${(e as Error).message}`);
     }
   }
 
@@ -194,24 +201,64 @@
     <h3>Lessons waiting for delivery</h3>
     <span class="chip"><strong>{lessons.length}</strong> queued</span>
   </div>
-  <div class="panel__body">
+  <div class="panel__body lessons-card__body">
     {#if lessons.length === 0}
       <div class="empty">
         <strong>Nothing waiting.</strong>
         A lesson is queued here when a pattern has advice for you, and it clears once your next session picks it up.
       </div>
     {:else}
-      <ul class="list">
-        {#each lessons as lesson}
-          <li>
-            <div class="row__title"><span class="mono">{lesson.pattern}</span></div>
-            <p class="lesson-text">{lesson.text}</p>
-          </li>
-        {/each}
-      </ul>
+      <div class="field lessons-search">
+        <label for="lesson-search">Search lessons</label>
+        <input id="lesson-search" type="search" placeholder="Pattern or lesson text" bind:value={lessonQuery} />
+      </div>
+      {#if lessonGroups.length === 0}
+        <p class="muted">No lesson matches "{lessonQuery.trim()}".</p>
+      {:else}
+        <ul class="list">
+          {#each visibleLessonGroups as group (group.pattern)}
+            <li>
+              <div class="row__title">
+                <span class="mono">{group.pattern}</span>
+                <span class="muted">· {group.items.length} lessons</span>
+              </div>
+              <p class="lesson-text lesson-text--clamped">{group.items[0]!.text}</p>
+            </li>
+          {/each}
+        </ul>
+        {#if lessonGroups.length > visibleLessonGroups.length}
+          <div class="actions lessons-actions">
+            <button onclick={() => (allLessonsOpen = true)}>Show all {lessonGroups.length}</button>
+          </div>
+        {/if}
+      {/if}
     {/if}
   </div>
 </div>
+
+<Drawer bind:open={allLessonsOpen} title="Lessons waiting for delivery">
+  <div class="field lessons-search">
+    <label for="all-lesson-search">Search lessons</label>
+    <input id="all-lesson-search" type="search" placeholder="Pattern or lesson text" bind:value={lessonQuery} />
+  </div>
+  {#if lessonGroups.length === 0}
+    <p class="muted">No lesson matches "{lessonQuery.trim()}".</p>
+  {:else}
+    <ul class="list">
+      {#each lessonGroups as group (group.pattern)}
+        <li>
+          <div class="row__title">
+            <span class="mono">{group.pattern}</span>
+            <span class="muted">· {group.items.length} lessons</span>
+          </div>
+          {#each group.items as lesson}
+            <p class="lesson-text">{lesson.text}</p>
+          {/each}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+</Drawer>
 
 <div class="panel">
   <div class="panel__head">
@@ -244,12 +291,6 @@
 </div>
 
 <style>
-  /* Lesson bodies are prose, so they get a reading measure the tables do not. */
-  .lesson-text {
-    margin: 0.15rem 0 0;
-    max-width: 78ch;
-  }
-
   .verdict {
     max-width: 16rem;
   }

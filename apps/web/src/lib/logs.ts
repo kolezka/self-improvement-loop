@@ -2,6 +2,8 @@
 // is JSON per line, the other logs are "<iso> <message>". Both parse here so the
 // console can show a time column, a level colour and a text filter.
 
+import type { LogLine as ViewerLine } from "../vendor/svelte-log-viewer/index.ts";
+
 export type LogLevel = "error" | "warn" | "info";
 
 export interface LogLine {
@@ -93,6 +95,18 @@ export function parseLogLine(raw: string, index: number): LogLine {
 
 export function parseLogLines(lines: string[]): LogLine[] {
   return lines.map((raw, i) => parseLogLine(raw, i + 1));
+}
+
+/** Maps one engine log line into the vendored viewer's stream model. */
+export function toViewerLine(raw: string, seq: number, source: string): ViewerLine {
+  const line = parseLogLine(raw, seq);
+  return {
+    source,
+    seq,
+    ts: line.iso,
+    stream: line.level === "error" ? "stderr" : "stdout",
+    text: line.text,
+  };
 }
 
 /** Matches what the console shows: the message plus the timestamp behind the

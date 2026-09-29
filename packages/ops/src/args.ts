@@ -42,6 +42,13 @@ export type RetireArgs = z.infer<typeof RetireArgs>;
 export const SessionArgs = z.object({ session_id: z.string().regex(SESSION_ID_RE) });
 export type SessionArgs = z.infer<typeof SessionArgs>;
 
+// web console: history and queue ops
+export const ClearArgs = z.object({ bucket: z.enum(["done", "failed"]) });
+export type ClearArgs = z.infer<typeof ClearArgs>;
+export const HistoryArgs = WorldArgs.extend({ days: z.coerce.number().int().min(1).max(90).default(30) });
+export type HistoryArgs = z.infer<typeof HistoryArgs>;
+// end: web console: history and queue ops
+
 export const FeedbackArgs = z.object({
   world: z.string().regex(WORLD_RE).max(64),
   ref: z.string().regex(ARTIFACT_REF_RE),
@@ -82,3 +89,7 @@ export const ReflectionListArgs = WorldArgs.extend({
   limit: z.coerce.number().int().min(1).max(2000).default(200),
 });
 export type ReflectionListArgs = z.infer<typeof ReflectionListArgs>;
+
+// web console: live logs and revise
+export const ReviseArgs = AcceptArgs.extend({ instruction: z.string().trim().min(1).max(4000) });
+export type ReviseArgs = z.infer<typeof ReviseArgs>;

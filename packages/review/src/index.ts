@@ -32,7 +32,7 @@ import {
   type World,
 } from "@sil/core";
 import { artifacts, branchName, git, loadLedger, reflections, scorecardByPattern, scorecards } from "@sil/curriculum";
-import { loadLedger as loadLedgerFile, parseLedger, saveLedger } from "@sil/store";
+import { loadLedger as loadLedgerFile, parseLedger, recordProposalEvent, saveLedger } from "@sil/store";
 import * as feedback from "@sil/feedback";
 import * as worker from "@sil/worker";
 import { publish, type RemoteOps, setRemoteOps } from "./remote.ts";
@@ -48,6 +48,7 @@ import {
 } from "./snapshot.ts";
 
 export { DIGEST_PREFIX, type Snapshot, snapshot };
+export { revise, type ReviseOptions, type ReviseResult } from "./revise.ts";
 export { type RemoteOps, setRemoteOps };
 
 // --- injectable seams --------------------------------------------------------
@@ -62,7 +63,7 @@ export function setScratchWorktree(fn: ScratchWorktree | null): void {
   scratchWorktree = fn;
 }
 
-function withTree<T>(repo: string, branch: string, base: string, fn: (tree: string) => T): T {
+export function withTree<T>(repo: string, branch: string, base: string, fn: (tree: string) => T): T {
   return (scratchWorktree ?? git.withScratchWorktree)(repo, branch, base, fn);
 }
 
@@ -73,7 +74,7 @@ function withTree<T>(repo: string, branch: string, base: string, fn: (tree: stri
  * check and its merge replaces the reviewed commit with one nobody read. The
  * lock is what the worker already takes, so taking it here makes the review path
  * and the run mutually exclusive rather than merely unlikely to overlap. */
-function withWorkerLock<T>(fn: () => T): T {
+export function withWorkerLock<T>(fn: () => T): T {
   const lock = new worker.Lock();
   try {
     lock.acquire();
@@ -403,6 +404,7 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
   // Past this line the artifact is on the default branch. Nothing below may
   // report a hard failure: an error here would contradict a repo that already
   // carries it. Every remaining step records its own problem instead.
+  recordProposalEvent(world.name, pattern, "accepted");
   const out: AcceptResult = {
     merged: true,
     status: retiring ? "retired" : "promoted",
@@ -598,6 +600,7 @@ function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOpt
   });
 
   git.git(repo, ["branch", "-q", "-D", snap.branch], { check: false });
+  recordProposalEvent(world.name, pattern, "rejected");
   return {
     pattern,
     deleted: snap.branch,
@@ -730,6 +733,7 @@ function rehomeInner(world: World, _cfg: Config, pattern: string, artifactType: 
     return [touched, `feat(${artifactType}): re-home ${pattern} (auto, gated)`];
   });
 
+  recordProposalEvent(world.name, pattern, "rehomed");
   return { branch, pattern, artifact_type: artifactType, path: newRel };
 }
 
@@ -770,6 +774,7 @@ function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
     return [[...(removed ? [removed] : []), rel], `feat(${oldType}): retire ${pattern} (auto, gated)`];
   });
 
+  recordProposalEvent(world.name, pattern, "retired");
   return { branch, pattern, removed };
 }
 

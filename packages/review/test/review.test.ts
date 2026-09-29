@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type Ledger,
@@ -22,7 +22,7 @@ import {
 } from "@sil/core";
 import { branchName, git, plan, run, type RunOptions } from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
-import { loadLedger, parseLedger, saveLedger } from "@sil/store";
+import { loadLedger, parseLedger, readProposalEvents, saveLedger } from "@sil/store";
 import { Lock } from "@sil/worker";
 import * as review from "../src/index.ts";
 import { foreignChanges } from "../src/snapshot.ts";
@@ -291,6 +291,52 @@ describe("accept", () => {
     // The sibling a human refused keeps its watermark and its status.
     expect(ledger.entries[SIBLING]!.status).toBe("rejected");
     expect(ledger.entries[SIBLING]!.rejected_at_count).toBe(7);
+
+    // stage() already wrote a "staged" event; accept appends its own.
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "accepted" });
+  });
+
+  test("an unwritable proposal-events log does not fail a merge that already landed", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const world = makeWorld();
+    const repo = seed(world);
+    await stage(world);
+    const detail = review.detail(world, cfg(), PATTERN);
+
+    const eventsDir = join(paths.stateDir(), "curriculum");
+    chmodSync(eventsDir, 0o000);
+    try {
+      const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+      expect(out.merged).toBe(true);
+      expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(true);
+
+      const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
+      expect(curriculumLog).toContain("ERROR proposal event accepted");
+    } finally {
+      chmodSync(eventsDir, 0o755);
+    }
+  });
+
+  test("accept still succeeds when both the events log and its own fallback log are unwritable", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const world = makeWorld();
+    const repo = seed(world);
+    await stage(world);
+    const detail = review.detail(world, cfg(), PATTERN);
+
+    const eventsDir = join(paths.stateDir(), "curriculum");
+    chmodSync(eventsDir, 0o000);
+    const logsDir = join(paths.stateDir(), "logs");
+    mkdirSync(logsDir, { recursive: true });
+    chmodSync(logsDir, 0o000);
+    try {
+      expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).not.toThrow();
+    } finally {
+      chmodSync(eventsDir, 0o755);
+      chmodSync(logsDir, 0o755);
+    }
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(true);
   });
 
   test("it deletes the branch", async () => {
@@ -655,6 +701,9 @@ describe("reject", () => {
     expect(existsSync(join(repo, "skills", PATTERN))).toBe(false);
     // And no forced route survives to re-impose the shape a human refused.
     expect(entry.served_by).toBeNull();
+
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "rejected" });
   });
 
   test("it counts the extra reflection roots plan() reads", async () => {
@@ -952,6 +1001,9 @@ describe("rehome and retire", () => {
     expect(entry.served_by!.type).toBe("hook");
     // A re-home preserves the evidence level.
     expect(entry.promoted_at_count).toBe(3);
+
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "rehomed" });
   });
 
   test("rehome refuses the type that already serves the pattern", async () => {
@@ -979,6 +1031,9 @@ describe("rehome and retire", () => {
     expect(entry.served_by).toBeNull();
     // Stages only, exactly like rehome.
     expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(true);
+
+    const events = readProposalEvents().events;
+    expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "retired" });
   });
 
   test("retiring twice is refused", async () => {

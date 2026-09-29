@@ -34,7 +34,7 @@ import {
   run,
   type RunOptions,
 } from "@sil/curriculum";
-import { parseLedger, saveLedger } from "@sil/store";
+import { parseLedger, readProposalEvents, saveLedger } from "@sil/store";
 import {
   addReflections,
   agentBody,
@@ -171,6 +171,10 @@ describe("the happy path", () => {
     expect(row.promoted_at_count).toBe(3);
     expect(row.artifact_type).toBe("skill");
     expect(row.served_by!.path).toBe(`skills/${PATTERN}/SKILL.md`);
+
+    const events = readProposalEvents().events;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ world: world.name, pattern: PATTERN, event: "staged" });
   });
 
   test("each staged branch carries only its own ledger row", async () => {
@@ -340,6 +344,7 @@ describe("gates", () => {
     expect(report.gated_out[PATTERN]).toContain("managed-block marker");
     expect(git.refExists(repo, `refs/heads/${branchName(world.name, PATTERN)}`)).toBe(false);
     expect(existsSync(join(repo, "RULES.md"))).toBe(false);
+    expect(readProposalEvents().events).toEqual([]);
   });
 
   test("a refined rule that carries its own tag is normalised, not gated", async () => {

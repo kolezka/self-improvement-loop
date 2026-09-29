@@ -1,4 +1,4 @@
-import type { AcceptArgs, PatternArgs, RehomeArgs, RetireArgs, WorldArgs } from "../args.ts";
+import type { AcceptArgs, PatternArgs, RehomeArgs, ReviseArgs, RetireArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
 
@@ -40,4 +40,10 @@ export function routerRetire(args: RetireArgs) {
 export function routerInventory(args: WorldArgs) {
   const [cfg, world] = cfgWorld(args.world);
   return deps.review.inventory(world, cfg);
+}
+
+// web console: live logs and revise
+export function reviewRevise(args: ReviseArgs) {
+  const [cfg, world] = cfgWorld(args.world);
+  return deps.review.revise(world, cfg, args.pattern, args.reviewed_state, args.instruction);
 }

@@ -7,6 +7,7 @@ import * as aliases from "./handlers/aliases.ts";
 import * as artifacts from "./handlers/artifacts.ts";
 import * as curriculum from "./handlers/curriculum.ts";
 import * as health from "./handlers/health.ts";
+import * as history from "./handlers/history.ts";
 import * as llm from "./handlers/llm.ts";
 import * as logs from "./handlers/logs.ts";
 import * as queue from "./handlers/queue.ts";
@@ -24,8 +25,14 @@ register({ name: "llm.get", tier: "read", gate: "none", args: Args.NoArgs, fn: l
 register({ name: "llm.set", tier: "local", gate: "none", args: Args.LlmArgs, fn: llm.llmSet, doc: "Validate and write llm.yaml." });
 register({ name: "llm.status", tier: "read", gate: "none", args: Args.WorldArgs, fn: llm.llmStatus, doc: "Provider reachability for a world, per endpoint." });
 register({ name: "llm.use", tier: "local", gate: "none", args: Args.LlmUseArgs, fn: llm.llmUse, doc: "Switch the active endpoint, or route one role to an endpoint." });
-register({ name: "queue.list", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.queueList, doc: "Pending, done and failed queue entries." });
+register({ name: "queue.list", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.queueList, doc: "Pending, done and failed queue entries; done/failed hide what queue.clear cut off." });
 register({ name: "queue.skip", tier: "local", gate: "none", args: Args.SessionArgs, fn: queue.queueSkip, doc: "Skip a pending session." });
+// web console: history and queue ops
+register({ name: "queue.clear", tier: "local", gate: "none", args: Args.ClearArgs, fn: queue.queueClear, doc: "Hide done or failed sessions up to now; reversible with queue.unclear." });
+register({ name: "queue.unclear", tier: "local", gate: "none", args: Args.ClearArgs, fn: queue.queueUnclear, doc: "Show the sessions queue.clear hid for one bucket." });
+register({ name: "history.series", tier: "read", gate: "none", args: Args.HistoryArgs, fn: history.historySeries, doc: "Per-day activity counts across sessions, reflections, feedback and proposals." });
+register({ name: "queue.detail", tier: "read", gate: "none", args: Args.SessionArgs, fn: queue.queueDetail, doc: "One queue entry with its reflections and a transcript excerpt." });
+// end: web console: history and queue ops
 register({ name: "worker.status", tier: "read", gate: "none", args: Args.NoArgs, fn: queue.workerStatus, doc: "Worker lock/last-run status." });
 register({ name: "loop.run", tier: "local", gate: "none", args: Args.WorldArgs, fn: queue.loopRun, doc: "Spawn a detached worker --once run." });
 register({ name: "curriculum.plan", tier: "read", gate: "none", args: Args.WorldArgs, fn: curriculum.curriculumPlan, doc: "Dry-run curriculum plan for a world." });
@@ -48,6 +55,10 @@ register({ name: "artifacts.rebuild", tier: "local", gate: "none", args: Args.Wo
 register({ name: "feedback.add", tier: "local", gate: "none", args: Args.FeedbackArgs, fn: artifacts.feedbackAdd, doc: "Record a human good/bad vote on an artifact." });
 register({ name: "lessons.list", tier: "read", gate: "none", args: Args.WorldArgs, fn: artifacts.lessonsList, doc: "Inbox lessons for a world." });
 register({ name: "logs.tail", tier: "read", gate: "none", args: Args.LogArgs, fn: logs.logsTail, doc: "Last N lines of one engine log." });
+
+// web console: live logs and revise
+export { tailLines } from "./handlers/logs.ts";
+register({ name: "review.revise", tier: "local", gate: "reviewed_state", args: Args.ReviseArgs, fn: review.reviewRevise, doc: "Ask the drafter to revise a staged proposal from a human instruction; reviewed_state must match." });
 
 export * from "./registry.ts";
 export * as opsArgs from "./args.ts";

@@ -84,3 +84,11 @@
   child process; a nested `claude` inherited it and would have lost its hooks. Bind a
   process-scoped flag to something only that process shares with its children, here
   the pid the hook shell sees as `$PPID`.
+- 2026-09-29: `acceptInner` decided "is this pattern already promoted" from the
+  branch's own ledger row, which reads `staged` for every ordinary redraft (only an
+  auto-merge branch ever writes `promoted` there). Every accepted redraft therefore
+  read as a first promotion and reset `promoted_at`, which reset the 7 day "new"
+  grace period on every redraft of a high-volume pattern. Never read "was this row
+  already promoted" from the row on the branch being accepted; read it from the live
+  ledger at the branch's base sha. `sil curriculum repair-promoted-at` recomputes
+  rows the bug already corrupted from the ledger file's git history.

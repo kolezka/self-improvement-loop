@@ -347,6 +347,57 @@ New: the planner reads scorecards and adds
 `refine` (misfires outnumber helpful votes) and `retire-candidate` (no use in
 `retire_after_days`) proposals. Both are surfaced, never executed automatically.
 
+### Redraft policy: observing and escalate
+
+Nothing judged whether a redraft actually worked: new evidence past the
+watermark redrafted an already-promoted pattern every time, wording churn with
+no read on whether the recurrence rate moved. Two fixes close that loop.
+
+**The accept bug.** `acceptInner` decided "is this pattern already promoted"
+from the branch's own ledger row (`entry`), which reads `staged` for every
+ordinary redraft (only an auto-merge branch ever writes `promoted` there). So
+every redraft's accept read as a first promotion and reset `promoted_at`,
+which also reset `recurrence_30d`'s window and kept a high-volume pattern
+inside the 7 day "new" grace period forever. The fix reads promotion status
+from the live ledger (`liveRow`, loaded at the branch's base sha) instead.
+`revised_at` and `revisions` are new fields alongside the fix: `promoted_at`
+stays the first promotion, `revised_at` moves on every accepted redraft, and
+`revisions` counts them. `sil curriculum repair-promoted-at` recomputes all
+three from the ledger file's own git history for rows the bug already
+corrupted (dry run by default, `--apply` writes and commits, never pushes).
+
+**Recurrence rate.** Each scorecard carries three `RateWindow`s
+(`{sessions, hits, rate}`): `rate_baseline` (before `promoted_at`),
+`rate_since_promotion` (from `promoted_at` to now) and `rate_since_revision`
+(from `revised_at`, or `promoted_at` when never revised, to now). `sessions`
+is every reflected session of the world in the window, `hits` the ones whose
+(alias-resolved) reflection is this pattern; `rate` is `null` below
+`promotion.observe_min_sessions` (default 20), since a ratio over a handful of
+sessions is noise, not a signal. Reflected sessions come from two sources: a
+reflection's own `session_id` when it has one, and `usage/reflect-runs.jsonl`,
+one line per critic run that finished, recorded or not, written by the worker
+right after `reflectSession` returns. The second source exists because the
+queue's `done` bucket is pruned to 500 entries and cannot serve as history; a
+world with any real volume loses the sessions that were reflected but did not
+record a lesson within days.
+
+The planner spends a redraft's evidence on itself before drafting: for an
+already-promoted pattern with new evidence past the watermark,
+`redraftPolicy` runs before `promote`/`refine`.
+- **`observing`**: `rate_since_revision.sessions` is below
+  `observe_min_sessions`. The live text has not been seen by enough sessions
+  to trust a rate yet, so the planner waits instead of drafting on noise.
+- **`escalate`**: the row has used its redraft budget (`revisions >=
+  max_rewords`, default 2) and the post-revision rate has not meaningfully
+  dropped (`rate_since_revision >= escalate_ratio * rate_since_promotion`,
+  default ratio 0.9). Wording is not fixing it; a human needs to change the
+  artifact's type or split the pattern.
+
+Both are proposals, exactly like `retire-candidate`: `run()` never executes
+them (no draft, no cap spent), and the run report does not count them as
+failures. `sil curriculum plan` and the web Loop pane show them alongside the
+other plan actions.
+
 ### What the drafter sees (`context.ts`)
 
 A drafting prompt carries more than one cluster's raw lessons, because both
@@ -428,7 +479,10 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 | relevance | critic marks a rule as relevant to the session | rule |
 
 Scorecard fields: `uses_30d`, `fires_30d`, `helpful`, `misfired`, `human_good`,
-`human_bad`, `recurrence_30d`, `last_used`, `proposal` (`keep | refine | retire-candidate`).
+`human_bad`, `recurrence_30d`, `last_used`, `proposal` (`keep | refine | retire-candidate`),
+`rate_baseline`, `rate_since_promotion`, `rate_since_revision` (see "Redraft
+policy: observing and escalate" above; `recurrence_30d` is a rolling 30 day
+count, the rate windows describe the artifact's whole life since promotion).
 
 `recurrence_30d` counts this pattern's reflections (alias-resolved) created after
 `promoted_at` inside the window, or the whole window when `promoted_at` is null.

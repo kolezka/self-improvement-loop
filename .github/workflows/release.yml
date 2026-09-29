@@ -1,6 +1,7 @@
 name: release
 
-# Manual release. Bumps the version, builds dist/, then publishes it two ways:
+# Manual release. Raises the version by one step, builds dist/, then publishes
+# it two ways (a dry run stops after showing the version and changelog):
 #   tag v<version> and the moving `release` branch carry a commit with dist/ in
 #   it (git installs), and a zip of that same tree is attached to the GitHub
 #   release (archive installs). main never carries dist/.
@@ -9,10 +10,19 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "major, minor, patch or an explicit x.y.z version"
+        description: "Which part of the version to raise by one"
         required: true
         default: patch
-        type: string
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run: show the new version and changelog, publish nothing"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -40,29 +50,35 @@ jobs:
       - name: install
         run: bun install
 
-      - name: Resolve the new version
-        id: version
+      - name: Resolve the new version and changelog
         env:
           BUMP: ${{ inputs.bump }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           current="$(jq -r .version package.json)"
-          IFS=. read -r major minor patch <<< "$current"
-          case "$BUMP" in
-            major) version="$((major + 1)).0.0" ;;
-            minor) version="$major.$((minor + 1)).0" ;;
-            patch) version="$major.$minor.$((patch + 1))" ;;
-            # Anything else is taken as an explicit version. bump-version.sh
-            # rejects it if it is not semver.
-            *) version="$BUMP" ;;
-          esac
+          version="$(bun scripts/release-notes.ts version "$BUMP")"
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          bun scripts/release-notes.ts changelog "$version" > "$RUNNER_TEMP/changelog.md"
+          {
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "# Dry run: $current to $version ($BUMP)"
+              echo
+              echo "Nothing was committed, tagged or published. Run again with dry run unchecked to release."
+            else
+              echo "# Release $current to $version ($BUMP)"
+            fi
+            echo
+            cat "$RUNNER_TEMP/changelog.md"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Rewrites every manifest, SIL_VERSION in the health handler and
       # bun.lock, then rebuilds dist/ from the bumped tree.
       - name: Bump and build
+        if: ${{ !inputs.dry_run }}
         run: scripts/bump-version.sh "$VERSION"
 
       - name: Check
+        if: ${{ !inputs.dry_run }}
         run: |
           bun run lint:dashes
           bun run typecheck
@@ -70,6 +86,7 @@ jobs:
           bun test
 
       - name: Commit the bump on the branch this ran from
+        if: ${{ !inputs.dry_run }}
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
@@ -81,6 +98,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
 
       - name: Tag a release commit that carries dist/
+        if: ${{ !inputs.dry_run }}
         run: |
           git add --force dist
           git commit -m "chore(release): build dist for v$VERSION"
@@ -91,6 +109,7 @@ jobs:
           git push --force origin "HEAD:refs/heads/release"
 
       - name: Pack the install archive
+        if: ${{ !inputs.dry_run }}
         id: archive
         run: |
           staging="$RUNNER_TEMP/pack"
@@ -103,6 +122,7 @@ jobs:
           echo "sha256=$(sha256sum "$asset" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Create the GitHub release
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA256: ${{ steps.archive.outputs.sha256 }}
@@ -111,6 +131,10 @@ jobs:
         run: |
           notes="$RUNNER_TEMP/notes.md"
           {
+            cat "$RUNNER_TEMP/changelog.md"
+            echo
+            echo "## Install"
+            echo
             echo "Install from the marketplace:"
             echo
             echo '```'

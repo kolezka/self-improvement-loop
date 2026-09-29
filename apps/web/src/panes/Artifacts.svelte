@@ -208,6 +208,7 @@
                   <td class="muted">-</td>
                   <td class="muted">-</td>
                   <td class="muted">-</td>
+                  <td class="muted">-</td>
                 {/if}
                 <td>
                   <button class="small danger" onclick={() => retire(row.pattern)}>Retire</button>

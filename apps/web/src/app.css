@@ -1336,6 +1336,8 @@ pre.diff .hunk {
   to {
     opacity: 0;
   }
+}
+
 /* log viewer aliases */
 :root {
   --surface-page: var(--bg);

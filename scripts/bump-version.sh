@@ -79,10 +79,12 @@ echo "  $HEALTH: $have -> $NEW"
 echo "Refreshing bun.lock ..."
 bun install --lockfile-only
 
-# Nothing outside dist/ may still carry the old version.
+# Nothing outside dist/ may still carry the old version. Test directories are
+# skipped: their fixtures hold version strings on purpose, and one matching the
+# current version once failed a real release at this step.
 stale="$(grep -rlF "\"$CURRENT\"" --include='*.json' --include='*.ts' \
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.claude \
-  --exclude-dir=.svelte-kit . || true)"
+  --exclude-dir=.svelte-kit --exclude-dir=test --exclude-dir=tests . || true)"
 if [ -n "$stale" ]; then
   echo "error: '$CURRENT' still present in:" >&2
   echo "$stale" >&2

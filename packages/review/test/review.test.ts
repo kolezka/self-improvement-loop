@@ -318,6 +318,27 @@ describe("accept", () => {
     }
   });
 
+  test("accept still succeeds when both the events log and its own fallback log are unwritable", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const world = makeWorld();
+    const repo = seed(world);
+    await stage(world);
+    const detail = review.detail(world, cfg(), PATTERN);
+
+    const eventsDir = join(paths.stateDir(), "curriculum");
+    chmodSync(eventsDir, 0o000);
+    const logsDir = join(paths.stateDir(), "logs");
+    mkdirSync(logsDir, { recursive: true });
+    chmodSync(logsDir, 0o000);
+    try {
+      expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).not.toThrow();
+    } finally {
+      chmodSync(eventsDir, 0o755);
+      chmodSync(logsDir, 0o755);
+    }
+    expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(true);
+  });
+
   test("it deletes the branch", async () => {
     const world = makeWorld();
     const repo = seed(world);

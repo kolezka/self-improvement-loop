@@ -74,4 +74,25 @@ describe("recordProposalEvent", () => {
       chmodSync(eventsDir, 0o755);
     }
   });
+
+  test("a write failure whose own fallback log write also fails does not throw", () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    // A disk-full condition, or the same broken mount, can hit both the
+    // events file and the log the fallback writes to; the fallback must not
+    // turn that into a second, unhandled throw.
+    const eventsDir = dirname(paths.proposalEventsFile());
+    mkdirSync(eventsDir, { recursive: true });
+    chmodSync(eventsDir, 0o000);
+    const logsDir = dirname(paths.logFile("curriculum"));
+    mkdirSync(logsDir, { recursive: true });
+    chmodSync(logsDir, 0o000);
+    try {
+      const result = recordProposalEvent("default", "p-one", "accepted");
+      expect(result).not.toBeNull();
+      expect(result).toContain("EACCES");
+    } finally {
+      chmodSync(eventsDir, 0o755);
+      chmodSync(logsDir, 0o755);
+    }
+  });
 });

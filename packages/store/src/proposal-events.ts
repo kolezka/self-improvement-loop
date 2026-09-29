@@ -36,7 +36,16 @@ export function recordProposalEvent(world: string, pattern: string, event: Propo
     return null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    fsx.appendLine(paths.logFile("curriculum"), `${fsx.nowIso()} ERROR proposal event ${event} ${world}/${pattern}: ${message}`);
+    try {
+      // Best-effort: the same disk-full or broken-mount condition that lost
+      // the event can just as well lose this trace. A rethrow here would
+      // fail the already-committed accept or revise a second time; the
+      // returned message is the caller's own record of the failure either
+      // way.
+      fsx.appendLine(paths.logFile("curriculum"), `${fsx.nowIso()} ERROR proposal event ${event} ${world}/${pattern}: ${message}`);
+    } catch {
+      // Nowhere left to report this.
+    }
     return message;
   }
 }

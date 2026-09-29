@@ -23,6 +23,15 @@ export interface LogStreamOptions {
    * failure (a file removed or replaced between stat and read) without
    * racing a real file system. */
   readRange?: (path: string, from: number, to: number) => string;
+  /** Chunks the stream will queue before controller.desiredSize goes to zero
+   * or below. Small in tests, so backpressure is reachable without a huge
+   * file; production default is generous enough that ordinary bursts never
+   * trip it against a client that is actually reading. */
+  queueHighWaterMark?: number;
+  /** Test-only hook fired at the end of every poll tick, letting a test
+   * observe offset and whether the tick skipped its read for backpressure
+   * without depending on timing. */
+  onPollTick?: (info: { skipped: boolean; offset: number }) => void;
 }
 
 const DEFAULT_POLL_MS = 500;
@@ -30,6 +39,7 @@ const DEFAULT_HEARTBEAT_MS = 15_000;
 const DEFAULT_INITIAL_LINES = 500;
 const DEFAULT_READ_CAP_BYTES = 1024 * 1024;
 const DEFAULT_PENDING_CAP_BYTES = 64 * 1024;
+const DEFAULT_QUEUE_HIGH_WATER_MARK = 256;
 
 /** Pure follower: given the previous offset and the current file size, what
  * to read next. A shrunk file (truncation or rotation) reads from 0. */
@@ -82,6 +92,8 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
   const readCapBytes = opts.readCapBytes ?? DEFAULT_READ_CAP_BYTES;
   const pendingCapBytes = opts.pendingCapBytes ?? DEFAULT_PENDING_CAP_BYTES;
   const readRangeFn = opts.readRange ?? readRange;
+  const queueHighWaterMark = opts.queueHighWaterMark ?? DEFAULT_QUEUE_HIGH_WATER_MARK;
+  const onPollTick = opts.onPollTick;
   const encoder = new TextEncoder();
 
   let offset = 0;
@@ -142,6 +154,14 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
 
       const poll = (): void => {
         try {
+          // The client is not draining fast enough: reading more now would
+          // just grow the queued response in memory with nowhere to go.
+          // Skip this tick without advancing offset; the same range is
+          // still there to read once desiredSize recovers.
+          if ((controller.desiredSize ?? 0) <= 0) {
+            onPollTick?.({ skipped: true, offset });
+            return;
+          }
           let stat: { size: number; dev: number; ino: number };
           try {
             stat = statSync(path);
@@ -199,6 +219,7 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
           offset = to;
           identity = { dev: stat.dev, ino: stat.ino };
           errorSent = false;
+          onPollTick?.({ skipped: false, offset });
         } catch (err) {
           const e = err instanceof Error ? err : new Error(String(err));
           const trace = e.stack ?? `${e.name}: ${e.message}`;
@@ -228,7 +249,7 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
       pollTimer = null;
       hbTimer = null;
     },
-  });
+  }, new CountQueuingStrategy({ highWaterMark: queueHighWaterMark }));
 
   return new Response(body, {
     headers: { "content-type": "text/event-stream", "cache-control": "no-store" },

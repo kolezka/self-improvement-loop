@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
 import { LOCAL_HEADER, TOKEN_HEADER } from "../src/guard.ts";
-import { nextRange } from "../src/log-stream.ts";
+import { handleLogStream, nextRange } from "../src/log-stream.ts";
 import { createServer } from "../src/main.ts";
 
 describe("nextRange", () => {
@@ -322,6 +322,52 @@ describe("GET /api/logs/stream", () => {
       capped.stop(true);
     }
   }, 6000);
+
+  test("a reader that never drains does not let the stream read the whole file into memory", async () => {
+    // Calls handleLogStream directly rather than through a real HTTP round
+    // trip: Bun's own socket layer pulls from the response stream to fill
+    // the OS send buffer regardless of whether a JS reader ever reads, which
+    // masks backpressure in a real fetch() over loopback. Never touching the
+    // returned body's reader here is what keeps controller.desiredSize
+    // reflecting only what this poll loop itself has enqueued.
+    const path = seedLog("worker", "start\n");
+    const ticks: { skipped: boolean; offset: number }[] = [];
+    const abort = new AbortController();
+    const url = new URL("http://x/api/logs/stream?name=worker");
+    const request = new Request(url, { signal: abort.signal });
+    handleLogStream(request, url, {
+      pollMs: 15,
+      heartbeatMs: 60_000,
+      queueHighWaterMark: 3,
+      onPollTick: (info) => ticks.push(info),
+    });
+    try {
+      // Bigger than the 1 MiB read cap, so even the one tick backpressure
+      // cannot stop (it already has desiredSize > 0 when it starts, and a
+      // single tick's own enqueues are not throttled mid-tick) still only
+      // drains one capped read's worth, not the whole burst.
+      let big = "";
+      while (big.length < 3 * 1024 * 1024) big += `line-${big.length}\n`;
+      appendFileSync(path, big);
+
+      const deadline = Date.now() + 2000;
+      while (ticks.length < 15 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+
+      expect(ticks.some((t) => t.skipped)).toBe(true);
+      const fullSize = readFileSync(path, "utf8").length;
+      const lastOffset = ticks[ticks.length - 1]!.offset;
+      // Bounded near one capped read, nowhere close to the 3 MiB burst: the
+      // first tick (desiredSize still positive) reads at most readCapBytes,
+      // which drives desiredSize deeply negative, and every following tick
+      // is skipped since nothing ever drains the queue.
+      expect(lastOffset).toBeLessThan(fullSize);
+      expect(lastOffset).toBeLessThan(2 * 1024 * 1024);
+    } finally {
+      abort.abort();
+    }
+  }, 5000);
 });
 
 function existsWebError(root: string): boolean {

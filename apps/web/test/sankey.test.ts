@@ -2,7 +2,7 @@
 // ordering. No Svelte or DOM here, so this runs as plain bun:test.
 
 import { describe, expect, test } from "bun:test";
-import { buildSankey } from "../src/lib/sankey.ts";
+import { buildSankey, spreadLabels } from "../src/lib/sankey.ts";
 
 const OPTS = { width: 400, height: 200, nodeWidth: 12, gap: 4 };
 
@@ -111,5 +111,25 @@ describe("buildSankey", () => {
     const link = links[0]!;
     expect(link.sourceY1 - link.sourceY0).toBeCloseTo(a.height, 5);
     expect(link.targetY1 - link.targetY0).toBeCloseTo(a.height, 5);
+  });
+});
+
+describe("spreadLabels", () => {
+  test("leaves labels that already have room where they are", () => {
+    expect(spreadLabels([10, 40, 80], 15, 0, 100)).toEqual([10, 40, 80]);
+  });
+
+  test("keeps every label at least the spacing apart and inside the bounds", () => {
+    // A long tail of tiny nodes: centers nearly on top of each other and
+    // the last one right at the bottom edge, as in the Reflections pane.
+    const centers = [5, 60, 90, 94, 97, 99, 100];
+    const out = spreadLabels(centers, 15, 6, 100);
+    expect(out[0]).toBeGreaterThanOrEqual(6);
+    expect(out[out.length - 1]).toBeLessThanOrEqual(100);
+    for (let i = 1; i < out.length; i++) expect(out[i]! - out[i - 1]!).toBeGreaterThanOrEqual(15 - 1e-9);
+  });
+
+  test("clamps a label near an edge back inside the bounds", () => {
+    expect(spreadLabels([0, 200], 10, 8, 192)).toEqual([8, 192]);
   });
 });

@@ -366,6 +366,26 @@ stays the first promotion, `revised_at` moves on every accepted redraft, and
 three from the ledger file's own git history for rows the bug already
 corrupted (dry run by default, `--apply` writes and commits, never pushes).
 
+The repair's version identity is the pattern's own artifact content read from
+git at each promoted snapshot (`git show <sha>:<served_by.path>`, a rule's own
+tagged bullet only), never the ledger `commit` field or a row's own
+`promoted_at`: auto-merge always writes `commit: null`, and a pre-fix redraft
+resets `promoted_at` on every accept, so neither survives as a stable version
+key. A new version is the first promoted snapshot in the current span (since
+the last retirement, if any) whose content differs from the version before
+it. The walk is `git log --first-parent --reverse` on the default branch only:
+a real merge from another branch interleaves commits by date, and a sibling
+branch's stale snapshot of the shared ledger file can show a pattern demoted
+and repromoted that never happened on the branch being repaired. A retired
+row keeps its status but still gets its three fields repaired from the
+promotion span that closed at the retirement.
+
+Auto-merge already landing a branch (it fast-forwards the default branch onto
+the branch tip but leaves the branch ref in place) is not itself an accept:
+`review.detail` and `review.accept` both refuse a pattern whose branch head is
+already an ancestor of the default branch, so a direct accept cannot add a
+ledger-only commit and bump `revisions` with no new draft behind it.
+
 **Recurrence rate.** Each scorecard carries three `RateWindow`s
 (`{sessions, hits, rate}`): `rate_baseline` (before `promoted_at`),
 `rate_since_promotion` (from `promoted_at` to now) and `rate_since_revision`
@@ -386,12 +406,22 @@ already-promoted pattern with new evidence past the watermark,
 `redraftPolicy` runs before `promote`/`refine`.
 - **`observing`**: `rate_since_revision.sessions` is below
   `observe_min_sessions`. The live text has not been seen by enough sessions
-  to trust a rate yet, so the planner waits instead of drafting on noise.
+  to trust a rate yet, so the planner waits instead of drafting on noise. A
+  concurrent scorecard `refine` complaint is not dropped: the reason is
+  appended and `feedback` stays set, the same as the `promote` path. A
+  low-traffic pattern that stays under `observe_min_sessions` for more than
+  `promotion.observe_max_days` (default 14) since its live text last changed
+  stops reporting `observing` and falls through to a normal redraft instead of
+  waiting on a window that will never fill.
 - **`escalate`**: the row has used its redraft budget (`revisions >=
-  max_rewords`, default 2) and the post-revision rate has not meaningfully
+  max_rewords`, default 2), the post-revision rate has not meaningfully
   dropped (`rate_since_revision >= escalate_ratio * rate_since_promotion`,
-  default ratio 0.9). Wording is not fixing it; a human needs to change the
-  artifact's type or split the pattern.
+  default ratio 0.9), and `rate_since_promotion` is a non-null, positive rate
+  with at least one hit. Without that last guard, a pattern with zero
+  recurrence before and after its revision (`0 >= escalate_ratio * 0`)
+  escalated despite never once recurring. Wording is not fixing a real
+  escalation; a human needs to change the artifact's type or split the
+  pattern.
 
 Both are proposals, exactly like `retire-candidate`: `run()` never executes
 them (no draft, no cap spent), and the run report does not count them as

@@ -92,3 +92,27 @@
   already promoted" from the row on the branch being accepted; read it from the live
   ledger at the branch's base sha. `sil curriculum repair-promoted-at` recomputes
   rows the bug already corrupted from the ledger file's git history.
+- 2026-09-30: The first `repair-promoted-at` rebuild used the ledger's own `commit`
+  field and `promoted_at` as version identity; both are unreliable writers, not
+  bugs in the read. Auto-merge always writes `commit: null` (the sha does not exist
+  until after the commit is made), and a post-fix `promoted_at` correctly stays put
+  across redrafts, so a "did this change" check built on either field either missed
+  every auto-merged redraft or mistook a stable post-fix `promoted_at` for no
+  redraft at all. When a ledger tracks an artifact's state but not its identity,
+  read the artifact's own content at each historical commit instead of trusting a
+  bookkeeping field to double as a version key.
+- 2026-09-30: A dry run on live data (world inkitt) showed a pattern with 2 real
+  accepted redrafts as 3 revisions. `git log <path>` without `--first-parent`
+  interleaves commits from every branch that ever touched the shared ledger file,
+  by date, not by what actually happened on the branch being read. A sibling
+  branch's stale snapshot of another pattern's edit can carry this pattern's row in
+  whatever state it was in at the fork point, inserted between two real events that
+  never had anything between them. Walk `--first-parent` on the named branch when a
+  shared file's history must reflect one lineage, not every branch that ever
+  touched it.
+- 2026-09-30: `redraftPolicy`'s escalate check compared two rates with no floor:
+  `revisionRate >= escalate_ratio * promotionRate` is true at `0 >= 0.9 * 0` for a
+  pattern that has never once recurred, because a ratio comparison cannot tell "no
+  change" from "no signal". A rate comparison guarding against decay needs a
+  positive baseline (`promotionRate > 0` and at least one hit) before the
+  comparison means anything.

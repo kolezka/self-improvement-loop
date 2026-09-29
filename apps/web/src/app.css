@@ -1264,6 +1264,44 @@ pre.diff .hunk {
   width: 100%;
 }
 
+.chart__plot {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.chart__plot .chart__svg {
+  flex: 1;
+  min-width: 0;
+}
+
+.chart__yaxis {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart__xaxis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.chart__gridline {
+  stroke: var(--border);
+}
+
+.chart__baseline {
+  stroke: var(--border-strong);
+}
+
 .chart__empty {
   display: grid;
   place-items: center;

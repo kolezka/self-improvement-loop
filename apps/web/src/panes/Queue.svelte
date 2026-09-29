@@ -32,7 +32,6 @@
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
 
-  const hiddenCount = $derived(queue.hidden.done + queue.hidden.failed);
   const drawerTitle = $derived(selected ? `Session ${selected.session_id}` : "Session preview");
 
   async function refreshWorker() {
@@ -80,16 +79,13 @@
     }
   }
 
-  async function showHidden() {
-    const buckets: ClearableBucket[] = [];
-    if (queue.hidden.done > 0) buckets.push("done");
-    if (queue.hidden.failed > 0) buckets.push("failed");
+  async function showHidden(bucket: ClearableBucket) {
     try {
-      await Promise.all(buckets.map((bucket) => call("queue.unclear", { bucket })));
-      toast("Hidden sessions restored", "ok");
+      await call("queue.unclear", { bucket });
+      toast(`Hidden ${bucket} sessions restored`, "ok");
       await refreshLists();
     } catch (e) {
-      toast(`Could not restore hidden sessions: ${(e as Error).message}`);
+      toast(`Could not restore hidden ${bucket} sessions: ${(e as Error).message}`);
     }
   }
 
@@ -122,11 +118,6 @@
 </script>
 
 <div class="toolbar queue-toolbar">
-  <button onclick={() => clear("done")} disabled={queue.done.length === 0}>Clear done</button>
-  <button onclick={() => clear("failed")} disabled={queue.failed.length === 0}>Clear failed</button>
-  {#if hiddenCount > 0}
-    <button onclick={showHidden}>Show hidden ({hiddenCount})</button>
-  {/if}
   <span class="toolbar__spacer"></span>
   <span class="queue-updated">Updated {queueUpdatedAt ? new Date(queueUpdatedAt).toLocaleTimeString() : "not yet"}</span>
 </div>
@@ -141,8 +132,22 @@
 <QueueBucket name="pending" entries={queue.pending} skippable={true} onSkip={skip} onOpen={openDetail} />
 
 <div class="grid">
-  <QueueBucket name="done" entries={queue.done} onOpen={openDetail} />
-  <QueueBucket name="failed" entries={queue.failed} onOpen={openDetail} />
+  <QueueBucket
+    name="done"
+    entries={queue.done}
+    onOpen={openDetail}
+    onClear={() => clear("done")}
+    hiddenCount={queue.hidden.done}
+    onShowHidden={() => showHidden("done")}
+  />
+  <QueueBucket
+    name="failed"
+    entries={queue.failed}
+    onOpen={openDetail}
+    onClear={() => clear("failed")}
+    hiddenCount={queue.hidden.failed}
+    onShowHidden={() => showHidden("failed")}
+  />
 </div>
 
 <Drawer bind:open={drawerOpen} title={drawerTitle}>

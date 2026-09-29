@@ -61,3 +61,129 @@ export function patternCounts<T extends { pattern: string }>(items: T[]): Patter
   for (const item of items) counts.set(item.pattern, (counts.get(item.pattern) ?? 0) + 1);
   return [...counts.entries()].map(([pattern, count]) => ({ pattern, count })).sort((a, b) => b.count - a.count || a.pattern.localeCompare(b.pattern));
 }
+
+/** The patterns kept as their own Sankey node: the top N by reflection
+ * count. Everything else is grouped under "Other patterns". */
+export function topPatternIds<T extends { pattern: string }>(items: T[], topN: number): Set<string> {
+  return new Set(patternCounts(items).slice(0, topN).map((c) => c.pattern));
+}
+
+export const OTHER_PATTERNS = "Other patterns";
+
+// --- pattern to proposal outcome ----------------------------------------
+
+/** Minimal shape of a `router.inventory` row: one per pattern already in the
+ * ledger. `status` is whatever the ledger recorded (usually one of the
+ * PromotionStatus values, but a future or migrated value is possible). */
+export interface RouterStatusRow {
+  pattern: string;
+  status: string;
+}
+
+/** Minimal shape of a `curriculum.plan` action: one per pattern the planner
+ * has evidence for, whether or not it has reached the ledger yet. */
+export interface CurriculumPlanAction {
+  pattern: string;
+  action: string;
+}
+
+// packages/review/src/index.ts:589,728,768 and packages/curriculum/src/context.ts:144
+// are the only places that write a PromotionStatus, so these four are the
+// complete known set; anything else is reported under its own raw name.
+const STATUS_OUTCOME: Record<string, string> = {
+  staged: "Staged",
+  promoted: "Accepted",
+  rejected: "Rejected",
+  retired: "Retired",
+};
+
+/** The proposal outcome for one pattern.
+ *
+ * A ledger row wins: its status is the outcome, mapped to a reader label, or
+ * kept verbatim when it is a status this pane does not recognize yet, so a
+ * new value shows up as its own node instead of silently disappearing.
+ *
+ * With no ledger row, the curriculum plan's action for the pattern decides:
+ * "below-threshold" means not enough evidence yet, anything else means the
+ * planner has evidence but the ledger has not caught up. With neither a
+ * ledger row nor a plan action, there is no evidence at all, which reads the
+ * same as below threshold. */
+export function reflectionOutcome(
+  pattern: string,
+  routerRows: RouterStatusRow[],
+  planActions: CurriculumPlanAction[],
+  reviewItems: ReviewQueueItem[] = [],
+): string {
+  // A staged proposal's ledger row sits on its branch, which router.inventory
+  // does not read, so the review queue decides first.
+  const review = reviewItems.find((r) => r.pattern === pattern);
+  if (review) return review.status === "retired" ? "Retirement staged" : "Staged";
+  const row = routerRows.find((r) => r.pattern === pattern);
+  if (row) return STATUS_OUTCOME[row.status] ?? row.status;
+  const action = planActions.find((a) => a.pattern === pattern);
+  if (!action || action.action === "below-threshold") return "Below threshold";
+  return "No proposal yet";
+}
+
+/** Minimal shape of a `review.queue` item: a proposal branch waiting for a human. */
+export interface ReviewQueueItem {
+  pattern: string;
+  status: string;
+}
+
+export interface SankeyFlowLike {
+  source: string;
+  target: string;
+  value: number;
+}
+
+/** Sankey flows from pattern to proposal outcome. The top N patterns by
+ * reflection count keep their own source node; the rest are combined into
+ * one "Other patterns" source, split by outcome so it still shows where
+ * that tail ended up. */
+export function buildPatternOutcomeFlows<T extends { pattern: string }>(
+  items: T[],
+  routerRows: RouterStatusRow[],
+  planActions: CurriculumPlanAction[],
+  topN: number,
+  reviewItems: ReviewQueueItem[] = [],
+): SankeyFlowLike[] {
+  const counts = patternCounts(items);
+  const top = counts.slice(0, topN);
+  const rest = counts.slice(topN);
+
+  const flows: SankeyFlowLike[] = top.map((c) => ({
+    source: c.pattern,
+    target: reflectionOutcome(c.pattern, routerRows, planActions, reviewItems),
+    value: c.count,
+  }));
+
+  const otherTotals = new Map<string, number>();
+  for (const c of rest) {
+    const outcome = reflectionOutcome(c.pattern, routerRows, planActions, reviewItems);
+    otherTotals.set(outcome, (otherTotals.get(outcome) ?? 0) + c.count);
+  }
+  for (const [outcome, value] of otherTotals) flows.push({ source: OTHER_PATTERNS, target: outcome, value });
+
+  return flows;
+}
+
+// --- reflection body sections --------------------------------------------
+
+export interface ReflectionSection {
+  heading: string;
+  text: string;
+}
+
+/** Splits a reflection body into its "## heading" sections, in document
+ * order. Content before the first heading (the "Pattern: x" line) is
+ * dropped: the pane already shows the pattern in its own header. */
+export function reflectionSections(body: string): ReflectionSection[] {
+  const sections: ReflectionSection[] = [];
+  for (const part of body.split(/\n(?=## )/)) {
+    const m = /^## ([^\n]+)\n?([\s\S]*)$/.exec(part.trim());
+    if (!m) continue;
+    sections.push({ heading: m[1]!.trim(), text: m[2]!.trim() });
+  }
+  return sections;
+}

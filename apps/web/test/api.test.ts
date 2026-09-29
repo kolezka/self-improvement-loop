@@ -3,7 +3,7 @@
 // location.href, location.replace and history.replaceState.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { dropReloadParam, reloadForBuild, tokenFromFragment } from "../src/lib/api.ts";
+import { authHeaders, dropReloadParam, reloadForBuild, tokenFromFragment } from "../src/lib/api.ts";
 
 interface Stub {
   replaced: string[];
@@ -93,5 +93,14 @@ describe("dropReloadParam", () => {
     const stub = stubBrowser("http://localhost:8766/#/review");
     dropReloadParam();
     expect(stub.pushed).toEqual([]);
+  });
+});
+
+describe("authHeaders", () => {
+  // Svelte runs a child pane's onMount before App's, so the first op calls
+  // happen before App captures the token. The headers must not depend on that order.
+  test("reads the token from the fragment when nothing captured it yet", () => {
+    stubBrowser("http://127.0.0.1:8799/#tok-first-load");
+    expect(authHeaders()["X-SIL-Token"]).toBe("tok-first-load");
   });
 });

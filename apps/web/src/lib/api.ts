@@ -16,6 +16,8 @@ let opsMeta: Map<string, OpMeta> | null = null;
 
 /** Headers every /api request needs; the server guard refuses anything else. */
 export function authHeaders(): Record<string, string> {
+  // A pane's onMount can run before App's, which is where captureToken lives.
+  if (!token) captureToken();
   return { "X-SIL-Local": "1", "X-SIL-Token": token };
 }
 

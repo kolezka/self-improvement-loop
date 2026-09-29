@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { paths } from "@sil/core";
+import { ledgerPath, loadConfig, paths, type PromotionEntry, targetRoot } from "@sil/core";
+import { git } from "@sil/curriculum";
+import { loadLedger, saveLedger } from "@sil/store";
 import { run } from "../src/main.ts";
 
 let tmp: string;
@@ -84,5 +86,60 @@ describe("sil curriculum repair-promoted-at", () => {
     expect(await run(["init"])).toBe(0);
     const code = await run(["curriculum", "repair-promoted-at", "--apply", "--world", "default"]);
     expect(code).toBe(0);
+  });
+
+  test("--apply against a damaged history repairs promoted_at, revised_at and revisions, and commits the fix", async () => {
+    expect(await run(["init"])).toBe(0);
+
+    const cfg = loadConfig();
+    const world = cfg.worlds.find((w) => w.name === "default")!;
+    const repo = targetRoot(world);
+    const rel = "promotions.json";
+    const skillRel = "skills/p/SKILL.md";
+
+    const row = (overrides: Partial<PromotionEntry> & { pattern: string }): PromotionEntry => ({
+      promoted_at_count: 3,
+      rejected_at_count: 0,
+      status: "staged",
+      artifact_type: "skill",
+      served_by: { type: "skill", path: skillRel },
+      last_updated: "2026-01-01T00:00:00.000Z",
+      promoted_at: null,
+      revised_at: null,
+      revisions: 0,
+      commit: null,
+      feedback: null,
+      ...overrides,
+    });
+
+    const commit = (entries: Record<string, PromotionEntry>, content: string, message: string): void => {
+      saveLedger(ledgerPath(world), { version: 1, entries });
+      mkdirSync(dirname(join(repo, skillRel)), { recursive: true });
+      writeFileSync(join(repo, skillRel), content, "utf8");
+      git.git(repo, ["add", "--", rel, skillRel]);
+      git.git(repo, ["commit", "-q", "-m", message]);
+    };
+
+    commit(
+      { p: row({ pattern: "p", status: "promoted", promoted_at: "2026-01-01T00:00:00.000Z", revised_at: "2026-01-01T00:00:00.000Z" }) },
+      "v1",
+      "feat(skill): promote p (reviewed)",
+    );
+    // The bug the accept fix (elsewhere in this branch) no longer commits:
+    // an accepted redraft reset promoted_at to that commit's own date.
+    commit(
+      { p: row({ pattern: "p", status: "promoted", promoted_at: "2026-01-10T00:00:00.000Z", revised_at: "2026-01-10T00:00:00.000Z" }) },
+      "v2",
+      "feat(skill): p (reviewed)",
+    );
+
+    const code = await run(["curriculum", "repair-promoted-at", "--apply", "--world", "default"]);
+    expect(code).toBe(0);
+
+    const after = loadLedger(ledgerPath(world)).entries["p"]!;
+    expect(after.promoted_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(after.revised_at).toBe("2026-01-10T00:00:00.000Z");
+    expect(after.revisions).toBe(1);
+    expect(git.git(repo, ["log", "-1", "--format=%s"])).toBe("chore(ledger): repair promoted_at from history");
   });
 });

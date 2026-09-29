@@ -112,11 +112,12 @@
         call("review.diff", { world: appState.world, pattern }),
       ])) as [ReviewDetail, Diff];
     } catch (e) {
+      // A failure for a proposal the operator already left is not news.
       if (mySeq === seq) {
         loadError = { pattern, message: (e as Error).message };
         loadingDetail = false;
+        toast(`could not load proposal: ${(e as Error).message}`);
       }
-      toast(`could not load proposal: ${(e as Error).message}`);
       return;
     }
     if (mySeq !== seq) return;

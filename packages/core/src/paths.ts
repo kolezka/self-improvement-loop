@@ -86,6 +86,7 @@ export const queueDir = (bucket: QueueBucket): string => current().queueDir(buck
 // queue file; queue.list just hides entries at or before it.
 export const queueClearedFile = (): string => join(stateDir(), "queue", "cleared.json");
 export const usageEventsFile = (): string => current().usageEventsFile();
+export const reflectRunsFile = (): string => current().reflectRunsFile();
 // hook_run lines live apart from the artifact uses: they are about 90% of the
 // volume and no scorecard reads them, so every rebuild parsed and dropped them.
 export const hookRunsFile = (): string => current().hookRunsFile();

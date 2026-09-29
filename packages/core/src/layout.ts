@@ -20,6 +20,7 @@ export interface Layout {
   dataDir(): string;
   queueDir(bucket: "pending" | "done" | "failed"): string;
   usageEventsFile(): string;
+  reflectRunsFile(): string;
   hookRunsFile(): string;
   payloadSamplesFile(world: string): string;
   nudgeFiresFile(): string;
@@ -154,6 +155,12 @@ export function layout(env: LayoutEnv): Layout {
     worldDir,
     queueDir: (bucket) => posixJoin(stateDir(), "queue", bucket),
     usageEventsFile: () => posixJoin(stateDir(), "usage", "events.jsonl"),
+    // Append-only, one line per critic run that actually finished (recorded
+    // or not), never for a session skipped before the critic ran. The
+    // scorecard rate denominator: the queue's `done` bucket is pruned and
+    // cannot serve as history, and a world's reflections alone miss every
+    // session the critic looked at but declined to record.
+    reflectRunsFile: () => posixJoin(stateDir(), "usage", "reflect-runs.jsonl"),
     hookRunsFile: () => posixJoin(stateDir(), "usage", "hook-runs.jsonl"),
     payloadSamplesFile: (world) => posixJoin(stateDir(), "usage", "payloads", `${safeComponent(world)}.jsonl`),
     nudgeFiresFile: () => posixJoin(stateDir(), "usage", "nudge-fires.jsonl"),

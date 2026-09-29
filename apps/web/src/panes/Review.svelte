@@ -581,14 +581,61 @@
     flex-direction: column;
     background: var(--surface);
     border-top: 1px solid var(--border);
+    /* Lets .action-bar query its own rendered width below, since the detail
+       column's width depends on the rail and list panel next to it, not the
+       viewport. */
+    container-type: inline-size;
   }
 
   .action-bar {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto auto 1fr auto auto;
     align-items: center;
     gap: 0.6rem;
-    flex-wrap: wrap;
     padding: 0.75rem 0.9rem;
+  }
+
+  /* Below this width the six-item row no longer fits. Wrapping each item on
+     its own stranded Apply alone on its own line. Put Move to and Apply on
+     one grid row instead, so they always wrap or stay together as a pair. */
+  @container (max-width: 34rem) {
+    .action-bar {
+      grid-template-columns: 1fr 1fr;
+      row-gap: 0.5rem;
+    }
+
+    .action-bar > :nth-child(1) {
+      grid-column: 1 / -1;
+    }
+
+    .action-bar > :nth-child(2) {
+      grid-column: 1;
+    }
+
+    .action-bar > :nth-child(3) {
+      grid-column: 2;
+    }
+
+    .action-bar > :nth-child(4) {
+      display: none;
+    }
+
+    .action-bar > :nth-child(5) {
+      grid-column: 1;
+    }
+
+    .action-bar > :nth-child(6) {
+      grid-column: 2;
+    }
+
+    .action-bar .control {
+      min-width: 0;
+    }
+
+    .action-bar select {
+      min-width: 0;
+      width: 100%;
+    }
   }
 
   .revise-panel {

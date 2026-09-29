@@ -62,6 +62,9 @@
     position: relative;
     width: 30px;
     height: 18px;
+    /* The host app's global `button` rule sets min-height: var(--control-height)
+       (2rem), which otherwise stretches this pill to a near-circle. */
+    min-height: 0;
     padding: 0;
     border: 1px solid var(--lv-border-strong);
     border-radius: 999px;

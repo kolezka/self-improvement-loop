@@ -34,8 +34,12 @@ export function toneOf(line: LogLine): LineTone {
   return "plain";
 }
 
-/** Local wall clock as HH:MM:SS.mmm. Unparseable input comes back as dashes. */
+/** Local wall clock as HH:MM:SS.mmm. Unparseable input comes back as dashes.
+ * Local patch (not upstream): a line with no ts at all passes "", which reads
+ * better blank than as a row of dashes; a malformed non-empty timestamp still
+ * shows dashes. Port this to upstream if lines.ts is refreshed from there. */
 export function formatClock(iso: string): string {
+  if (iso === "") return "";
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "--:--:--.---";
   const pad = (value: number, width = 2) => String(value).padStart(width, "0");

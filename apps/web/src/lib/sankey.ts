@@ -82,6 +82,22 @@ function ribbonPath(x0: number, sy0: number, sy1: number, x1: number, ty0: numbe
   return `M${x0},${sy0} C${xc},${sy0} ${xc},${ty0} ${x1},${ty0} L${x1},${ty1} C${xc},${ty1} ${xc},${sy1} ${x0},${sy1} Z`;
 }
 
+/** Spreads label centers so neighbours sit at least `spacing` apart and
+ * all stay inside [min, max]. Input order is kept. A crowded tail pushes
+ * labels down first, then the whole run is pulled back up from the bottom. */
+export function spreadLabels(centers: number[], spacing: number, min: number, max: number): number[] {
+  const out: number[] = [];
+  for (const [i, center] of centers.entries()) {
+    const floor = i === 0 ? min : out[i - 1]! + spacing;
+    out.push(Math.max(center, floor));
+  }
+  for (let i = out.length - 1; i >= 0; i--) {
+    const ceiling = i === out.length - 1 ? max : out[i + 1]! - spacing;
+    out[i] = Math.max(Math.min(out[i]!, ceiling), min);
+  }
+  return out;
+}
+
 /** Lays out a two-column Sankey: sources on the left, targets on the right,
  * link width proportional to flow value. `ky` (pixels per unit of value) is
  * shared by both columns so a link's ribbon is the same thickness at both

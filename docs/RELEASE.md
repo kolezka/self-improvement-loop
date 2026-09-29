@@ -6,12 +6,25 @@ is what produces it.
 
 ## Cutting a release
 
-Actions > `release` > Run workflow, with `bump` set to `major`, `minor`, `patch`
-or an explicit `x.y.z`. The workflow (`.github/workflows/release.yml`) then:
+Actions > `release` > Run workflow. Pick `bump` from the dropdown: `patch`,
+`minor` or `major`. Each raises that part of the version by one, from
+`package.json`: `0.3.10` becomes `0.3.11`, `0.4.0` or `1.0.0`. There is no free
+text version.
 
-1. Turns the keyword into a version and runs `scripts/bump-version.sh`, which
-   rewrites every manifest, `SIL_VERSION` in the health handler and `bun.lock`,
-   then rebuilds `dist/`.
+`dry_run` is checked by default. A dry run computes the new version and the
+changelog, shows both in the run summary, and stops: nothing is committed,
+tagged or published. Read the summary, then run again with `dry_run` unchecked.
+
+The changelog comes from `scripts/release-notes.ts`: Conventional Commit
+subjects since the highest `v*` tag, grouped into Breaking (`!`), Features
+(`feat`), Fixes (`fix`, `perf`) and Other. Merge commits and the workflow's own
+bump and dist commits are left out. It also heads the GitHub release notes.
+
+A real run (`dry_run` unchecked) then:
+
+1. Runs `scripts/bump-version.sh` with the new version, which rewrites every
+   manifest, `SIL_VERSION` in the health handler and `bun.lock`, then rebuilds
+   `dist/`.
 2. Runs `lint:dashes`, `typecheck`, `check:web` and `bun test`. The drift test
    in `tests/dist.test.ts` runs here because a build is present.
 3. Commits the bump on the branch the run started from and pushes it.
@@ -20,7 +33,7 @@ or an explicit `x.y.z`. The workflow (`.github/workflows/release.yml`) then:
 5. Force-pushes that same commit to the `release` branch. `release` is
    generated output, not a development branch: every run replaces it.
 6. Zips the tag tree as `self-improvement-loop-<version>.zip` and attaches it to
-   the GitHub release, with the SHA-256 in the release notes.
+   the GitHub release, with the changelog and the SHA-256 in the release notes.
 
 Nothing else is safe to merge into `release`, and no one should branch off it.
 

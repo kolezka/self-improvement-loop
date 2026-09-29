@@ -9,12 +9,18 @@
     skippable = false,
     onSkip,
     onOpen,
+    onClear,
+    hiddenCount = 0,
+    onShowHidden,
   }: {
     name: string;
     entries: QueueEntry[];
     skippable?: boolean;
     onSkip?: (sessionId: string) => void;
     onOpen?: (entry: QueueEntry) => void;
+    onClear?: () => void;
+    hiddenCount?: number;
+    onShowHidden?: () => void;
   } = $props();
 
   const label = $derived(name.charAt(0).toUpperCase() + name.slice(1));
@@ -43,6 +49,13 @@
     <span class={name === "failed" && entries.length > 0 ? "chip err" : "chip"}>
       <strong>{entries.length}</strong>
     </span>
+    <span class="spacer"></span>
+    {#if hiddenCount > 0}
+      <button class="small" onclick={onShowHidden}>Show hidden ({hiddenCount})</button>
+    {/if}
+    {#if onClear}
+      <button class="small" onclick={onClear} disabled={entries.length === 0}>Clear</button>
+    {/if}
   </div>
   <div class="panel__body">
     {#if entries.length === 0}

@@ -61,3 +61,28 @@ describe("sil curriculum run --apply", () => {
     expect(code).toBe(0);
   });
 });
+
+describe("sil curriculum repair-promoted-at", () => {
+  test("dry run against an empty ledger reports nothing to repair and writes nothing", async () => {
+    expect(await run(["init"])).toBe(0);
+
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    let code: number;
+    try {
+      code = await run(["curriculum", "repair-promoted-at", "--world", "default"]);
+    } finally {
+      console.log = orig;
+    }
+
+    expect(code).toBe(0);
+    expect(logs.join("\n")).toContain("nothing to repair");
+  });
+
+  test("--apply against an empty ledger commits nothing", async () => {
+    expect(await run(["init"])).toBe(0);
+    const code = await run(["curriculum", "repair-promoted-at", "--apply", "--world", "default"]);
+    expect(code).toBe(0);
+  });
+});

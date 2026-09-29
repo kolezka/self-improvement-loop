@@ -1,4 +1,4 @@
-// sil curriculum plan|run.
+// sil curriculum plan|run|repair-promoted-at.
 
 import { loadConfig } from "@sil/core";
 import { resolveWorld } from "../common.ts";
@@ -10,6 +10,12 @@ export interface CurriculumPlanOptions {
 }
 
 export interface CurriculumRunOptions {
+  world?: string;
+  apply?: boolean;
+  json?: boolean;
+}
+
+export interface CurriculumRepairOptions {
   world?: string;
   apply?: boolean;
   json?: boolean;
@@ -70,5 +76,39 @@ export async function cmdCurriculumRun(opts: CurriculumRunOptions, deps: Deps = 
     for (const [pattern, reason] of gatedOut) console.log(`  ${pattern}: ${reason}`);
   }
   if (report.error) console.error(`error: ${report.error}`);
+  return 0;
+}
+
+/** Dry run by default, reporting what history says every pattern's
+ * promoted_at/revised_at/revisions should be. `--apply` takes the worker
+ * lock and writes and commits the repair; it never pushes. */
+export function cmdCurriculumRepairPromotedAt(opts: CurriculumRepairOptions, deps: Deps = defaultDeps): number {
+  const cfg = loadConfig();
+  const world = resolveWorld(cfg, opts.world);
+  const result = deps.review.repairPromotedAt(world, cfg, { apply: opts.apply ?? false });
+
+  if (opts.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  const changed = result.rows.filter((r) => r.changed);
+  if (changed.length === 0) {
+    console.log(`world: ${world.name}  nothing to repair`);
+    return 0;
+  }
+  console.log(`world: ${world.name}  ${opts.apply ? "repairing" : "dry run"}  ${changed.length} pattern(s)`);
+  for (const r of changed) {
+    console.log(
+      `  ${r.pattern.padEnd(30)} promoted_at: ${r.current_promoted_at ?? "null"} -> ${r.repaired_promoted_at ?? "null"}  ` +
+        `revisions: ${r.current_revisions} -> ${r.repaired_revisions}`,
+    );
+  }
+  if (!opts.apply) {
+    console.log("dry run: nothing written. Re-run with --apply to write and commit.");
+  } else if (result.applied) {
+    console.log(`committed ${result.commit}`);
+  } else {
+    console.log("nothing committed");
+  }
   return 0;
 }

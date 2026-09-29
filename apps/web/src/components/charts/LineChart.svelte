@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { dayLabel, niceMax, scaleY, total, yTicks, type ChartSeries, type ChartTone } from "../../lib/chart.ts";
+  import { dayLabel, scaleY, total, yTicks, type ChartSeries, type ChartTone } from "../../lib/chart.ts";
 
   interface Props {
     series: ChartSeries[];
@@ -19,12 +19,14 @@
 
   const days = $derived(series[0]?.points.map((p) => p.day) ?? []);
   const viewBoxWidth = $derived(Math.max(days.length * 10, 10));
-  const max = $derived(niceMax(series.flatMap((s) => s.points.map((p) => p.count))));
+  const dataMax = $derived(Math.max(0, ...series.flatMap((s) => s.points.map((p) => p.count))));
   const hasActivity = $derived(series.some((s) => total(s.points) > 0));
   const summary = $derived(series.map((s) => `${s.label} ${total(s.points)}`).join(", "));
 
   const TICK_COUNT = 4;
-  const ticks = $derived(yTicks(max, TICK_COUNT));
+  const ticks = $derived(yTicks(dataMax, TICK_COUNT));
+  // The top tick is the top of the chart, so grid lines sit on the ticks.
+  const max = $derived(ticks.at(-1) ?? 1);
   const yLabels = $derived([...ticks].reverse());
 
   interface XAxisLabels {

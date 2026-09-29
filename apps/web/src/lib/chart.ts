@@ -11,28 +11,6 @@ export interface ChartSeries {
   points: SeriesPoint[];
 }
 
-const NICE_STEPS = [1, 1.5, 2, 2.5, 5, 10];
-
-/** Smallest "nice" axis ceiling at or above the window's max value.
- * 0 -> 1, 7 -> 10, 23 -> 25, 101 -> 150. */
-export function niceMax(values: number[]): number {
-  const max = values.length > 0 ? Math.max(0, ...values) : 0;
-  if (max <= 0) return 1;
-
-  let exponent = Math.floor(Math.log10(max));
-  let magnitude = 10 ** exponent;
-  // Guards against float error at decade boundaries (log10(100) can land
-  // fractionally under 2).
-  if (max / magnitude >= 10) {
-    exponent += 1;
-    magnitude *= 10;
-  }
-
-  const fraction = max / magnitude;
-  const niceFraction = NICE_STEPS.find((step) => step >= fraction) ?? 10;
-  return niceFraction * magnitude;
-}
-
 /** Pixel y for a count: 0 maps to the bottom (height), max maps to the top (0). */
 export function scaleY(value: number, max: number, height: number): number {
   if (max <= 0) return height;
@@ -55,9 +33,20 @@ export function total(points: SeriesPoint[]): number {
   return points.reduce((sum, p) => sum + p.count, 0);
 }
 
-/** `count` evenly spaced axis ticks from 0 up to max, 0 always included. */
+/** At most `count` whole-number ticks from 0; the last one is the top of the chart. */
 export function yTicks(max: number, count: number): number[] {
-  if (count <= 1) return [0];
-  const step = max / (count - 1);
-  return Array.from({ length: count }, (_, i) => step * i);
+  if (max <= 0) return [0, 1];
+  const intervals = Math.max(count - 1, 1);
+  // Whole steps only: the values are counts, and a fractional step rounded
+  // for display printed the same label twice.
+  let step = 1;
+  for (let magnitude = 1; ; magnitude *= 10) {
+    const found = [1, 2, 5].map((m) => m * magnitude).find((s) => Math.ceil(max / s) <= intervals);
+    if (found !== undefined) {
+      step = found;
+      break;
+    }
+  }
+  const top = Math.ceil(max / step) * step;
+  return Array.from({ length: top / step + 1 }, (_, i) => i * step);
 }

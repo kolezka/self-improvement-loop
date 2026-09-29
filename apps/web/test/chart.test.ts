@@ -1,28 +1,7 @@
 // Unit tests for the chart scale and label helpers.
 
 import { describe, expect, test } from "bun:test";
-import { dayLabel, niceMax, scaleY, total, yTicks } from "../src/lib/chart.ts";
-
-describe("niceMax", () => {
-  test("returns 1 for an empty or all-zero window", () => {
-    expect(niceMax([])).toBe(1);
-    expect(niceMax([0, 0, 0])).toBe(1);
-  });
-
-  test("rounds up to the next nice number within a decade", () => {
-    expect(niceMax([7])).toBe(10);
-    expect(niceMax([23])).toBe(25);
-    expect(niceMax([101])).toBe(150);
-  });
-
-  test("takes the max across the whole window, not the last value", () => {
-    expect(niceMax([2, 23, 5])).toBe(25);
-  });
-
-  test("fits exactly when the max is already nice", () => {
-    expect(niceMax([10])).toBe(10);
-  });
-});
+import { dayLabel, scaleY, total, yTicks } from "../src/lib/chart.ts";
 
 describe("scaleY", () => {
   test("maps 0 to the full height", () => {
@@ -63,19 +42,30 @@ describe("total", () => {
 });
 
 describe("yTicks", () => {
-  test("splits 0 to max into count evenly spaced ticks", () => {
-    expect(yTicks(12, 4)).toEqual([0, 4, 8, 12]);
+  // Chart values are counts, so every tick is a distinct whole number and the
+  // last tick is the top of the chart.
+  test("small maxima get unit steps without repeats", () => {
+    expect(yTicks(2, 4)).toEqual([0, 1, 2]);
+    expect(yTicks(3, 4)).toEqual([0, 1, 2, 3]);
   });
 
-  test("always starts at 0", () => {
-    expect(yTicks(9, 3)[0]).toBe(0);
+  test("larger maxima get a nice whole step and round the top up", () => {
+    expect(yTicks(5, 4)).toEqual([0, 2, 4, 6]);
+    expect(yTicks(12, 4)).toEqual([0, 5, 10, 15]);
+    expect(yTicks(304, 4)).toEqual([0, 200, 400]);
   });
 
-  test("always ends at max", () => {
-    expect(yTicks(9, 3).at(-1)).toBe(9);
+  test("ticks are unique integers that cover max", () => {
+    for (const max of [1, 2, 3, 4, 5, 7, 9, 10, 23, 99, 150, 279, 1000]) {
+      const ticks = yTicks(max, 4);
+      expect(new Set(ticks).size).toBe(ticks.length);
+      expect(ticks.every(Number.isInteger)).toBe(true);
+      expect(ticks.at(-1)!).toBeGreaterThanOrEqual(max);
+      expect(ticks.length).toBeLessThanOrEqual(4);
+    }
   });
 
-  test("returns just 0 when max is 0", () => {
-    expect(yTicks(0, 4)).toEqual([0, 0, 0, 0]);
+  test("an empty chart still has a 0 to 1 axis", () => {
+    expect(yTicks(0, 4)).toEqual([0, 1]);
   });
 });

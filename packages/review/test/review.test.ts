@@ -72,12 +72,32 @@ const cfg = () => makeCfg();
  * `quote` varies the drafted body. A refine that reproduces the artifact
  * already on the default branch is not staged at all, so a test that stages
  * twice over one accepted artifact has to change something. */
-function stage(world: World, pattern = PATTERN, extraDirs: string[] = [], quote = QUOTE): Promise<unknown> {
+/** A scorecard past observe_min_sessions for `pattern`, so a redraft of an
+ * already-promoted row is not read as "too few sessions on the live text
+ * yet" (`observing`) by a test that is not about the new redraft policy.
+ * Harmless on a first promotion: the planner only reads it once the ledger
+ * row is already "promoted". */
+function observedCard(pattern = PATTERN, type = "skill"): Scorecard {
+  return Scorecard.parse({
+    ref: `${type}:${pattern}`,
+    type,
+    name: pattern,
+    rate_since_revision: { sessions: 999, hits: 0, rate: 0 },
+    rate_since_promotion: { sessions: 999, hits: 0, rate: 0 },
+  });
+}
+
+/** `cards` left undefined lets `run()` compute scorecards live, same as
+ * before this parameter existed; pass `[observedCard(pattern)]` only for a
+ * redraft of an already-promoted pattern that is not itself testing the new
+ * redraft policy or a live-computed scorecard. */
+function stage(world: World, pattern = PATTERN, extraDirs: string[] = [], quote = QUOTE, cards?: Scorecard[]): Promise<unknown> {
   const opts: RunOptions = {
     apply: true,
     chat: new FakeChat({ draft: skillDraft(pattern, quote) }).fn,
     gateRunner: fakeGateRunner,
     extraDirs,
+    cards,
   };
   return run(world, makeCfg(), opts);
 }
@@ -96,6 +116,8 @@ function seed(world: World, opts: { sibling?: boolean } = {}): string {
       served_by: null,
       last_updated: "2026-09-01T00:00:00Z",
       promoted_at: null,
+      revised_at: null,
+      revisions: 0,
       commit: null,
       feedback: null,
     };
@@ -295,6 +317,59 @@ describe("accept", () => {
     // stage() already wrote a "staged" event; accept appends its own.
     const events = readProposalEvents().events;
     expect(events[events.length - 1]).toMatchObject({ world: world.name, pattern: PATTERN, event: "accepted" });
+  });
+
+  test("promoted_at survives an accepted redraft of an already promoted pattern", async () => {
+    // Regression for the bug where accept read "already promoted" off the
+    // branch's own row, which always reads "staged" for an ordinary redraft
+    // (run.ts only ever writes "promoted" there on an auto-merge branch).
+    // That made every redraft's accept stamp a fresh promoted_at, so
+    // recurrenceSince kept restarting at 0 and a high-volume pattern never
+    // left the 7 day "new" window.
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+    const firstAccept = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(firstAccept.merged).toBe(true);
+    const promotedAt = loadLedger(ledgerPath(world)).entries[PATTERN]!.promoted_at;
+    expect(promotedAt).toBeTruthy();
+
+    // Past the watermark, with a different draft so the redraft is not
+    // gated out as "no change: the redraft reproduces the artifact already
+    // in place".
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    const staged = (await stage(world, PATTERN, [], `${QUOTE}, and re-run it after every rebase`, [observedCard(PATTERN)])) as { staged: string[] };
+    expect(staged.staged).toEqual([PATTERN]);
+    const redraft = review.detail(world, cfg(), PATTERN);
+    expect(redraft.status).toBe("staged");
+
+    review.accept(world, cfg(), PATTERN, redraft.reviewed_state);
+    const after = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(after.promoted_at).toBe(promotedAt);
+  });
+
+  test("an accepted redraft bumps revised_at and counts a revision", async () => {
+    // Same scenario as the promoted_at regression above, covering the fields
+    // added alongside that fix (revised_at, revisions). Kept in its own test
+    // so the promoted_at regression above can run standalone against a base
+    // checkout that predates these two fields.
+    const world = makeWorld();
+    seed(world);
+    await stage(world);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    const promotedAt = loadLedger(ledgerPath(world)).entries[PATTERN]!.promoted_at;
+
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    const staged = (await stage(world, PATTERN, [], `${QUOTE}, and re-run it after every rebase`, [observedCard(PATTERN)])) as {
+      staged: string[];
+    };
+    expect(staged.staged).toEqual([PATTERN]);
+    const redraft = review.detail(world, cfg(), PATTERN);
+
+    review.accept(world, cfg(), PATTERN, redraft.reviewed_state);
+    const after = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(after.revised_at).not.toBe(promotedAt);
+    expect(after.revisions).toBe(1);
   });
 
   test("an unwritable proposal-events log does not fail a merge that already landed", async () => {
@@ -757,7 +832,7 @@ describe("reject", () => {
     const promotedAt = loadLedger(ledgerPath(world)).entries[PATTERN]!.promoted_at;
     expect(promotedAt).toBeTruthy();
     addReflections(world, PATTERN, 3, { startDay: 20 });
-    await stage(world, PATTERN, [], `${QUOTE}, and re-run it after every rebase`);
+    await stage(world, PATTERN, [], `${QUOTE}, and re-run it after every rebase`, [observedCard(PATTERN)]);
 
     const out = review.reject(world, cfg(), PATTERN);
 
@@ -845,6 +920,8 @@ describe("a scorecard refine end to end", () => {
           served_by: { type: "rule", path: RULES },
           last_updated: promotedAt,
           promoted_at: promotedAt,
+          revised_at: promotedAt,
+          revisions: 0,
           commit: null,
           feedback: null,
         },
@@ -910,6 +987,8 @@ describe("a recurrence refine end to end", () => {
           served_by: { type: "rule", path: RULES },
           last_updated: day(20),
           promoted_at: null,
+          revised_at: null,
+          revisions: 0,
           commit: null,
           feedback: null,
         },
@@ -1128,7 +1207,7 @@ describe("rehome and retire", () => {
     const head = git.git(repo, ["rev-parse", retired.branch]);
 
     addReflections(world, PATTERN, 3, { startDay: 20 });
-    const report = (await stage(world, PATTERN, [], "a different quote about reading every call site first")) as {
+    const report = (await stage(world, PATTERN, [], "a different quote about reading every call site first", [observedCard(PATTERN)])) as {
       staged: string[];
       gated_out: Record<string, string>;
     };
@@ -1342,6 +1421,7 @@ describe("relink", () => {
       apply: true,
       chat: new FakeChat({ draft: hookDraft(PATTERN) }).fn,
       gateRunner: fakeGateRunner,
+      cards: [observedCard(PATTERN)],
     });
     const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
 

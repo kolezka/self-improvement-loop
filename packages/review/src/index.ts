@@ -49,6 +49,16 @@ import {
 
 export { DIGEST_PREFIX, type Snapshot, snapshot };
 export { revise, type ReviseOptions, type ReviseResult } from "./revise.ts";
+export {
+  applyRepair,
+  computeRepair,
+  ledgerHistory,
+  repairPromotedAt,
+  type LedgerSnapshot,
+  type RepairedRow,
+  type RepairOptions,
+  type RepairResult,
+} from "./repair.ts";
 export { type RemoteOps, setRemoteOps };
 
 // --- injectable seams --------------------------------------------------------
@@ -359,8 +369,18 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
     // a branch written before the one-row rule cannot drag its siblings in and
     // burn patterns a human already refused.
     const merged = ledgerAt(world, repo, snap.base_sha);
-    const row = entry ?? merged.entries[pattern] ?? null;
+    const liveRow = merged.entries[pattern] ?? null;
+    const row = entry ?? liveRow;
     if (row) {
+      // Whether this pattern was already promoted has to come from the live
+      // ledger, not from `row`: `entry`, the branch's own row, reads "staged"
+      // for every ordinary redraft (run.ts only ever writes "promoted" there
+      // on an auto-merge branch), so checking `row.status === "promoted"` was
+      // true only on the very first accept and false on every redraft after
+      // it, which reset promoted_at on every accept instead of only the first.
+      const wasPromoted = !retiring && liveRow?.status === "promoted";
+      const now = fsx.nowIso();
+      const promotedAt = retiring ? row.promoted_at : wasPromoted ? (liveRow!.promoted_at ?? now) : now;
       merged.entries[pattern] = {
         ...row,
         status: retiring ? "retired" : "promoted",
@@ -369,16 +389,19 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
         // serving and let the next plan refine it back into existence.
         served_by: retiring ? null : row.served_by,
         commit: snap.branch_sha.slice(0, 12),
-        last_updated: fsx.nowIso(),
-        // Accepting a row that is already promoted is a redraft of the same
-        // artifact, so the original promotion date stands. Anything else is
-        // this pattern becoming promoted now. A retirement promotes nothing, so
-        // it leaves the date exactly as it was, null included.
-        promoted_at: retiring
-          ? row.promoted_at
-          : row.status === "promoted"
-            ? (row.promoted_at ?? fsx.nowIso())
-            : fsx.nowIso(),
+        last_updated: now,
+        // Accepting a row that is already promoted (in the live ledger) is a
+        // redraft of the same artifact, so the original promotion date stands.
+        // Anything else is this pattern becoming promoted now. A retirement
+        // promotes nothing, so it leaves the date exactly as it was, null
+        // included.
+        promoted_at: promotedAt,
+        // revised_at tracks the text now live: promoted_at on a first
+        // promotion, now on every accepted redraft. revisions counts accepted
+        // redrafts of an already-promoted row. A retirement leaves both as
+        // they were on the row it retired.
+        revised_at: retiring ? row.revised_at : wasPromoted ? now : promotedAt,
+        revisions: retiring ? row.revisions : wasPromoted ? (liveRow!.revisions ?? 0) + 1 : 0,
       };
     }
     saveLedger(join(tree, rel), merged);
@@ -591,6 +614,8 @@ function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOpt
         served_by: null,
         last_updated: fsx.nowIso(),
         promoted_at: null,
+        revised_at: null,
+        revisions: 0,
         commit: null,
         feedback: card,
       };
@@ -614,8 +639,10 @@ function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOpt
  *
  * The live checkout holds the default branch, and git refuses a second worktree
  * on the same branch, so the commit is made on a scratch ref and fast-forwarded
- * in. The operator's tree only ever sees a fast-forward. */
-function commitOnDefault(
+ * in. The operator's tree only ever sees a fast-forward. Exported for
+ * `repair.ts`, whose repair-from-history commit is another single-file write
+ * onto the default branch with no branch of its own. */
+export function commitOnDefault(
   world: World,
   repo: string,
   defaultRef: string,

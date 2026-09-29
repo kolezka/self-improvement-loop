@@ -13,13 +13,20 @@
 
   let { flows, selectedPattern = null, selectedOutcome = null, height = 280, onSelectPattern, onSelectOutcome }: Props = $props();
 
-  const WIDTH = 640;
+  const WIDTH = 900;
   const NODE_WIDTH = 10;
   // Space reserved inside the viewBox for the pattern labels on the left and
   // the (shorter) outcome labels on the right, so text never spills past the
   // SVG's own coordinate space.
-  const LEFT_GUTTER = 170;
-  const RIGHT_GUTTER = 130;
+  const LEFT_GUTTER = 230;
+  const RIGHT_GUTTER = 170;
+  // Pattern slugs run long; past this many characters the label is cut and
+  // the full name stays in the node's tooltip.
+  const MAX_LABEL = 30;
+
+  function shortLabel(id: string): string {
+    return id.length > MAX_LABEL ? `${id.slice(0, MAX_LABEL - 1)}\u2026` : id;
+  }
   const INNER_WIDTH = WIDTH - LEFT_GUTTER - RIGHT_GUTTER;
 
   const gap = $derived.by(() => {
@@ -55,7 +62,7 @@
   {#if flows.length === 0}
     <div class="chart__empty">No reflections yet</div>
   {:else}
-    <svg class="chart__svg sankey__svg" viewBox={`0 0 ${WIDTH} ${height}`} preserveAspectRatio="none" width="100%" height={height}>
+    <svg class="chart__svg sankey__svg" viewBox={`0 0 ${WIDTH} ${height}`}>
       <g transform={`translate(${LEFT_GUTTER}, 0)`}>
         {#each layout.links as link (link.source + "\u0000" + link.target)}
           <path class="sankey__link" class:dimmed={linkDimmed(link.source, link.target)} d={link.path}>
@@ -82,7 +89,7 @@
               <title>{node.id}: {node.value} reflection{node.value === 1 ? "" : "s"}</title>
             </rect>
             <text x={node.column === 0 ? node.x - 6 : node.x + node.width + 6} y={node.y + node.height / 2} text-anchor={node.column === 0 ? "end" : "start"}>
-              {node.id} <tspan class="sankey__count">{node.value}</tspan>
+              {shortLabel(node.id)} <tspan class="sankey__count">{node.value}</tspan>
             </text>
           </g>
         {/each}
@@ -94,8 +101,11 @@
 
 <style>
   /* sankey */
+  /* The SVG scales uniformly with its width, so text is sized in viewBox
+     units; a CSS rem size would scale twice. */
   .sankey__svg {
-    font-size: var(--fs-xs);
+    height: auto;
+    font-size: 13px;
   }
 
   .sankey__link {

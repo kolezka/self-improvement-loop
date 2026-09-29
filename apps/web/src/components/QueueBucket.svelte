@@ -1,5 +1,6 @@
 <script lang="ts">
   import { formatTime, plural } from "../lib/format.ts";
+  import { resultTextClass } from "../lib/queue.ts";
   import type { QueueEntry } from "../lib/api-types.ts";
 
   let {
@@ -65,7 +66,7 @@
                 <span>last stop {formatTime(entry.last_stop)}</span>
               </div>
               {#if entry.result}
-                <div class="error-text">{entry.result}</div>
+                <div class={resultTextClass(name)}>{entry.result}</div>
               {/if}
             </button>
             {#if skippable}

@@ -280,17 +280,15 @@
                 <li>
                   <button class="row reflections-row" class:selected={r.id === selectedId} onclick={() => open(r.id)}>
                     <div class="row__title">
-                      <span class="grow">{r.pattern}</span>
-                      <span class="reflections-row__date muted">{formatTime(r.created)}</span>
+                      <span class="grow" title={r.pattern}>{r.pattern}</span>
                     </div>
                     {#if firstLine(r.lesson)}
                       <p class="reflections-lesson">{firstLine(r.lesson)}</p>
                     {/if}
-                    {#if countBadges(r).length > 0}
-                      <div class="meta">
-                        {#each countBadges(r) as b}<span class="chip {b.cls}">{b.label}</span>{/each}
-                      </div>
-                    {/if}
+                    <div class="reflections-row__meta">
+                      <span class="reflections-row__date muted">{formatTime(r.created)}</span>
+                      {#each countBadges(r) as b}<span class="chip {b.cls}">{b.label}</span>{/each}
+                    </div>
                   </button>
                 </li>
               {/each}
@@ -413,19 +411,41 @@
     padding-bottom: 0.4rem;
   }
 
-  .reflections-row__date {
-    flex: none;
-    font-size: var(--fs-xs);
-    font-weight: 400;
+  .reflections-row__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.4rem;
+    margin-top: 0.35rem;
   }
 
+  .reflections-row__date {
+    margin-right: 0.2rem;
+    font-size: var(--fs-xs);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .reflections-row__meta .chip {
+    height: 1.2rem;
+    padding: 0 0.45rem;
+  }
+
+  /* Two lines of the lesson, not one cut mid-word. */
   .reflections-lesson {
+    display: -webkit-box;
     margin: 0.15rem 0 0;
     color: var(--muted);
     font-size: var(--fs-sm);
+    line-height: 1.35;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  a.chip {
+    text-decoration: none;
   }
 
   .reflection-sections {

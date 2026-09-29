@@ -152,7 +152,7 @@ describe("GET /api/logs/stream", () => {
             err.code = "ENOENT";
             throw err;
           }
-          return readFileSync(p, "utf8").slice(from, to);
+          return readFileSync(p).subarray(from, to);
         },
       },
     });
@@ -236,26 +236,30 @@ describe("GET /api/logs/stream", () => {
   });
 
   test("a delta bigger than the read cap is spread over several poll ticks, lines intact", async () => {
+    const ticks: { skipped: boolean; offset: number }[] = [];
     const capped = createServer({
       port: 0,
       host: "127.0.0.1",
       token: TOKEN,
-      logStream: { pollMs: 20, heartbeatMs: 60_000, readCapBytes: 5 },
+      logStream: { pollMs: 20, heartbeatMs: 60_000, readCapBytes: 5, onPollTick: (info) => ticks.push(info) },
     });
     try {
       const path = seedLog("worker", "");
       const res = await fetch(`http://127.0.0.1:${capped.port}/api/logs/stream?name=worker`, { headers: goodHeaders() });
       const reader = res.body!.getReader();
       try {
-        // 17 bytes over a 5-byte cap needs 4 capped reads, at least 3 poll
-        // gaps between them; an unbounded read would return it in one tick.
+        // 17 bytes over a 5-byte cap needs exactly 4 capped reads: 5, 10, 15,
+        // 17. An uncapped read would jump straight from 0 to 17 in one tick.
         appendFileSync(path, "alpha\nbeta\ngamma\n");
-        const start = Date.now();
         const grown = await readUntil(reader, '"line":"gamma"', 3000);
-        const elapsedMs = Date.now() - start;
         const got = [...grown.matchAll(/data: (\{"line":"[^}]*"\})/g)].map((m) => (JSON.parse(m[1]!) as { line: string }).line);
         expect(got).toEqual(["alpha", "beta", "gamma"]);
-        expect(elapsedMs).toBeGreaterThanOrEqual(40);
+
+        const nonSkipped = ticks.filter((t) => !t.skipped).map((t) => t.offset);
+        const distinct = nonSkipped.filter((o, i) => i === 0 || o !== nonSkipped[i - 1]);
+        // A leading 0 or two may or may not show up depending on whether a
+        // poll fires before the append lands; the growth itself must not.
+        expect(distinct.slice(-4)).toEqual([5, 10, 15, 17]);
       } finally {
         await reader.cancel();
       }
@@ -263,6 +267,33 @@ describe("GET /api/logs/stream", () => {
       capped.stop(true);
     }
   });
+
+  test("a capped read never corrupts a multi-byte UTF-8 character at the boundary", async () => {
+    const capped = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      token: TOKEN,
+      // Small enough that "ż" and friends (2 bytes each in UTF-8) are
+      // guaranteed to land split across at least one capped read.
+      logStream: { pollMs: 20, heartbeatMs: 60_000, readCapBytes: 3 },
+    });
+    try {
+      const path = seedLog("worker", "");
+      const res = await fetch(`http://127.0.0.1:${capped.port}/api/logs/stream?name=worker`, { headers: goodHeaders() });
+      const reader = res.body!.getReader();
+      try {
+        const text = "zażółć gęślą jaźń";
+        appendFileSync(path, `${text}\n`);
+        const grown = await readUntil(reader, "jaźń", 3000);
+        expect(grown).toContain(`"line":${JSON.stringify(text)}`);
+        expect(grown).not.toContain("�");
+      } finally {
+        await reader.cancel();
+      }
+    } finally {
+      capped.stop(true);
+    }
+  }, 5000);
 
   test("a pending line over the cap is flushed without waiting for a newline", async () => {
     const capped = createServer({

@@ -22,7 +22,7 @@ export interface LogStreamOptions {
   /** Test-only override for the range reader, letting a test force a read
    * failure (a file removed or replaced between stat and read) without
    * racing a real file system. */
-  readRange?: (path: string, from: number, to: number) => string;
+  readRange?: (path: string, from: number, to: number) => Buffer;
   /** Chunks the stream will queue before controller.desiredSize goes to zero
    * or below. Small in tests, so backpressure is reachable without a huge
    * file; production default is generous enough that ordinary bursts never
@@ -48,13 +48,18 @@ export function nextRange(prevOffset: number, size: number): { from: number; to:
   return { from: prevOffset, to: size, reset: false };
 }
 
-function readRange(path: string, from: number, to: number): string {
-  if (to <= from) return "";
+/** Raw bytes, never decoded here: a capped read can cut a multi-byte UTF-8
+ * character in half, and decoding each range on its own would corrupt it
+ * into U+FFFD. The caller runs every range through one persistent
+ * TextDecoder in stream mode instead, so a split character completes
+ * correctly on the next read. */
+function readRange(path: string, from: number, to: number): Buffer {
+  if (to <= from) return Buffer.alloc(0);
   const fd = openSync(path, "r");
   try {
     const buf = Buffer.alloc(to - from);
     readSync(fd, buf, 0, to - from, from);
-    return buf.toString("utf8");
+    return buf;
   } finally {
     closeSync(fd);
   }
@@ -103,6 +108,12 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
   let identity: { dev: number; ino: number } | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let hbTimer: ReturnType<typeof setInterval> | null = null;
+  // One decoder for the whole connection, always in stream mode: a byte
+  // range cut mid-character holds its tail here until the rest arrives,
+  // instead of that range being decoded (and corrupted) on its own. Replaced
+  // on every reset, since a held-back byte belongs to whatever was being
+  // read before, not to the file (or position) being read now.
+  let decoder = new TextDecoder("utf-8");
 
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -135,7 +146,10 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
         // so a file not ending in a newline leaves a partial line as the
         // last entry. Sending it as a full line now, then the remainder as a
         // second line once the newline lands, tears one line into two.
-        const endsInNewline = size === 0 || readRangeFn(path, size - 1, size) === "\n";
+        // A raw byte compare, not run through the stream decoder: this is a
+        // one-off peek unrelated to the main decode stream, and feeding it
+        // through would risk consuming a byte the real read still needs.
+        const endsInNewline = size === 0 || readRangeFn(path, size - 1, size)[0] === 0x0a;
         if (!endsInNewline && tail.length > 0) pending = tail.pop() ?? "";
         for (const line of tail) send(sseLine(line));
         offset = size;
@@ -183,14 +197,15 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
           if (reset) {
             send(SSE_RESET);
             pending = "";
+            decoder = new TextDecoder("utf-8");
           }
           const from = reset ? 0 : range.from;
           // A delta bigger than the cap continues on the next tick instead
           // of one unbounded allocation for a burst of writes.
           const to = range.to - from > readCapBytes ? from + readCapBytes : range.to;
-          let chunk: string;
+          let chunkBuf: Buffer;
           try {
-            chunk = readRangeFn(path, from, to);
+            chunkBuf = readRangeFn(path, from, to);
           } catch (err) {
             const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : undefined;
             if (code !== "ENOENT") throw err; // a real problem, handled below
@@ -202,9 +217,13 @@ export function handleLogStream(request: Request, url: URL, opts: LogStreamOptio
             offset = 0;
             pending = "";
             identity = null;
+            decoder = new TextDecoder("utf-8");
             return;
           }
-          if (chunk) {
+          if (chunkBuf.length > 0) {
+            // stream: true holds back a trailing partial character instead
+            // of replacing it with U+FFFD; it completes on the next chunk.
+            const chunk = decoder.decode(chunkBuf, { stream: true });
             pending += chunk;
             const lines = pending.split("\n");
             pending = lines.pop() ?? "";

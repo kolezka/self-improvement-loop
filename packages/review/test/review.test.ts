@@ -287,6 +287,33 @@ describe("accept", () => {
     expect(() => review.accept(world, cfg(), PATTERN, "")).toThrow(/reviewed state changed/);
   });
 
+  test("it refuses a branch auto-merge already landed, and revisions stay unchanged", async () => {
+    // Auto-merge fast-forwards the default branch onto the branch tip but
+    // never deletes the branch ref (autoMergeBranch in run.ts), so a direct
+    // accept by pattern name can still reach it even though the queue's own
+    // `--no-merged` listing would never surface it.
+    const world = makeWorld();
+    const repo = seed(world);
+    const before = git.head(repo);
+    const opts: RunOptions = { apply: true, chat: new FakeChat({ draft: skillDraft(PATTERN, QUOTE) }).fn, gateRunner: fakeGateRunner };
+    const report = await run(world, makeCfg({ auto_merge: true }), opts);
+    expect(report.merged).toEqual([PATTERN]);
+    expect(git.head(repo)).not.toBe(before);
+
+    const branch = branchName(world.name, PATTERN);
+    expect(git.refExists(repo, `refs/heads/${branch}`)).toBe(true);
+
+    const beforeRow = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(() => review.accept(world, cfg(), PATTERN, "irrelevant")).toThrow(/already merged/);
+    const afterRow = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(afterRow).toEqual(beforeRow);
+    expect(afterRow.revisions).toBe(beforeRow.revisions);
+
+    // The preview agrees rather than silently offering an accept that would refuse.
+    const detail = review.detail(world, cfg(), PATTERN);
+    expect(detail.accept_blocked).toMatch(/already merged/);
+  });
+
   test("it fast-forwards and promotes only its own row", async () => {
     const world = makeWorld();
     const repo = seed(world, { sibling: true });

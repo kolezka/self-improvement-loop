@@ -215,6 +215,21 @@ function foreignProblem(
   return null;
 }
 
+/** Why this branch is already merged into the default branch, or null.
+ *
+ * An ordinary accept always deletes the branch it merges, so the only way a
+ * branch head can be an ancestor of the default branch while the branch ref
+ * still exists is an auto-merge: it fast-forwards the default branch onto the
+ * branch tip but leaves the ref in place (see `autoMergeBranch` in run.ts).
+ * `queue()` already excludes such a branch via `--no-merged`, so this only
+ * matters for a direct call by pattern name; accepting it anyway would add a
+ * ledger-only commit and bump revisions with no new draft behind it. */
+function alreadyMergedProblem(repo: string, snap: Snapshot): string | null {
+  if (!snap.branch_sha || !snap.base_sha) return null;
+  if (!git.isAncestor(repo, snap.branch_sha, snap.base_sha)) return null;
+  return `${snap.branch} is already merged into ${snap.base_ref}; auto-merge already landed it, so there is nothing new to accept.`;
+}
+
 /** The body on the branch, its evidence, and whether accept is blocked. */
 export function detail(world: World, _cfg: Config, pattern: string, opts: ReviewOptions = {}): ReviewDetail {
   const repo = targetRoot(world);
@@ -226,12 +241,12 @@ export function detail(world: World, _cfg: Config, pattern: string, opts: Review
   const atype = entryType(entry);
   const { found, body } = artifactBody(world, repo, snap.branch_sha, atype, pattern);
 
-  let blocked: string | null = null;
-  if (artifacts.isPlaceholderBody(atype, body)) {
+  let blocked: string | null = alreadyMergedProblem(repo, snap);
+  if (!blocked && artifacts.isPlaceholderBody(atype, body)) {
     blocked =
       `${snap.branch} still carries the re-home placeholder for ${JSON.stringify(pattern)} (${atype}); ` +
       "no real draft has been written yet. Wait for the next run to redraft it, or reject and re-route.";
-  } else {
+  } else if (!blocked) {
     blocked = foreignProblem(world, repo, snap, pattern, atype);
   }
 
@@ -328,6 +343,8 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
   const defaultRef = git.defaultBranch(repo);
   const snap = snapshot(world, repo, defaultRef, pattern);
   if (!snap.branch_sha) throw new ReviewError(`${snap.branch} has no resolvable commit; nothing to accept`);
+  const merged = alreadyMergedProblem(repo, snap);
+  if (merged) throw new ReviewError(merged);
   if (!reviewedState || reviewedState !== snap.reviewed_state) {
     throw new ReviewError("reviewed state changed since preview; reload the review and accept again");
   }

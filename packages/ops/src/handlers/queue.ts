@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { fsx, ValidationError } from "@sil/core";
 import { SECRET_RE } from "@sil/curriculum";
 import { isHidden, listQueue, listReflections, loadEntry, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
@@ -117,12 +117,15 @@ function transcriptMessages(path: string, limit: number, maxChars: number): { ro
 
 /** iterEvidenceRecords swallows a read failure (EACCES, a race) into an
  * empty generator, which would otherwise surface as an empty transcript
- * instead of the error it actually is. A direct read first tells them apart:
- * missing is "not persisted", anything else is a real failure to report. */
+ * instead of the error it actually is. An open-and-close check first tells
+ * them apart cheaply: missing is "not persisted", anything else is a real
+ * failure to report. Only opens the fd, never reads a byte, so a large
+ * transcript is not pulled into memory here only to be read again by
+ * transcriptMessages below. */
 function transcriptStatus(path: string): { ok: true } | { ok: false; reason: string } {
   if (!existsSync(path)) return { ok: false, reason: "transcript not persisted" };
   try {
-    readFileSync(path, "utf8");
+    closeSync(openSync(path, "r"));
     return { ok: true };
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : String(err);

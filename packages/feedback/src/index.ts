@@ -1,9 +1,24 @@
 // Per-artifact scorecards: usage, nudge fires, critic votes and human
 // feedback folded into one record the planner and web UI read.
 
-import { fsx, ledgerPath, paths, type Config, type HumanFeedback, type Ledger, type Scorecard, type UsageEvent, type World } from "@sil/core";
+import {
+  fsx,
+  ledgerPath,
+  paths,
+  type Config,
+  type HumanFeedback,
+  type Ledger,
+  type RateWindow,
+  type ReflectRunEvent,
+  type Scorecard,
+  type UsageEvent,
+  type World,
+} from "@sil/core";
 import { listReflections, loadAliases, loadLedger } from "@sil/store";
 import { installedArtifacts } from "@sil/critic";
+import { patternRates, type SessionDayRow } from "./rates.ts";
+
+export { patternRates, type RateWindows, type SessionDayRow } from "./rates.ts";
 
 export interface ScorecardOptions { now?: Date; windowDays?: number }
 
@@ -45,6 +60,13 @@ export const REFINE_COOLDOWN_DAYS = 7;
 
 export function appendUsage(event: UsageEvent): void {
   fsx.appendJsonl(paths.usageEventsFile(), event);
+}
+
+/** One line per critic run that finished, recorded or not. The worker calls
+ * this exactly once, where a critic outcome is finalised, and never for a
+ * session skipped before the critic ran: see worker/src/index.ts. */
+export function recordReflectRun(event: ReflectRunEvent): void {
+  fsx.appendJsonl(paths.reflectRunsFile(), event);
 }
 
 export function recordHuman(fb: HumanFeedback): string {
@@ -185,13 +207,37 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   }
 
   const createdByPattern = new Map<string, string[]>();
+  // Every reflected session of the world (source 1) and, per pattern, the
+  // sessions that reflected it: the rate windows' denominator and numerator.
+  // No 30 day cap, unlike createdByPattern above: these describe a pattern's
+  // whole life since promotion, not a rolling window.
+  const allSessionRows: SessionDayRow[] = [];
+  const hitsByPattern = new Map<string, SessionDayRow[]>();
   const aliases = loadAliases(world.name);
   for (const r of listReflections(world.name)) {
-    if (!within(r.created, windowStart, now)) continue;
     const pattern = aliases[r.pattern] ?? r.pattern;
-    const bucket = createdByPattern.get(pattern);
-    if (bucket) bucket.push(r.created);
-    else createdByPattern.set(pattern, [r.created]);
+    if (within(r.created, windowStart, now)) {
+      const bucket = createdByPattern.get(pattern);
+      if (bucket) bucket.push(r.created);
+      else createdByPattern.set(pattern, [r.created]);
+    }
+    if (r.session_id) {
+      const row: SessionDayRow = { session_id: r.session_id, day: r.created.slice(0, 10) };
+      allSessionRows.push(row);
+      const bucket = hitsByPattern.get(pattern);
+      if (bucket) bucket.push(row);
+      else hitsByPattern.set(pattern, [row]);
+    }
+  }
+  // Source 2: the critic ran on this session but did not always record. The
+  // queue's `done` bucket is pruned to 500 and cannot serve as history.
+  for (const rec of fsx.readJsonl<Record<string, unknown>>(paths.reflectRunsFile())) {
+    if (rec["world"] !== world.name) continue;
+    const sid = rec["session_id"];
+    const ts = rec["ts"];
+    if (typeof sid === "string" && sid.length > 0 && typeof ts === "string") {
+      allSessionRows.push({ session_id: sid, day: ts.slice(0, 10) });
+    }
   }
 
   const out: Scorecard[] = [];
@@ -209,6 +255,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     const entry = ledger.entries[name];
     const recurrence = recurrenceSince(entry, createdByPattern.get(name) ?? []);
     const [proposal, reason] = propose(entry, uses, fires, helpful, misfired, humanGood, humanBad, recurrence, lastUsed, now, retireCutoff, cfg);
+    const rates = patternRates(entry, allSessionRows, hitsByPattern.get(name) ?? [], cfg.promotion.observe_min_sessions, now);
     out.push({
       ref,
       type: atype,
@@ -224,6 +271,9 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
       proposal,
       reason,
       snapshot_at: null,
+      rate_baseline: rates.rate_baseline,
+      rate_since_promotion: rates.rate_since_promotion,
+      rate_since_revision: rates.rate_since_revision,
     });
   }
   return { cards: out, diagnostics: { unresolved_critic_refs: unresolvedCriticRefs } };
@@ -410,6 +460,13 @@ export function load(world: World, cfg: Config): Scorecard[] {
   return out;
 }
 
+function parseRateWindow(v: unknown): RateWindow | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const rate = typeof o["rate"] === "number" ? o["rate"] : null;
+  return { sessions: Number(o["sessions"] ?? 0), hits: Number(o["hits"] ?? 0), rate };
+}
+
 function validateScorecard(item: unknown): Scorecard | null {
   if (!item || typeof item !== "object") return null;
   const o = item as Record<string, unknown>;
@@ -429,6 +486,9 @@ function validateScorecard(item: unknown): Scorecard | null {
     proposal: (o["proposal"] as Scorecard["proposal"]) ?? "keep",
     reason: o["reason"] ? String(o["reason"]) : "",
     snapshot_at: o["snapshot_at"] ? String(o["snapshot_at"]) : null,
+    rate_baseline: parseRateWindow(o["rate_baseline"]),
+    rate_since_promotion: parseRateWindow(o["rate_since_promotion"]),
+    rate_since_revision: parseRateWindow(o["rate_since_revision"]),
   };
 }
 

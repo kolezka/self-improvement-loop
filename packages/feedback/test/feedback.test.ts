@@ -45,7 +45,7 @@ function world(name = "default"): World {
 }
 
 function cfg(w: World): Config {
-  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] }, alias_semantic: AliasSemanticConfig.parse({}) };
+  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, max_rewords: 2, escalate_ratio: 0.9 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] }, alias_semantic: AliasSemanticConfig.parse({}) };
 }
 
 function buildWorldAndLedger(): { w: World; c: Config } {
@@ -54,11 +54,11 @@ function buildWorldAndLedger(): { w: World; c: Config } {
   const ledger: Ledger = {
     version: 1,
     entries: {
-      "new-thing": { pattern: "new-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: iso(daysAgo(2)), commit: null, feedback: null },
-      "steady-thing": { pattern: "steady-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, commit: null, feedback: null },
-      "flaky-thing": { pattern: "flaky-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "hook", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, commit: null, feedback: null },
-      "dead-thing": { pattern: "dead-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "agent", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: null, commit: null, feedback: null },
-      "staged-thing": { pattern: "staged-thing", promoted_at_count: 0, rejected_at_count: 0, status: "staged", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(1)), promoted_at: null, commit: null, feedback: null },
+      "new-thing": { pattern: "new-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: iso(daysAgo(2)), revised_at: null, revisions: 0, commit: null, feedback: null },
+      "steady-thing": { pattern: "steady-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
+      "flaky-thing": { pattern: "flaky-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "hook", served_by: null, last_updated: iso(daysAgo(40)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
+      "dead-thing": { pattern: "dead-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "agent", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
+      "staged-thing": { pattern: "staged-thing", promoted_at_count: 0, rejected_at_count: 0, status: "staged", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(1)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
     },
   };
   saveLedger(ledgerPath(w), ledger);
@@ -169,7 +169,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(8)), promoted_at: null, commit: null, feedback: null },
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(8)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -185,7 +185,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), promoted_at: null, commit: null, feedback: null },
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -201,7 +201,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "idle-thing": { pattern: "idle-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: null, commit: null, feedback: null },
+        "idle-thing": { pattern: "idle-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -218,7 +218,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "no-date-thing": { pattern: "no-date-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: "not-a-date", promoted_at: null, commit: null, feedback: null },
+        "no-date-thing": { pattern: "no-date-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: "not-a-date", promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -238,7 +238,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 1, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(5)), promoted_at: iso(daysAgo(60)), commit: null, feedback: null },
+        "never-used": { pattern: "never-used", promoted_at_count: 0, rejected_at_count: 1, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(5)), promoted_at: iso(daysAgo(60)), revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -256,9 +256,9 @@ describe("scorecards proposals", () => {
       version: 1,
       entries: {
         // promoted 60 days ago, row rewritten today: still not new.
-        "old-thing": { pattern: "old-thing", promoted_at_count: 0, rejected_at_count: 1, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(0)), promoted_at: iso(daysAgo(60)), commit: null, feedback: null },
+        "old-thing": { pattern: "old-thing", promoted_at_count: 0, rejected_at_count: 1, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(0)), promoted_at: iso(daysAgo(60)), revised_at: null, revisions: 0, commit: null, feedback: null },
         // promoted 2 days ago, row untouched since: new.
-        "fresh-thing": { pattern: "fresh-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: iso(daysAgo(2)), commit: null, feedback: null },
+        "fresh-thing": { pattern: "fresh-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(2)), promoted_at: iso(daysAgo(2)), revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -273,7 +273,7 @@ describe("scorecards proposals", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        "legacy-thing": { pattern: "legacy-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), promoted_at: null, commit: null, feedback: null },
+        "legacy-thing": { pattern: "legacy-thing", promoted_at_count: 0, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(60)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -428,7 +428,7 @@ describe("critic verdicts and the refine snapshot", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        judged: { pattern: "judged", promoted_at_count: 3, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: iso(daysAgo(90)), commit: null, feedback: snapshot },
+        judged: { pattern: "judged", promoted_at_count: 3, rejected_at_count: 0, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(daysAgo(90)), promoted_at: iso(daysAgo(90)), revised_at: null, revisions: 0, commit: null, feedback: snapshot },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -469,7 +469,7 @@ describe("critic verdicts and the refine snapshot", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        judged: { pattern: "judged", promoted_at_count: 3, rejected_at_count: 9, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(NOW), promoted_at: null, commit: null, feedback: null },
+        judged: { pattern: "judged", promoted_at_count: 3, rejected_at_count: 9, status: "promoted", artifact_type: "skill", served_by: null, last_updated: iso(NOW), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -525,7 +525,7 @@ describe("recurrence since promotion", () => {
     const ledger: Ledger = {
       version: 1,
       entries: {
-        recurring: { pattern: "recurring", promoted_at_count: 181, rejected_at_count: 0, status: "promoted", artifact_type: "rule", served_by: null, last_updated: iso(daysAgo(20)), promoted_at: null, commit: null, feedback: null, ...fields },
+        recurring: { pattern: "recurring", promoted_at_count: 181, rejected_at_count: 0, status: "promoted", artifact_type: "rule", served_by: null, last_updated: iso(daysAgo(20)), promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null, ...fields },
       },
     };
     saveLedger(ledgerPath(world()), ledger);

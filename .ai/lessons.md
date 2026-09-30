@@ -111,8 +111,10 @@
   accept of a stale branch commits a merge whose FIRST parent is the stale branch,
   so the default line continues through the second parent and `--first-parent`
   drops every redraft accepted in between. Walk the branch's own line explicitly
-  (here: second parent at a `(reviewed)` merge, first parent elsewhere) and make
-  the counting tolerant of stale snapshots (distinct contents, not transitions).
+  (here: second parent at a merge with the exact accept subject, first parent
+  elsewhere). Counting distinct contents instead was tried and dropped: it
+  undercounts a real revert to an earlier text. Also read blobs raw: `git.git`
+  trims stdout, which hides a redraft that only changes trailing whitespace.
 - 2026-09-30: `redraftPolicy`'s escalate check compared two rates with no floor:
   `revisionRate >= escalate_ratio * promotionRate` is true at `0 >= 0.9 * 0` for a
   pattern that has never once recurred, because a ratio comparison cannot tell "no

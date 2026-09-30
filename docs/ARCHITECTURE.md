@@ -370,15 +370,16 @@ The repair's version identity is the pattern's own artifact content read from
 git at each promoted snapshot (a rule's own tagged bullet only), never the
 ledger `commit` field or a row's own `promoted_at`: auto-merge always writes
 `commit: null`, and a pre-fix redraft resets `promoted_at` on every accept, so
-neither survives as a stable version key. Versions are the distinct contents
-seen promoted in the current span (since the last retirement, if any), so a
-snapshot that still shows an older version adds nothing, and an unreadable
-artifact counts toward the span start only. The walk follows the default
-branch's own line from its tip: an accept of a stale branch merges the default
-branch into it and commits the merge as `... (reviewed)` with the old default
-tip as second parent, so the line continues through that parent; any other
-merge keeps it on the first parent, so a side branch's stale ledger is never
-read. `--first-parent` alone lost the redrafts behind such an accept, a plain
+neither survives as a stable version key. A new version is a readable,
+byte-exact content that differs from the one before it in the current span
+(since the last retirement, if any), so a revert to an earlier text still
+counts, and an unreadable artifact counts toward the span start only. The walk
+follows the default branch's own line from its tip: an accept of a stale
+branch merges the default branch into it and commits the merge with the exact
+accept subject (`feat(<type>): [retire ]<pattern> (reviewed)`) and the old
+default tip as second parent, so the line continues through that parent; any
+other merge keeps it on the first parent, so a side branch's stale ledger is
+never read. `--first-parent` alone lost the redrafts behind such an accept, a plain
 log read stale side snapshots. Reads are cached per blob id, so a repair costs
 one `ls-tree` per commit on that line plus one read per distinct blob. With a
 single visible version (a shallow or imported history) a post-fix row keeps its

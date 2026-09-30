@@ -13,7 +13,7 @@ import { defaultDeps, type Deps } from "./deps.ts";
 import { cmdAliasesList, cmdAliasesRm, cmdAliasesSet, cmdAliasesSuggest } from "./commands/aliases.ts";
 import { cmdArtifacts } from "./commands/artifacts.ts";
 import { cmdExport, cmdImportBundle } from "./commands/bundle.ts";
-import { cmdCurriculumPlan, cmdCurriculumRun } from "./commands/curriculum.ts";
+import { cmdCurriculumPlan, cmdCurriculumRepairPromotedAt, cmdCurriculumRun } from "./commands/curriculum.ts";
 import { cmdFeedbackAdd, cmdFeedbackList } from "./commands/feedback.ts";
 import { cmdHookSnapshot } from "./commands/hookSnapshot.ts";
 import { cmdImportLedger, cmdImportPayloads, cmdImportReflections } from "./commands/import.ts";
@@ -92,6 +92,12 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .option("--apply")
     .option("--json")
     .action(wire((opts) => cmdCurriculumRun(opts, deps)));
+  curriculum
+    .command("repair-promoted-at")
+    .option("--world <name>")
+    .option("--apply")
+    .option("--json")
+    .action(wire((opts) => cmdCurriculumRepairPromotedAt(opts, deps)));
 
   const review = program.command("review");
   review

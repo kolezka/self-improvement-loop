@@ -73,7 +73,7 @@ function world(name = "default"): World {
 }
 
 function cfg(w: World): Config {
-  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] }, alias_semantic: AliasSemanticConfig.parse({}) };
+  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] }, alias_semantic: AliasSemanticConfig.parse({}) };
 }
 
 function llm(): LlmConfig {
@@ -244,8 +244,8 @@ describe("installedArtifacts", () => {
     const ledger = {
       version: 1,
       entries: {
-        "good-skill": { pattern: "good-skill", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
-        "staged-thing": { pattern: "staged-thing", promoted_at_count: 1, rejected_at_count: 0, status: "staged" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
+        "good-skill": { pattern: "good-skill", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
+        "staged-thing": { pattern: "staged-thing", promoted_at_count: 1, rejected_at_count: 0, status: "staged" as const, artifact_type: "skill" as const, served_by: null, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -263,7 +263,7 @@ describe("installedArtifacts", () => {
     const ledger = {
       version: 1,
       entries: {
-        rehomed: { pattern: "rehomed", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "none" as const, served_by: { type: "skill" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null },
+        rehomed: { pattern: "rehomed", promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type: "none" as const, served_by: { type: "skill" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null },
       },
     };
     saveLedger(ledgerPath(w), ledger);
@@ -278,7 +278,7 @@ describe("installedArtifacts", () => {
     const c = cfg(w);
     const { saveLedger } = await import("@sil/store");
     const { ledgerPath } = await import("@sil/core");
-    const row = (pattern: string, artifact_type: "skill" | "none") => ({ pattern, promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type, served_by: { type: "none" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, commit: null, feedback: null });
+    const row = (pattern: string, artifact_type: "skill" | "none") => ({ pattern, promoted_at_count: 3, rejected_at_count: 0, status: "promoted" as const, artifact_type, served_by: { type: "none" as const, path: null }, last_updated: "2026-09-14T10:00:00Z", promoted_at: null, revised_at: null, revisions: 0, commit: null, feedback: null });
     saveLedger(ledgerPath(w), { version: 1, entries: { drafted: row("drafted", "skill"), empty: row("empty", "none") } });
 
     const refs = installedArtifacts(w, c);
@@ -344,6 +344,8 @@ describe("reflectSession normalizes bare artifact refs", () => {
           served_by: null,
           last_updated: "2026-09-14T10:00:00Z",
           promoted_at: null,
+          revised_at: null,
+          revisions: 0,
           commit: null,
           feedback: null,
         },

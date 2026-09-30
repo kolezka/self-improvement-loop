@@ -56,6 +56,21 @@ export const Promotion = z.object({
   max_rule_chars: z.number().int().min(100).default(DEFAULT_MAX_RULE_CHARS),
   auto_merge: z.boolean().default(false),
   retire_after_days: z.number().int().min(1).default(45),
+  // Minimum reflected sessions since the live text (revised_at, or
+  // promoted_at with no revision yet) before its recurrence rate is trusted
+  // enough to plan from. Below this the planner reports `observing`.
+  observe_min_sessions: z.number().int().min(1).default(20),
+  // A pattern stuck below observe_min_sessions this many days after its live
+  // text last changed stops reporting `observing`: low traffic will never
+  // fill the window, so the planner falls through to a normal redraft
+  // instead of holding new evidence back forever.
+  observe_max_days: z.number().int().min(1).default(14),
+  // Accepted redrafts of an already-promoted row allowed before a still-high
+  // rate escalates instead of redrafting again.
+  max_rewords: z.number().int().min(0).default(2),
+  // How close the post-revision rate must stay to the pre-revision rate,
+  // as a fraction, before a pattern that has used up max_rewords escalates.
+  escalate_ratio: z.number().min(0).max(1).default(0.9),
 });
 
 export const WorkerConfig = z.object({
@@ -177,6 +192,19 @@ export const UsageEvent = z.object({
 });
 export type UsageEvent = z.infer<typeof UsageEvent>;
 
+/** One line of usage/reflect-runs.jsonl: one critic run that finished, never
+ * a session skipped before the critic ran. The scorecard rate denominator
+ * reads distinct session_ids from this, unioned with reflection session_ids,
+ * per world. */
+export const ReflectRunEvent = z.object({
+  ts: isoTs,
+  world: z.string(),
+  session_id: z.string(),
+  recorded: z.boolean(),
+  pattern: z.string().nullable().default(null),
+});
+export type ReflectRunEvent = z.infer<typeof ReflectRunEvent>;
+
 export const ARTIFACT_REF_RE = /^(skill|hook|rule|agent):[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const HumanFeedback = z.object({
@@ -191,6 +219,17 @@ export type HumanFeedback = z.infer<typeof HumanFeedback>;
 
 export const Proposal = z.enum(["keep", "refine", "retire-candidate", "new"]);
 export type Proposal = z.infer<typeof Proposal>;
+
+/** Hits over reflected sessions in one span of a pattern's life. `rate` is
+ * null below `promotion.observe_min_sessions`: too few sessions to trust a
+ * ratio, which is what tells the planner to hold off rather than redraft on
+ * noise. */
+export const RateWindow = z.object({
+  sessions: z.number().int().default(0),
+  hits: z.number().int().default(0),
+  rate: z.number().nullable().default(null),
+});
+export type RateWindow = z.infer<typeof RateWindow>;
 
 export const Scorecard = z.object({
   ref: z.string(),
@@ -209,6 +248,12 @@ export const Scorecard = z.object({
   reason: z.string().default(""),
   // Set only on the copy a ledger row keeps: when a stage or reject took it.
   snapshot_at: isoTs.nullable().default(null),
+  // The recurrence rate, no 30 day cap: these describe the artifact's whole
+  // life, not a rolling window. Null (the whole window, not just its rate)
+  // when the pattern has never been promoted, or is not this card's pattern.
+  rate_baseline: RateWindow.nullable().default(null),
+  rate_since_promotion: RateWindow.nullable().default(null),
+  rate_since_revision: RateWindow.nullable().default(null),
 });
 export type Scorecard = z.infer<typeof Scorecard>;
 
@@ -271,6 +316,12 @@ export const PromotionEntry = z.object({
   // retire clock every time a human refuses a redraft. Null on rows written
   // before this field existed, and on rows that were never promoted.
   promoted_at: isoTs.nullable().default(null),
+  // When the artifact text now live was accepted. promoted_at stays the first
+  // promotion; this moves on every accepted redraft. Null on rows written
+  // before this field existed and on rows that were never promoted.
+  revised_at: isoTs.nullable().default(null),
+  // Accepted redrafts of an already promoted row since promoted_at.
+  revisions: z.number().int().default(0),
   commit: z.string().nullable().default(null),
   feedback: Scorecard.nullable().default(null),
 });
@@ -293,7 +344,22 @@ export type Ledger = z.infer<typeof Ledger>;
 
 // --- curriculum reports -------------------------------------------------
 
-export const PlanActionKind = z.enum(["promote", "refine", "over-cap", "below-threshold", "done", "retire-candidate"]);
+export const PlanActionKind = z.enum([
+  "promote",
+  "refine",
+  "over-cap",
+  "below-threshold",
+  "done",
+  "retire-candidate",
+  // A promoted pattern with new evidence, but too few reflected sessions
+  // since its live text to trust the recurrence rate yet. Surfaced, not
+  // executed: no redraft, no cap spent.
+  "observing",
+  // A promoted pattern that has used up its redraft budget and is still
+  // recurring nearly as often as before. Surfaced for a human to change the
+  // artifact's type or split the pattern; never executed, no cap spent.
+  "escalate",
+]);
 export type PlanActionKind = z.infer<typeof PlanActionKind>;
 
 export const PlanAction = z.object({

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { AliasSemanticConfig, fsx, LlmConfig, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
 import { listQueue, loadEntry, writeEntry } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
@@ -101,7 +101,7 @@ function cfg(opts: { idleMinutes?: number; minToolUses?: number } = {}): Config 
   return {
     version: 1,
     worlds: [world()],
-    promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45 },
+    promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 },
     worker: { idle_minutes: opts.idleMinutes ?? 10, curriculum_interval_minutes: 60, min_tool_uses: opts.minToolUses ?? 1, auto_kick: true },
     web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] },
     alias_semantic: AliasSemanticConfig.parse({}),
@@ -123,6 +123,30 @@ describe("runOnce eligible entry", () => {
     const done = loadEntry("done", "sess-good");
     expect(done).not.toBeNull();
     expect(done!.result?.startsWith("recorded:")).toBe(true);
+  });
+
+  test("a broken reflect-run log does not fail a critic run that already succeeded", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    prepareEnv();
+    writePending("sess-good", { ended: true });
+    const usageDir = join(paths.stateDir(), "usage");
+    mkdirSync(usageDir, { recursive: true });
+    chmodSync(usageDir, 0o000);
+    try {
+      const summary = await runOnce(cfg(), { reflect: true, curriculum: false, chat: goodChat });
+
+      expect(summary.reflected).toEqual(["sess-good"]);
+      expect(summary.failed).toEqual([]);
+      const done = loadEntry("done", "sess-good");
+      expect(done).not.toBeNull();
+      expect(done!.result?.startsWith("recorded:")).toBe(true);
+
+      chmodSync(usageDir, 0o755);
+      const workerLog = readFileSync(paths.logFile("worker"), "utf8");
+      expect(workerLog).toContain("reflect-run-log-failed");
+    } finally {
+      chmodSync(usageDir, 0o755);
+    }
   });
 });
 

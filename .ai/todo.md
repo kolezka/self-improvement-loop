@@ -425,3 +425,38 @@ through `sessions/<id>/module-spool.json`, ingested under the session lock.
       tests in `test/theme.test.ts`); tdd-guard sees no `bun test` results (no bun reporter,
       no `test.json`), so it kept blocking, and was switched off for this repo
 - [x] verify: `bun run check` 0 errors, `bun run build`, `lint:dashes` plus `rg` on untracked files
+
+## Recurrence rate and redraft policy (branch feat/recurrence-rate)
+
+Goal: the loop kept rewording a promoted pattern whenever new evidence arrived,
+never asking whether the redraft actually moved the recurrence rate. See
+`docs/ARCHITECTURE.md` "Redraft policy: observing and escalate".
+
+- [x] fix: `acceptInner` read "already promoted" from the branch's own row (always
+      `staged` for an ordinary redraft), which reset `promoted_at` on every accepted
+      redraft; now reads it from the live ledger at the branch's base sha
+- [x] `PromotionEntry.revised_at`, `revisions`; set at both write points (review accept,
+      `run.ts` auto-merge), never by a third path
+- [x] `sil curriculum repair-promoted-at`: recomputes promoted_at/revised_at/revisions
+      for every pattern from the ledger file's own git history; dry run by default
+- [x] `packages/feedback/src/rates.ts` (`patternRates`, pure, unit tested standalone):
+      `rate_baseline` / `rate_since_promotion` / `rate_since_revision` on Scorecard,
+      `rate` null below `promotion.observe_min_sessions` (default 20)
+- [x] `usage/reflect-runs.jsonl` (`recordReflectRun`, `paths.reflectRunsFile`): one line
+      per critic run that finished, written by the worker right after `reflectSession`
+      returns, in its own try/catch so a failed append cannot turn a finished critic run
+      into a `failed` queue entry
+- [x] `redraftPolicy` in `plan.ts`: `observing` (too few reflected sessions since the live
+      text) and `escalate` (redraft budget spent, rate has not meaningfully dropped);
+      both surfaced only, `run()` never drafts or spends the cap on them
+- [x] every consumer of plan actions updated: `apps/web/src/panes/Loop.svelte`
+      `ACTION_ORDER` (was missing `observing`/`escalate` entirely, so both were silently
+      dropped from the pane); CLI plan printing was already generic
+- [x] `sil artifacts` text and `--json`: the three rate windows as `hits/sessions (pct%)`,
+      or `n/a (<sessions> sessions)` below `observe_min_sessions`
+- [x] end-to-end test through the real modules (`packages/curriculum/test/plan.test.ts`,
+      `describe("observing and escalate")`): real `scorecards()` into real `plan()`,
+      verified red against the code with `redraftPolicy` disabled
+- [x] docs: ARCHITECTURE, `.ai/lessons.md` (the accept-reset trap)
+- [ ] not done: no CLI/web surface distinguishes `rate_baseline` (pre-promotion) from
+      the other two windows beyond the raw numbers; nobody has asked for that read yet

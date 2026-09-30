@@ -137,8 +137,8 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   for (const action of planned.actions) {
     if (action.action === "below-threshold") report.dropped[action.pattern] = action.count;
     else if (action.action === "promote" || action.action === "refine") actionable.push(action);
-    // `done` is silent, and `retire-candidate` is a proposal for a human that
-    // this function deliberately never executes.
+    // `done` is silent; `retire-candidate`, `observing` and `escalate` are
+    // proposals for a human that this function deliberately never executes.
   }
 
   if (!opts.apply) {
@@ -488,6 +488,14 @@ async function stageOne(
 
   const rel = artifacts.artifactRel(world, routedType, pattern);
   const autoMerge = cfg.promotion.auto_merge && world.llm !== "local";
+  const now = fsx.nowIso();
+  // Only an auto-merge promotes here: it lands directly on the default branch
+  // with no separate accept, so it is the other single write point (besides
+  // review accept) that must decide promoted_at/revised_at/revisions. A
+  // staged row is not live yet, so it carries the prior live values forward
+  // unchanged; accept decides them for real when the branch is reviewed.
+  const wasPromoted = autoMerge && prior?.status === "promoted";
+  const promotedAt = autoMerge ? (wasPromoted ? (prior!.promoted_at ?? now) : now) : (prior?.promoted_at ?? null);
   const entry: PromotionEntry = {
     pattern,
     // A ledger-only refine counts nothing new, so the watermark must not drop.
@@ -496,13 +504,14 @@ async function stageOne(
     status: autoMerge ? "promoted" : "staged",
     artifact_type: routedType as ArtifactType,
     served_by: { type: routedType as ArtifactType, path: rel },
-    last_updated: fsx.nowIso(),
-    // Only an auto-merge promotes here, and re-promoting a row that is already
-    // promoted is a redraft, so the first promotion date stands. A staged row
-    // keeps the date of the artifact still live for this pattern.
-    promoted_at: autoMerge
-      ? ((prior?.status === "promoted" ? prior.promoted_at : null) ?? fsx.nowIso())
-      : (prior?.promoted_at ?? null),
+    last_updated: now,
+    // Re-promoting a row that is already promoted is a redraft, so the first
+    // promotion date stands.
+    promoted_at: promotedAt,
+    // revised_at tracks the text now live: promoted_at on a first promotion,
+    // now on every auto-merged redraft. revisions counts those redrafts.
+    revised_at: autoMerge ? (wasPromoted ? now : promotedAt) : (prior?.revised_at ?? null),
+    revisions: autoMerge ? (wasPromoted ? (prior!.revisions ?? 0) + 1 : 0) : (prior?.revisions ?? 0),
     commit: null,
     // The scorecard as the drafter saw it: a refine proposal counts only new
     // complaints past this snapshot, and recurrence waits out a cooldown from it.

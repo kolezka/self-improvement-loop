@@ -5,6 +5,12 @@
   import { filterLessons, groupByPattern } from "../lib/lessons.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
 
+  interface RateWindow {
+    sessions: number;
+    hits: number;
+    rate: number | null;
+  }
+
   interface Scorecard {
     uses_30d: number;
     helpful: number;
@@ -14,6 +20,9 @@
     human_bad: number;
     proposal: string;
     reason: string;
+    rate_baseline?: RateWindow | null;
+    rate_since_promotion?: RateWindow | null;
+    rate_since_revision?: RateWindow | null;
   }
 
   interface InventoryRow {
@@ -56,6 +65,14 @@
 
   function votesText(card: Scorecard): string {
     return `${card.human_good} good, ${card.human_bad} bad`;
+  }
+
+  // "12/34 (35%)", or "n/a (<sessions> sessions)" below observe_min_sessions,
+  // where rate is null. Missing altogether reads the same as zero sessions.
+  function formatRate(w: RateWindow | null | undefined): string {
+    if (!w) return "n/a (0 sessions)";
+    if (w.rate === null) return `n/a (${w.sessions} sessions)`;
+    return `${w.hits}/${w.sessions} (${Math.round(w.rate * 100)}%)`;
   }
 
   async function loadInventory() {
@@ -148,6 +165,9 @@
               <th scope="col" class="num">Misfired</th>
               <th scope="col">Human votes</th>
               <th scope="col" class="num">Recurred, 30 days</th>
+              <th scope="col">Rate, baseline</th>
+              <th scope="col">Rate, since promotion</th>
+              <th scope="col">Rate, since revision</th>
               <th scope="col">Proposal</th>
               <th scope="col">Reason</th>
               <th scope="col">Actions</th>
@@ -173,6 +193,9 @@
                   <td class="num">{row.scorecard.misfired}</td>
                   <td>{votesText(row.scorecard)}</td>
                   <td class="num">{row.scorecard.recurrence_30d ?? 0}</td>
+                  <td class="mono">{formatRate(row.scorecard.rate_baseline)}</td>
+                  <td class="mono">{formatRate(row.scorecard.rate_since_promotion)}</td>
+                  <td class="mono">{formatRate(row.scorecard.rate_since_revision)}</td>
                   <td>{row.scorecard.proposal}</td>
                   <td>{row.scorecard.reason}</td>
                 {:else}
@@ -181,6 +204,9 @@
                   <td class="num muted">-</td>
                   <td class="muted">-</td>
                   <td class="num muted">-</td>
+                  <td class="muted">-</td>
+                  <td class="muted">-</td>
+                  <td class="muted">-</td>
                   <td class="muted">-</td>
                   <td class="muted">-</td>
                 {/if}

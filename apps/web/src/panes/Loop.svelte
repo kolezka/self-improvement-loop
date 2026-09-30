@@ -35,7 +35,7 @@
   type RecentRunsState = { status: "loading" } | { status: "ok"; runs: WorkerRun[] } | { status: "error"; error: string };
   type HistoryState = { status: "loading" } | { status: "ok"; data: HistorySeries } | { status: "error"; error: string };
 
-  const ACTION_ORDER = ["promote", "refine", "retire-candidate", "over-cap", "below-threshold", "done"];
+  const ACTION_ORDER = ["promote", "refine", "escalate", "observing", "retire-candidate", "over-cap", "below-threshold", "done"];
   const RUN_TAIL_LINES = 2000;
   const MAX_RECENT_RUNS = 10;
   const MINI_HISTORY_DAYS = 14;

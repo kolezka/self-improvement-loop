@@ -18,7 +18,7 @@ import {
 } from "@sil/core";
 import type { ChatFn } from "@sil/providers";
 import { reflectSession } from "@sil/critic";
-import { compactUsageEvents, rebuild as rebuildScorecards } from "@sil/feedback";
+import { compactUsageEvents, rebuild as rebuildScorecards, recordReflectRun } from "@sil/feedback";
 import { entryPath, listQueue, loadEntry, moveEntry, reflectedSessions, writeEntry, type Bucket } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import { run as curriculumRun } from "@sil/curriculum";
@@ -451,6 +451,18 @@ async function reflectPending(
     try {
       const result = await reflectSession(entry, { cfg, world, chat });
       if (result.recorded) reflectedIn(entry.world).set(entry.session_id, Date.now());
+      // The one place a critic outcome is finalised: recorded or not, this
+      // session's critic run finished, so it counts in the scorecard rate
+      // denominator. Never reached for a session `eligible` skipped before
+      // the critic ran. Its own try/catch: a failed append here is a lost
+      // rate sample, not a lost reflection, and must never turn a critic run
+      // that already succeeded into a `failed` queue entry.
+      try {
+        recordReflectRun({ ts: new Date().toISOString(), world: entry.world, session_id: entry.session_id, recorded: result.recorded, pattern: result.pattern });
+      } catch (e) {
+        const err = e as Error;
+        log({ action: "reflect-run-log-failed", session_id: entry.session_id, error: `${err.constructor.name}: ${err.message}`.slice(0, 300) });
+      }
       const outcome = result.recorded ? `recorded:${result.pattern}` : result.reason || "not recorded";
       moveToTerminal(entry, "done", outcome);
       summary.reflected.push(entry.session_id);

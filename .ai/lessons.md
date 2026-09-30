@@ -84,3 +84,40 @@
   child process; a nested `claude` inherited it and would have lost its hooks. Bind a
   process-scoped flag to something only that process shares with its children, here
   the pid the hook shell sees as `$PPID`.
+- 2026-09-29: `acceptInner` decided "is this pattern already promoted" from the
+  branch's own ledger row, which reads `staged` for every ordinary redraft (only an
+  auto-merge branch ever writes `promoted` there). Every accepted redraft therefore
+  read as a first promotion and reset `promoted_at`, which reset the 7 day "new"
+  grace period on every redraft of a high-volume pattern. Never read "was this row
+  already promoted" from the row on the branch being accepted; read it from the live
+  ledger at the branch's base sha. `sil curriculum repair-promoted-at` recomputes
+  rows the bug already corrupted from the ledger file's git history.
+- 2026-09-30: The first `repair-promoted-at` rebuild used the ledger's own `commit`
+  field and `promoted_at` as version identity; both are unreliable writers, not
+  bugs in the read. Auto-merge always writes `commit: null` (the sha does not exist
+  until after the commit is made), and a post-fix `promoted_at` correctly stays put
+  across redrafts, so a "did this change" check built on either field either missed
+  every auto-merged redraft or mistook a stable post-fix `promoted_at` for no
+  redraft at all. When a ledger tracks an artifact's state but not its identity,
+  read the artifact's own content at each historical commit instead of trusting a
+  bookkeeping field to double as a version key.
+- 2026-09-30: A dry run on live data (world inkitt) showed a pattern with 2 real
+  accepted redrafts as 3 revisions. `git log <path>` without `--first-parent`
+  interleaves commits from every branch that ever touched the shared ledger file,
+  by date, not by what actually happened on the branch being read. A sibling
+  branch's stale snapshot of another pattern's edit can carry this pattern's row in
+  whatever state it was in at the fork point, inserted between two real events that
+  never had anything between them. `--first-parent` was not the fix either: an
+  accept of a stale branch commits a merge whose FIRST parent is the stale branch,
+  so the default line continues through the second parent and `--first-parent`
+  drops every redraft accepted in between. Walk the branch's own line explicitly
+  (here: second parent at a merge with the exact accept subject, first parent
+  elsewhere). Counting distinct contents instead was tried and dropped: it
+  undercounts a real revert to an earlier text. Also read blobs raw: `git.git`
+  trims stdout, which hides a redraft that only changes trailing whitespace.
+- 2026-09-30: `redraftPolicy`'s escalate check compared two rates with no floor:
+  `revisionRate >= escalate_ratio * promotionRate` is true at `0 >= 0.9 * 0` for a
+  pattern that has never once recurred, because a ratio comparison cannot tell "no
+  change" from "no signal". A rate comparison guarding against decay needs a
+  positive baseline (`promotionRate > 0` and at least one hit) before the
+  comparison means anything.

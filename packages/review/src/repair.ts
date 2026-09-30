@@ -44,36 +44,47 @@ export interface RepairedRow {
   changed: boolean;
 }
 
-function normalizeDate(x: string): string {
-  return new Date(x).toISOString();
+/** UTC ISO, or null when `x` is not a readable date. A malformed historic
+ * timestamp must not abort the whole repair. */
+function normalizeDate(x: string | null | undefined): string | null {
+  if (!x) return null;
+  const t = new Date(x);
+  return Number.isNaN(t.getTime()) ? null : t.toISOString();
 }
 
-/** The date a version boundary is stamped with: whatever date the row itself
- * already carries (post-fix `revised_at`, or `promoted_at` on a pre-fix row
- * or a span's first version, where it equals this snapshot's own date rather
- * than a later reset), falling back to the commit's own author date only for
- * a row that predates both fields. */
-function versionDate(row: PromotionEntry, snapDate: string): string {
-  return normalizeDate(row.revised_at ?? row.promoted_at ?? snapDate);
+/** Date of a span's first promoted snapshot. promoted_at is right on that
+ * first snapshot even under the old bug, which only reset it on later accepts. */
+function startDate(row: PromotionEntry, snapDate: string): string | null {
+  return normalizeDate(row.promoted_at) ?? normalizeDate(snapDate);
+}
+
+/** Date a later version went live: the row's own revised_at when it has one
+ * (post-fix), else its promoted_at (pre-fix accepts reset it to the accept
+ * time), else the commit date. */
+function versionDate(row: PromotionEntry, snapDate: string): string | null {
+  return normalizeDate(row.revised_at) ?? normalizeDate(row.promoted_at) ?? normalizeDate(snapDate);
+}
+
+interface Span {
+  start: string | null;
+  /** First date each distinct artifact content was seen promoted. */
+  firstSeen: Map<string, string | null>;
 }
 
 /** Recompute promoted_at, revised_at and revisions for every pattern in the
  * final snapshot's ledger, from the full history of ledger snapshots.
  *
- * For each pattern, walk the snapshots oldest to newest, tracking the current
- * promotion span (the run of "promoted" snapshots since the last "retired"
- * one, if any). Within a span, a new version starts whenever a promoted
- * snapshot's own artifact content differs from the span's current version; a
- * repeat of the same content (a reject of a refine, or an unrelated commit
- * that happens to touch the shared ledger file) is not a new version.
+ * A span is the run of "promoted" snapshots since the last "retired" one.
+ * Versions are the distinct artifact contents seen promoted in the span, not
+ * content changes between neighbours: an accept of a stale branch merges the
+ * default branch into it, so history holds side commits that still show an
+ * older version. Counting distinct contents makes those harmless. A snapshot
+ * whose content could not be read counts toward the span start only.
  *
- * promoted_at is the date of the span's first version; revised_at is the date
- * of its latest version (equal to promoted_at when there is only one);
- * revisions is the version count minus one. A currently "promoted" row uses
- * the span still open; a currently "retired" row uses the span that just
- * closed, so a retirement never loses the history of what it retired. A row
- * that was never promoted, or is retired with no promotion span behind it,
- * needs no repair. */
+ * promoted_at is the span start; revised_at is the first-seen date of the
+ * newest version (promoted_at when there is only one); revisions is the
+ * number of distinct contents minus one. A retired row uses the span that
+ * ended at its retirement. */
 export function computeRepair(snapshots: readonly LedgerSnapshot[]): RepairedRow[] {
   if (snapshots.length === 0) return [];
 
@@ -82,36 +93,44 @@ export function computeRepair(snapshots: readonly LedgerSnapshot[]): RepairedRow
   for (const pattern of Object.keys(live.entries).sort()) {
     const current = live.entries[pattern]!;
 
-    let versions: string[] = [];
-    let lastClosedSpan: string[] = [];
-    let currentContent: string | null = null;
+    let span: Span | null = null;
+    let lastClosed: Span | null = null;
 
     for (const snap of snapshots) {
-      const row = snap.ledger.entries[pattern];
-      if (!row) continue;
+      if (!Object.hasOwn(snap.ledger.entries, pattern)) continue;
+      const row = snap.ledger.entries[pattern]!;
       if (row.status === "retired") {
-        if (versions.length > 0) lastClosedSpan = versions;
-        versions = [];
-        currentContent = null;
+        if (span) lastClosed = span;
+        span = null;
         continue;
       }
       if (row.status !== "promoted") continue;
-      const content = snap.content[pattern] ?? "";
-      if (versions.length === 0 || content !== currentContent) {
-        versions.push(versionDate(row, snap.date));
-        currentContent = content;
+      if (!span) span = { start: startDate(row, snap.date), firstSeen: new Map() };
+      if (!Object.hasOwn(snap.content, pattern)) continue;
+      const content = snap.content[pattern]!;
+      if (!span.firstSeen.has(content)) {
+        span.firstSeen.set(content, span.firstSeen.size === 0 ? span.start : versionDate(row, snap.date));
       }
     }
 
-    const span = current.status === "retired" ? lastClosedSpan : versions;
+    const chosen = current.status === "retired" ? lastClosed : span;
 
     let repairedPromotedAt = current.promoted_at;
     let repairedRevisedAt = current.revised_at;
     let repairedRevisions = current.revisions;
-    if (span.length > 0) {
-      repairedPromotedAt = span[0]!;
-      repairedRevisedAt = span.length > 1 ? span[span.length - 1]! : span[0]!;
-      repairedRevisions = span.length - 1;
+    if (chosen && chosen.start) {
+      const dates = [...chosen.firstSeen.values()].filter((d): d is string => d !== null).sort();
+      repairedPromotedAt = chosen.start;
+      if (chosen.firstSeen.size > 1) {
+        repairedRevisions = chosen.firstSeen.size - 1;
+        repairedRevisedAt = dates.length > 0 ? dates[dates.length - 1]! : chosen.start;
+      } else {
+        // One visible version says nothing about redrafts before the history
+        // starts (a shallow or imported repo), so a post-fix row keeps its own.
+        const own = chosen === span ? normalizeDate(current.revised_at) : null;
+        repairedRevisedAt = own ?? chosen.start;
+        repairedRevisions = own ? current.revisions : 0;
+      }
     }
 
     out.push({
@@ -149,55 +168,104 @@ export function applyRepair(ledger: Ledger, rows: readonly RepairedRow[]): Ledge
   return { ...ledger, entries };
 }
 
-/** This pattern's artifact content at `sha`, or "" when it cannot be read.
- *
- * `served_by.path` is the row's own record of where its text lived at that
- * commit, read straight rather than recomputed from the world's current
- * layout: a re-homed or migrated pattern's own history is the one thing that
- * can name its path honestly. For a rule, only the pattern's own tagged
- * bullet counts, never the whole shared file every pattern's rule lives in. */
-function artifactContentAt(repo: string, sha: string, row: PromotionEntry, pattern: string): string {
-  const path = row.served_by?.path;
-  if (!path) return "";
-  const { found, text } = git.show(repo, sha, path);
-  if (!found) return "";
-  return servedType(row) === "rule" ? artifacts.stripRuleTag(artifacts.ruleBulletInText(text, pattern), pattern) : text;
+/** Pattern content out of a file's text, or null when the pattern has no
+ * content there. For a rule only its own tagged bullet counts, never the whole
+ * shared file; a rules file without that bullet is missing, not empty. */
+function contentOf(text: string, row: PromotionEntry, pattern: string): string | null {
+  if (servedType(row) !== "rule") return text;
+  const bullet = artifacts.ruleBulletInText(text, pattern);
+  return bullet ? artifacts.stripRuleTag(bullet, pattern) : null;
 }
 
-/** The ledger file's own commit history on the default branch, oldest first.
+/** Blob ids of `paths` at `sha`, one subprocess for all of them. */
+function blobIds(repo: string, sha: string, paths: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  if (paths.length === 0) return out;
+  const listing = git.git(repo, ["ls-tree", "-r", "-z", sha, "--", ...paths], { check: false });
+  for (const entry of listing.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab === -1) continue;
+    const oid = entry.slice(0, tab).split(" ")[2];
+    if (oid) out.set(entry.slice(tab + 1), oid);
+  }
+  return out;
+}
+
+/** Commits of the default branch's own line, oldest first.
  *
- * `--first-parent` on the default branch only: a curriculum tick's own
- * commits are always fast-forwarded in, but the world's repo can carry other
- * branches merged in with a real merge commit, and plain `git log` walks
- * those in too, interleaved by date with the real history. A pattern's ledger
- * row read off such a side commit can show stale content or a stale status
- * that never actually happened on the branch anyone is repairing from.
+ * Neither `--first-parent` nor a plain log is right here. An accept of a stale
+ * branch merges the default branch into it and commits the merge as
+ * `... (reviewed)`, first parent the branch, second parent the old default
+ * tip; that line continues through the second parent. Any other merge keeps
+ * the default line on its first parent, so a side branch's stale ledger never
+ * gets read. */
+function defaultLine(repo: string, defaultRef: string): Array<{ sha: string; date: string }> {
+  const log = git.git(repo, ["log", "--format=%H%x09%P%x09%aI%x09%s", defaultRef], { check: false });
+  const commits = new Map<string, { parents: string[]; date: string; subject: string }>();
+  for (const line of log.split("\n")) {
+    const [sha, parents, date, ...rest] = line.split("\t");
+    if (!sha || date === undefined) continue;
+    commits.set(sha, { parents: parents ? parents.split(" ") : [], date, subject: rest.join("\t") });
+  }
+  const out: Array<{ sha: string; date: string }> = [];
+  let sha = git.git(repo, ["rev-parse", defaultRef], { check: false });
+  const seen = new Set<string>();
+  while (sha && commits.has(sha) && !seen.has(sha)) {
+    seen.add(sha);
+    const c = commits.get(sha)!;
+    out.push({ sha, date: c.date });
+    const acceptMerge = c.parents.length > 1 && c.subject.endsWith("(reviewed)");
+    sha = (acceptMerge ? c.parents[1] : c.parents[0]) ?? "";
+  }
+  return out.reverse();
+}
+
+/** Ledger snapshots along the default branch's own line, oldest first, one per
+ * change of the ledger blob.
  *
- * A commit whose ledger blob fails to parse is skipped, not fatal: history a
- * human already lived with should not block reading the rest of it. */
+ * Content is read per blob id and cached: one `ls-tree` per line commit, plus
+ * one read per distinct ledger or artifact blob. A missing path or unreadable
+ * blob leaves the pattern out of `content` for that snapshot. A commit whose
+ * ledger fails to parse is skipped, not fatal. */
 export function ledgerHistory(world: World, repo: string): LedgerSnapshot[] {
   const rel = ledgerRel(world);
   const defaultRef = git.defaultBranch(repo);
-  const log = git.git(repo, ["log", "--first-parent", "--reverse", "--format=%H%x09%aI", defaultRef, "--", rel], { check: false });
-  if (!log) return [];
+  const blobs = new Map<string, string | null>();
+  const readBlob = (oid: string): string | null => {
+    if (!blobs.has(oid)) {
+      const text = git.git(repo, ["cat-file", "blob", oid], { check: false });
+      blobs.set(oid, text === "" ? null : text);
+    }
+    return blobs.get(oid) ?? null;
+  };
+
   const out: LedgerSnapshot[] = [];
-  for (const line of log.split("\n")) {
-    const tab = line.indexOf("\t");
-    if (tab === -1) continue;
-    const sha = line.slice(0, tab);
-    const date = line.slice(tab + 1);
-    const { found, text } = git.show(repo, sha, rel);
-    if (!found) continue;
+  let lastLedgerOid: string | null = null;
+  for (const { sha, date } of defaultLine(repo, defaultRef)) {
+    const ledgerOid = blobIds(repo, sha, [rel]).get(rel) ?? null;
+    if (ledgerOid === null || ledgerOid === lastLedgerOid) continue;
+    lastLedgerOid = ledgerOid;
+    const text = readBlob(ledgerOid);
+    if (text === null) continue;
     let ledger: Ledger;
     try {
       ledger = parseLedger(text, sha);
     } catch {
       continue;
     }
-    const content: Record<string, string> = {};
+    const promoted: Array<[string, PromotionEntry, string]> = [];
     for (const [pattern, row] of Object.entries(ledger.entries)) {
-      if (row.status !== "promoted") continue;
-      content[pattern] = artifactContentAt(repo, sha, row, pattern);
+      const path = row.served_by?.path;
+      if (row.status === "promoted" && path) promoted.push([pattern, row, path]);
+    }
+    const ids = blobIds(repo, sha, [...new Set(promoted.map(([, , path]) => path))]);
+    const content: Record<string, string> = {};
+    for (const [pattern, row, path] of promoted) {
+      const oid = ids.get(path);
+      const file = oid ? readBlob(oid) : null;
+      if (file === null) continue;
+      const value = contentOf(file, row, pattern);
+      if (value !== null) content[pattern] = value;
     }
     out.push({ sha, date, ledger, content });
   }

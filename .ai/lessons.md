@@ -107,9 +107,12 @@
   by date, not by what actually happened on the branch being read. A sibling
   branch's stale snapshot of another pattern's edit can carry this pattern's row in
   whatever state it was in at the fork point, inserted between two real events that
-  never had anything between them. Walk `--first-parent` on the named branch when a
-  shared file's history must reflect one lineage, not every branch that ever
-  touched it.
+  never had anything between them. `--first-parent` was not the fix either: an
+  accept of a stale branch commits a merge whose FIRST parent is the stale branch,
+  so the default line continues through the second parent and `--first-parent`
+  drops every redraft accepted in between. Walk the branch's own line explicitly
+  (here: second parent at a `(reviewed)` merge, first parent elsewhere) and make
+  the counting tolerant of stale snapshots (distinct contents, not transitions).
 - 2026-09-30: `redraftPolicy`'s escalate check compared two rates with no floor:
   `revisionRate >= escalate_ratio * promotionRate` is true at `0 >= 0.9 * 0` for a
   pattern that has never once recurred, because a ratio comparison cannot tell "no

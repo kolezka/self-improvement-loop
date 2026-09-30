@@ -367,18 +367,23 @@ three from the ledger file's own git history for rows the bug already
 corrupted (dry run by default, `--apply` writes and commits, never pushes).
 
 The repair's version identity is the pattern's own artifact content read from
-git at each promoted snapshot (`git show <sha>:<served_by.path>`, a rule's own
-tagged bullet only), never the ledger `commit` field or a row's own
-`promoted_at`: auto-merge always writes `commit: null`, and a pre-fix redraft
-resets `promoted_at` on every accept, so neither survives as a stable version
-key. A new version is the first promoted snapshot in the current span (since
-the last retirement, if any) whose content differs from the version before
-it. The walk is `git log --first-parent --reverse` on the default branch only:
-a real merge from another branch interleaves commits by date, and a sibling
-branch's stale snapshot of the shared ledger file can show a pattern demoted
-and repromoted that never happened on the branch being repaired. A retired
-row keeps its status but still gets its three fields repaired from the
-promotion span that closed at the retirement.
+git at each promoted snapshot (a rule's own tagged bullet only), never the
+ledger `commit` field or a row's own `promoted_at`: auto-merge always writes
+`commit: null`, and a pre-fix redraft resets `promoted_at` on every accept, so
+neither survives as a stable version key. Versions are the distinct contents
+seen promoted in the current span (since the last retirement, if any), so a
+snapshot that still shows an older version adds nothing, and an unreadable
+artifact counts toward the span start only. The walk follows the default
+branch's own line from its tip: an accept of a stale branch merges the default
+branch into it and commits the merge as `... (reviewed)` with the old default
+tip as second parent, so the line continues through that parent; any other
+merge keeps it on the first parent, so a side branch's stale ledger is never
+read. `--first-parent` alone lost the redrafts behind such an accept, a plain
+log read stale side snapshots. Reads are cached per blob id, so a repair costs
+one `ls-tree` per commit on that line plus one read per distinct blob. With a
+single visible version (a shallow or imported history) a post-fix row keeps its
+own `revised_at` and `revisions`. A retired row keeps its status but still gets
+its three fields repaired from the span that closed at the retirement.
 
 Auto-merge already landing a branch (it fast-forwards the default branch onto
 the branch tip but leaves the branch ref in place) is not itself an accept:
@@ -412,14 +417,15 @@ already-promoted pattern with new evidence past the watermark,
   low-traffic pattern that stays under `observe_min_sessions` for more than
   `promotion.observe_max_days` (default 14) since its live text last changed
   stops reporting `observing` and falls through to a normal redraft instead of
-  waiting on a window that will never fill.
+  waiting on a window that will never fill. A row with no date at all (a V1
+  row never repaired) has no age to wait out and redrafts as before.
 - **`escalate`**: the row has used its redraft budget (`revisions >=
   max_rewords`, default 2), the post-revision rate has not meaningfully
   dropped (`rate_since_revision >= escalate_ratio * rate_since_promotion`,
-  default ratio 0.9), and `rate_since_promotion` is a non-null, positive rate
-  with at least one hit. Without that last guard, a pattern with zero
-  recurrence before and after its revision (`0 >= escalate_ratio * 0`)
-  escalated despite never once recurring. Wording is not fixing a real
+  default ratio 0.9), and both windows have at least one hit with
+  `rate_since_promotion` positive. Without those guards, zero recurrence on
+  both sides (`0 >= escalate_ratio * 0`), or zero since the revision with
+  `escalate_ratio` 0, escalated a pattern that had stopped recurring. Wording is not fixing a real
   escalation; a human needs to change the artifact's type or split the
   pattern.
 

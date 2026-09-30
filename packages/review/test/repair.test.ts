@@ -260,7 +260,7 @@ describe("computeRepair: uncertain history", () => {
     expect(out).toMatchObject({ repaired_promoted_at: "2026-01-01T00:00:00.000Z", repaired_revisions: 0 });
   });
 
-  test("a stale side snapshot showing an older version again adds no revision", () => {
+  test("a real revert to an earlier text is still a version", () => {
     const at = (d: string) => row({ pattern: "p", status: "promoted", promoted_at: "2026-01-01T00:00:00.000Z", revised_at: d });
     const [out] = computeRepair([
       snap("a", "2026-01-01T00:00:00Z", at("2026-01-01T00:00:00.000Z"), "v1"),
@@ -268,13 +268,20 @@ describe("computeRepair: uncertain history", () => {
       snap("c", "2026-01-03T00:00:00Z", at("2026-01-02T00:00:00.000Z"), "v1"),
       snap("d", "2026-01-04T00:00:00Z", at("2026-01-04T00:00:00.000Z"), "v3"),
     ]);
-    expect(out).toMatchObject({ repaired_revisions: 2, repaired_revised_at: "2026-01-04T00:00:00.000Z" });
+    expect(out).toMatchObject({ repaired_revisions: 3, repaired_revised_at: "2026-01-04T00:00:00.000Z" });
   });
 
   test("one visible version keeps a post-fix row's own revised_at and revisions", () => {
     const r = row({ pattern: "p", status: "promoted", promoted_at: "2026-01-01T00:00:00.000Z", revised_at: "2026-01-10T00:00:00.000Z", revisions: 3 });
     const [out] = computeRepair([snap("a", "2026-01-12T00:00:00Z", r, "v4")]);
     expect(out).toMatchObject({ repaired_promoted_at: "2026-01-01T00:00:00.000Z", repaired_revised_at: "2026-01-10T00:00:00.000Z", repaired_revisions: 3, changed: false });
+  });
+
+  test("a retired row with one visible version keeps its own revised_at and revisions", () => {
+    const promoted = row({ pattern: "p", status: "promoted", promoted_at: "2026-01-01T00:00:00.000Z", revised_at: "2026-01-10T00:00:00.000Z", revisions: 3 });
+    const retired = row({ pattern: "p", status: "retired", promoted_at: "2026-01-01T00:00:00.000Z", revised_at: "2026-01-10T00:00:00.000Z", revisions: 3 });
+    const [out] = computeRepair([snap("a", "2026-01-12T00:00:00Z", promoted, "v4"), snap("b", "2026-01-13T00:00:00Z", retired)]);
+    expect(out).toMatchObject({ repaired_revised_at: "2026-01-10T00:00:00.000Z", repaired_revisions: 3, changed: false });
   });
 
   test("a malformed historic timestamp falls back to the commit date instead of aborting", () => {
@@ -354,7 +361,9 @@ describe("ledgerHistory (real git)", () => {
     // merge commit differs from both parents, so a plain `git log` has to
     // explain it by walking the sibling's own commit too; the default line walk
     // stays on the first parent of an ordinary merge and must not.
-    git.git(repo, ["merge", "-q", "--no-ff", "-X", "ours", "-m", "merge sibling", "sibling"]);
+    // The subject ends like an accept's, but is not one: the walk must still
+    // stay on the first parent.
+    git.git(repo, ["merge", "-q", "--no-ff", "-X", "ours", "-m", "chore: merge sibling (reviewed)", "sibling"]);
 
     // Sanity: the plain log really does include the sibling's commit for this path, proving the hazard is real here.
     const plain = git.git(repo, ["log", "--reverse", "--format=%H", "--", rel]);
@@ -405,6 +414,27 @@ describe("ledgerHistory (real git): accept of a stale branch", () => {
 
     const r = computeRepair(ledgerHistory(world, repo)).find((x) => x.pattern === "p");
     expect(r).toMatchObject({ repaired_promoted_at: "2026-01-01T00:00:00.000Z", repaired_revisions: 2, repaired_revised_at: "2026-01-03T00:00:00.000Z" });
+  });
+});
+
+describe("ledgerHistory (real git): exact content", () => {
+  test("a redraft that only adds a trailing newline is still a new version", () => {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const skillRel = "skills/p/SKILL.md";
+    const pRow = (revisedAt: string): PromotionEntry =>
+      row({ pattern: "p", status: "promoted", promoted_at: "2026-01-01T00:00:00.000Z", revised_at: revisedAt, last_updated: revisedAt });
+    const commit = (r: PromotionEntry, content: string, message: string): void => {
+      saveLedger(ledgerPath(world), { version: 1, entries: { p: r } });
+      mkdirSync(dirname(join(repo, skillRel)), { recursive: true });
+      writeFileSync(join(repo, skillRel), content, "utf8");
+      git.git(repo, ["add", "--", "promotions.json", skillRel]);
+      git.git(repo, ["commit", "-q", "-m", message]);
+    };
+    commit(pRow("2026-01-01T00:00:00.000Z"), "body", "feat(skill): promote p (auto, gated)");
+    commit(pRow("2026-01-02T00:00:00.000Z"), "body\n", "feat(skill): p (reviewed)");
+    const [r] = computeRepair(ledgerHistory(world, repo));
+    expect(r).toMatchObject({ repaired_revisions: 1, repaired_revised_at: "2026-01-02T00:00:00.000Z" });
   });
 });
 

@@ -67,24 +67,24 @@ function versionDate(row: PromotionEntry, snapDate: string): string | null {
 
 interface Span {
   start: string | null;
-  /** First date each distinct artifact content was seen promoted. */
-  firstSeen: Map<string, string | null>;
+  /** Each version's date, oldest first. */
+  versions: Array<string | null>;
+  /** Content of the newest version, null until one could be read. */
+  last: string | null;
 }
 
 /** Recompute promoted_at, revised_at and revisions for every pattern in the
  * final snapshot's ledger, from the full history of ledger snapshots.
  *
- * A span is the run of "promoted" snapshots since the last "retired" one.
- * Versions are the distinct artifact contents seen promoted in the span, not
- * content changes between neighbours: an accept of a stale branch merges the
- * default branch into it, so history holds side commits that still show an
- * older version. Counting distinct contents makes those harmless. A snapshot
- * whose content could not be read counts toward the span start only.
+ * A span is the run of "promoted" snapshots since the last "retired" one. A
+ * new version is a readable content that differs from the one before it, so
+ * a revert to an earlier text still counts. This relies on `ledgerHistory`
+ * walking only the default line: stale side snapshots never reach here. A
+ * snapshot whose content could not be read counts toward the span start only.
  *
- * promoted_at is the span start; revised_at is the first-seen date of the
- * newest version (promoted_at when there is only one); revisions is the
- * number of distinct contents minus one. A retired row uses the span that
- * ended at its retirement. */
+ * promoted_at is the span start; revised_at is the date of the newest version
+ * (promoted_at when there is only one); revisions is the number of versions
+ * minus one. A retired row uses the span that ended at its retirement. */
 export function computeRepair(snapshots: readonly LedgerSnapshot[]): RepairedRow[] {
   if (snapshots.length === 0) return [];
 
@@ -105,11 +105,15 @@ export function computeRepair(snapshots: readonly LedgerSnapshot[]): RepairedRow
         continue;
       }
       if (row.status !== "promoted") continue;
-      if (!span) span = { start: startDate(row, snap.date), firstSeen: new Map() };
+      if (!span) span = { start: startDate(row, snap.date), versions: [], last: null };
       if (!Object.hasOwn(snap.content, pattern)) continue;
       const content = snap.content[pattern]!;
-      if (!span.firstSeen.has(content)) {
-        span.firstSeen.set(content, span.firstSeen.size === 0 ? span.start : versionDate(row, snap.date));
+      if (span.versions.length === 0) {
+        span.versions.push(span.start);
+        span.last = content;
+      } else if (content !== span.last) {
+        span.versions.push(versionDate(row, snap.date));
+        span.last = content;
       }
     }
 
@@ -119,15 +123,14 @@ export function computeRepair(snapshots: readonly LedgerSnapshot[]): RepairedRow
     let repairedRevisedAt = current.revised_at;
     let repairedRevisions = current.revisions;
     if (chosen && chosen.start) {
-      const dates = [...chosen.firstSeen.values()].filter((d): d is string => d !== null).sort();
       repairedPromotedAt = chosen.start;
-      if (chosen.firstSeen.size > 1) {
-        repairedRevisions = chosen.firstSeen.size - 1;
-        repairedRevisedAt = dates.length > 0 ? dates[dates.length - 1]! : chosen.start;
+      if (chosen.versions.length > 1) {
+        repairedRevisions = chosen.versions.length - 1;
+        repairedRevisedAt = chosen.versions[chosen.versions.length - 1] ?? chosen.start;
       } else {
         // One visible version says nothing about redrafts before the history
         // starts (a shallow or imported repo), so a post-fix row keeps its own.
-        const own = chosen === span ? normalizeDate(current.revised_at) : null;
+        const own = normalizeDate(current.revised_at);
         repairedRevisedAt = own ?? chosen.start;
         repairedRevisions = own ? current.revisions : 0;
       }
@@ -199,6 +202,10 @@ function blobIds(repo: string, sha: string, paths: readonly string[]): Map<strin
  * tip; that line continues through the second parent. Any other merge keeps
  * the default line on its first parent, so a side branch's stale ledger never
  * gets read. */
+/** The exact subject acceptInner commits with; a looser match would let a
+ * hand-made merge steer the walk. */
+const ACCEPT_SUBJECT = /^feat\([a-z]+\): (retire )?[a-z0-9][a-z0-9-]* \(reviewed\)$/;
+
 function defaultLine(repo: string, defaultRef: string): Array<{ sha: string; date: string }> {
   const log = git.git(repo, ["log", "--format=%H%x09%P%x09%aI%x09%s", defaultRef], { check: false });
   const commits = new Map<string, { parents: string[]; date: string; subject: string }>();
@@ -214,7 +221,7 @@ function defaultLine(repo: string, defaultRef: string): Array<{ sha: string; dat
     seen.add(sha);
     const c = commits.get(sha)!;
     out.push({ sha, date: c.date });
-    const acceptMerge = c.parents.length > 1 && c.subject.endsWith("(reviewed)");
+    const acceptMerge = c.parents.length > 1 && ACCEPT_SUBJECT.test(c.subject);
     sha = (acceptMerge ? c.parents[1] : c.parents[0]) ?? "";
   }
   return out.reverse();
@@ -233,8 +240,9 @@ export function ledgerHistory(world: World, repo: string): LedgerSnapshot[] {
   const blobs = new Map<string, string | null>();
   const readBlob = (oid: string): string | null => {
     if (!blobs.has(oid)) {
-      const text = git.git(repo, ["cat-file", "blob", oid], { check: false });
-      blobs.set(oid, text === "" ? null : text);
+      // Raw read: git.git trims, and a trailing newline can be a redraft.
+      const res = git.gitRaw(repo, ["cat-file", "blob", oid]);
+      blobs.set(oid, res.code === 0 ? res.stdout : null);
     }
     return blobs.get(oid) ?? null;
   };

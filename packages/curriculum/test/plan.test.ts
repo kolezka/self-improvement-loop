@@ -866,5 +866,24 @@ describe("observing and escalate", () => {
       });
       expect(redraftPolicy(e, zeroSessionCard(), makeCfg(), NOW)).toBeNull();
     });
+
+    test("a promoted row with no dates at all (V1, never repaired) never observes forever", () => {
+      const e = entry({ pattern: PATTERN, status: "promoted", promoted_at: null, revised_at: null });
+      expect(redraftPolicy(e, zeroSessionCard(), makeCfg(), NOW)).toBeNull();
+    });
+  });
+
+  test("escalate_ratio 0 with no hits since the revision does not escalate", () => {
+    const cfg = makeCfg();
+    cfg.promotion.escalate_ratio = 0;
+    const card = ScorecardSchema.parse({
+      ref: `skill:${PATTERN}`,
+      type: "skill",
+      name: PATTERN,
+      rate_since_promotion: { sessions: 40, hits: 10, rate: 0.25 },
+      rate_since_revision: { sessions: 20, hits: 0, rate: 0 },
+    });
+    const e = entry({ pattern: PATTERN, status: "promoted", promoted_at: "2026-09-01T00:00:00Z", revised_at: "2026-09-20T00:00:00Z", revisions: 2 });
+    expect(redraftPolicy(e, card, cfg, new Date("2026-09-29T00:00:00Z"))).toBeNull();
   });
 });

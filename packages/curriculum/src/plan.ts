@@ -331,8 +331,10 @@ export function redraftPolicy(
     // Low-traffic patterns never fill the session window on their own: past
     // observe_max_days since the live text last changed, keep waiting no
     // longer and fall through to a normal redraft instead.
+    // No date at all (a V1 row never repaired) gives no age to wait out, so it
+    // redrafts as before rather than observing forever.
     const anchor = entry.revised_at ?? entry.promoted_at;
-    const stalled = anchor !== null && daysSince(anchor, now) > cfg.promotion.observe_max_days;
+    const stalled = anchor === null || daysSince(anchor, now) > cfg.promotion.observe_max_days;
     if (!stalled) {
       return { action: "observing", reason: `current version seen in ${sinceRevisionSessions}/${minSessions} reflected sessions` };
     }
@@ -342,15 +344,16 @@ export function redraftPolicy(
   const revisionRate = sinceRevision!.rate;
   const promotionRate = sincePromotion?.rate ?? null;
   const promotionHits = sincePromotion?.hits ?? 0;
-  // A promotion rate of 0 (no recurrence at all since promotion) can never be
-  // "still recurring almost as often": without this, 0 >= escalate_ratio * 0
-  // escalated a pattern that has never once recurred.
+  const revisionHits = sinceRevision!.hits;
+  // Escalate only on real recurrence in both windows: 0 >= ratio * 0, or
+  // 0 >= 0 * rate with escalate_ratio 0, would escalate a pattern that stopped.
   if (
     entry.revisions >= cfg.promotion.max_rewords &&
     revisionRate !== null &&
     promotionRate !== null &&
     promotionRate > 0 &&
     promotionHits > 0 &&
+    revisionHits > 0 &&
     revisionRate >= cfg.promotion.escalate_ratio * promotionRate
   ) {
     const pct = (n: number): string => `${Math.round(n * 100)}%`;

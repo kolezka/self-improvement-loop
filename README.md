@@ -10,6 +10,10 @@ remote without a human.
 [![License](https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-blue)](LICENSE)
 [![Runtime](https://img.shields.io/badge/runtime-Bun%201.4.2%2B-black)](https://bun.sh)
 
+<p align="center">
+  <a href="docs/media/demo.mp4"><img src="docs/media/demo.gif" width="800" alt="30 second tour: the problem, the loop, and the review console"></a>
+</p>
+
 OpenClaw sessions feed the same loop. See [`docs/OPENCLAW.md`](docs/OPENCLAW.md).
 
 ## Contents

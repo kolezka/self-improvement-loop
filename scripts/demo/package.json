@@ -1,0 +1,8 @@
+{
+  "name": "sil-demo-capture",
+  "private": true,
+  "description": "Renders docs/media/demo.mp4 and demo.gif. Kept out of the workspace so the main lockfile stays free of a browser driver.",
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

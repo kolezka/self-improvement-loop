@@ -1,0 +1,161 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>sil demo</title>
+<style>
+  :root {
+    --bg: #0d0f13; --surface: #14171d; --panel: #181c23; --fg: #e6e9ef;
+    --soft: #b3bbc8; --muted: #8b94a5; --border: #252a33; --accent: #4cc2bd;
+    --ok: #3fb950; --warn: #d29922; --err: #f4574c;
+    --ui: Inter, -apple-system, "Helvetica Neue", sans-serif;
+    --mono: "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1280px; height: 720px; overflow: hidden; background: var(--bg); color: var(--fg); font-family: var(--ui); }
+  .scene { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0; }
+  h1 { font-size: 64px; font-weight: 700; letter-spacing: -1.5px; }
+  h2 { font-size: 40px; font-weight: 650; letter-spacing: -0.8px; text-align: center; line-height: 1.2; }
+  .sub { font-size: 26px; color: var(--soft); margin-top: 18px; text-align: center; }
+  .accent { color: var(--accent); }
+  .mono { font-family: var(--mono); }
+  .term { width: 860px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 22px 26px; margin-top: 36px; font-family: var(--mono); font-size: 19px; line-height: 1.8; }
+  .term .line { opacity: 0; white-space: nowrap; }
+  .term .dim { color: var(--muted); }
+  .term .bad { color: var(--err); }
+  .loop { position: relative; width: 1100px; height: 420px; margin-top: 20px; }
+  .node { position: absolute; width: 250px; padding: 16px 18px; background: var(--surface); border: 1.5px solid var(--border); border-radius: 12px; text-align: center; opacity: 0; }
+  .node b { display: block; font-size: 21px; margin-bottom: 4px; }
+  .node span { font-size: 16px; color: var(--muted); }
+  .node.on { border-color: var(--accent); box-shadow: 0 0 0 4px rgb(76 194 189 / 0.15); }
+  svg.edges { position: absolute; inset: 0; overflow: visible; }
+  svg.edges > path { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+  .shot { position: absolute; inset: 0; overflow: hidden; }
+  .shot img { position: absolute; width: 1280px; transform-origin: 0 0; }
+  .caption { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); background: rgb(13 15 19 / 0.92); border: 1px solid var(--accent); color: var(--fg); padding: 14px 28px; border-radius: 999px; font-size: 26px; font-weight: 600; white-space: nowrap; }
+  .caption small { color: var(--accent); margin-right: 12px; font-family: var(--mono); font-size: 20px; }
+  .benefits { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 28px; margin-top: 34px; }
+  .benefit { opacity: 0; display: flex; gap: 14px; align-items: center; font-size: 24px; width: 470px; }
+  .benefit i { font-style: normal; width: 34px; height: 34px; border-radius: 50%; background: rgb(76 194 189 / 0.15); color: var(--accent); display: grid; place-items: center; font-size: 18px; flex: none; }
+  .install { margin-top: 44px; font-family: var(--mono); font-size: 22px; background: var(--surface); border: 1px solid var(--border); padding: 16px 26px; border-radius: 10px; opacity: 0; }
+  .install .dim { color: var(--muted); }
+  .bar { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--accent); }
+</style>
+</head>
+<body>
+
+<section class="scene" id="s1">
+  <h1>self-improvement-loop</h1>
+  <div class="sub">A Claude Code plugin that <span class="accent">learns from your sessions</span>.</div>
+</section>
+
+<section class="scene" id="s2">
+  <h2>Your agent makes the same mistake<br>in session after session.</h2>
+  <div class="term">
+    <div class="line"><span class="dim">mon</span>  edited worktree, tests ran against main <span class="bad">✗</span></div>
+    <div class="line"><span class="dim">wed</span>  edited worktree, tests ran against main <span class="bad">✗</span></div>
+    <div class="line"><span class="dim">fri</span>  edited worktree, tests ran against main <span class="bad">✗</span></div>
+    <div class="line dim">     ...and every new session starts from zero.</div>
+  </div>
+</section>
+
+<section class="scene" id="s3">
+  <h2>It closes the loop, <span class="accent">in the background</span>.</h2>
+  <div class="loop">
+    <svg class="edges" viewBox="0 0 1100 420"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4cc2bd" stroke="none"/></marker></defs></svg>
+    <div class="node" style="left:0;top:20px"><b>Hooks record</b><span>never block, no model</span></div>
+    <div class="node" style="left:425px;top:20px"><b>Worker reflects</b><span>out of session</span></div>
+    <div class="node" style="left:850px;top:20px"><b>Patterns cluster</b><span>3 hits to promote</span></div>
+    <div class="node" style="left:850px;top:290px"><b>Drafts an artifact</b><span>skill, hook, rule, agent</span></div>
+    <div class="node" style="left:425px;top:290px"><b>You review</b><span>accept or reject</span></div>
+    <div class="node" style="left:0;top:290px"><b>Next session</b><span>gets the lesson</span></div>
+  </div>
+</section>
+
+<section class="scene shot" id="s4"><img id="img4"><div class="caption"><small>01</small>Every session becomes a reflection</div></section>
+<section class="scene shot" id="s5"><img id="img5"><div class="caption"><small>02</small>Staged artifacts wait for your review</div></section>
+<section class="scene shot" id="s6"><img id="img6"><div class="caption"><small>03</small>Scorecards show what actually helps</div></section>
+
+<section class="scene" id="s7">
+  <h2>Better sessions, without babysitting.</h2>
+  <div class="benefits">
+    <div class="benefit"><i>✓</i>Fewer repeated mistakes</div>
+    <div class="benefit"><i>✓</i>Hooks under 60 ms, never block</div>
+    <div class="benefit"><i>✓</i>Local-first, your models</div>
+    <div class="benefit"><i>✓</i>Nothing ships without a human</div>
+  </div>
+  <div class="install"><span class="dim">$</span> claude plugin install self-improvement-loop@kolezka</div>
+</section>
+
+<div class="bar" id="bar"></div>
+
+<script>
+  const DURATION = 30;
+  // [id, start, end] in seconds. Scenes cross-fade over FADE.
+  const SCENES = [["s1", 0, 3.6], ["s2", 3.6, 8.2], ["s3", 8.2, 14], ["s4", 14, 18], ["s5", 18, 22], ["s6", 22, 25.6], ["s7", 25.6, 30]];
+  const FADE = 0.4;
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const ease = (x) => 1 - Math.pow(1 - clamp(x), 3);
+  const prog = (t, a, b) => ease((t - a) / (b - a));
+
+  // Loop diagram edges, center to center, drawn in order.
+  const EDGES = ["M252 61 L420 61", "M677 61 L845 61", "M975 104 L975 285", "M848 331 L680 331", "M423 331 L255 331", "M125 288 L125 107"];
+  const svg = document.querySelector("svg.edges");
+  const paths = EDGES.map((d) => {
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", d);
+        svg.appendChild(p);
+    const len = p.getTotalLength();
+    p.style.strokeDasharray = len;
+    p.style.strokeDashoffset = len;
+    return [p, len];
+  });
+
+  // Shot pan: [fromScale, fromX, fromY, toScale, toX, toY], set per image.
+  window.PANS = { img4: [1, 0, 0, 1.25, -297, 0], img5: [1, 0, 0, 1.35, -448, -200], img6: [1, 0, 0, 1.3, -335, 0] };
+
+  window.render = (t) => {
+    for (const [id, a, b] of SCENES) {
+      const el = document.getElementById(id);
+      const op = Math.min(clamp((t - a) / FADE), clamp((b - t) / FADE));
+      // First scene starts visible, last one holds to the end.
+      el.style.opacity = id === "s1" ? clamp((b - t) / FADE) : id === "s7" ? clamp((t - a) / FADE) : op;
+    }
+    // s1 title rise
+    document.querySelector("#s1 h1").style.transform = `translateY(${(1 - prog(t, 0, 0.8)) * 24}px)`;
+    document.querySelector("#s1 .sub").style.opacity = prog(t, 0.6, 1.4);
+    // s2 terminal lines
+    document.querySelectorAll("#s2 .line").forEach((l, i) => (l.style.opacity = prog(t, 4.3 + i * 0.75, 4.7 + i * 0.75)));
+    // s3 nodes and edges
+    const nodes = document.querySelectorAll("#s3 .node");
+    nodes.forEach((n, i) => {
+      const at = 8.6 + i * 0.8;
+      n.style.opacity = prog(t, at, at + 0.35);
+      n.classList.toggle("on", t >= at && t < at + 0.8);
+    });
+    paths.forEach(([p, len], i) => {
+      const at = 8.95 + i * 0.8;
+      const k = prog(t, at, at + 0.45);
+      p.style.strokeDashoffset = len * (1 - k);
+      // Arrowhead appears once the line has reached its target.
+      if (k > 0.97) p.setAttribute("marker-end", "url(#arr)");
+      else p.removeAttribute("marker-end");
+    });
+    if (t > 13.4) nodes.forEach((n) => n.classList.add("on"));
+    // shots: slow pan and zoom
+    for (const [id, a, b] of [["img4", 14, 18], ["img5", 18, 22], ["img6", 22, 25.6]]) {
+      const [s0, x0, y0, s1, x1, y1] = window.PANS[id];
+      const k = clamp((t - a) / (b - a));
+      const e = k * k * (3 - 2 * k);
+      const img = document.getElementById(id);
+      img.style.transform = `translate(${x0 + (x1 - x0) * e}px, ${y0 + (y1 - y0) * e}px) scale(${s0 + (s1 - s0) * e})`;
+    }
+    // s7 benefits then install
+    document.querySelectorAll("#s7 .benefit").forEach((b, i) => (b.style.opacity = prog(t, 26 + i * 0.35, 26.4 + i * 0.35)));
+    document.querySelector("#s7 .install").style.opacity = prog(t, 27.7, 28.2);
+    document.getElementById("bar").style.width = `${(t / DURATION) * 100}%`;
+  };
+  window.render(0);
+</script>
+</body>
+</html>

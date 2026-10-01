@@ -460,3 +460,17 @@ never asking whether the redraft actually moved the recurrence rate. See
 - [x] docs: ARCHITECTURE, `.ai/lessons.md` (the accept-reset trap)
 - [ ] not done: no CLI/web surface distinguishes `rate_baseline` (pre-promotion) from
       the other two windows beyond the raw numbers; nobody has asked for that read yet
+
+## README demo video (2026-10-01, branch docs/demo-video)
+- [x] `scripts/demo/seed.ts`: fake home in a temp dir (world `default`, 12 reflections,
+      2 accepted artifacts with usage and votes, 1 staged skill), staged and accepted
+      through the real `curriculum.run` and `review.accept` with a canned chat
+- [x] `scripts/demo/scenes.html`: title, loop diagram and outro, captured frame by frame
+- [x] `scripts/demo/record.ts` (`bun run demo:record`): drives `sil web` over the seeded
+      home with headless Chromium (`playwright-core`, system Chromium), joins segments
+      with ffmpeg into `docs/media/demo.mp4` and `demo.gif`
+- [x] README embeds the GIF and links the MP4
+- [ ] not done: the web UI starts with `appState.world = "default"` and panes fetch
+      before boot sets the real world, so an install without a `default` world gets a
+      "could not load proposal outcomes: unknown world" toast on first load. The demo
+      uses world `default` instead of fixing this here.

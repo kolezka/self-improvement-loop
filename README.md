@@ -10,6 +10,10 @@ remote without a human.
 [![License](https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-blue)](LICENSE)
 [![Runtime](https://img.shields.io/badge/runtime-Bun%201.4.2%2B-black)](https://bun.sh)
 
+![30 second demo: how the loop works, then a staged skill reviewed and accepted in the web console](docs/media/demo.gif)
+
+30 seconds, no sound. Also as [MP4](docs/media/demo.mp4).
+
 OpenClaw sessions feed the same loop. See [`docs/OPENCLAW.md`](docs/OPENCLAW.md).
 
 ## Contents
@@ -267,6 +271,12 @@ make dev-install   # claude --plugin-dir $(CURDIR)
 
 `dist/` is untracked and the hooks run `dist/hook.js`, so `make build` is not
 optional for a local dev install.
+
+The README demo is recorded by `bun run build && bun run demo:record`. It seeds
+a fake home in a temp dir (`scripts/demo/seed.ts`), drives `sil web` over it
+with headless Chromium, and writes `docs/media/demo.mp4` and `demo.gif`. It
+needs `ffmpeg` and a Chromium binary (`CHROMIUM_PATH`, default
+`/usr/bin/chromium`). No model is called and no real install is read.
 
 ## Documentation
 

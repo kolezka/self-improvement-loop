@@ -121,3 +121,7 @@
   change" from "no signal". A rate comparison guarding against decay needs a
   positive baseline (`promotionRate > 0` and at least one hit) before the
   comparison means anything.
+- 2026-10-01: A demo script's CLI printed its `demoEnv()` result, and that env is a
+  copy of `process.env`, so one debug redirect wrote every secret in the operator's
+  shell to a temp file. A helper that copies `process.env` to hand a subprocess its
+  env must never be printed or logged; print only the values you built.

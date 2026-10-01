@@ -125,3 +125,10 @@
   copy of `process.env`, so one debug redirect wrote every secret in the operator's
   shell to a temp file. A helper that copies `process.env` to hand a subprocess its
   env must never be printed or logged; print only the values you built.
+- 2026-10-01: Pointing HOME at an empty demo dir made `seedDemoHome` refuse its own
+  root: Bun writes its transpiler cache to `$HOME/.bun/install/cache` before the
+  script's first line runs. A child process with a fresh HOME needs
+  `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`, or a root check that tolerates it.
+- 2026-10-01: `propose()` only returns `retire-candidate` for an artifact with zero
+  uses and zero fires. Misfires and bad votes on a used artifact give `refine`. Read
+  the branch order before seeding data for a proposal you want to show.

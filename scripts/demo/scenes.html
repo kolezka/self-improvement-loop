@@ -25,7 +25,8 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { width: 1280px; height: 720px; overflow: hidden; }
   body {
-    background: radial-gradient(1000px 600px at 50% 40%, rgb(76 194 189 / 0.08), transparent 70%), var(--bg);
+    /* Solid on purpose: a gradient bands once the GIF drops its dithering. */
+    background: var(--bg);
     color: var(--fg);
     font-family: var(--font-ui);
     -webkit-font-smoothing: antialiased;
@@ -57,12 +58,12 @@
   #loop h2 small { display: block; font-size: 18px; font-weight: 400; color: var(--muted); margin-top: 6px; }
   #loop svg { position: absolute; inset: 0; }
   #loop .track { fill: none; stroke: var(--border-strong); stroke-width: 2; stroke-dasharray: 4 8; }
-  #loop .arc { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: draw 6.3s linear 0.4s both; }
+  #loop .arc { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: draw 5.4s linear 0.4s both; }
   #loop .dot {
     position: absolute; left: 0; top: 0; width: 14px; height: 14px; border-radius: 50%;
     background: var(--accent); box-shadow: 0 0 18px 4px rgb(76 194 189 / 0.6);
     offset-rotate: 0deg; offset-anchor: center;
-    animation: fade 0.2s linear 0.4s both, travel 6.3s linear 0.4s both;
+    animation: fade 0.2s linear 0.4s both, travel 5.4s linear 0.4s both;
   }
   .node {
     position: absolute; width: 250px; padding: 12px 16px; transform: translate(-50%, -50%);
@@ -86,25 +87,45 @@
   .chip { white-space: nowrap; padding: 6px 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 600 15px var(--font-mono); }
 
   /* Outro */
-  #outro .wrap { position: absolute; left: 120px; right: 120px; top: 92px; }
+  #outro .wrap { position: absolute; left: 120px; right: 120px; top: 115px; }
   #outro h2 { font-size: 40px; font-weight: 700; animation: rise 0.5s ease-out 0s both; }
-  #outro ul { list-style: none; margin-top: 38px; }
-  #outro li { display: flex; align-items: center; gap: 18px; font-size: 30px; margin-top: 22px; }
+  #outro ul { list-style: none; margin-top: 30px; }
+  #outro li { display: flex; align-items: center; gap: 18px; font-size: 28px; margin-top: 18px; }
   #outro li .ic {
     flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
     background: var(--accent-soft); color: var(--accent); font-size: 22px; font-weight: 700;
   }
   #outro li:nth-child(1) { animation: rise 0.5s ease-out 0.35s both; }
-  #outro li:nth-child(2) { animation: rise 0.5s ease-out 0.85s both; }
-  #outro li:nth-child(3) { animation: rise 0.5s ease-out 1.35s both; }
+  #outro li:nth-child(2) { animation: rise 0.5s ease-out 0.75s both; }
+  #outro li:nth-child(3) { animation: rise 0.5s ease-out 1.15s both; }
+  #outro li:nth-child(4) { animation: rise 0.5s ease-out 1.55s both; }
   #outro li .muted { color: var(--muted); }
   #outro .term {
-    margin-top: 54px; padding: 20px 24px; border-radius: 12px; background: var(--surface);
+    margin-top: 40px; padding: 18px 24px; border-radius: 12px; background: var(--surface);
     border: 1px solid var(--border-strong); font: 21px/1.7 var(--font-mono); color: var(--fg-soft);
     animation: rise 0.5s ease-out 2s both;
   }
   #outro .term .p { color: var(--accent); }
   #outro .term .cur { display: inline-block; width: 11px; height: 22px; background: var(--fg-soft); vertical-align: -3px; animation: caret 1s step-end 2s infinite; }
+  #console .window {
+    position: absolute; left: 96px; top: 14px; width: 1088px; border-radius: 12px; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--border-strong);
+    box-shadow: 0 28px 70px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(255 255 255 / 0.03);
+  }
+  #console .bar { position: relative; height: 30px; display: flex; align-items: center; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  #console .bar i { width: 11px; height: 11px; border-radius: 50%; margin-right: 7px; background: var(--border-strong); }
+  #console .bar .url { position: absolute; left: 0; right: 0; text-align: center; font: 13px var(--font-mono); color: var(--muted); }
+  #console .viewport { position: relative; width: 1088px; height: 612px; overflow: hidden; background: var(--bg); }
+  #console .cam { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; transform-origin: 0 0; }
+  #console .cam img { display: block; width: 1280px; height: 720px; }
+  #console .caption {
+    position: absolute; left: 0; right: 0; top: 668px; display: flex; justify-content: center; align-items: center; gap: 14px;
+    font-size: 22px; font-weight: 600; color: var(--fg);
+  }
+  #console .caption .tag {
+    padding: 4px 10px; border-radius: 6px; background: var(--accent-soft); color: var(--accent);
+    font: 700 13px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
+  }
   #outro .foot { margin-top: 26px; font: 20px var(--font-mono); color: var(--muted); animation: fade 0.5s ease-out 2.6s both; }
 </style>
 </head>
@@ -131,7 +152,7 @@
   <div class="node" data-step="3"><div class="k">4 · curriculum</div><div class="t">Draft</div><div class="d">A skill, rule, hook or agent is staged on a git branch.</div></div>
   <div class="node" data-step="4"><div class="k">5 · you</div><div class="t">Review</div><div class="d">You accept or reject it in the web console or the CLI.</div></div>
   <div class="node" data-step="5"><div class="k">6 · delivery</div><div class="t">Next session</div><div class="d">The next matching session gets the lesson as context.</div></div>
-  <div class="center" style="animation: fade 0.6s ease-out 6.9s both">
+  <div class="center" style="animation: fade 0.6s ease-out 6s both">
     <div class="t">Then it keeps score</div>
     <div class="d">Usage and votes show whether each lesson actually helps.</div>
     <div class="chips"><span class="chip">used 7×</span><span class="chip">3 good votes</span><span class="chip">refine or retire</span></div>
@@ -143,6 +164,7 @@
     <h2>Why use it</h2>
     <ul>
       <li><span class="ic">✓</span><span>Repeated mistakes turn into reusable skills</span></li>
+      <li><span class="ic">✓</span><span>Usage and votes show which ones actually help</span></li>
       <li><span class="ic">✓</span><span>Local-first <span class="muted">· hooks never block or call a model</span></span></li>
       <li><span class="ic">✓</span><span>Nothing ships without your review</span></li>
     </ul>
@@ -154,11 +176,19 @@
   </div>
 </section>
 
+<section class="scene" id="console">
+  <div class="window">
+    <div class="bar"><i></i><i></i><i></i><span class="url">127.0.0.1:8766 · sil web</span></div>
+    <div class="viewport"><div class="cam" id="cam"><img id="shot" alt=""></div></div>
+  </div>
+  <div class="caption" id="caption"><span class="tag" id="caption-tag"></span><span id="caption-text"></span></div>
+</section>
+
 <script>
   // Nodes sit at equal distances along the ring, so the drawn arc and the
   // travelling dot reach each node exactly when it appears.
   const STEP_START = 0.4;
-  const STEP_GAP = 6.3 / 6;
+  const STEP_GAP = 5.4 / 6;
   const ring = document.getElementById("ring");
   const total = ring.getTotalLength();
   for (const node of document.querySelectorAll(".node")) {
@@ -173,6 +203,89 @@
   const params = new URLSearchParams(location.search);
   document.getElementById(params.get("scene") ?? "title").classList.add("on");
   if (params.has("render")) document.documentElement.classList.add("render");
+
+  // Console stage. record.ts hands over the screencast frames and the walk's
+  // marks, then seeks frame by frame like the other scenes.
+  const SRC_W = 1280;
+  const SRC_H = 720;
+  const VIEW_SCALE = 1088 / SRC_W;
+  const MAX_ZOOM = 1.6;
+  const CAM_MOVE = 0.8;
+  const FULL = { z: 1, cx: SRC_W / 2, cy: SRC_H / 2 };
+  let consoleData = null;
+  let camKeys = [];
+  let captionKeys = [];
+
+  const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const clamp01 = (x) => Math.min(1, Math.max(0, x));
+  const mix = (a, b, p) => ({ z: a.z + (b.z - a.z) * p, cx: a.cx + (b.cx - a.cx) * p, cy: a.cy + (b.cy - a.cy) * p });
+
+  // Frames the focus box with some margin, never past the edges of the page.
+  function camFor(focus) {
+    if (!focus) return FULL;
+    const z = Math.min(MAX_ZOOM, Math.max(1, Math.min((SRC_W * 0.84) / focus.w, (SRC_H * 0.84) / focus.h)));
+    const hw = SRC_W / 2 / z;
+    const hh = SRC_H / 2 / z;
+    return {
+      z,
+      cx: Math.min(SRC_W - hw, Math.max(hw, focus.x + focus.w / 2)),
+      cy: Math.min(SRC_H - hh, Math.max(hh, focus.y + focus.h / 2)),
+    };
+  }
+
+  function camAt(t) {
+    let from = FULL;
+    let to = FULL;
+    let start = -Infinity;
+    for (const key of camKeys) {
+      if (key.t > t) break;
+      from = mix(from, to, easeInOut(clamp01((key.t - start) / CAM_MOVE)));
+      to = key.cam;
+      start = key.t;
+    }
+    return mix(from, to, easeInOut(clamp01((t - start) / CAM_MOVE)));
+  }
+
+  window.loadConsole = (data) => {
+    consoleData = data;
+    camKeys = data.marks.filter((m) => Object.hasOwn(m, "focus")).map((m) => ({ t: m.t, cam: camFor(m.focus) }));
+    captionKeys = data.marks.filter((m) => m.caption);
+  };
+
+  window.seekConsole = async (t) => {
+    const frames = consoleData.frames;
+    let lo = 0;
+    let hi = frames.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (frames[mid].t <= t) lo = mid;
+      else hi = mid - 1;
+    }
+    const img = document.getElementById("shot");
+    if (img.dataset.src !== frames[lo].src) {
+      img.dataset.src = frames[lo].src;
+      img.src = frames[lo].src;
+      await img.decode();
+    }
+
+    const cam = camAt(t);
+    const scale = VIEW_SCALE * cam.z;
+    const tx = -(cam.cx - SRC_W / 2 / cam.z) * scale;
+    const ty = -(cam.cy - SRC_H / 2 / cam.z) * scale;
+    document.getElementById("cam").style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+
+    const current = captionKeys.filter((k) => k.t <= t).at(-1);
+    const caption = document.getElementById("caption");
+    if (current) {
+      document.getElementById("caption-tag").textContent = current.label;
+      document.getElementById("caption-text").textContent = current.caption;
+      const p = easeInOut(clamp01((t - current.t) / 0.35));
+      caption.style.opacity = String(p);
+      caption.style.transform = `translateY(${(1 - p) * 8}px)`;
+    } else {
+      caption.style.opacity = "0";
+    }
+  };
 
   // record.ts calls this once per frame.
   window.seek = (seconds) => {

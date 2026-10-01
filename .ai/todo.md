@@ -470,6 +470,13 @@ never asking whether the redraft actually moved the recurrence rate. See
       home with headless Chromium (`playwright-core`, system Chromium), joins segments
       with ffmpeg into `docs/media/demo.mp4` and `demo.gif`
 - [x] README embeds the GIF and links the MP4
+- [x] follow-up (branch fix/demo-env-isolation): demo env is an allowlist with a fake HOME,
+      recorder cleanup and accept are checked, both outputs are swapped in together
+- [x] feedback loop in the video: usage and misfire columns, a real vote through the
+      verdict form, and a misfiring hook (`run-full-suite`) that the planner flags `refine`;
+      promotions are backdated with a scoped fake clock so usage comes after promotion
+- [x] console replayed inside a window frame with a camera that zooms onto the action,
+      captions as a lower third with a step label
 - [ ] not done: the web UI starts with `appState.world = "default"` and panes fetch
       before boot sets the real world, so an install without a `default` world gets a
       "could not load proposal outcomes: unknown world" toast on first load. The demo

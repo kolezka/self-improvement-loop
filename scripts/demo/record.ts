@@ -1,22 +1,24 @@
 #!/usr/bin/env bun
 // Records the README demo: docs/media/demo.mp4 and docs/media/demo.gif.
 //
-// Title, loop diagram and outro come from scenes.html, captured frame by frame.
-// The middle part is the real web console, served by `sil web` over a demo home
-// that seed.ts builds in a temp dir. No real install is read and no model is
+// Every frame comes from scenes.html. Title, loop diagram and outro are pure
+// animation. The console part replays a real `sil web` session, served over a
+// demo home that seed.ts builds in a temp dir, inside a window frame with a
+// camera that zooms onto the action. No real install is read and no model is
 // called.
 //
 // Run: bun run build && bun run demo:record [--keep]
 // Needs ffmpeg and a Chromium binary (CHROMIUM_PATH, default /usr/bin/chromium).
 // --keep leaves the temp dir (demo home, frames, segments) in place.
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { chromium, type Browser, type Locator, type Page } from "playwright-core";
 
-import { demoEnv, STAGED_PATTERN } from "./seed.ts";
+import { demoEnv, MISFIRE_PATTERN, PROMOTED_SKILL_PATTERN, STAGED_PATTERN } from "./seed.ts";
 
 const REPO = join(import.meta.dir, "..", "..");
 const OUT_DIR = join(REPO, "docs", "media");
@@ -28,7 +30,7 @@ const SCALE = 2;
 const FPS = 30;
 const FADE = 0.4;
 
-const SCENES = { title: 4.4, loop: 8.6, outro: 5.4 } as const;
+const SCENES = { title: 3.4, loop: 7.2, outro: 4.8 } as const;
 
 function run(cmd: string[], env?: Record<string, string>): void {
   const res = Bun.spawnSync(cmd, { cwd: REPO, env: env ?? process.env, stdout: "pipe", stderr: "pipe" });
@@ -65,15 +67,30 @@ function encodeSequence(pattern: string, out: string): void {
   ]);
 }
 
-async function renderScene(browser: Browser, name: keyof typeof SCENES, dir: string): Promise<string> {
+type SceneWindow = {
+  seek(t: number): void;
+  loadConsole(data: ConsoleCapture): void;
+  seekConsole(t: number): Promise<void>;
+};
+
+/** Captures one scene of scenes.html at FPS, `seek` placing each frame exactly. */
+async function captureScene(
+  browser: Browser,
+  name: string,
+  seconds: number,
+  dir: string,
+  seek: (page: Page, t: number) => Promise<void>,
+  setup?: (page: Page) => Promise<void>,
+): Promise<string> {
   const page = await browser.newPage({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: SCALE });
-  await page.goto(`file://${join(import.meta.dir, "scenes.html")}?scene=${name}&render=1`);
+  await page.goto(`${pathToFileURL(join(import.meta.dir, "scenes.html")).href}?scene=${name}&render=1`);
   await page.evaluate(() => document.fonts.ready);
-  const frames = Math.round(SCENES[name] * FPS);
+  await setup?.(page);
   const frameDir = join(dir, `scene-${name}`);
   mkdirSync(frameDir);
+  const frames = Math.round(seconds * FPS);
   for (let i = 0; i < frames; i++) {
-    await page.evaluate((t) => (window as unknown as { seek: (s: number) => void }).seek(t), i / FPS);
+    await seek(page, i / FPS);
     await page.screenshot({ path: join(frameDir, `${String(i).padStart(5, "0")}.png`) });
   }
   await page.close();
@@ -82,8 +99,25 @@ async function renderScene(browser: Browser, name: keyof typeof SCENES, dir: str
   return out;
 }
 
-// Playwright video has no cursor and no captions, so both are drawn in the page.
-// Captions sit in the empty middle of the top bar, clear of the action buttons.
+function renderScene(browser: Browser, name: keyof typeof SCENES, dir: string): Promise<string> {
+  return captureScene(browser, name, SCENES[name], dir, (page, t) =>
+    page.evaluate((s) => (window as unknown as SceneWindow).seek(s), t),
+  );
+}
+
+function renderConsole(browser: Browser, capture: ConsoleCapture, dir: string): Promise<string> {
+  return captureScene(
+    browser,
+    "console",
+    capture.duration,
+    dir,
+    (page, t) => page.evaluate((s) => (window as unknown as SceneWindow).seekConsole(s), t),
+    (page) => page.evaluate((data) => (window as unknown as SceneWindow).loadConsole(data), capture),
+  );
+}
+
+// The screencast has no cursor, so one is drawn in the page. Captions and the
+// camera are added later by the console scene, from the marks the walk leaves.
 const OVERLAY = `
   try { localStorage.setItem("sil.theme", "dark"); } catch {}
   window.addEventListener("DOMContentLoaded", () => {
@@ -96,20 +130,12 @@ const OVERLAY = `
         border: 3px solid #4cc2bd; opacity: 0; }
       #demo-ring.on { animation: demo-ring 0.5s ease-out; }
       @keyframes demo-ring { from { opacity: 1; transform: scale(0.3); } to { opacity: 0; transform: scale(1.4); } }
-      #demo-caption { position: fixed; left: 50%; top: 5px; z-index: 99998; pointer-events: none;
-        transform: translateX(-50%); max-width: 720px; padding: 7px 18px; border-radius: 10px;
-        background: rgb(6 33 31 / 0.95); border: 1px solid #4cc2bd; color: #e6e9ef;
-        font: 600 17px Inter, Roboto, system-ui, sans-serif; text-align: center; white-space: nowrap;
-        box-shadow: 0 8px 30px rgb(0 0 0 / 0.5); opacity: 0; transition: opacity 0.25s; }
-      #demo-caption.on { opacity: 1; }
     \`;
     document.head.append(style);
     const cursor = document.createElement("div");
     cursor.id = "demo-cursor";
     cursor.innerHTML = '<div id="demo-ring"></div><svg width="26" height="30" viewBox="0 0 26 30"><path d="M2 2 L2 24 L8 18.5 L12.5 28 L16.5 26.2 L12 17 L20 17 Z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
-    const caption = document.createElement("div");
-    caption.id = "demo-caption";
-    document.body.append(cursor, caption);
+    document.body.append(cursor);
   });
   window.__demo = {
     move(x, y, ms) {
@@ -123,18 +149,24 @@ const OVERLAY = `
       void ring.offsetWidth;
       ring.classList.add("on");
     },
-    caption(text) {
-      const el = document.getElementById("demo-caption");
-      el.classList.remove("on");
-      setTimeout(() => { el.textContent = text; el.classList.add("on"); }, text ? 120 : 0);
-    },
   };
 `;
 
-type Demo = { move(x: number, y: number, ms: number): void; click(): void; caption(text: string): void };
+type Demo = { move(x: number, y: number, ms: number): void; click(): void };
+type Box = { x: number; y: number; w: number; h: number };
+/** A moment in the walk: a new caption, a new camera focus (null zooms out), or both. */
+type Mark = { t: number; label?: string; caption?: string; focus?: Box | null };
+type ConsoleCapture = { frames: { src: string; t: number }[]; marks: Mark[]; duration: number };
 
-async function caption(page: Page, text: string): Promise<void> {
-  await page.evaluate((t) => (window as unknown as { __demo: Demo }).__demo.caption(t), text);
+/** The union of the targets' boxes, clipped to the viewport. */
+async function boxOf(...targets: Locator[]): Promise<Box> {
+  const boxes = await Promise.all(targets.map((t) => t.boundingBox()));
+  if (boxes.some((b) => b === null)) throw new Error("cannot frame a target that is not visible");
+  const x0 = Math.max(0, Math.min(...boxes.map((b) => b!.x)));
+  const y0 = Math.max(0, Math.min(...boxes.map((b) => b!.y)));
+  const x1 = Math.min(WIDTH, Math.max(...boxes.map((b) => b!.x + b!.width)));
+  const y1 = Math.min(HEIGHT, Math.max(...boxes.map((b) => b!.y + b!.height)));
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 async function pointAt(page: Page, target: Locator, ms = 650): Promise<void> {
@@ -152,13 +184,32 @@ async function clickOn(page: Page, target: Locator): Promise<void> {
   await target.click();
 }
 
-/** The scripted walk through the console. Keep it near 12 seconds. */
-async function walkConsole(page: Page): Promise<void> {
-  await caption(page, "Every session leaves a lesson. Four alike make a pattern.");
-  await pointAt(page, page.getByText(STAGED_PATTERN).first(), 800);
-  await page.waitForTimeout(1500);
+async function scrollTo(page: Page, target: Locator, options: { left?: "end" } = {}): Promise<void> {
+  await target.evaluate(
+    (el, left) =>
+      left === "end"
+        ? el.scrollTo({ left: el.scrollWidth, behavior: "smooth" })
+        : el.scrollIntoView({ behavior: "smooth", block: "center" }),
+    options.left,
+  );
+  await page.waitForTimeout(650);
+}
 
-  await caption(page, "The loop drafted a skill on a git branch. You read it first.");
+function votesGood(text: string | null): number {
+  const match = /^(\d+) good/.exec(text ?? "");
+  if (match === null) throw new Error(`unexpected votes cell: ${JSON.stringify(text)}`);
+  return Number(match[1]);
+}
+
+/** The scripted walk through the console. Keep it near 17 seconds. */
+async function walkConsole(page: Page, mark: (m: Omit<Mark, "t">) => void): Promise<void> {
+  const sankey = page.locator(".panel").filter({ hasText: "Pattern to proposal outcome" }).first();
+  mark({ label: "Reflect", caption: "Every session leaves a lesson. Three alike make a pattern.", focus: await boxOf(sankey) });
+  await page.waitForTimeout(300);
+  await pointAt(page, page.getByText(STAGED_PATTERN).first(), 800);
+  await page.waitForTimeout(1100);
+
+  mark({ label: "Review", caption: "The loop drafted a skill on a git branch. You read it first.", focus: null });
   await clickOn(page, page.locator('a.rail__link[href="#/review"]'));
   await page.waitForURL("**#/review");
   const row = page.getByRole("option", { name: new RegExp(STAGED_PATTERN) });
@@ -166,27 +217,62 @@ async function walkConsole(page: Page): Promise<void> {
   await clickOn(page, row);
   const acceptButton = page.getByRole("button", { name: "Accept proposal" });
   await acceptButton.waitFor();
-  await page.waitForTimeout(1800);
+  mark({ focus: await boxOf(page.getByText("Ready to accept"), page.locator(".action-bar")) });
+  await page.waitForTimeout(1500);
 
-  await caption(page, "Accept merges it. The next matching session gets the lesson.");
+  mark({ label: "Accept", caption: "Accept merges it. The next matching session gets the lesson." });
   await clickOn(page, acceptButton);
-  await page.waitForTimeout(900);
+  // A failed accept only shows a toast, and the video would still look fine.
+  await page.getByText(`${STAGED_PATTERN} accepted`).waitFor({ timeout: 10_000 });
+  await page.getByText("Nothing is staged").waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(500);
 
-  await caption(page, "Scorecards show whether each lesson is used and helpful.");
+  mark({ label: "Track", caption: "Every use is counted, with helpful and misfire signals.", focus: null });
   await clickOn(page, page.locator('a.rail__link[href="#/artifacts"]'));
   await page.waitForURL("**#/artifacts");
-  const artifactRow = page.locator("tr", { hasText: "read-before-edit" });
-  await artifactRow.waitFor();
-  await pointAt(page, artifactRow, 700);
-  await page.waitForTimeout(1700);
+  const table = page.locator(".table-wrap").first();
+  const skillRow = table.locator("tr", { hasText: PROMOTED_SKILL_PATTERN });
+  const misfireRow = table.locator("tr", { hasText: MISFIRE_PATTERN });
+  await skillRow.waitFor();
+  await misfireRow.waitFor();
+  await table.locator("tr", { hasText: STAGED_PATTERN }).waitFor();
+  const votesCell = skillRow.locator("td").nth(8);
+  const votesBefore = votesGood(await votesCell.textContent());
+  mark({ focus: await boxOf(table.locator("thead th").nth(0), table.locator("tbody tr").last().locator("td").nth(8)) });
+  await pointAt(page, skillRow.locator("td").nth(5), 700);
+  await page.waitForTimeout(1000);
+
+  mark({ label: "Rate", caption: "Rate it yourself. Your vote lands on the same scorecard.", focus: null });
+  const verdict = page.locator(".panel").filter({ hasText: "Record your own verdict" });
+  await scrollTo(page, verdict);
+  mark({ focus: await boxOf(verdict) });
+  const refInput = page.locator("#feedback-ref");
+  await clickOn(page, refInput);
+  await refInput.pressSequentially(`skill:${PROMOTED_SKILL_PATTERN}`, { delay: 25 });
+  await clickOn(page, page.getByRole("button", { name: "Record feedback" }));
+  await page.getByText("Feedback recorded").waitFor({ timeout: 10_000 });
+  mark({ focus: null });
+  await scrollTo(page, table);
+  await votesCell.getByText(`${votesBefore + 1} good`).waitFor({ timeout: 10_000 });
+  mark({ focus: await boxOf(table.locator("thead th").nth(0), skillRow.locator("td").nth(8)) });
+  await pointAt(page, votesCell, 600);
+  await page.waitForTimeout(700);
+
+  mark({ label: "Decide", caption: "Misfires and bad votes flag it for a rewrite. You decide.", focus: null });
+  await scrollTo(page, table, { left: "end" });
+  const proposal = misfireRow.getByText("refine", { exact: true });
+  await proposal.waitFor();
+  mark({ focus: await boxOf(table.locator("thead th").nth(11), misfireRow.locator("td").nth(14)) });
+  await pointAt(page, proposal, 700);
+  await page.waitForTimeout(1600);
 }
 
 /**
  * Captures the console with the DevTools screencast. Frames only arrive when the
- * page repaints, so each keeps its own timestamp and ffmpeg's concat demuxer
- * turns them back into real-time video.
+ * page repaints, so each keeps its own timestamp; the console scene picks the
+ * latest frame at or before each output frame.
  */
-async function recordConsole(browser: Browser, url: string, dir: string): Promise<string> {
+async function recordConsole(browser: Browser, url: string, dir: string): Promise<ConsoleCapture> {
   const context = await browser.newContext({
     viewport: { width: WIDTH, height: HEIGHT },
     deviceScaleFactor: SCALE,
@@ -200,12 +286,14 @@ async function recordConsole(browser: Browser, url: string, dir: string): Promis
 
   const frameDir = join(dir, "console");
   mkdirSync(frameDir);
-  const frames: { file: string; ts: number }[] = [];
+  const frames: { src: string; t: number }[] = [];
+  const marks: Mark[] = [];
   const cdp = await context.newCDPSession(page);
+  const t0 = Date.now() / 1000;
   cdp.on("Page.screencastFrame", (frame) => {
     const file = join(frameDir, `${String(frames.length).padStart(5, "0")}.jpg`);
     writeFileSync(file, Buffer.from(frame.data, "base64"));
-    frames.push({ file, ts: frame.metadata.timestamp ?? Date.now() / 1000 });
+    frames.push({ src: pathToFileURL(file).href, t: (frame.metadata.timestamp ?? Date.now() / 1000) - t0 });
     void cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId });
   });
   await cdp.send("Page.startScreencast", {
@@ -215,28 +303,12 @@ async function recordConsole(browser: Browser, url: string, dir: string): Promis
     maxHeight: HEIGHT * SCALE,
   });
   await page.waitForTimeout(300);
-  await walkConsole(page);
+  await walkConsole(page, (m) => marks.push({ t: Date.now() / 1000 - t0, ...m }));
   await cdp.send("Page.stopScreencast");
-  const end = Date.now() / 1000;
+  const duration = Date.now() / 1000 - t0;
   await context.close();
   if (frames.length < 10) throw new Error(`screencast produced only ${frames.length} frames`);
-
-  const lines: string[] = [];
-  frames.forEach((f, i) => {
-    const next = frames[i + 1]?.ts ?? end;
-    lines.push(`file '${f.file}'`, `duration ${Math.max(next - f.ts, 0.001).toFixed(4)}`);
-  });
-  // The concat demuxer ignores the last duration unless the file repeats.
-  lines.push(`file '${frames.at(-1)!.file}'`);
-  const list = join(dir, "console.txt");
-  writeFileSync(list, lines.join("\n") + "\n");
-  const out = join(dir, "seg-console.mp4");
-  run([
-    "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list,
-    "-vf", `fps=${FPS},scale=${WIDTH}:${HEIGHT}:flags=lanczos,format=yuv420p`,
-    "-c:v", "libx264", "-crf", "16", "-preset", "slow", out,
-  ]);
-  return out;
+  return { frames, marks, duration };
 }
 
 function probeSeconds(file: string): number {
@@ -265,7 +337,9 @@ function assemble(segments: string[], mp4: string, gif: string): void {
   ]);
   run([
     "ffmpeg", "-y", "-loglevel", "error", "-i", mp4,
-    "-vf", "fps=15,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff:max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle",
+    // The camera moves change most of every frame, so frame diffs barely help.
+    // 10 fps, 880 px and no dithering keep the GIF near 7 MB.
+    "-vf", "fps=10,scale=880:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff:max_colors=128[p];[b][p]paletteuse=dither=none:diff_mode=rectangle",
     gif,
   ]);
 }
@@ -279,10 +353,10 @@ async function main(): Promise<void> {
   const work = mkdtempSync(join(tmpdir(), "sil-demo-"));
   const home = join(work, "home");
   const env = demoEnv(home, REPO);
-  const port = freePort();
   let server: ReturnType<typeof Bun.spawn> | undefined;
   let browser: Browser | undefined;
   try {
+    const port = freePort();
     run([process.execPath, join(import.meta.dir, "seed.ts"), home], env);
     server = Bun.spawn([process.execPath, "apps/cli/src/main.ts", "web", "--port", String(port), "--no-watch"], {
       cwd: REPO,
@@ -296,17 +370,26 @@ async function main(): Promise<void> {
     browser = await chromium.launch({ executablePath: CHROMIUM });
     const title = await renderScene(browser, "title", work);
     const loop = await renderScene(browser, "loop", work);
-    const consoleSeg = await recordConsole(browser, url, work);
+    const consoleSeg = await renderConsole(browser, await recordConsole(browser, url, work), work);
     const outro = await renderScene(browser, "outro", work);
 
+    // Both files are built in the temp dir first, so a failed GIF never leaves
+    // a new MP4 next to an old GIF.
+    const tmpMp4 = join(work, "demo.mp4");
+    const tmpGif = join(work, "demo.gif");
+    assemble([title, loop, consoleSeg, outro], tmpMp4, tmpGif);
+    const seconds = probeSeconds(tmpMp4);
+    probeSeconds(tmpGif);
     mkdirSync(OUT_DIR, { recursive: true });
     const mp4 = join(OUT_DIR, "demo.mp4");
     const gif = join(OUT_DIR, "demo.gif");
-    assemble([title, loop, consoleSeg, outro], mp4, gif);
-    console.log(`wrote ${mp4} (${probeSeconds(mp4).toFixed(1)} s, ${(Bun.file(mp4).size / 1e6).toFixed(2)} MB)`);
+    copyFileSync(tmpMp4, mp4);
+    copyFileSync(tmpGif, gif);
+    console.log(`wrote ${mp4} (${seconds.toFixed(1)} s, ${(Bun.file(mp4).size / 1e6).toFixed(2)} MB)`);
     console.log(`wrote ${gif} (${(Bun.file(gif).size / 1e6).toFixed(2)} MB)`);
   } finally {
-    await browser?.close();
+    // Each step runs even when an earlier one throws, so no server is orphaned.
+    await browser?.close().catch((e: unknown) => console.error(`browser close failed: ${String(e)}`));
     if (server) {
       server.kill();
       await server.exited;

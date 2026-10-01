@@ -10,9 +10,9 @@ remote without a human.
 [![License](https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-blue)](LICENSE)
 [![Runtime](https://img.shields.io/badge/runtime-Bun%201.4.2%2B-black)](https://bun.sh)
 
-![30 second demo: how the loop works, then a staged skill reviewed and accepted in the web console](docs/media/demo.gif)
+![Demo: how the loop works, then in the web console a staged skill is reviewed and accepted, its usage and votes are tracked, and a misfiring hook is flagged for a rewrite](docs/media/demo.gif)
 
-30 seconds, no sound. Also as [MP4](docs/media/demo.mp4).
+About 30 seconds, no sound. Also as [MP4](docs/media/demo.mp4).
 
 OpenClaw sessions feed the same loop. See [`docs/OPENCLAW.md`](docs/OPENCLAW.md).
 

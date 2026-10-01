@@ -18,7 +18,8 @@
     "check:web": "bun run --cwd apps/web check",
     "lint:dashes": "bun run scripts/lint-dashes.ts",
     "dev:web": "bun run --cwd apps/web dev",
-    "sil": "bun run apps/cli/src/main.ts"
+    "sil": "bun run apps/cli/src/main.ts",
+    "demo:record": "bun run scripts/demo/record.ts"
   },
   "devDependencies": {
     "@sil/core": "workspace:*",
@@ -34,6 +35,7 @@
     "@sil/transcript": "workspace:*",
     "@sil/worker": "workspace:*",
     "@types/bun": "^1.4.2",
+    "playwright-core": "1.63.0",
     "typescript": "^5.9.0"
   }
 }

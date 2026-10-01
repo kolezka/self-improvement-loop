@@ -1,0 +1,183 @@
+<!doctype html>
+<!-- Animated scenes for the README demo. Open it in a browser to preview
+     (?scene=title|loop|outro). record.ts loads it with ?render=1, which pauses
+     every animation so each frame is captured at an exact time. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sil demo scenes</title>
+<style>
+  :root {
+    --bg: #0d0f13;
+    --surface: #14171d;
+    --panel: #181c23;
+    --fg: #e6e9ef;
+    --fg-soft: #b3bbc8;
+    --muted: #8b94a5;
+    --border: #252a33;
+    --border-strong: #363d49;
+    --accent: #4cc2bd;
+    --accent-soft: rgb(76 194 189 / 0.13);
+    --ok: #3fb950;
+    --font-ui: Inter, Roboto, "Noto Sans", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 720px; overflow: hidden; }
+  body {
+    background: radial-gradient(1000px 600px at 50% 40%, rgb(76 194 189 / 0.08), transparent 70%), var(--bg);
+    color: var(--fg);
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+  .render * { animation-play-state: paused !important; }
+  .scene { position: absolute; inset: 0; display: none; }
+  .scene.on { display: block; }
+  .mono { font-family: var(--font-mono); }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes pop { 0% { opacity: 0; transform: translate(-50%, -50%) scale(0.85); } 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+  @keyframes glow { from { box-shadow: 0 0 0 0 rgb(76 194 189 / 0.55); } to { box-shadow: 0 0 0 14px rgb(76 194 189 / 0); } }
+  @keyframes draw { from { stroke-dashoffset: 1000; } to { stroke-dashoffset: 0; } }
+  @keyframes travel { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+  @keyframes caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+  /* Title */
+  #title .wrap { position: absolute; left: 120px; top: 225px; right: 120px; }
+  #title .kicker { font-size: 20px; color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase; animation: rise 0.6s ease-out 0.15s both; }
+  #title h1 { font-family: var(--font-mono); font-size: 72px; font-weight: 700; letter-spacing: -0.02em; margin-top: 18px; animation: rise 0.7s ease-out 0.35s both; }
+  #title h1 span { color: var(--accent); }
+  #title .sub { font-size: 34px; color: var(--fg-soft); margin-top: 26px; animation: rise 0.7s ease-out 0.9s both; }
+  #title .line { font-size: 26px; color: var(--muted); margin-top: 46px; animation: rise 0.7s ease-out 2s both; }
+  #title .line b { color: var(--fg); font-weight: 600; }
+
+  /* Loop */
+  #loop h2 { position: absolute; left: 56px; top: 44px; font-size: 30px; font-weight: 700; animation: rise 0.5s ease-out 0s both; }
+  #loop h2 small { display: block; font-size: 18px; font-weight: 400; color: var(--muted); margin-top: 6px; }
+  #loop svg { position: absolute; inset: 0; }
+  #loop .track { fill: none; stroke: var(--border-strong); stroke-width: 2; stroke-dasharray: 4 8; }
+  #loop .arc { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: draw 6.3s linear 0.4s both; }
+  #loop .dot {
+    position: absolute; left: 0; top: 0; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 18px 4px rgb(76 194 189 / 0.6);
+    offset-rotate: 0deg; offset-anchor: center;
+    animation: fade 0.2s linear 0.4s both, travel 6.3s linear 0.4s both;
+  }
+  .node {
+    position: absolute; width: 250px; padding: 12px 16px; transform: translate(-50%, -50%);
+    background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px;
+  }
+  .node .k { font-size: 13px; font-family: var(--font-mono); color: var(--accent); }
+  .node .t { font-size: 20px; font-weight: 700; margin-top: 2px; }
+  .node .d { font-size: 14px; color: var(--fg-soft); margin-top: 4px; line-height: 1.35; }
+  .node .badge {
+    position: absolute; top: -12px; right: -12px; padding: 3px 9px; border-radius: 999px;
+    background: var(--accent); color: #06211f; font: 700 14px var(--font-mono);
+  }
+  .node.hot { border-color: var(--accent); }
+  .center {
+    position: absolute; left: 640px; top: 392px; width: 380px; text-align: center;
+    transform: translate(-50%, -50%);
+  }
+  .center .t { font-size: 24px; font-weight: 700; }
+  .center .d { font-size: 17px; color: var(--fg-soft); margin-top: 8px; line-height: 1.4; }
+  .chips { display: flex; gap: 10px; justify-content: center; margin-top: 16px; }
+  .chip { white-space: nowrap; padding: 6px 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 600 15px var(--font-mono); }
+
+  /* Outro */
+  #outro .wrap { position: absolute; left: 120px; right: 120px; top: 92px; }
+  #outro h2 { font-size: 40px; font-weight: 700; animation: rise 0.5s ease-out 0s both; }
+  #outro ul { list-style: none; margin-top: 38px; }
+  #outro li { display: flex; align-items: center; gap: 18px; font-size: 30px; margin-top: 22px; }
+  #outro li .ic {
+    flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent); font-size: 22px; font-weight: 700;
+  }
+  #outro li:nth-child(1) { animation: rise 0.5s ease-out 0.35s both; }
+  #outro li:nth-child(2) { animation: rise 0.5s ease-out 0.85s both; }
+  #outro li:nth-child(3) { animation: rise 0.5s ease-out 1.35s both; }
+  #outro li .muted { color: var(--muted); }
+  #outro .term {
+    margin-top: 54px; padding: 20px 24px; border-radius: 12px; background: var(--surface);
+    border: 1px solid var(--border-strong); font: 21px/1.7 var(--font-mono); color: var(--fg-soft);
+    animation: rise 0.5s ease-out 2s both;
+  }
+  #outro .term .p { color: var(--accent); }
+  #outro .term .cur { display: inline-block; width: 11px; height: 22px; background: var(--fg-soft); vertical-align: -3px; animation: caret 1s step-end 2s infinite; }
+  #outro .foot { margin-top: 26px; font: 20px var(--font-mono); color: var(--muted); animation: fade 0.5s ease-out 2.6s both; }
+</style>
+</head>
+<body>
+<section class="scene" id="title">
+  <div class="wrap">
+    <div class="kicker">A Claude Code plugin</div>
+    <h1>self-improvement-<span>loop</span></h1>
+    <div class="sub">Claude Code that learns from your sessions.</div>
+    <div class="line">Mistakes you keep repeating become <b>skills, rules and hooks</b> you keep.</div>
+  </div>
+</section>
+
+<section class="scene" id="loop">
+  <h2>How the loop works<small>runs in the background, outside your session</small></h2>
+  <svg width="1280" height="720" viewBox="0 0 1280 720">
+    <path id="ring" class="track" pathLength="1000" d="M 640 168 A 410 222 0 1 1 640 612 A 410 222 0 1 1 640 168" />
+    <path class="arc" pathLength="1000" d="M 640 168 A 410 222 0 1 1 640 612 A 410 222 0 1 1 640 168" />
+  </svg>
+  <div class="dot" style="offset-path: path('M 640 168 A 410 222 0 1 1 640 612 A 410 222 0 1 1 640 168')"></div>
+  <div class="node" data-step="0"><div class="k">1 · hooks</div><div class="t">Session</div><div class="d">Hooks record events. They never block and never call a model.</div></div>
+  <div class="node" data-step="1"><div class="k">2 · worker</div><div class="t">Reflect</div><div class="d">After the session, one model call turns the transcript into a lesson.</div></div>
+  <div class="node" data-step="2"><div class="k">3 · cluster</div><div class="t">Spot the pattern</div><div class="d">The same lesson three times becomes a pattern.</div><div class="badge">×3</div></div>
+  <div class="node" data-step="3"><div class="k">4 · curriculum</div><div class="t">Draft</div><div class="d">A skill, rule, hook or agent is staged on a git branch.</div></div>
+  <div class="node" data-step="4"><div class="k">5 · you</div><div class="t">Review</div><div class="d">You accept or reject it in the web console or the CLI.</div></div>
+  <div class="node" data-step="5"><div class="k">6 · delivery</div><div class="t">Next session</div><div class="d">The next matching session gets the lesson as context.</div></div>
+  <div class="center" style="animation: fade 0.6s ease-out 6.9s both">
+    <div class="t">Then it keeps score</div>
+    <div class="d">Usage and votes show whether each lesson actually helps.</div>
+    <div class="chips"><span class="chip">used 7×</span><span class="chip">3 good votes</span><span class="chip">refine or retire</span></div>
+  </div>
+</section>
+
+<section class="scene" id="outro">
+  <div class="wrap">
+    <h2>Why use it</h2>
+    <ul>
+      <li><span class="ic">✓</span><span>Repeated mistakes turn into reusable skills</span></li>
+      <li><span class="ic">✓</span><span>Local-first <span class="muted">· hooks never block or call a model</span></span></li>
+      <li><span class="ic">✓</span><span>Nothing ships without your review</span></li>
+    </ul>
+    <div class="term">
+      <div><span class="p">$</span> claude plugin marketplace add kolezka/marketplace</div>
+      <div><span class="p">$</span> claude plugin install self-improvement-loop@kolezka <span class="cur"></span></div>
+    </div>
+    <div class="foot">github.com/kolezka/self-improvement-loop</div>
+  </div>
+</section>
+
+<script>
+  // Nodes sit at equal distances along the ring, so the drawn arc and the
+  // travelling dot reach each node exactly when it appears.
+  const STEP_START = 0.4;
+  const STEP_GAP = 6.3 / 6;
+  const ring = document.getElementById("ring");
+  const total = ring.getTotalLength();
+  for (const node of document.querySelectorAll(".node")) {
+    const step = Number(node.dataset.step);
+    const pt = ring.getPointAtLength((total * step) / 6);
+    node.style.left = `${pt.x}px`;
+    node.style.top = `${pt.y}px`;
+    const at = STEP_START + step * STEP_GAP;
+    node.style.animation = `pop 0.45s ease-out ${at}s both, glow 0.9s ease-out ${at}s both`;
+  }
+
+  const params = new URLSearchParams(location.search);
+  document.getElementById(params.get("scene") ?? "title").classList.add("on");
+  if (params.has("render")) document.documentElement.classList.add("render");
+
+  // record.ts calls this once per frame.
+  window.seek = (seconds) => {
+    for (const anim of document.getAnimations()) anim.currentTime = seconds * 1000;
+  };
+</script>
+</body>
+</html>

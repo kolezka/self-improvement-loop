@@ -6,7 +6,7 @@
 // upgrade changes `${CLAUDE_PLUGIN_ROOT}`; the shim resolves the current
 // install at call time, so an installed schedule never goes stale.
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
@@ -35,7 +35,7 @@ export const realRunner: Runner = (cmd) => {
 
 // Bun's homedir() does not follow a HOME change made after startup, so a test
 // that points HOME at a temp dir would still write into the real LaunchAgents.
-function home(): string {
+export function home(): string {
   return process.env["HOME"] || homedir();
 }
 
@@ -219,8 +219,20 @@ export function renderLaunchd(intervalMin: number, web: boolean, envPath: string
   return units;
 }
 
-function installShim(): string {
+/** A symlink at an install destination is the user's own wiring. Copying onto
+ * it would overwrite the file it points at, often a tracked file in a checkout. */
+export function isSymlink(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
+  }
+}
+
+export function installShim(): string {
   const dest = shimPath();
+  if (isSymlink(dest)) return dest;
   mkdirSync(dirname(dest), { recursive: true });
   const src = join(paths.pluginRoot(), "scripts", "sil");
   copyFileSync(src, dest);

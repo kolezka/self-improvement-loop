@@ -3,7 +3,8 @@
 **A Claude Code plugin that learns from your sessions.** It reflects on them in
 the background, promotes recurring lessons into skills, hooks, rules and agents,
 and tracks whether those artifacts actually get used. Nothing reaches a shared
-remote without a human.
+remote without a human. A Codex agent can operate the same loop through the
+same skill.
 
 [![CI](https://github.com/kolezka/self-improvement-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/kolezka/self-improvement-loop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kolezka/self-improvement-loop?label=release)](https://github.com/kolezka/self-improvement-loop/releases)
@@ -14,15 +15,16 @@ remote without a human.
 
 About 30 seconds, no sound. Also as [MP4](docs/media/demo.mp4).
 
-OpenClaw sessions feed the same loop. See [`docs/OPENCLAW.md`](docs/OPENCLAW.md).
-
 ## Contents
 
 - [How the loop works](#how-the-loop-works)
+- [Hosts: Claude Code, Codex, OpenClaw](#hosts-claude-code-codex-openclaw)
 - [Requirements](#requirements)
 - [Install](#install)
 - [Quick start](#quick-start)
-- [Commands](#commands)
+- [Using the loop from an agent](#using-the-loop-from-an-agent)
+- [CLI reference](#cli-reference)
+- [Reviewing a staged artifact](#reviewing-a-staged-artifact)
 - [How lessons reach a session](#how-lessons-reach-a-session)
 - [Feedback and scorecards](#feedback-and-scorecards)
 - [Configuration](#configuration)
@@ -31,6 +33,7 @@ OpenClaw sessions feed the same loop. See [`docs/OPENCLAW.md`](docs/OPENCLAW.md)
 - [Patterns and aliases](#patterns-and-aliases)
 - [Moving to another host](#moving-to-another-host)
 - [Privacy](#privacy)
+- [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Documentation](#documentation)
 - [License](#license)
@@ -65,6 +68,24 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture and
 [`docs/V1-PARITY.md`](docs/V1-PARITY.md) for what carried over from the previous
 (`dotfiles-next`) version of this loop and what changed.
 
+## Hosts: Claude Code, Codex, OpenClaw
+
+The engine is the `sil` CLI. A host is an agent whose sessions feed the loop,
+or whose agent operates it.
+
+| | Claude Code | Codex | OpenClaw |
+| --- | --- | --- | --- |
+| Sessions feed the loop | yes, plugin hooks | no | yes, plugin or `sil openclaw scan` |
+| Lessons delivered | `SessionStart` and `UserPromptSubmit` context | no, `sil lessons` reads them | managed block in `AGENTS.md` |
+| Skill use counted | yes | no | yes, on a read of the `SKILL.md` |
+| Agent skill | ships with the plugin | `sil codex install` | `sil openclaw install` |
+| Slash commands | `/reflect`, `/loop`, `/curriculum`, `/feedback` | none | none |
+
+Claude Code and Codex load the same skill file,
+[`skills/self-improvement-loop/SKILL.md`](skills/self-improvement-loop/SKILL.md).
+OpenClaw has its own, because lessons reach it a different way. See
+[`docs/OPENCLAW.md`](docs/OPENCLAW.md).
+
 ## Requirements
 
 | Requirement | Notes |
@@ -72,6 +93,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture and
 | `bun` >= 1.4.2 | Runs every part of the plugin: hook fast path, CLI, worker, web UI. |
 | `git` | Artifacts are staged on a branch in a target repo. |
 | A model endpoint | An OpenAI-compatible proxy (LiteLLM, Ollama) or the `claude` CLI on `PATH`. |
+| Codex CLI (optional) | Only to operate the loop from Codex. |
 
 ## Install
 
@@ -80,46 +102,130 @@ claude plugin marketplace add kolezka/marketplace
 claude plugin install self-improvement-loop@kolezka
 ```
 
-See [`docs/INSTALL.md`](docs/INSTALL.md) for local dev installs and running on a
-schedule.
+In any Claude Code session, `/loop` then prints status and confirms the plugin
+is wired up.
+
+To operate the loop from Codex as well, run the plugin's own copy of the CLI
+once (no `sil` shim exists yet):
+
+```sh
+~/.claude/plugins/cache/kolezka/self-improvement-loop/<version>/scripts/sil codex install
+```
+
+It copies the skill to `~/.agents/skills/self-improvement-loop/SKILL.md`, where
+Codex finds it, and writes the `sil` shim to `~/.local/bin/sil`. Both are
+copies, so run `sil codex install` again after a plugin update. A symlink you
+put at either path is left alone.
+
+See [`docs/INSTALL.md`](docs/INSTALL.md) for local dev installs, the web UI on
+another machine, and running on a schedule.
 
 ## Quick start
 
+Until a shim exists, call the plugin's own copy of the CLI. Claude Code keeps it
+under its plugin cache:
+
 ```sh
-sil init   # write config templates and a learned/ repo for the default world
-sil web    # open the local review UI
+SIL=~/.claude/plugins/cache/kolezka/self-improvement-loop/<version>/scripts/sil
+"$SIL" init                     # config templates and a learned/ repo for the default world
+$EDITOR ~/.config/self-improvement-loop/llm.yaml   # set models.critic, models.drafter, models.judge
+"$SIL" status                   # worlds, queue, worker and model wiring
+"$SIL" schedule install --web   # worker on a timer, web UI as a service, shim in ~/.local/bin
+sil status                      # from here on, plain sil
 ```
 
-`sil init` writes `config.yaml` and `llm.yaml` templates and a `learned/` repo
-for the default world. Edit `llm.yaml` and set `models.critic`,
-`models.drafter` and `models.judge` before the worker can call a model.
+The worker cannot call a model until `llm.yaml` names a model for each of the
+three roles. After `sil schedule install`, plain `sil` works from any shell
+that has `~/.local/bin` on `PATH`, and the web UI answers at
+`http://127.0.0.1:8766/` (the port is `web.port` in `config.yaml`).
 
-## Commands
+## Using the loop from an agent
+
+The skill teaches an agent the real command surface: which commands need
+`--world`, how to read reflections and pending lessons, how to rate an artifact,
+and how to accept a staged one only after the human saw its diff.
+
+**Claude Code** loads the skill with the plugin. These slash commands come with
+it:
+
+| Command | What it does |
+| --- | --- |
+| `/reflect` | Queue the current session for a background reflection. Returns at once. |
+| `/loop` | Print loop status. `/loop web` starts the web UI, `/loop run` triggers one worker pass. |
+| `/curriculum` | Dry-run preview of what would be promoted. `/curriculum apply` drafts and stages branches, detached. |
+| `/feedback <type>:<name> good\|bad [note]` | Record a vote on an artifact. |
+
+**Codex** gets the same skill from `sil codex install`. Mention it with
+`$self-improvement-loop`, or let Codex pick it from its description. A Codex
+agent can check status, read reflections and lessons, review and rate
+artifacts. It cannot queue its own session: nothing records Codex sessions yet,
+and the skill tells the agent to say so instead of running `sil reflect`.
+
+## CLI reference
 
 | Command | What it does |
 | --- | --- |
 | `sil init` | Write config templates and the default world. |
 | `sil status` | Show worlds, queue, worker state and model wiring. |
-| `sil web` | Serve the local review UI. |
-| `sil worker --once` | Run one reflection pass by hand. |
-| `sil curriculum` | Run a promotion pass over clustered reflections. |
-| `sil review` | Review staged artifacts from the terminal. |
-| `sil artifacts` | List artifacts with their scorecards. |
-| `sil feedback add <artifact> good\|bad` | Rate an artifact. |
-| `sil worlds` | Add, list and edit worlds. |
-| `sil llm` | Inspect and switch model endpoints per role. |
-| `sil aliases` | Fold near-duplicate pattern slugs together. |
+| `sil web` | Serve the local review UI. It prints the URL and keeps running. |
+| `sil worker --once` | Run one worker pass by hand: reflections, then curriculum when it is due. `--no-curriculum` skips curriculum. It calls a model. |
+| `sil reflect --session <id>` or `--cwd <path>` | Mark a pending Claude Code queue entry ended. `--now` also runs the worker. |
+| `sil reflections list`, `show <id>` | List reflections (`--pattern`, `--limit`) or print one. |
+| `sil lessons` | List the lessons waiting in the inbox. Delivers nothing. |
+| `sil curriculum plan`, `run --apply` | Preview a promotion pass, or draft and stage branches. |
+| `sil review list`, `show`, `accept`, `reject`, `rehome`, `retire` | Review staged artifacts from the terminal. |
+| `sil artifacts` | List artifacts with their scorecards. `sil artifacts rebuild --world <w>` recomputes them. |
+| `sil feedback add <type>:<name> good\|bad` | Rate an artifact. `sil feedback list` shows every vote. |
+| `sil worlds list`, `add`, `import-kb` | Manage worlds. |
+| `sil llm list`, `use`, `set-model` | Inspect and switch model endpoints per role. |
+| `sil aliases list`, `set`, `rm`, `suggest` | Fold near-duplicate pattern slugs together. |
+| `sil schedule install`, `uninstall`, `show` | Run the worker and web UI under systemd or launchd. |
+| `sil logs <name>` | Tail the `hook`, `worker`, `web` or `curriculum` log. |
+| `sil codex install` | Install the skill and the `sil` shim for Codex. |
+| `sil openclaw install`, `sync`, `scan`, `status` | Run the loop against an OpenClaw install. |
 | `sil export <path>` | Write a migration bundle: config, worlds, reflections, learned repos and history. |
 | `sil import bundle <path>` | Restore a migration bundle on another host. |
 
-The plugin also ships slash commands: `/loop`, `/reflect`, `/curriculum` and
-`/feedback`.
+Every command takes `--help`. Read commands resolve the world from the current
+directory. The commands that change a review, and `reflections show`, need
+`--world <name>`.
+
+## Reviewing a staged artifact
+
+The web UI is the easiest way. From the terminal:
+
+```sh
+sil review list                                   # pattern, type, count, branch
+sil review show verify-callsites --world work     # body, reviewed_state, any accept block
+sil review show verify-callsites --world work --diff
+sil review accept verify-callsites --world work --reviewed-state <hash from the diff>
+```
+
+Accept is bound to the `reviewed_state` digest of the exact diff you saw. If
+the branch moved since, accept refuses with `reviewed state changed since
+preview`; look at the new diff and accept that one. Accept merges into the
+world's target repo, and a world with `remote: push` or `remote: pr` also pushes
+or opens a PR.
+
+`sil review reject <pattern> --world <w>` drops a staged branch.
+`sil review retire <pattern> --world <w> --yes` stages the removal of a live
+artifact, and `sil review rehome <pattern> --type <type> --world <w>` stages a
+move to another type. Both take effect only when their branch is accepted.
+
+`promotion.auto_merge: true` in `config.yaml` skips the review: curriculum
+fast-forwards a staged branch into the target repo's default branch on its own.
+It is off by default, never applies to an `llm: local` world, and never pushes.
 
 ## How lessons reach a session
 
-`SessionStart` and `UserPromptSubmit` hooks inject up to a few undelivered
-lessons for the current world as `additionalContext`. A lesson is delivered
-once, then marked so it is never repeated in a later session.
+In Claude Code, `SessionStart` injects the world's managed rules block (when
+`rules_inject` is on), up to 3 undelivered lessons and a one-line loop status.
+`UserPromptSubmit` delivers lessons that arrived since the session started. A
+lesson is delivered once, then marked so it never repeats in a later session.
+
+OpenClaw gets the same lessons through a managed block in the workspace
+`AGENTS.md`. Codex gets nothing injected; `sil lessons` lists what is waiting
+without marking anything delivered.
 
 ## Feedback and scorecards
 
@@ -140,14 +246,19 @@ artifacts`). The curriculum planner reads scorecards and proposes `refine` or
 
 ## Configuration
 
-| File | Contents |
+| Path | Contents |
 | --- | --- |
 | `~/.config/self-improvement-loop/config.yaml` | Worlds, promotion thresholds, worker cadence, web UI port. |
 | `~/.config/self-improvement-loop/llm.yaml` | Model endpoints and the three model roles (`critic`, `drafter`, `judge`). |
+| `~/.local/state/self-improvement-loop/` | Queue, usage events, feedback, inbox, logs, `worker.lock`. |
+| `~/.local/share/self-improvement-loop/` | Reflections and aliases per world, and the built-in `learned/` repo. |
+
+`SIL_CONFIG_DIR`, `SIL_STATE_DIR` and `SIL_DATA_DIR` move each of them.
 
 Each endpoint carries its own model names. `sil llm list` shows which endpoint
-serves each role, `sil llm use <endpoint>` switches all three, and `sil llm use
-<endpoint> --role critic` switches one.
+serves each role, `sil llm use <endpoint>` switches all three, `sil llm use
+<endpoint> --role critic` switches one, and `sil llm set-model <role> <model>`
+changes the model a role asks for.
 
 ## Worlds
 
@@ -250,27 +361,45 @@ calls leave the machine, to whatever endpoint you configured. Curriculum never
 pushes to a remote on its own; accept is a human action, and `remote: push|pr`
 is an explicit per-world opt-in on top of that.
 
+`sil codex install` writes two files, the skill and the shim, and reads nothing
+from Codex.
+
 A migration bundle carries `config.yaml` and `llm.yaml` only. No other file from
 the config directory is read, so an `env` file you keep next to them never
 enters a bundle.
 
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| `ModelNotConfigured` | A role has no model. `sil llm list`, then `sil llm set-model <role> <model>`. A scheduled worker also needs the endpoint's API key env var in its own environment. |
+| Nothing ever gets reflected | `sil schedule show`. With no unit, the worker runs only when a Claude Code hook kicks it (`worker.auto_kick`, on by default) or on `sil worker --once`. Then `sil logs worker`. |
+| Queue entry `skipped: transcript not persisted` | The session ran with `--no-session-persistence`. Nothing to fix. |
+| Queue entry `failed` | The reflection ran and broke. `sil logs worker` has the error. |
+| `sil: command not found` | Run `sil schedule install` or `sil codex install` once through the plugin's copy, see [Quick start](#quick-start). |
+
+More in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
 ## Development
 
-The repo is a Bun workspace: `apps/` (cli, hook, server, web) and `packages/`
-(core, critic, curriculum, feedback, nudges, openclaw, ops, providers, review,
-store, transcript, worker).
+The repo is a Bun workspace: `apps/` (cli, hook, hook-module, server, web) and
+`packages/` (core, critic, curriculum, feedback, nudges, openclaw, ops,
+providers, review, store, transcript, worker).
 
 ```sh
-make install       # bun install
-make build         # build dist/, which the hooks run
-make test          # bun test
-make typecheck     # tsc --noEmit
-make lint-dashes   # fail on an em dash or en dash in tracked text
-make dev-install   # claude --plugin-dir $(CURDIR)
+bun install
+bun run lint:dashes   # fail on an em dash or en dash in tracked text
+bun run typecheck
+bun run check:web     # svelte-check
+bun run build         # writes dist/, which the hooks run
+bun test
+make dev-install      # claude --plugin-dir .
 ```
 
-`dist/` is untracked and the hooks run `dist/hook.js`, so `make build` is not
-optional for a local dev install.
+CI runs the same steps in that order, plus a check that `bun.lock` did not
+change. Build before testing: `dist/` is untracked, the hooks run
+`dist/hook.js`, and the drift tests skip without a build. `bun run sil <args>`
+runs the CLI from source.
 
 The README demo is recorded by `bun run build && bun run demo:record`. It seeds
 a fake home in a temp dir (`scripts/demo/seed.ts`), drives `sil web` over it
@@ -283,7 +412,7 @@ needs `ffmpeg` and a Chromium binary (`CHROMIUM_PATH`, default
 | Document | Contents |
 | --- | --- |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Design rules, runtime layout, full loop mechanics. |
-| [`docs/INSTALL.md`](docs/INSTALL.md) | Marketplace install, local dev install, scheduling. |
+| [`docs/INSTALL.md`](docs/INSTALL.md) | Marketplace install, local dev install, Codex, scheduling. |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Daily loop, reviewing, host migration, key rotation, troubleshooting. |
 | [`docs/OPENCLAW.md`](docs/OPENCLAW.md) | Running the loop on OpenClaw sessions. |
 | [`docs/BENCHMARK.md`](docs/BENCHMARK.md) | Engine benchmark: hook fast path, worker, curriculum, API timings. |

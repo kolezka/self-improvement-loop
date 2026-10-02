@@ -72,6 +72,35 @@ sil status
 sil web
 ```
 
+## Codex
+
+The first time, before any shim exists, run the plugin's own copy:
+
+```
+~/.claude/plugins/cache/kolezka/self-improvement-loop/<version>/scripts/sil codex install
+```
+
+This copies `skills/self-improvement-loop/SKILL.md`, the same skill Claude Code
+loads, to `~/.agents/skills/self-improvement-loop/SKILL.md`. That is the user
+skill directory Codex scans. It also writes the `~/.local/bin/sil` shim, so a
+Codex agent can call `sil`, and warns when that directory is not on `PATH`.
+
+Both files are copies, never symlinks, because the plugin cache path changes
+with every version. Run `sil codex install` again after a plugin update. If you
+put a symlink at either path yourself, it is left alone and nothing is written
+through it.
+
+The shim finds the plugin through `SIL_PLUGIN_ROOT`, else through Claude Code's
+`installed_plugins.json`. With no marketplace install, for example a dev
+checkout, export `SIL_PLUGIN_ROOT=/path/to/self-improvement-loop` in the shell
+Codex runs from.
+
+The skill lets a Codex agent operate the loop: status, reflections, lessons,
+review and feedback. Codex sessions do not feed the loop. Nothing records them
+and there is no Codex transcript parser, so a Codex agent asked to queue its
+session says it cannot. To remove the skill, delete
+`~/.agents/skills/self-improvement-loop`.
+
 ## Function hooks (early access)
 
 Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment before starting

@@ -51,7 +51,8 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [x] release workflow: manual bump, build, tag + `release` branch + zip asset (`.github/workflows/release.yml`)
 - [x] CI workflow on push/PR: `.github/workflows/ci.yml`. It now builds before the tests, because `dist/` is untracked and the drift test skips without a build.
 - [ ] second review by another model family (Codex) before use on employer repos
-- [ ] Codex and OpenCode have no hook equivalent; V1 had a parity build, V2 has none
+- [x] Codex can operate the loop: `sil codex install` copies the shared skill to `~/.agents/skills` and writes the shim (2026-10-02)
+- [ ] Codex sessions still do not feed the loop. Codex plugins now take `hooks/hooks.json` with `PLUGIN_ROOT` (developers.openai.com/codex/plugins/build, read 2026-10-02), so a Codex transcript adapter plus hooks is possible. Not built. A Codex manifest in this repo would pick up the Claude `hooks/hooks.json` by default, so that needs its own hooks file first. OpenCode: unchanged, no hook equivalent.
 - [x] Claude Code function hooks (Mods, upstream anthropics/claude-code#91870): assessed and then built 2026-09-21 (see "Function hooks module" below). Still unshipped upstream and flag-gated (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`); without the flag the `modules` key is ignored and nothing changes. Re-check the upstream CHANGELOG before relying on it in a release note.
 
 ## Web UI version badge (done 2026-09-19)

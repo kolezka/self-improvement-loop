@@ -13,6 +13,7 @@ import { defaultDeps, type Deps } from "./deps.ts";
 import { cmdAliasesList, cmdAliasesRm, cmdAliasesSet, cmdAliasesSuggest } from "./commands/aliases.ts";
 import { cmdArtifacts } from "./commands/artifacts.ts";
 import { cmdExport, cmdImportBundle } from "./commands/bundle.ts";
+import { cmdCodexInstall } from "./commands/codex.ts";
 import { cmdCurriculumPlan, cmdCurriculumRepairPromotedAt, cmdCurriculumRun } from "./commands/curriculum.ts";
 import { cmdFeedbackAdd, cmdFeedbackList } from "./commands/feedback.ts";
 import { cmdHookSnapshot } from "./commands/hookSnapshot.ts";
@@ -274,6 +275,12 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .command("status")
     .option("--json")
     .action(wire((opts) => cmdOpenclawStatus(opts)));
+
+  const codex = program.command("codex").description("let a Codex agent operate the loop");
+  codex
+    .command("install")
+    .description("copy the loop skill into ~/.agents/skills and install the sil shim")
+    .action(wire(() => cmdCodexInstall()));
 
   program
     .command("export")

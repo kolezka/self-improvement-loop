@@ -132,3 +132,8 @@
 - 2026-10-01: `propose()` only returns `retire-candidate` for an artifact with zero
   uses and zero fires. Misfires and bad votes on a used artifact give `refine`. Read
   the branch order before seeding data for a proposal you want to show.
+- 2026-10-02: A baseline run of the old skill showed agents calling `sil review
+  accept <pattern>` with no `--world` and no `--reviewed-state`, both required,
+  and a Codex agent running `sil reflect` with no flags and reporting the session
+  queued. A skill that lists commands without their required flags gets guessed
+  at. Test a skill change with a subagent that may read only the skill.

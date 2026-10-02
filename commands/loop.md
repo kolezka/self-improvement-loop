@@ -18,13 +18,17 @@ Run and print the output verbatim, as a short summary (not the raw JSON):
 Start it detached, do not wait for it to exit:
 
 ```sh
-nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" web > /dev/null 2>&1 &
+out="$(mktemp)"
+nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" web > "$out" 2>&1 &
 sleep 1
-"${CLAUDE_PLUGIN_ROOT}/scripts/sil" logs web --lines 5
+cat "$out"
 ```
 
-Report the URL printed in the `web` log (it contains a one-time token in the
-fragment). Do not open a browser yourself.
+`sil web` prints its URL on stdout, not to the `web` log, so read it from that
+file. Report the URL. On loopback it has no token; a bind off loopback carries
+the token in the fragment. If the file shows the port is taken, the web service
+is probably already running: say so and give `sil schedule show`. Do not open a
+browser yourself.
 
 ## `$1` is `run`: trigger a worker pass
 

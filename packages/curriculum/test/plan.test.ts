@@ -22,12 +22,14 @@ import {
   branchName,
   cluster,
   draftingTexts,
+  draftMessages,
   git,
   lessonTexts,
   loadPayloadCorpus,
   MAX_SAMPLED_PAYLOADS,
   placeholderBody,
   plan,
+  RECENT_LESSONS,
   reflections,
   scorecardByPattern,
   scorecards,
@@ -165,6 +167,40 @@ describe("clustering and aliases", () => {
     const groups = cluster(reflections(world));
     expect(groups.map((g) => g.pattern)).toEqual([PATTERN]);
     expect(groups[0]!.items.length).toBe(3);
+  });
+
+  test("a same-day cluster orders by write time, and the newest lesson reaches the drafter prompt", () => {
+    // RECENT_LESSONS + 1 same-day reflections. Ids are zero-padded 00..12 in
+    // ascending order, but created_at runs the OTHER way: id "00" is the
+    // most recently written (23:00) and id "12" the oldest (11:00). A fix
+    // that still tiebreaks on id instead of created_at would hand the
+    // drafter the wrong end of the window: id "00" (the true newest lesson)
+    // would be the one left out, exactly the incident this guards.
+    const day = "2026-09-10";
+    const count = RECENT_LESSONS + 1;
+    for (let k = 0; k < count; k++) {
+      const id = `${day}-${PATTERN}-${String(k).padStart(2, "0")}`;
+      const createdAt = `${day}T${String(23 - k).padStart(2, "0")}:00:00.000Z`;
+      const lesson = `${LESSON} Marker UNIQUE_SAMEDAY_LESSON_${k}.`;
+      writeReflection(world.name, { id, created: day, created_at: createdAt }, reflectionBody(PATTERN, day, lesson));
+    }
+
+    const groups = cluster(reflections(world));
+    const items = groups.find((g) => g.pattern === PATTERN)!.items;
+    expect(items.length).toBe(count);
+    // Oldest to newest by created_at: k=12 (11:00) first, k=0 (23:00) last.
+    expect(items.map((r) => r.created_at)).toEqual([...items.map((r) => r.created_at)].sort());
+    expect(items[0]!.lesson).toContain("UNIQUE_SAMEDAY_LESSON_12");
+    expect(items[count - 1]!.lesson).toContain("UNIQUE_SAMEDAY_LESSON_0");
+
+    // The real path: lessonTexts -> draftMessages, with a summary present so
+    // the prompt quotes only the newest RECENT_LESSONS.
+    const lessons = lessonTexts(items);
+    const messages = draftMessages(PATTERN, lessons, null, null, { summary: "Earlier lessons, summarised." });
+    const prompt = messages.map((m) => m.content).join("\n");
+    expect(prompt).toContain("UNIQUE_SAMEDAY_LESSON_0");
+    // The true oldest lesson is the one correctly left out of the quoted window.
+    expect(prompt).not.toContain("UNIQUE_SAMEDAY_LESSON_12");
   });
 });
 

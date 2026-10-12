@@ -54,12 +54,17 @@ export function parseReflection(path: string, world: string): ReflectionT | null
   const pattern = reflectionPattern(body) ?? reflectionPattern(text);
   if (!pattern) return null;
   const created = meta["created"] ? String(meta["created"]) : new Date(statSync(path).mtimeMs).toISOString().slice(0, 10);
+  // A file written before this field existed has no front matter value, so
+  // fall back to the file's own mtime rather than null: a real write-order
+  // signal beats no signal at all.
+  const createdAt = meta["created_at"] ? String(meta["created_at"]) : new Date(statSync(path).mtimeMs).toISOString();
   const parsed = Reflection.safeParse({
     id: meta["id"] ? String(meta["id"]) : basename(path).replace(/\.md$/, ""),
     world: meta["world"] ? String(meta["world"]) : world,
     pattern,
     path,
     created,
+    created_at: createdAt,
     session_id: strOrNull(meta["session_id"]),
     cwd: strOrNull(meta["cwd"]),
     revision: strOrNull(meta["revision"]),
@@ -127,7 +132,20 @@ export function listReflections(world: string, extraDirs: string[] = []): Reflec
       if (r && r.world === world) out.push(r);
     }
   }
-  out.sort((a, b) => (a.created === b.created ? (a.id < b.id ? 1 : -1) : a.created < b.created ? 1 : -1));
+  // `created` (date-only) stays the primary key so a hand-edited date wins
+  // across days. Same-day ties break on `created_at` (write time), newest
+  // first; `id` is only the last resort when both are equal.
+  out.sort((a, b) => {
+    if (a.created !== b.created) return a.created < b.created ? 1 : -1;
+    const aAt = a.created_at;
+    const bAt = b.created_at;
+    if (aAt !== bAt) {
+      if (aAt === null) return 1;
+      if (bAt === null) return -1;
+      return aAt < bAt ? 1 : -1;
+    }
+    return a.id < b.id ? 1 : -1;
+  });
   return out;
 }
 
@@ -172,6 +190,7 @@ export function writeReflection(world: string, meta: Record<string, unknown>, bo
     world,
     pattern,
     created: meta["created"] ? String(meta["created"]) : fsx.today(),
+    created_at: meta["created_at"] ? String(meta["created_at"]) : fsx.nowIso(),
     ...meta,
   };
   const front = YAML.stringify(full).trimEnd();

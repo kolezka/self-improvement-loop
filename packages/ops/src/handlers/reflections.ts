@@ -13,6 +13,7 @@ export function reflectionsList(args: ReflectionListArgs) {
     id: r.id,
     pattern: r.pattern,
     created: r.created,
+    created_at: r.created_at,
     lesson: r.lesson,
     artifacts_used: r.artifacts_used,
     artifacts_helpful: r.artifacts_helpful,

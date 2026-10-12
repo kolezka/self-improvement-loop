@@ -265,6 +265,10 @@ export const Reflection = z.object({
   pattern: slug,
   path: z.string(),
   created: z.string(),
+  // Full ISO timestamp, additive to `created` (date-only). Breaks same-day
+  // ties in write order. Optional: old files predate this field and fall
+  // back to file mtime in parseReflection, never to null.
+  created_at: isoTs.nullable().default(null),
   session_id: z.string().nullable().default(null),
   cwd: z.string().nullable().default(null),
   revision: z.string().nullable().default(null),

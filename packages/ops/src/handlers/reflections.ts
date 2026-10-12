@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { paths, ValidationError } from "@sil/core";
 import { listReflections, parseReflection } from "@sil/store";
-import type { ReflectionArgs, ReflectionListArgs } from "../args.ts";
+import type { ReflectionArgs, ReflectionListArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 
 export function reflectionsList(args: ReflectionListArgs) {
@@ -18,6 +18,12 @@ export function reflectionsList(args: ReflectionListArgs) {
     artifacts_helpful: r.artifacts_helpful,
     artifacts_misfired: r.artifacts_misfired,
   }));
+}
+
+/** Total reflections in a world, unbounded by any list window. */
+export function reflectionsCount(args: WorldArgs): { total: number } {
+  const [, world] = cfgWorld(args.world);
+  return { total: listReflections(world.name).length };
 }
 
 export function reflectionsGet(args: ReflectionArgs) {

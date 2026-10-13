@@ -48,7 +48,8 @@ correction into a skill, agent, rule, nudge or CLAUDE.md edit.
 | Piece | Path | Role |
 | --- | --- | --- |
 | Slash command | `commands/learn.md` | Claude Code entry, takes optional `[note]` |
-| Procedure | `skills/self-improvement-loop/learn.md` | The steps below. `commands/learn.md` points at it, so the two cannot drift |
+| Procedure | `skills/self-improvement-loop/learn.md` | The steps below. `commands/learn.md` points at it, so the two cannot drift. Kept out of `SKILL.md`, which has a 120 line budget (`tests/plugin-manifest.test.ts`) |
+| Codex copy | `apps/cli/src/commands/codex.ts` | `sil codex install` copies `learn.md` next to `SKILL.md`; today it copies `SKILL.md` only (`codex.ts:24`) |
 | Skill index | `skills/self-improvement-loop/SKILL.md` | One row in the quick reference: "capture a lesson now: read `learn.md`" |
 | CLI | `sil artifacts register` | Ledger write |
 | Op | `packages/review` `register()` | The single write point the CLI calls |
@@ -60,32 +61,43 @@ correction into a skill, agent, rule, nudge or CLAUDE.md edit.
    overrides the guess. State the failure in one sentence and the check that
    would have caught it in a second. Wait for the operator to confirm. A wrong
    reading here poisons every later step.
-2. **Dedupe.** Run `sil artifacts --json` and `sil curriculum plan` (no model
+2. **Pick the world.** Run `sil status` and `sil worlds list`, propose the
+   world whose target this lesson belongs to, and get it confirmed. Every later
+   `sil` call passes `--world <name>`; never rely on cwd resolution, which can
+   record a global lesson in an unrelated project's world.
+3. **Dedupe.** Run `sil artifacts --json` and `sil curriculum plan` (no model
    calls), then `rg` the candidate targets: project `CLAUDE.md`, `.claude/`,
    `~/.claude/CLAUDE.md`, `~/.claude/skills/`, `~/.claude/agents/`. If an
    artifact or a pending cluster covers the same failure, propose extending it
    and reuse its pattern slug. A tagged `<!--rule:slug-->` line is never the
    thing extended. The loop owns it; vote on it with `/feedback` instead.
-3. **Pick a type, with the reason stated.**
+4. **Pick a type, with the reason stated.**
    - rule: a short invariant that is always true in its scope.
    - skill: a procedure with a trigger ("before claiming no X, grep all of Y").
    - agent: a reusable role with its own context, such as a reviewer.
    - nudge: a reminder bound to a tool event, context only.
-4. **Pick a scope.** Suggest one: a trap specific to this repo goes to the
+5. **Pick a scope.** Suggest one: a trap specific to this repo goes to the
    project, a behaviour that applies everywhere goes to `~/.claude/`. The
    operator confirms or changes it. A nudge has no scope choice: the hook only
    loads nudges from the world's `nudges_dir` in its target repo
-   (`apps/hook/src/handlers.ts:136`), so a nudge is written there, on a branch,
-   and fires only after that branch is merged into the live checkout.
-5. **Draft and show the diff.** Write nothing yet. Wait for an explicit yes to
-   that diff. A yes given before the diff was shown does not count.
-6. **Write.** A file inside a git repo goes on a worktree branch, committed,
+   (`apps/hook/src/handlers.ts:136`). The agent writes the approved nudge JSON
+   to a scratch file and `sil artifacts register` copies it into `nudges_dir`
+   in the same commit as the ledger row, so it is live on that commit.
+6. **Preflight, draft and show the diff.** Run `sil artifacts register ...
+   --dry-run`. It runs every refusal check and prints the ledger row it would
+   commit, without writing. Show the artifact diff and that row together. Write
+   nothing yet. Wait for an explicit yes to both. A yes given before they were
+   shown does not count.
+7. **Write.** A file inside a git repo goes on a worktree branch, committed,
    never on the default branch directly. A file that only works at its
    installed path (`~/.claude/*`) is edited in place and committed on its own
    if that directory is a repo. Run the repo's dash lint when it has one.
-7. **Register.** `sil artifacts register --type <t> --pattern <slug> --path
-   <absolute path> --note "<one-line failure>"`. If `sil` is not on PATH, say
-   the artifact is not recorded in the loop and stop. Never claim it was.
+8. **Register.** `sil artifacts register --world <w> --type <t> --pattern
+   <slug> --path <absolute path> --note "<one-line lesson>"`. If `sil` is not
+   on PATH, say the artifact is not recorded in the loop and stop. Never claim
+   it was. If register refuses after the write (the target checkout moved off
+   its default branch or got dirty under the artifact paths since the
+   preflight), report the refusal verbatim and the exact command to re-run.
 
 Report: the file written, the branch or commit, and the register result
 verbatim.
@@ -98,7 +110,7 @@ artifact.
 
 ```
 sil artifacts register --type rule|skill|agent|hook --pattern <slug>
-                       --path <abs> [--note <text>] [--world <name>]
+                       --path <abs> --note <text> [--world <name>] [--dry-run]
 ```
 
 World: `resolveWorld` from cwd unless `--world` is given (rule 6: filter by
@@ -109,10 +121,15 @@ world first). Slug: must pass `isSlug`, the same check as `artifactRel`.
 `PromotionEntry` gains two fields, both defaulted, so every existing row parses:
 
 ```ts
-origin: z.enum(["loop", "inline"]).default("loop"),
-// Absolute path of an inline artifact. Outside the target repo, so it never
-// goes in served_by.path, which repair.ts reads as a repo-relative blob path.
-external_path: z.string().nullable().default(null),
+// Absent means "loop". Optional, not defaulted: a default would be written
+// into every row on the next save and churn the whole ledger file.
+origin: z.enum(["loop", "inline"]).optional(),
+// Absolute path of an inline artifact outside the target repo. Never in
+// served_by.path, which repair.ts reads as a repo-relative blob path.
+external_path: z.string().optional(),
+// One-line lesson for an inline row. The knowledge map uses it as the gist,
+// since an inline rule lives in a whole CLAUDE.md, not a file of its own.
+note: z.string().optional(),
 ```
 
 The row register writes:
@@ -120,12 +137,16 @@ The row register writes:
 ```ts
 {
   pattern, status: "promoted", origin: "inline",
-  artifact_type: type, served_by: { type, path: null },
-  external_path: abs, promoted_at: now, revised_at: now,
+  artifact_type: type,
+  // skill, agent, rule: the file lives outside the repo.
+  served_by: { type, path: null }, external_path: abs,
+  // hook: the nudge is copied into the repo, so it has a repo path instead.
+  // served_by: { type: "hook", path: artifactRel(world, "hook", pattern) },
+  promoted_at: now, revised_at: now,
   // Reflections already on disk for this pattern are the evidence that led
-  // here, not new recurrence.
-  // New helper: this pattern's alias-resolved count from plan.cluster().
-  promoted_at_count: clusterCount(world, pattern),
+  // here, not new recurrence. Same count reject and retire use.
+  promoted_at_count: max(prior?.promoted_at_count ?? 0,
+    reflections(world).filter((r) => r.pattern === pattern).length),
   last_updated: now,
 }
 ```
@@ -142,8 +163,13 @@ Refusals, each a non-zero exit with the reason:
 
 - the slug fails `isSlug`;
 - `--path` is not absolute or the file does not exist;
-- the pattern already has a row with `origin: "loop"` and status `staged` or
-  `promoted`. The loop owns it, so the operator votes or re-homes instead;
+- the pattern already has a loop row with status `promoted`, or a curriculum
+  branch `curriculum/<world>/<pattern>` exists (a staged loop row lives only
+  on that branch). The loop owns it, so the operator votes or re-homes
+  instead. A `rejected` or `retired` loop row may be replaced: a human already
+  said no to the loop's version;
+- `--type hook` and the file is not JSON, its `pattern` field is not the slug,
+  or `lintHook` reports a problem;
 - the pattern has an `inline` row with a different `external_path`. Re-running
   with the same path updates `revised_at` and `revisions`. That is the "extend
   an existing lesson" case.
@@ -156,14 +182,22 @@ copies, one the loop rewrites and one it cannot see.
 - `plan.ts`: a row with `origin: "inline"` plans as `done`, whatever its
   recurrence. A scorecard proposal of `refine` or `retire-candidate` is still
   reported, tagged `inline: edit <external_path> by hand`.
-- `run.ts`: refuses to stage a pattern whose live row is `inline`. This is a
-  second lock in case a plan bug lets one through, following the existing
-  pattern at `run.ts:551`.
+- `run.ts`: refuses to stage a pattern whose live row is `inline`, right after
+  `prior` is read (`run.ts:288`). A second lock in case a plan bug lets one
+  through.
+- `review accept`: refuses when the live row is `inline`, so an older staged
+  branch cannot overwrite it. `register` already refuses while such a branch
+  exists; this covers a branch created after.
 - `review retire|rehome`: refuse an inline row and print `external_path`.
-- `sil artifacts` and the web Artifacts pane: show `origin=inline` and
-  `external_path`.
-- `repair.ts`: unchanged. It reads `served_by.path`, which is null for inline
-  rows, so it already skips them.
+- `repair.ts`: skips inline rows explicitly. Today it would still compute
+  dates for them from ledger history.
+- `feedback` `propose()`: never `retire-candidate` for an inline rule, since
+  its usage is not counted. Complaints can still propose `refine`.
+- `context.ts`: an inline row's gist is its `note`, so drafts of neighbouring
+  patterns see the lesson text for dedupe.
+- `RouterRow` gains `origin`, and `inventory()` puts `external_path` in its
+  `served_by` column when set. `sil artifacts` prints `origin=inline`. The web
+  Artifacts pane already renders `served_by`, so it needs no change.
 
 ## Usage and feedback
 
@@ -184,8 +218,9 @@ good|bad` works for all four.
   in CLAUDE.md, which Claude Code loads itself, and it must stay untagged
   because the loop rewrites tagged lines. Its scorecard shows `uses_30d 0`, and
   the planner must not read that as a retire signal for `origin: "inline"` rules.
-  A later change could add an `<!--lesson:slug-->` tag that the SessionStart
-  hook counts from CLAUDE.md files.
+  `propose()` skips zero-use retirement for them. A later change could add an
+  `<!--lesson:slug-->` tag that the SessionStart hook counts from CLAUDE.md
+  files.
 - **Same failure, different slug.** If the critic later names the same failure
   differently, a loop cluster can grow beside the inline artifact. Step 2's
   `sil curriculum plan` check catches the clusters that exist today. A later one

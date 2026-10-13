@@ -434,8 +434,8 @@ export function compactUsageEvents(cfg: Config, now: Date = new Date(), minDrop:
   return dropped;
 }
 
-export function rebuild(world: World, cfg: Config): string {
-  const cards = scorecards(world, cfg);
+export function rebuild(world: World, cfg: Config, opts: ScorecardOptions = {}): string {
+  const cards = scorecards(world, cfg, opts);
   const path = paths.scorecardsFile(world.name);
   fsx.writeJson(path, cards);
   return path;

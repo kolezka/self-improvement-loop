@@ -287,7 +287,7 @@ describe("rebuild and load", () => {
   test("round trips through disk", () => {
     const { w, c } = buildWorldAndLedger();
     seedSignals();
-    rebuild(w, c);
+    rebuild(w, c, { now: NOW });
     const loaded = new Map(load(w, c).map((s) => [s.ref, s]));
     expect(loaded.has("agent:dead-thing")).toBe(true);
     expect(loaded.get("agent:dead-thing")!.proposal).toBe("retire-candidate");
@@ -361,7 +361,7 @@ describe("load", () => {
     // Deciding readers call scorecards() instead, live, every time.
     const { w, c } = buildWorldAndLedger();
     seedSignals();
-    rebuild(w, c);
+    rebuild(w, c, { now: NOW });
     const before = new Map(load(w, c).map((s) => [s.ref, s])).get("skill:steady-thing")!;
     expect(before.uses_30d).toBe(2);
 
@@ -623,7 +623,7 @@ describe("recurrence since promotion", () => {
     row();
     use();
     reflect(2);
-    rebuild(world(), cfg(world()));
+    rebuild(world(), cfg(world()), { now: NOW });
     expect(load(world(), cfg(world())).find((c) => c.ref === "rule:recurring")).toMatchObject({ recurrence_30d: 1, snapshot_at: null });
   });
 });

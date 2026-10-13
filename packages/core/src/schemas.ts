@@ -328,6 +328,14 @@ export const PromotionEntry = z.object({
   revisions: z.number().int().default(0),
   commit: z.string().nullable().default(null),
   feedback: Scorecard.nullable().default(null),
+  // Absent means "loop". Optional, not defaulted: a default would be written
+  // into every row on the next save and churn the whole ledger file.
+  origin: z.enum(["loop", "inline"]).optional(),
+  // Absolute path of an inline artifact outside the target repo. Never in
+  // served_by.path, which repair.ts reads as a repo-relative blob path.
+  external_path: z.string().optional(),
+  // One-line lesson of an inline row, used as its gist in the knowledge map.
+  note: z.string().optional(),
 });
 export type PromotionEntry = z.infer<typeof PromotionEntry>;
 
@@ -447,6 +455,7 @@ export const RouterRow = z.object({
   status: z.string(),
   reflections: z.number().int().default(0),
   scorecard: Scorecard.nullable().default(null),
+  origin: z.enum(["loop", "inline"]).optional(),
 });
 export type RouterRow = z.infer<typeof RouterRow>;
 

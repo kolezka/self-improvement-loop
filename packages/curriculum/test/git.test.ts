@@ -3,7 +3,7 @@
 // the loop owns commits on a machine with no git identity.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_TIMEOUT_MS, isTimeoutSignal, signalMessage } from "../src/git.ts";
 import * as git from "../src/git.ts";
@@ -110,5 +110,39 @@ describe("ensureIdentity", () => {
     git.ensureRepo(repo);
 
     expect(git.git(repo, ["config", "user.email"])).toBe(before);
+  });
+});
+
+describe("dirtyPaths", () => {
+  function repoWith(files: Record<string, string>): string {
+    const repo = git.ensureRepo(join(env.tmp, "dirty"));
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(join(repo, rel, ".."), { recursive: true });
+      writeFileSync(join(repo, rel), text);
+    }
+    git.git(repo, ["add", "--", ...Object.keys(files)]);
+    git.git(repo, ["commit", "-q", "-m", "fixture"]);
+    return repo;
+  }
+
+  // A worktree-only edit prints as " M <path>". Trimming the whole output ate
+  // that leading space, so the first path lost its first character.
+  test("keeps the first tracked edit's path intact", () => {
+    const repo = repoWith({ "skills/a/SKILL.md": "a\n" });
+    writeFileSync(join(repo, "skills/a/SKILL.md"), "edited\n");
+    expect(git.dirtyPaths(repo, ["skills"])).toEqual(["skills/a/SKILL.md"]);
+  });
+
+  test("reports a one-character tracked path as dirty", () => {
+    const repo = repoWith({ x: "a\n" });
+    writeFileSync(join(repo, "x"), "edited\n");
+    expect(git.dirtyPaths(repo, ["x"])).toEqual(["x"]);
+  });
+
+  test("control: an untracked first record and a clean tree", () => {
+    const repo = repoWith({ "skills/a/SKILL.md": "a\n" });
+    expect(git.dirtyPaths(repo, ["skills"], { includeUntracked: true })).toEqual([]);
+    writeFileSync(join(repo, "skills/new.md"), "n\n");
+    expect(git.dirtyPaths(repo, ["skills"], { includeUntracked: true })).toEqual(["skills/new.md"]);
   });
 });

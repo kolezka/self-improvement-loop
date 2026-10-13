@@ -75,7 +75,8 @@ correction into a skill, agent, rule, nudge or CLAUDE.md edit.
    - rule: a short invariant that is always true in its scope.
    - skill: a procedure with a trigger ("before claiming no X, grep all of Y").
    - agent: a reusable role with its own context, such as a reviewer.
-   - nudge: a reminder bound to a tool event, context only.
+   - nudge: a reminder bound to a tool event, context only. Registered as
+     `--type hook`, the ledger's name for it.
 5. **Pick a scope.** Suggest one: a trap specific to this repo goes to the
    project, a behaviour that applies everywhere goes to `~/.claude/`. The
    operator confirms or changes it. A nudge has no scope choice: the hook only
@@ -118,7 +119,7 @@ world first). Slug: must pass `isSlug`, the same check as `artifactRel`.
 
 ### Ledger schema change
 
-`PromotionEntry` gains two fields, both defaulted, so every existing row parses:
+`PromotionEntry` gains three optional fields. Absent on every existing row, so old rows parse and save unchanged:
 
 ```ts
 // Absent means "loop". Optional, not defaulted: a default would be written
@@ -222,7 +223,7 @@ good|bad` works for all four.
   `<!--lesson:slug-->` tag that the SessionStart hook counts from CLAUDE.md
   files.
 - **Same failure, different slug.** If the critic later names the same failure
-  differently, a loop cluster can grow beside the inline artifact. Step 2's
+  differently, a loop cluster can grow beside the inline artifact. Step 3's
   `sil curriculum plan` check catches the clusters that exist today. A later one
   needs `sil aliases` like any other duplicate.
 - **Codex nudges.** Codex runs no loop hooks, so a nudge written from Codex
@@ -230,8 +231,9 @@ good|bad` works for all four.
 
 ## Testing
 
-- `packages/core`: old ledger rows parse with `origin: "loop"` and
-  `external_path: null`. A V1 fixture still round-trips.
+- `packages/core`: old ledger rows parse with `origin`, `external_path` and
+  `note` absent, and a save writes none of those keys. A V1 fixture still
+  round-trips.
 - `packages/review` `register()`:
   - writes exactly one commit on the default branch, and the target repo's
     working tree is unchanged;

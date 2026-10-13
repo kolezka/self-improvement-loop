@@ -4,7 +4,7 @@
   import type { HistorySeries } from "../lib/api-types.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { formatTime, plural } from "../lib/format.ts";
-  import { countEscalations, reviewHint as reviewHintText } from "../lib/overview.ts";
+  import { countEscalations, reviewHint as reviewHintText, reviewLink } from "../lib/overview.ts";
   import WorkerStatus from "../components/WorkerStatus.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import BarChart from "../components/charts/BarChart.svelte";
@@ -60,7 +60,9 @@
   let artifacts = $state<Stat>(LOADING);
   let lessons = $state<Stat>(LOADING);
   let threshold = $state<number | null>(null);
-  let escalations = $state(0);
+  // null means not yet loaded, or the curriculum.plan call that would have
+  // counted escalations failed: the real count is unknown, not zero.
+  let escalations = $state<number | null>(null);
   let lastLoad = $state<string | null>(null);
   let healthError = $state<string | null>(null);
   let busy = $state(false);
@@ -119,7 +121,7 @@
         }
       })(),
       totalOf("reflections.count", { world }),
-      (async (): Promise<{ stat: Stat; threshold: number | null; escalations: number }> => {
+      (async (): Promise<{ stat: Stat; threshold: number | null; escalations: number | null }> => {
         try {
           const plan = (await call("curriculum.plan", { world })) as PlanReport;
           return {
@@ -128,7 +130,7 @@
             escalations: countEscalations(plan.actions),
           };
         } catch (e) {
-          return { stat: { status: "error", error: (e as Error).message }, threshold: null, escalations: 0 };
+          return { stat: { status: "error", error: (e as Error).message }, threshold: null, escalations: null };
         }
       })(),
       countOf("review.queue", { world }),
@@ -199,16 +201,22 @@
   }
 
   /** The "Waiting for review" tile's displayed count: staged reviews plus
-   * escalated patterns, since both need a human before anything moves. */
+   * escalated patterns, since both need a human before anything moves. With
+   * the escalated count unknown (the plan call failed), falls back to the
+   * staged count alone rather than padding the unknown with a 0 and
+   * reading as if the total were complete. */
   const reviewTotal = $derived.by((): Stat => {
-    if (review.status !== "ok") return review;
+    if (review.status !== "ok" || escalations === null) return review;
     return { status: "ok", value: review.value + escalations };
   });
 
-  function reviewHint(stat: Stat, escalated: number): string {
+  function stagedCount(stat: Stat): number {
+    return stat.status === "ok" ? stat.value : 0;
+  }
+
+  function reviewHint(stat: Stat, escalated: number | null): string {
     if (stat.status === "error") return "Status unknown";
-    const staged = stat.status === "ok" ? stat.value : 0;
-    return reviewHintText(staged, escalated);
+    return reviewHintText(stagedCount(stat), escalated);
   }
 
   function reflectionsHint(stat: Stat): string {
@@ -282,7 +290,7 @@
       </a>
     </li>
     <li class="stage" class:is-gate={reviewTotal.status === "ok" && reviewTotal.value > 0}>
-      <a class="stage__link" href="#/review">
+      <a class="stage__link" href={reviewLink(stagedCount(review), escalations)}>
         <span class="stage__value">{@render statValue(reviewTotal)}</span>
         <span class="stage__label">Waiting for review</span>
         <span class="stage__hint">{reviewHint(review, escalations)}</span>

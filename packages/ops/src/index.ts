@@ -39,6 +39,7 @@ register({ name: "curriculum.plan", tier: "read", gate: "none", args: Args.World
 register({ name: "curriculum.run", tier: "local", gate: "none", args: Args.WorldArgs, fn: curriculum.curriculumRun, doc: "Spawn a detached curriculum run --apply for a world." });
 register({ name: "reflections.list", tier: "read", gate: "none", args: Args.ReflectionListArgs, fn: reflections.reflectionsList, doc: "List reflections, newest first, filterable by pattern." });
 register({ name: "reflections.get", tier: "read", gate: "none", args: Args.ReflectionArgs, fn: reflections.reflectionsGet, doc: "Full body of one reflection." });
+register({ name: "reflections.count", tier: "read", gate: "none", args: Args.WorldArgs, fn: reflections.reflectionsCount, doc: "Total reflections in a world, not capped like reflections.list." });
 register({ name: "aliases.get", tier: "read", gate: "none", args: Args.WorldArgs, fn: aliases.aliasesGet, doc: "Pattern alias map for a world." });
 register({ name: "aliases.set", tier: "local", gate: "none", args: Args.AliasArgs, fn: aliases.aliasesSet, doc: "Replace the alias map for a world." });
 register({ name: "aliases.suggest", tier: "read", gate: "none", args: Args.WorldArgs, fn: aliases.aliasesSuggest, doc: "Deterministic near-duplicate pattern slug suggestions for a world." });

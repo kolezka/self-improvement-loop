@@ -4,6 +4,7 @@
   import type { HistorySeries } from "../lib/api-types.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { formatTime, plural } from "../lib/format.ts";
+  import { countEscalations, reviewHint as reviewHintText, reviewLink } from "../lib/overview.ts";
   import WorkerStatus from "../components/WorkerStatus.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import BarChart from "../components/charts/BarChart.svelte";
@@ -59,6 +60,9 @@
   let artifacts = $state<Stat>(LOADING);
   let lessons = $state<Stat>(LOADING);
   let threshold = $state<number | null>(null);
+  // null means not yet loaded, or the curriculum.plan call that would have
+  // counted escalations failed: the real count is unknown, not zero.
+  let escalations = $state<number | null>(null);
   let lastLoad = $state<string | null>(null);
   let healthError = $state<string | null>(null);
   let busy = $state(false);
@@ -72,14 +76,23 @@
   let history = $state<HistoryState>({ status: "loading" });
   const HISTORY_DAYS = 30;
 
-  // The reflection stage reads a window, not the whole store, so the number
-  // below it says which window it is.
+  // The tile shows the real total. REFLECTION_WINDOW only words the hint: it
+  // is the same limit the linked Reflections pane applies to its own list.
   const REFLECTION_WINDOW = 500;
 
   async function countOf(op: string, payload: Record<string, unknown>): Promise<Stat> {
     try {
       const items = (await call(op, payload)) as unknown[];
       return { status: "ok", value: Array.isArray(items) ? items.length : 0 };
+    } catch (e) {
+      return { status: "error", error: (e as Error).message };
+    }
+  }
+
+  async function totalOf(op: string, payload: Record<string, unknown>): Promise<Stat> {
+    try {
+      const result = (await call(op, payload)) as { total: number };
+      return { status: "ok", value: result.total };
     } catch (e) {
       return { status: "error", error: (e as Error).message };
     }
@@ -107,13 +120,17 @@
           return { status: "error", error: (e as Error).message };
         }
       })(),
-      countOf("reflections.list", { world, limit: REFLECTION_WINDOW }),
-      (async (): Promise<{ stat: Stat; threshold: number | null }> => {
+      totalOf("reflections.count", { world }),
+      (async (): Promise<{ stat: Stat; threshold: number | null; escalations: number | null }> => {
         try {
           const plan = (await call("curriculum.plan", { world })) as PlanReport;
-          return { stat: { status: "ok", value: plan.actions.filter((a) => a.action === "promote").length }, threshold: plan.threshold };
+          return {
+            stat: { status: "ok", value: plan.actions.filter((a) => a.action === "promote").length },
+            threshold: plan.threshold,
+            escalations: countEscalations(plan.actions),
+          };
         } catch (e) {
-          return { stat: { status: "error", error: (e as Error).message }, threshold: null };
+          return { stat: { status: "error", error: (e as Error).message }, threshold: null, escalations: null };
         }
       })(),
       countOf("review.queue", { world }),
@@ -125,6 +142,7 @@
     reflections = reflectionsStat;
     promote = planResult.stat;
     threshold = planResult.threshold;
+    escalations = planResult.escalations;
     review = reviewStat;
     artifacts = artifactsStat;
     lessons = lessonsStat;
@@ -182,9 +200,28 @@
     }
   }
 
-  function reviewHint(stat: Stat): string {
+  /** The "Waiting for review" tile's displayed count: staged reviews plus
+   * escalated patterns, since both need a human before anything moves. With
+   * the escalated count unknown (the plan call failed), falls back to the
+   * staged count alone rather than padding the unknown with a 0 and
+   * reading as if the total were complete. */
+  const reviewTotal = $derived.by((): Stat => {
+    if (review.status !== "ok" || escalations === null) return review;
+    return { status: "ok", value: review.value + escalations };
+  });
+
+  function stagedCount(stat: Stat): number {
+    return stat.status === "ok" ? stat.value : 0;
+  }
+
+  function reviewHint(stat: Stat, escalated: number | null): string {
     if (stat.status === "error") return "Status unknown";
-    return stat.status === "ok" && stat.value > 0 ? "Your gate, nothing moves without you" : "Nothing needs you";
+    return reviewHintText(stagedCount(stat), escalated);
+  }
+
+  function reflectionsHint(stat: Stat): string {
+    if (stat.status !== "ok") return `Last ${REFLECTION_WINDOW} in this world`;
+    return stat.value > REFLECTION_WINDOW ? `Showing the last ${REFLECTION_WINDOW} of ${stat.value}` : `All ${stat.value} in this world`;
   }
 
   interface ProviderRow {
@@ -242,7 +279,7 @@
       <a class="stage__link" href="#/reflections">
         <span class="stage__value">{@render statValue(reflections)}</span>
         <span class="stage__label">Reflections</span>
-        <span class="stage__hint">Last {REFLECTION_WINDOW} in this world</span>
+        <span class="stage__hint">{reflectionsHint(reflections)}</span>
       </a>
     </li>
     <li class="stage">
@@ -252,11 +289,11 @@
         <span class="stage__hint">{threshold === null ? "Threshold unknown" : `Seen ${threshold} times or more`}</span>
       </a>
     </li>
-    <li class="stage" class:is-gate={review.status === "ok" && review.value > 0}>
-      <a class="stage__link" href="#/review">
-        <span class="stage__value">{@render statValue(review)}</span>
+    <li class="stage" class:is-gate={reviewTotal.status === "ok" && reviewTotal.value > 0}>
+      <a class="stage__link" href={reviewLink(stagedCount(review), escalations)}>
+        <span class="stage__value">{@render statValue(reviewTotal)}</span>
         <span class="stage__label">Waiting for review</span>
-        <span class="stage__hint">{reviewHint(review)}</span>
+        <span class="stage__hint">{reviewHint(review, escalations)}</span>
       </a>
     </li>
     <li class="stage">

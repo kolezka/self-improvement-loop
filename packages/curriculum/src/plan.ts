@@ -81,7 +81,22 @@ export function cluster(items: Reflection[]): Cluster[] {
   const out: Cluster[] = [];
   for (const pattern of [...groups.keys()].sort()) {
     const group = groups.get(pattern)!;
-    group.sort((a, b) => (a.created === b.created ? (a.id < b.id ? -1 : 1) : a.created < b.created ? -1 : 1));
+    // `created` (date-only) stays the primary key. Same-day ties break on
+    // `created_at` (write time), oldest first; an id starts with the pattern
+    // name, so using it as the tiebreak sorted same-day reflections
+    // reverse-alphabetically by pattern, not by when they were written, and
+    // could drop the genuinely newest lesson from the drafter's window.
+    group.sort((a, b) => {
+      if (a.created !== b.created) return a.created < b.created ? -1 : 1;
+      const aAt = a.created_at;
+      const bAt = b.created_at;
+      if (aAt !== bAt) {
+        if (aAt === null) return -1;
+        if (bAt === null) return 1;
+        return aAt < bAt ? -1 : 1;
+      }
+      return a.id < b.id ? -1 : 1;
+    });
     out.push({ pattern, items: group });
   }
   return out;

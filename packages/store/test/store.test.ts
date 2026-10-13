@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "@sil/core";
@@ -54,14 +54,47 @@ describe("reflections", () => {
   });
 
   test("write then list, newest first, with front matter", () => {
-    writeReflection("w", { id: "2026-09-10-a-0001", session_id: "s1" }, body("a"));
-    writeReflection("w", { id: "2026-09-12-a-0002" }, body("a"));
-    writeReflection("w", { id: "2026-09-11-b-0003" }, body("b"));
+    // None of these pass `created`, so all three land on today's real date
+    // and tie there. The ids' embedded dates are just names; the actual
+    // order comes from `created_at` (write time), last write first. Pinned
+    // explicitly so the test does not depend on three calls landing in three
+    // distinct milliseconds of real wall clock.
+    writeReflection("w", { id: "2026-09-10-a-0001", session_id: "s1", created_at: "2026-10-01T08:00:00.000Z" }, body("a"));
+    writeReflection("w", { id: "2026-09-12-a-0002", created_at: "2026-10-01T09:00:00.000Z" }, body("a"));
+    writeReflection("w", { id: "2026-09-11-b-0003", created_at: "2026-10-01T10:00:00.000Z" }, body("b"));
     const items = listReflections("w");
-    expect(items.map((r) => r.id)).toEqual(["2026-09-12-a-0002", "2026-09-11-b-0003", "2026-09-10-a-0001"]);
+    expect(items.map((r) => r.id)).toEqual(["2026-09-11-b-0003", "2026-09-12-a-0002", "2026-09-10-a-0001"]);
     expect(items[2]!.session_id).toBe("s1");
     expect(items[0]!.lesson).toBe("Do the thing.");
     expect(patternCounts("w")).toEqual({ a: 2, b: 1 });
+  });
+
+  test("same-day reflections order by write time, not by pattern-name tiebreak", () => {
+    // The bug: an id starts with the pattern name, so a same-day tie used to
+    // sort reverse-alphabetically by pattern, not by when the file was
+    // written. "zeta" written first (morning), "alpha" written later the
+    // same day must still come out first.
+    writeReflection("w", { created: "2026-10-01", created_at: "2026-10-01T08:00:00.000Z" }, body("zeta"));
+    writeReflection("w", { created: "2026-10-01", created_at: "2026-10-01T18:03:00.000Z" }, body("alpha"));
+    const items = listReflections("w");
+    expect(items.map((r) => r.pattern)).toEqual(["alpha", "zeta"]);
+  });
+
+  test("a file written before created_at existed falls back to its own mtime", () => {
+    const dir = paths.reflectionsDir("w");
+    mkdirSync(dir, { recursive: true });
+    // ids chosen so the old id-tiebreak and the mtime fallback disagree:
+    // "zeta" sorts first by id-descending, "alpha" by mtime (it is newer).
+    const older = join(dir, "2026-10-01-zeta-0001.md");
+    const newer = join(dir, "2026-10-01-alpha-0002.md");
+    writeFileSync(older, `---\nid: 2026-10-01-zeta-0001\nworld: w\ncreated: 2026-10-01\n---\n${body("zeta")}`);
+    writeFileSync(newer, `---\nid: 2026-10-01-alpha-0002\nworld: w\ncreated: 2026-10-01\n---\n${body("alpha")}`);
+    const earlier = new Date("2026-10-01T08:00:00Z");
+    const later = new Date("2026-10-01T18:03:00Z");
+    utimesSync(older, earlier, earlier);
+    utimesSync(newer, later, later);
+    const items = listReflections("w");
+    expect(items.map((r) => r.id)).toEqual(["2026-10-01-alpha-0002", "2026-10-01-zeta-0001"]);
   });
 
   test("a colliding generated id picks another one, it does not lose the reflection", () => {

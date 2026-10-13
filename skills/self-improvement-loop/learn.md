@@ -56,10 +56,11 @@ the ledger row.
 
 ## 6. Preflight, draft and show the diff
 
-Decide the final absolute path the artifact will be written to. For a rule,
-skill or agent the file need not exist yet. For a nudge, write the draft JSON
-into a fresh `mktemp -d` directory and use that path: register reads and lints
-it. That scratch file is the only write allowed before the yes.
+For a rule, skill or agent, `--path` is the final absolute path in the
+project's main checkout or in `~/.claude/`, never a worktree path. The file
+need not exist yet. For a nudge, write the draft JSON into a fresh `mktemp -d`
+directory and use that path: register reads and lints it. That scratch file is
+the only write allowed before the yes.
 
 Run the preflight:
 
@@ -89,18 +90,23 @@ sil artifacts register --world <w> --type <rule|skill|agent|hook> \
   --pattern <slug> --path <absolute path> --note "<one-line lesson>"
 ```
 
-If `sil` is not on PATH (try `~/.local/bin/sil`, and in Claude Code
-`"${CLAUDE_PLUGIN_ROOT}/scripts/sil"`), say the artifact is not recorded in the
-loop and stop. Never claim it was. If register refuses (for example, the
-target checkout moved off its default branch, or got dirty under the artifact
-paths since the preflight), report the refusal verbatim and the exact command
-to re-run.
+Run it now only for a nudge (register commits it) or an artifact edited in
+place under `~/.claude/`. For a project artifact, new file or edit to an
+existing one, do not register yet: the file is not on the default branch.
+Report the branch and the exact command. Run it in this session only after the
+operator confirms the merge; otherwise they run it after merging.
+
+The artifact is not recorded until register succeeds. Never claim it is. If
+`sil` is not on PATH (try `~/.local/bin/sil`, and in Claude Code
+`"${CLAUDE_PLUGIN_ROOT}/scripts/sil"`), say so and stop. If register refuses
+(for example, the target checkout moved off its default branch, or got dirty
+under the artifact paths since the preflight), report the refusal verbatim
+and the exact command to re-run.
 
 For a nudge, remove the scratch directory only after register succeeds or the
 operator says no. If register refuses, keep it: the retry needs the same
-approved bytes at the same path. Report the directory's path with the retry
-command, and tell the operator to delete it after a successful retry or once
-they give up.
+approved bytes at the same path. Report its path with the retry command, and
+tell the operator to delete it after a successful retry or once they give up.
 
 ## Guardrails
 
@@ -110,4 +116,4 @@ put secrets, or transcript excerpts that contain secrets, into the artifact.
 ## Report
 
 Tell the operator three things: the file written, the branch or commit, and
-the register result verbatim.
+the register result verbatim, or the pending register command if not run yet.

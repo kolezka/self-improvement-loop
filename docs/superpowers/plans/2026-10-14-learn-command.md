@@ -250,6 +250,14 @@ describe("register", () => {
     expect(git.head(repo)).toBe(before);
   });
 
+  test("dry run accepts a path that does not exist yet", () => {
+    const world = makeWorld();
+    initTarget(world);
+    const future = join(env.tmp, "not-yet", "SKILL.md");
+    const out = review.register(world, makeCfg(), "skill", P, future, "n", { dryRun: true });
+    expect(out.row.external_path).toBe(future);
+  });
+
   test("a hook is copied into nudges_dir in the same commit", () => {
     const world = makeWorld();
     const repo = initTarget(world);
@@ -361,7 +369,9 @@ export function register(
   if (!isSlug(pattern)) throw new ReviewError(`unsafe pattern slug ${JSON.stringify(pattern)}`);
   if (!note.trim()) throw new ReviewError("--note is required: one line naming the lesson");
   if (!isAbsolute(path)) throw new ReviewError(`--path must be absolute, got ${JSON.stringify(path)}`);
-  if (!existsSync(path)) throw new ReviewError(`${path} does not exist`);
+  // A preflight runs before the artifact is written, so its file may not exist yet.
+  // A nudge draft is a scratch file that always exists.
+  if ((type === "hook" || !opts.dryRun) && !existsSync(path)) throw new ReviewError(`${path} does not exist`);
   const nudge = type === "hook" ? readNudge(path, pattern) : null;
 
   return withWorkerLock(() => {

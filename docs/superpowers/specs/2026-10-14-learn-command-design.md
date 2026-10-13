@@ -85,8 +85,13 @@ correction into a skill, agent, rule, nudge or CLAUDE.md edit.
    to a scratch file and `sil artifacts register` copies it into `nudges_dir`
    in the same commit as the ledger row, so it is live on that commit.
 6. **Preflight, draft and show the diff.** Run `sil artifacts register ...
-   --dry-run`. It runs every refusal check and prints the ledger row it would
-   commit, without writing. Show the artifact diff and that row together. Write
+   --dry-run` with the path the artifact will be written to. It runs every
+   refusal check and prints the ledger row it would commit, without writing.
+   For a rule, skill or agent the file need not exist yet. A nudge draft is
+   first written to a fresh `mktemp -d` directory, since register reads and
+   lints it; that is the only write allowed before the yes, its contents are
+   part of the diff shown, and the directory is removed after register or a
+   no. Show the artifact diff and that row together. Write
    nothing yet. Wait for an explicit yes to both. A yes given before they were
    shown does not count.
 7. **Write.** A file inside a git repo goes on a worktree branch, committed,
@@ -157,13 +162,14 @@ The row register writes:
 `register()` lives in `@sil/review` next to reject and retire. It runs under
 `withWorkerLock` and writes through `commitOnDefault`: one local commit on the
 target repo's default branch, message `chore(ledger): register inline
-<type>:<pattern>`. No push. That keeps rule 4: the operator approved the
+<type> <pattern>`, with the note as its body. No push. That keeps rule 4: the operator approved the
 artifact diff in the session, and nothing goes to a remote.
 
 Refusals, each a non-zero exit with the reason:
 
 - the slug fails `isSlug`;
-- `--path` is not absolute or the file does not exist;
+- `--path` is not absolute, or the file does not exist (a `--dry-run` for a
+  rule, skill or agent skips the existence check; a nudge draft must exist);
 - the pattern already has a loop row with status `promoted`, or a curriculum
   branch `curriculum/<world>/<pattern>` exists (a staged loop row lives only
   on that branch). The loop owns it, so the operator votes or re-homes
@@ -260,7 +266,7 @@ good|bad` works for all four.
 
 ## Docs
 
-- `docs/ARCHITECTURE.md`: one section on inline artifacts and the two ledger
+- `docs/ARCHITECTURE.md`: one section on inline artifacts and the three ledger
   fields.
 - `docs/OPERATIONS.md`: `/learn` and `sil artifacts register`.
 - `README.md` command table.

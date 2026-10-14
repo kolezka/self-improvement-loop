@@ -120,12 +120,20 @@ const UPGRADE_TYPES = new Set(["hook", "skill", "agent"]);
 /** Whether this pattern's type was already decided by a human, so a re-route
  * must never second-guess it.
  *
- * Three ways that shows up: a re-home still staged on the branch and not yet
- * accepted (`migrating`, or any `served_by` at all on that branch row, staged
- * or not: a human may be mid-review of an ordinary redraft too, and a
- * re-route landing behind that review is not this feature's call to make);
- * or a `rehomed` event this pattern has ever recorded, read from the ledger
- * `recordProposalEvent` writes to, which outlives the branch that earned it. */
+ * Two ways that shows up: a re-home still staged on the branch and not yet
+ * accepted (`migrating`: the branch's type disagrees with the live one), which
+ * also covers an earlier auto re-route still pending review, since that
+ * branch's type disagrees with the live ledger in exactly the same way; or a
+ * `rehomed` event this pattern has ever recorded, read from the ledger
+ * `recordProposalEvent` writes to, which outlives the branch that earned it.
+ *
+ * An ordinary open branch of the SAME type is not a human choice and must not
+ * block this: the worker restages that branch on every tick regardless (new
+ * evidence past the watermark is the normal case, not the exception), a
+ * reviewing human is protected by `reviewed_state` and the reset the restage
+ * already does, and every pattern with new evidence measured on live state
+ * had an open restaged branch, so blocking on "any staged branch" never let
+ * the feature fire at all. */
 function humanSetType(
   world: World,
   pattern: string,
@@ -134,7 +142,6 @@ function humanSetType(
   proposalEvents: readonly ProposalEvent[],
 ): boolean {
   if (migrating(staged, prior)) return true;
-  if (staged && staged.served_by) return true;
   return proposalEvents.some((e) => e.world === world.name && e.pattern === pattern && e.event === "rehomed");
 }
 

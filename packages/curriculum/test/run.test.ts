@@ -890,15 +890,53 @@ describe("re-routing an already served pattern", () => {
     expect(rules.text).toContain(ruleTag(PATTERN));
   });
 
-  test("a branch already staged and unreviewed blocks re-routing until it is answered", async () => {
+  test("an open same-type restaged branch does not block re-routing", async () => {
+    // The worker restages this same branch on every tick with new evidence, so
+    // an open branch here is the normal state, not an edge case: measured on
+    // live state, every pattern with new evidence had one. Only a branch whose
+    // own type already disagrees with the live one (a pending re-home or an
+    // earlier pending re-route), or a recorded `rehomed` event, is a human
+    // choice this feature must not second-guess.
     const world = worldWith();
     const repo = initTarget(world);
-    // First tick: free routing stages an ordinary rule, nothing accepted yet.
     const first = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: ruleDraft() }).fn }));
     expect(first.staged).toEqual([PATTERN]);
 
     addReflections(world, PATTERN, 3, { startDay: 20 });
-    const chat = new FakeChat({ draft: HOOK_PROBE });
+    const chat = new FakeChat({ drafts: [HOOK_PROBE, hookDraft(PATTERN)] });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(chat.roles).toEqual(["drafter", "drafter", "judge"]);
+    expect(report.routed[PATTERN]).toMatchObject({ drafted: "rule", type: "hook" });
+    expect(report.routed[PATTERN]!.reason).toContain("re-routed from rule to hook");
+    const branch = branchName(world.name, PATTERN);
+    const hook = git.show(repo, branch, `nudges/${PATTERN}.json`);
+    expect(hook.found).toBe(true);
+    const row = parseLedger(git.show(repo, branch, "promotions.json").text).entries[PATTERN]!;
+    expect(row.served_by).toEqual({ type: "hook", path: `nudges/${PATTERN}.json` });
+  });
+
+  test("a pending re-route is not flipped back or re-routed again on the next tick", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo);
+
+    // Tick 1: new evidence earns a hook. Staged, not accepted.
+    const first = await run(
+      world,
+      makeCfg(),
+      opts({ apply: true, chat: new FakeChat({ drafts: [HOOK_PROBE, hookDraft(PATTERN)] }).fn, cards: [observedCard(PATTERN)] }),
+    );
+    expect(first.routed[PATTERN]!.type).toBe("hook");
+
+    // Tick 2: more evidence arrives before a human reviews tick 1's branch.
+    // The live ledger still says "rule" (nothing accepted), the branch says
+    // "hook": migrating() reads that disagreement as a re-route still
+    // pending review, exactly like a pending human re-home, and route() must
+    // not be consulted again.
+    addReflections(world, PATTERN, 3, { startDay: 40 });
+    const chat = new FakeChat({ draft: hookDraft(PATTERN) });
     const report = await run(
       world,
       makeCfg(),
@@ -906,15 +944,22 @@ describe("re-routing an already served pattern", () => {
         apply: true,
         chat: chat.fn,
         gateRunner: () => {
-          throw new Error("route() was consulted while a branch awaits review");
+          throw new Error("route() was consulted while an earlier re-route awaits review");
         },
+        cards: [observedCard(PATTERN)],
       }),
     );
 
     expect(report.staged).toEqual([PATTERN]);
-    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
-    const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
-    expect(rules.text).toContain(ruleTag(PATTERN));
+    expect(chat.roles).toEqual(["drafter", "judge"]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "hook", type: "hook", reason: "already served by this artifact" });
+    const branch = branchName(world.name, PATTERN);
+    const hook = git.show(repo, branch, `nudges/${PATTERN}.json`);
+    expect(hook.found).toBe(true);
+    const rules = git.show(repo, branch, "RULES.md");
+    // Still gone, not restored: the branch landed on top rather than
+    // resetting, so tick 1's removal of the rule bullet was not reverted.
+    expect(rules.text).not.toContain(ruleTag(PATTERN));
   });
 });
 

@@ -96,3 +96,42 @@ export interface WorkerRun {
   failed: number;
   skipped: number;
 }
+
+export interface PreviewResult {
+  pattern: string;
+  artifact_type: string;
+  path: string;
+  body: string;
+  live: boolean;
+}
+
+export interface LiveCheck {
+  live: boolean;
+  detail: string;
+}
+
+export interface GateCheck {
+  verdict: string;
+  fires: boolean;
+  hits: number;
+  total: number;
+}
+
+export interface VerifyOffline {
+  exists: boolean;
+  live: LiveCheck;
+  lint: string[];
+  gate: GateCheck | null;
+}
+
+export type TypeCheck =
+  | { current_type: string; router_type: string; reason: string; upgrade: boolean }
+  | { skipped: string }
+  | { error: string };
+
+export interface VerifyResult {
+  pattern: string;
+  artifact_type: string;
+  offline: VerifyOffline;
+  type_check: TypeCheck;
+}

@@ -92,6 +92,8 @@ export function computeRepair(snapshots: readonly LedgerSnapshot[]): RepairedRow
   const out: RepairedRow[] = [];
   for (const pattern of Object.keys(live.entries).sort()) {
     const current = live.entries[pattern]!;
+    // An inline row's dates come from register, not from ledger history.
+    if (current.origin === "inline") continue;
 
     let span: Span | null = null;
     let lastClosed: Span | null = null;

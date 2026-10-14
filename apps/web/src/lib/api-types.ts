@@ -103,6 +103,7 @@ export interface PreviewResult {
   path: string;
   body: string;
   live: boolean;
+  matches_default_branch: boolean;
 }
 
 export interface LiveCheck {

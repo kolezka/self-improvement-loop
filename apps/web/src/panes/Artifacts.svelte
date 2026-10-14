@@ -5,6 +5,7 @@
   import { canRetire, LIVE_STATUSES } from "../lib/artifact-actions.ts";
   import { filterLessons, groupByPattern } from "../lib/lessons.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
+  import { isCurrentVerifyPattern } from "../lib/verify-guard.ts";
   import type { PreviewResult, VerifyResult } from "../lib/api-types.ts";
 
   interface RateWindow {
@@ -136,8 +137,10 @@
   let verifyLoading = $state(false);
   let verifyData = $state<VerifyResult | null>(null);
   let verifyError = $state<string | null>(null);
-  // The pattern the open verify result is about, so Rehome never fires
-  // against a different row than the one the operator is looking at.
+  // The pattern the latest Verify click selected, set synchronously before
+  // the request goes out. Used only to drop a response that is no longer
+  // current (see isCurrentVerifyPattern); Rehome reads the pattern from
+  // verifyData itself, never from this.
   let verifyPattern = $state<string | null>(null);
 
   async function openVerify(pattern: string) {
@@ -147,10 +150,16 @@
     verifyError = null;
     verifyPattern = pattern;
     try {
-      verifyData = (await call("artifacts.verify", { world: appState.world, pattern })) as VerifyResult;
+      const result = (await call("artifacts.verify", { world: appState.world, pattern })) as VerifyResult;
+      // Verify on another row can have been clicked while this request was
+      // in flight; a late response for the row no longer selected must never
+      // land under whatever row is open now.
+      if (!isCurrentVerifyPattern(pattern, verifyPattern)) return;
+      verifyData = result;
+      verifyLoading = false;
     } catch (e) {
+      if (!isCurrentVerifyPattern(pattern, verifyPattern)) return;
       verifyError = (e as Error).message;
-    } finally {
       verifyLoading = false;
     }
   }
@@ -161,7 +170,10 @@
   });
 
   async function rehomeFromVerify() {
-    const pattern = verifyPattern;
+    // From the result actually shown, never from verifyPattern: that guards
+    // against showing the wrong result, not against acting on it, and
+    // verifyData is what the operator is looking at.
+    const pattern = verifyData?.pattern ?? null;
     const toType = verifyUpgradeType;
     if (!pattern || !toType) return;
     if (!window.confirm(`Re-home ${pattern} to ${toType}? The move is staged for review, not applied yet.`)) return;
@@ -366,6 +378,11 @@
       <span class="badge mono">{previewData.path}</span>
       <span class={previewData.live ? "chip ok" : "chip warn"}>{previewData.live ? "live" : "not active"}</span>
     </div>
+    {#if !previewData.matches_default_branch}
+      <div class="notice warn">
+        Uncommitted local changes: this is what is served right now, but it was never accepted in review.
+      </div>
+    {/if}
     <pre class="file">{previewData.body}</pre>
   {/if}
 </Drawer>

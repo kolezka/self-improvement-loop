@@ -341,6 +341,7 @@
             { label: "Staged", tone: "muted", points: history.data.series.proposals_staged },
             { label: "Accepted", tone: "ok", points: history.data.series.proposals_accepted },
             { label: "Rejected", tone: "err", points: history.data.series.proposals_rejected },
+            { label: "Rerouted", tone: "accent", points: history.data.series.proposals_rerouted },
           ]}
         />
         {#if proposalsSinceNote}

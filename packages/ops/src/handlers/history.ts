@@ -19,7 +19,8 @@ export type SeriesName =
   | "proposals_staged"
   | "proposals_revised"
   | "proposals_accepted"
-  | "proposals_rejected";
+  | "proposals_rejected"
+  | "proposals_rerouted";
 
 export interface SeriesPoint {
   day: string;
@@ -193,6 +194,9 @@ export function historySeries(args: HistoryArgs): HistorySeries {
   set("worker_runs", fold(runs, "ts", days, now, worker.skipped));
 
   // proposals_*: the append-only history from proposal-events.jsonl, this world.
+  // "rerouted" is recorded alongside "staged" for the same commit (an
+  // automatic re-route is a stage too), so it is also counted there; this is
+  // the distinct series for how many of those stages were re-routes.
   const proposals = readProposalEvents();
   const forWorld = proposals.events.filter((e) => e.world === world.name);
   const byEvent = (kind: string): Record<string, unknown>[] =>
@@ -201,6 +205,7 @@ export function historySeries(args: HistoryArgs): HistorySeries {
   set("proposals_revised", fold(byEvent("revised"), "ts", days, now, proposals.skipped));
   set("proposals_accepted", fold(byEvent("accepted"), "ts", days, now, proposals.skipped));
   set("proposals_rejected", fold(byEvent("rejected"), "ts", days, now, proposals.skipped));
+  set("proposals_rerouted", fold(byEvent("rerouted"), "ts", days, now, proposals.skipped));
 
   return { world: world.name, days, since, skipped, series };
 }

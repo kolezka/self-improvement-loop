@@ -141,4 +141,16 @@ describe("history.series", () => {
     expect(out.since.proposals_staged).not.toBeNull();
     expect(out.series.worker_runs[0]!.count).toBe(1);
   });
+
+  test("a re-route is counted in its own series, and still in proposals_staged", async () => {
+    // run.ts records "staged" and "rerouted" for the same commit when a
+    // re-route lands, so "rerouted" is a distinct series without pulling
+    // those commits out of "staged".
+    appendProposalEvent("default", "verify-callsites", "staged");
+    appendProposalEvent("default", "verify-callsites", "rerouted");
+
+    const out = (await invoke("history.series", { world: "default", days: 1 })) as HistorySeries;
+    expect(out.series.proposals_rerouted[0]!.count).toBe(1);
+    expect(out.series.proposals_staged[0]!.count).toBe(1);
+  });
 });

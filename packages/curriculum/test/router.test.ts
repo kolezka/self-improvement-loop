@@ -55,6 +55,19 @@ describe("hook: the claim is executed, not read", () => {
     );
     expect(result.artifact_type).not.toBe("hook");
     expect(result.reason).toContain("matched nothing");
+    expect(result.reason).toContain('"command_matches":"zzz-never-appears"');
+  });
+
+  test("a rejected gate is shown without flooding the route reason", () => {
+    const result = route(
+      answer({ trigger_event: "PreToolUse:Bash", gate: { command_matches: "z".repeat(195) } }),
+      SOURCES,
+      PAYLOADS,
+      opts,
+    );
+    expect(result.reason).toContain('"command_matches":"zzzz');
+    expect(result.reason).toContain("...");
+    expect(result.reason.length).toBeLessThan(400);
   });
 
   test("a gate that fires on everything is a broadcast, not a hook", () => {

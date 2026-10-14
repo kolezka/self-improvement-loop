@@ -137,3 +137,7 @@
   and a Codex agent running `sil reflect` with no flags and reporting the session
   queued. A skill that lists commands without their required flags gets guessed
   at. Test a skill change with a subagent that may read only the skill.
+- 2026-10-14: A router refusal that says only "gate matched nothing" discards the
+  one input needed to distinguish a bad drafted predicate from a thin corpus.
+  Keep a bounded excerpt of the refused gate in the route reason. Rotated payload
+  logs cannot recreate the corpus from the day of an older routing decision.

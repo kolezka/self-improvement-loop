@@ -46,12 +46,11 @@ A skill directory name and an agent name must equal the pattern slug.
 
 ## 5. Pick a scope
 
-Suggest one: a trap specific to this repo goes to the project, a behaviour
-that applies everywhere goes to `~/.claude/`. The operator confirms or changes
-it. A nudge has no scope choice: the hook only loads nudges from the world's
-`nudges_dir` in its target repo. You write the nudge JSON to a scratch file,
-and `sil artifacts register` copies it into `nudges_dir` in the same commit as
-the ledger row.
+Suggest one: a trap specific to this repo goes to the project, a behaviour that
+applies everywhere goes to `~/.claude/`. The operator confirms or changes it. A
+nudge has no scope choice: the hook only loads nudges from the world's
+`nudges_dir` in its target repo. Write the nudge JSON to a scratch file;
+register copies it into `nudges_dir` in the same commit as the ledger row.
 
 ## 6. Preflight, draft and show the diff
 
@@ -82,20 +81,21 @@ Register copies a nudge in step 8.
 
 ## 8. Register
 
-The register command is the step 6 preflight without `--dry-run`. Run it now
-for a nudge (register commits it) or a file edited in place (under
-`~/.claude/`, or in a project directory without git). A project artifact in a
-git repo, new or edited, is on a branch: do not register yet. Report the branch
-and the exact command. Do not merge or push it yourself. Once the operator says
-it is merged, check that it landed:
+Register with the step 6 preflight minus `--dry-run`. Do it now for a nudge
+(register commits it) or a file edited in place (under `~/.claude/`, or in a
+project directory without git). A project artifact in a git repo, new or
+edited, is on a branch: do not register yet. Report the branch and the exact
+command; do not merge or push it yourself. When the operator says it is merged,
+check it landed. Either exit 0 counts (the second covers squash and rebase):
 
 ```sh
 git -C <repo> merge-base --is-ancestor <branch> <default-branch>
+git -C <repo> diff --quiet <branch> <default-branch> -- <repo-relative path>
 ```
 
-Register only if that exits 0. On any other exit, report the pending command
-and do not run register. The artifact is not recorded until register succeeds.
-Never claim it is.
+Register only if one exits 0. Otherwise report the pending command, do not run
+register, and tell the operator to pull the default branch locally first if
+they merged on the remote. Never claim it is recorded before register succeeds.
 
 If `sil` is not on PATH (try `~/.local/bin/sil`, and in Claude Code
 `"${CLAUDE_PLUGIN_ROOT}/scripts/sil"`), say so and stop. If register refuses

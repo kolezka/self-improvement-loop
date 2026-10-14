@@ -403,7 +403,8 @@ function inlineReason(entry: PromotionEntry, card: Scorecard | undefined): strin
  *   escalate         promoted, redraft budget spent, still recurring almost as often
  *   over-cap         actionable, but the per-run budget is spent
  *   below-threshold  not enough evidence yet, and never promoted
- *   done             in the ledger, no new evidence since its watermark
+ *   done             in the ledger, no new evidence since its watermark, or an
+ *                    inline artifact, which is edited by hand
  *   retire-candidate promoted and unused; surfaced for a human, never executed */
 export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanReport {
   const threshold = cfg.promotion.threshold;

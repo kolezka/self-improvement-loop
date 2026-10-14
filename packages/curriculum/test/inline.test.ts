@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { ledgerPath, Scorecard, type World } from "@sil/core";
 import { saveLedger } from "@sil/store";
-import { plan, run, worldKnowledge } from "../src/index.ts";
+import { plan, reflections, run, worldKnowledge } from "../src/index.ts";
 import { addReflections, cleanupEnv, fakeGateRunner, FakeChat, initTarget, makeCfg, makeWorld, silEnv, skillDraft, type TestEnv } from "./fixtures.ts";
 
 const P = "deny-without-grep";
@@ -85,6 +85,23 @@ test("control: run stages the same loop row, so the fixture reaches a real stage
   expect(report.gated_out).toEqual({});
   expect(report.staged).toEqual([P]);
   expect(chat.calls.length).toBeGreaterThan(0);
+});
+
+test("run's own guard refuses an inline row even when handed a promote action", async () => {
+  const world = seed("inline");
+  const chat = new FakeChat({ draft: skillDraft(P, "q") });
+  const sources = reflections(world).map((r) => r.id);
+  const report = await run(world, makeCfg(), {
+    apply: true,
+    chat: chat.fn,
+    gateRunner: fakeGateRunner,
+    cards: card("refine"),
+    actions: [{ pattern: P, count: 5, watermark: 0, action: "promote", sources, reason: "forced past plan()", feedback: null }],
+  });
+  expect(report.staged).toEqual([]);
+  expect(report.gated_out[P]).toBe("an inline artifact serves this pattern; edit it by hand");
+  expect(report.error).toBeNull();
+  expect(chat.calls).toHaveLength(0);
 });
 
 test("an inline row's gist is its note", () => {

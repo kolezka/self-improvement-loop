@@ -22,6 +22,7 @@ import {
   fsx,
   GitError,
   paths,
+  type PlanAction,
   type PromotionEntry,
   type Reflection,
   type RunReport,
@@ -63,6 +64,8 @@ export interface RunOptions {
   cards?: Scorecard[];
   /** Injected corpus runner for the router's hook gate. */
   gateRunner?: GateRunner;
+  /** Tests only: use these actions instead of plan(). */
+  actions?: PlanAction[];
 }
 
 function describe(e: unknown): string {
@@ -130,7 +133,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // gate out (a lint or judge refusal), stranding viable ones at over-cap and
   // staging nothing. The cap is enforced below, on successes.
   const cards = opts.cards ?? scorecards(world, cfg);
-  const planned = plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards, items, enforceCap: false });
+  const planned = opts.actions ? { actions: opts.actions } : plan(world, cfg, { extraDirs: opts.extraDirs ?? [], cards, items, enforceCap: false });
   const cap = cfg.promotion.per_run_cap;
 
   const actionable = [];

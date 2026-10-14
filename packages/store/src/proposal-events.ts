@@ -1,11 +1,17 @@
 // Append-only proposal history: staged, revised, accepted, rejected, retired,
-// rehomed. The ledger keeps only the latest state per pattern, so this is the
-// only place a chart can rebuild that history from.
+// rehomed, rerouted. The ledger keeps only the latest state per pattern, so
+// this is the only place a chart can rebuild that history from.
 
 import { z } from "zod";
 import { fsx, paths } from "@sil/core";
 
-export const PROPOSAL_EVENT_KINDS = ["staged", "revised", "accepted", "rejected", "retired", "rehomed"] as const;
+// "rehomed" is a human decision only (`review.rehome`); kept that way on
+// purpose, because `run()`'s own re-route reads past "rehomed" events to
+// decide whether a human already chose this pattern's type (never override
+// that choice). Recording an automatic re-route under "rehomed" would both
+// misreport it as a human action and permanently block the pattern's own
+// future re-routes, so it gets its own kind instead.
+export const PROPOSAL_EVENT_KINDS = ["staged", "revised", "accepted", "rejected", "retired", "rehomed", "rerouted"] as const;
 export type ProposalEventKind = (typeof PROPOSAL_EVENT_KINDS)[number];
 
 const ProposalEventSchema = z.object({

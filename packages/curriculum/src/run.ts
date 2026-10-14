@@ -32,7 +32,14 @@ import {
 import * as feedback from "@sil/feedback";
 import * as providers from "@sil/providers";
 import type { ChatFn, DecideFn } from "@sil/providers";
-import { loadLedger as loadLedgerFile, parseLedger, recordProposalEvent, saveLedger } from "@sil/store";
+import {
+  loadLedger as loadLedgerFile,
+  parseLedger,
+  type ProposalEvent,
+  readProposalEvents,
+  recordProposalEvent,
+  saveLedger,
+} from "@sil/store";
 import * as artifacts from "./artifacts.ts";
 import * as context from "./context.ts";
 import type { GateRunner } from "./deps.ts";
@@ -103,6 +110,32 @@ function migrating(staged: PromotionEntry | null, prior: PromotionEntry | null):
   const branchType = rowType(staged);
   const baseType = rowType(prior);
   return branchType !== null && baseType !== null && branchType !== baseType;
+}
+
+// Real artifact types a re-route may move an already-served pattern to. "rule"
+// is the router's own fallback, not evidence of anything, and "none" means the
+// drafter declined; neither may displace an artifact a prior tick earned.
+const UPGRADE_TYPES = new Set(["hook", "skill", "agent"]);
+
+/** Whether this pattern's type was already decided by a human, so a re-route
+ * must never second-guess it.
+ *
+ * Three ways that shows up: a re-home still staged on the branch and not yet
+ * accepted (`migrating`, or any `served_by` at all on that branch row, staged
+ * or not: a human may be mid-review of an ordinary redraft too, and a
+ * re-route landing behind that review is not this feature's call to make);
+ * or a `rehomed` event this pattern has ever recorded, read from the ledger
+ * `recordProposalEvent` writes to, which outlives the branch that earned it. */
+function humanSetType(
+  world: World,
+  pattern: string,
+  staged: PromotionEntry | null,
+  prior: PromotionEntry | null,
+  proposalEvents: readonly ProposalEvent[],
+): boolean {
+  if (migrating(staged, prior)) return true;
+  if (staged && staged.served_by) return true;
+  return proposalEvents.some((e) => e.world === world.name && e.pattern === pattern && e.event === "rehomed");
 }
 
 /** One curriculum tick for one world.
@@ -179,6 +212,9 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   const cardsByPattern = scorecardByPattern(cards, ledger.entries);
   const attempts = loadAttempts(world);
   let attemptsChanged = false;
+  // Read once: a re-route needs every "rehomed" event ever recorded for a
+  // pattern, which a per-pattern read would cost once per actionable pattern.
+  const proposalEvents = readProposalEvents().events;
 
   for (const action of actionable) {
     const isRefine = action.action === "refine";
@@ -209,6 +245,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
         decide,
         typedJudge: judgeEndpoint !== null,
         judgeThreshold: judgeEndpoint?.decision_threshold ?? 0.5,
+        proposalEvents,
       });
     } catch (e) {
       // One pattern's failure is not the run's.
@@ -247,6 +284,10 @@ interface StageContext {
   decide: DecideFn;
   typedJudge: boolean;
   judgeThreshold: number;
+  /** Every recorded proposal event, read once for the whole run. Used to spot
+   * a `rehomed` event when weighing whether to re-route an already-served
+   * pattern. */
+  proposalEvents: readonly ProposalEvent[];
 }
 
 /** One field feeds both the budget the drafter is told and the cap the lint
@@ -310,6 +351,17 @@ async function stageOne(
     forcedType = null;
   }
 
+  // Whether new evidence may move this already-served pattern to a different
+  // real type. Only a `promote` (new reflections past the watermark), never a
+  // `refine` and never a ledger-only one (the drafter has no reflections to
+  // route from there, only a complaint about the artifact it would replace),
+  // and never when a human already chose the type: see `humanSetType`.
+  const rerouteEligible =
+    forcedType !== null &&
+    action.action === "promote" &&
+    !ledgerOnly &&
+    !humanSetType(world, pattern, stagedEntry, prior, ctx.proposalEvents);
+
   // `readArtifact` already strips the tag the writer appends, so a refine told
   // to keep the existing wording is not handed a line `lintRule` refuses.
   let existing: string | null = forcedType ? artifacts.readArtifact(world, forcedType, pattern) || null : null;
@@ -357,10 +409,11 @@ async function stageOne(
 
   let raw: string;
   try {
-    raw = await chat("drafter", prompts.draftMessages(pattern, drafting, existing, forcedType, draftOpts), {
-      world,
-      jsonMode: true,
-    });
+    raw = await chat(
+      "drafter",
+      prompts.draftMessages(pattern, drafting, existing, forcedType, { ...draftOpts, wantRouteAnswer: rerouteEligible }),
+      { world, jsonMode: true },
+    );
   } catch (e) {
     // A provider failure gates one pattern.
     report.gated_out[pattern] = `draft failed: ${describe(e)}`;
@@ -368,13 +421,26 @@ async function stageOne(
     return;
   }
   attempt.drafted = true;
-  let [body, answer] = prompts.parseDraft(raw, { forcedType });
+  let [body, answer] = prompts.parseDraft(raw, { forcedType, keepRouteAnswer: rerouteEligible });
 
   let routedType: string;
   let routedReason: string;
+  // Set only when new evidence earns this pattern a different real type: the
+  // old type, for the branch message and the proposal event below. Upgrade
+  // only, never churn: a router result of "rule" (the fallback) or "none"
+  // never moves an artifact a prior tick already earned.
+  let rerouteFrom: string | null = null;
   if (forcedType !== null) {
     routedType = forcedType;
     routedReason = "already served by this artifact";
+    if (rerouteEligible) {
+      const probe = route(answer, sources, ctx.payloads, { gateRunner: ctx.gateRunner });
+      if (UPGRADE_TYPES.has(probe.artifact_type) && probe.artifact_type !== forcedType) {
+        rerouteFrom = forcedType;
+        routedType = probe.artifact_type;
+        routedReason = `re-routed from ${forcedType} to ${probe.artifact_type} on new evidence: ${probe.reason}`;
+      }
+    }
   } else {
     const result = route(answer, sources, ctx.payloads, { gateRunner: ctx.gateRunner });
     routedType = result.artifact_type;
@@ -401,10 +467,11 @@ async function stageOne(
     }
   }
 
-  // The router can disagree with the shape the drafter committed to. Redraft
-  // once in the type that survived, rather than feeding a mismatched body to a
-  // lint that can only ever fail.
-  if (forcedType === null && routedType !== draftedType(answer)) {
+  // The router can disagree with the shape the drafter committed to, or (on a
+  // re-route) the body above is still in the old type's shape: either way,
+  // redraft once in the type that survived, rather than feeding a mismatched
+  // body to a lint that can only ever fail.
+  if ((forcedType === null && routedType !== draftedType(answer)) || rerouteFrom !== null) {
     try {
       raw = await chat("drafter", prompts.draftMessages(pattern, drafting, null, routedType, draftOpts), {
         world,
@@ -430,7 +497,7 @@ async function stageOne(
   const problems = lint(routedType, body, pattern, sources, caps);
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");
-    if (forcedType === null) reason += `; router: ${routedReason}`;
+    if (forcedType === null || rerouteFrom !== null) reason += `; router: ${routedReason}`;
     report.gated_out[pattern] = reason;
     return;
   }
@@ -536,8 +603,9 @@ async function stageOne(
   // below when the routed type differs.
   const oldType = migrating(stagedEntry, prior) ? rowType(stagedEntry) : rowType(prior);
 
-  const verb = action.action === "refine" ? "refine" : "promote";
-  const message = `feat(${routedType}): ${verb} ${pattern} (auto, gated)`;
+  const verb =
+    rerouteFrom !== null ? `re-route ${pattern} from ${rerouteFrom}` : `${action.action === "refine" ? "refine" : "promote"} ${pattern}`;
+  const message = `feat(${routedType}): ${verb} (auto, gated)`;
   const sha = git.withScratchWorktree(ctx.target, branch, ctx.defaultRef, (tree) => {
     let removedRel = "";
     if (oldType && oldType !== "none" && oldType !== routedType) {
@@ -572,6 +640,10 @@ async function stageOne(
   ctx.ledger.entries[pattern] = entry;
   report.staged.push(pattern);
   recordProposalEvent(world.name, pattern, "staged");
+  // Distinct from "staged": "rehomed" is a human decision only (see
+  // PROPOSAL_EVENT_KINDS), so an automatic re-route gets its own kind and
+  // never blocks this pattern's own future re-routes.
+  if (rerouteFrom !== null) recordProposalEvent(world.name, pattern, "rerouted");
 
   if (autoMerge) autoMergeBranch(report, ctx.target, ctx.defaultRef, branch, pattern);
 }

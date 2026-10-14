@@ -104,6 +104,11 @@ export interface DraftOptions {
   /** The world's other patterns and the artifacts already serving them.
    * Absent in a young world with nothing else to compare against. */
   knowledge?: string | null;
+  /** Forced path only: also ask for the routing fields alongside "artifact",
+   * so a caller considering a re-route of an already-served pattern reads a
+   * real signal instead of the empty default. Never changes the instructions
+   * for "artifact" itself, which stay exactly what the forced shape asks for. */
+  wantRouteAnswer?: boolean;
 }
 
 export function ruleShape(pattern: string, opts: DraftOptions = {}): string {
@@ -333,6 +338,19 @@ export function draftMessages(
     : "";
   let user: string;
   if (artifactType !== null && artifactType in SHAPES) {
+    // wantRouteAnswer asks for routing fields ALONGSIDE "artifact", never
+    // instead of it: the instructions for "artifact" below are unchanged from
+    // the plain forced case, so what this call writes for the body does not
+    // move. The extra ask only tells a caller weighing a re-route what the
+    // evidence would otherwise support.
+    const routeAsk = opts.wantRouteAnswer
+      ? "\n\nAlso add these keys to the same JSON object, for a human reviewer " +
+        "only: trigger_event, gate, needs_own_context, context_evidence, " +
+        "capability_evidence, no_artifact.\n\n" +
+        routingFields(ruleBudget(pattern, opts.maxRuleChars)) +
+        '\n\nAnswer those from the evidence alone. They never change "artifact": ' +
+        "write that in the required shape above regardless of what you answer here."
+      : "";
     user =
       `${existing ? "Refine the existing" : "Write a"} ` +
       `${FORCED_SUBJECT[artifactType]} for the recurring lesson ` +
@@ -341,7 +359,9 @@ export function draftMessages(
       `value is ${artifactType === "hook" ? "an object" : "a string"} in this shape:\n` +
       SHAPES[artifactType]!(pattern, opts) +
       "\n\nDo not restate this task, do not add commentary, do not leave " +
-      "angle-bracket fill-ins, do not include secrets or tokens.\n\n" +
+      "angle-bracket fill-ins, do not include secrets or tokens." +
+      routeAsk +
+      "\n\n" +
       head +
       "Lessons to generalise:\n\n" +
       sources +
@@ -513,6 +533,12 @@ function loads(raw: string): Record<string, unknown> | null {
 
 export interface ParseDraftOptions {
   forcedType?: string | null;
+  /** On the forced path, also parse the routing fields the prompt asked for
+   * (see `DraftOptions.wantRouteAnswer`) instead of the empty default. A reply
+   * that fails validation falls back to `emptyAnswer()`: the forced body it
+   * came with is used either way, and "no signal" is the safe no-churn answer
+   * for a caller deciding whether to re-route. */
+  keepRouteAnswer?: boolean;
 }
 
 /** [body, RouteAnswer] from the drafter's reply.
@@ -522,8 +548,9 @@ export interface ParseDraftOptions {
  * to `route()`, and returning it for "I could not read this" would route a
  * malformed answer straight at the rules file.
  *
- * On the forced path the routing fields are absent by construction. The caller
- * short-circuits `route()` there, so the answer is never read, and it is left
+ * On the forced path the routing fields are absent by construction unless the
+ * caller asked for them (`keepRouteAnswer`); without that, the caller
+ * short-circuits `route()`, so the answer is never read, and it is left
  * without a `parse_error` so nothing reports a decline the drafter never made. */
 export function parseDraft(raw: string, opts: ParseDraftOptions = {}): [unknown, RouteAnswer] {
   const forcedType = opts.forcedType ?? null;
@@ -539,7 +566,16 @@ export function parseDraft(raw: string, opts: ParseDraftOptions = {}): [unknown,
   }
 
   const body = data["artifact"] ?? "";
-  if (forcedType !== null) return [coerceBody(body, forcedType), emptyAnswer()];
+  if (forcedType !== null) {
+    if (!opts.keepRouteAnswer) return [coerceBody(body, forcedType), emptyAnswer()];
+    const fields: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (k === "artifact" || k === "parse_error") continue;
+      fields[k] = v;
+    }
+    const parsed = RouteAnswer.safeParse(fields);
+    return [coerceBody(body, forcedType), parsed.success ? parsed.data : emptyAnswer()];
+  }
 
   const fields: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) {

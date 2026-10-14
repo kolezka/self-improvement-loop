@@ -137,3 +137,20 @@
   and a Codex agent running `sil reflect` with no flags and reporting the session
   queued. A skill that lists commands without their required flags gets guessed
   at. Test a skill change with a subagent that may read only the skill.
+- 2026-10-14: `run.ts`'s forced path (`forcedType` set) short-circuits
+  `parseDraft` to `emptyAnswer()` by construction, so a redraft of an
+  already-served pattern never carries a real routing signal even when the
+  drafter is asked for one in the same call. The fix is a caller-supplied flag
+  through both `draftMessages` (`wantRouteAnswer`) and `parseDraft`
+  (`keepRouteAnswer`), not a second cheap routing call: one extra set of keys
+  in an existing call versus a second model round trip. Test that the extra ask
+  does not change the forced body's own instructions by diffing the rendered
+  prompt on both sides of the inserted text, not by trusting that appending
+  text "obviously" leaves the rest alone.
+- 2026-10-14: A new automatic action (an auto re-route) must never log itself
+  under an existing event kind that a guard elsewhere reads as "a human decided
+  this" (`rehomed`). Doing so both misreports the action and, because that
+  guard exists specifically to stop auto logic from running again, silently
+  freezes the pattern after its first automatic action. When adding an
+  automated producer of an event, check every reader's use of that kind before
+  reusing it, not just the schema.

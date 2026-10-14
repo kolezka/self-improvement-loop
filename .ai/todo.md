@@ -482,3 +482,43 @@ never asking whether the redraft actually moved the recurrence rate. See
       before boot sets the real world, so an install without a `default` world gets a
       "could not load proposal outcomes: unknown world" toast on first load. The demo
       uses world `default` instead of fixing this here.
+
+## Re-route an already served pattern on new evidence (branch feat/reroute-existing-artifacts)
+
+Goal: once a pattern was served by a type, `forcedType` sent every later redraft
+through the same type forever (29 fresh router decisions against 400+ `already
+served by this artifact` redrafts over 30 days); only a human `rehome` could move
+it. See `docs/ARCHITECTURE.md` "Re-routing an already served pattern".
+
+- [x] `prompts.ts`: `DraftOptions.wantRouteAnswer` adds the routing-field ask to the
+      forced prompt without touching the body instructions; `ParseDraftOptions.keepRouteAnswer`
+      reads them back (falls back to `emptyAnswer()` on a reply that fails validation)
+- [x] `run.ts` `stageOne`: `rerouteEligible` (promote action, not ledger-only, not a human
+      choice) gates one extra `route()` call on the forced answer; an upgrade to `hook`,
+      `skill` or `agent` that differs from the current type redrafts once more in the new
+      shape (reusing the existing drafter/router mismatch redraft path), stages with the old
+      artifact removed and `served_by`/`artifact_type` flipped, commit message
+      `feat(hook): re-route <pattern> from rule (auto, gated)`
+- [x] `humanSetType`: never re-routes over a pending re-home (`migrating`), any staged
+      branch at all (a human may be mid-review of an ordinary redraft too), or a `rehomed`
+      proposal event ever recorded for the pattern
+- [x] new proposal event kind `rerouted` (`packages/store/src/proposal-events.ts`), distinct
+      from `rehomed`: reusing `rehomed` would misreport an automatic re-route as a human
+      decision and, since a `rehomed` event blocks future re-routing, would permanently
+      freeze the pattern after its first auto-upgrade
+- [x] accept needed no change: `entryType`/`artifactBody`/`foreignChanges` already read the
+      branch's own `served_by` and allow every type's path for the pattern, so a worker-staged
+      type change merges through the same path as a human re-home; proved with an end-to-end
+      review test, not just by reading the code
+- [x] tests: `prompts.test.ts` (wantRouteAnswer/keepRouteAnswer contract), `run.test.ts`
+      ("re-routing an already served pattern": upgrade, router-says-rule no-op, refine never
+      reroutes, a `rehomed` event blocks it, an unreviewed staged branch blocks it),
+      `review.test.ts` (accept of a staged re-route installs the new artifact and removes
+      the old one)
+- [x] verify: red confirmed by reverting the source files only (`git diff` + `git checkout --`
+      + `git apply`) and re-running the new tests before restoring; green after
+- [ ] not done: a staged branch that merely happens to carry the SAME type as the live
+      ledger (an ordinary unreviewed redraft, not a rehome) also blocks re-routing, per a
+      literal reading of "any served_by set on the branch blocks it". This is the
+      conservative reading (do not touch a pattern a human might already be reviewing);
+      revisit if that turns out to suppress real upgrades too often in practice.

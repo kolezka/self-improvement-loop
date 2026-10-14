@@ -1319,6 +1319,59 @@ describe("rehome and retire", () => {
   });
 });
 
+// --- re-routing on new evidence, no human rehome -----------------------------
+
+describe("accepting a worker-staged re-route", () => {
+  test("installs the new artifact live and removes the old one", async () => {
+    const world = makeWorld();
+    const repo = seed(world);
+
+    // First promotion: an ordinary rule, accepted exactly like today.
+    await run(world, cfg(), { apply: true, chat: new FakeChat({ draft: ruleDraft() }).fn, gateRunner: fakeGateRunner });
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(readFileSync(join(repo, RULES), "utf8")).toContain(ruleTag(PATTERN));
+
+    // New evidence past the watermark, whose routing fields earn a hook: a
+    // gate already proved narrow against the real payload corpus elsewhere.
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    const probe = { ...ruleDraft(), trigger_event: "PreToolUse:Bash", gate: { command_matches: "git (commit|push)" } };
+    const chat = new FakeChat({ drafts: [probe, hookDraft(PATTERN)] });
+    const report = await run(world, cfg(), {
+      apply: true,
+      chat: chat.fn,
+      gateRunner: fakeGateRunner,
+      cards: [observedCard(PATTERN, "rule")],
+    });
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]!.type).toBe("hook");
+
+    const detail = review.detail(world, cfg(), PATTERN);
+    expect(detail.artifact_type).toBe("hook");
+    expect(detail.accept_blocked).toBeNull();
+
+    const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
+
+    expect(out.merged).toBe(true);
+    expect(out.status).toBe("promoted");
+    expect(out.artifact_type).toBe("hook");
+    expect(existsSync(join(repo, "nudges", `${PATTERN}.json`))).toBe(true);
+    const rules = readFileSync(join(repo, RULES), "utf8");
+    expect(rules).not.toContain(ruleTag(PATTERN));
+
+    const entry = loadLedger(ledgerPath(world)).entries[PATTERN]!;
+    expect(entry.served_by).toEqual({ type: "hook", path: `nudges/${PATTERN}.json` });
+    expect(entry.artifact_type).toBe("hook");
+    expect(entry.status).toBe("promoted");
+    // A re-route is a redraft of an already-promoted row, not a first
+    // promotion: the original date stands and revisions counts it.
+    expect(entry.promoted_at).not.toBeNull();
+    expect(entry.revisions).toBe(1);
+
+    const events = readProposalEvents().events.filter((e) => e.pattern === PATTERN);
+    expect(events.map((e) => e.event)).toContain("rerouted");
+  });
+});
+
 // --- relink -------------------------------------------------------------------
 
 describe("relink", () => {

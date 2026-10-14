@@ -1,6 +1,8 @@
 // The curriculum run: gates, staging, and what it is not allowed to touch.
-// Covers INVARIANTS 1 (never pushes), 3 (served patterns are not re-routed),
-// 7 (rule writability), 9 (one commit) and 13 (per-pattern provider isolation).
+// Covers INVARIANTS 1 (never pushes), 3 (a served pattern is only re-routed to
+// a different real type on new promote evidence, and never over a human's own
+// choice), 7 (rule writability), 9 (one commit) and 13 (per-pattern provider
+// isolation).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -34,7 +36,7 @@ import {
   run,
   type RunOptions,
 } from "@sil/curriculum";
-import { parseLedger, readProposalEvents, saveLedger } from "@sil/store";
+import { parseLedger, readProposalEvents, recordProposalEvent, saveLedger } from "@sil/store";
 import {
   addReflections,
   agentBody,
@@ -48,6 +50,7 @@ import {
   makeCfg,
   makeWorld,
   ruleBody,
+  ruleDraft,
   silEnv,
   skillBody,
   skillDraft,
@@ -685,7 +688,7 @@ describe("auto merge", () => {
 });
 
 describe("served_by suppression", () => {
-  test("an already served pattern is not re-routed", async () => {
+  test("an already served pattern with no upgrade signal is not re-routed", async () => {
     const world = worldWith();
     const repo = initTarget(world);
     writeLedger(world, [
@@ -698,8 +701,12 @@ describe("served_by suppression", () => {
     ]);
     commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
 
-    // route() must never be consulted: a fake runner that throws would surface
-    // any call, and the drafter prompt below proves the forced path was taken.
+    // The forced draft carries no trigger_event or gate, so the re-route probe
+    // (see "re-routing an already served pattern" below) falls through to
+    // "rule" without ever reaching the gate runner: hookVerdict refuses "no
+    // trigger event proposed" before it is called. A throwing runner here
+    // proves that, and the drafter prompt below proves the forced path, not
+    // the free-routing one, was taken.
     const chat = new FakeChat({ draft: { artifact: ruleBody() } });
     const report = await run(
       world,
@@ -746,6 +753,168 @@ describe("served_by suppression", () => {
     expect(prompt).toContain("Write a");
     expect(prompt).not.toContain("Refine the existing");
     expect(prompt).not.toContain("awaiting a real draft");
+  });
+});
+
+describe("re-routing an already served pattern", () => {
+  /** A pattern already promoted and served by a rule bullet, which this
+   * describe block's tests redraft on new evidence. */
+  function seedRuleServed(world: World, repo: string, overrides: Partial<PromotionEntry> = {}): void {
+    // Deliberately not `ruleBody()`: the fake drafter's forced-mode reply
+    // below returns that text, and an "existing" that already reads the same
+    // would gate out as "no change" before the route probe matters.
+    commitFile(
+      repo,
+      "RULES.md",
+      `# Rules\n\n${RULE_START}\n- old wording for ${PATTERN}. ${ruleTag(PATTERN)}\n${RULE_END}\n`,
+      "chore: rules",
+    );
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+        ...overrides,
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+  }
+
+  // A gate already proved narrow against the real payload corpus by "a routed
+  // hook is written as JSON at the nudges path" above; reused here so a
+  // genuine router call, not a fixture quirk, is what earns the upgrade.
+  const HOOK_PROBE = { ...ruleDraft(), trigger_event: "PreToolUse:Bash", gate: { command_matches: "git (commit|push)" } };
+
+  test("new evidence that earns a hook re-routes a promoted rule, removing the rule bullet", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo);
+
+    // First call: forced "rule" body plus the routing fields the probe asks
+    // for. Second call: the real redraft, in the shape the router earned.
+    const chat = new FakeChat({ drafts: [HOOK_PROBE, hookDraft(PATTERN)] });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(chat.roles).toEqual(["drafter", "drafter", "judge"]);
+    expect(chat.promptsFor("drafter")[0]).toContain("Its type is already decided");
+    expect(report.routed[PATTERN]).toMatchObject({ drafted: "rule", type: "hook" });
+    expect(report.routed[PATTERN]!.reason).toContain("re-routed from rule to hook");
+
+    const branch = branchName(world.name, PATTERN);
+    const hook = git.show(repo, branch, `nudges/${PATTERN}.json`);
+    expect(hook.found).toBe(true);
+    const rules = git.show(repo, branch, "RULES.md");
+    expect(rules.found).toBe(true);
+    expect(rules.text).not.toContain(ruleTag(PATTERN));
+    const row = parseLedger(git.show(repo, branch, "promotions.json").text).entries[PATTERN]!;
+    expect(row.served_by).toEqual({ type: "hook", path: `nudges/${PATTERN}.json` });
+    expect(row.artifact_type).toBe("hook");
+    expect(git.git(repo, ["log", "-1", "--format=%s", branch])).toBe(
+      `feat(hook): re-route ${PATTERN} from rule (auto, gated)`,
+    );
+    const events = readProposalEvents().events;
+    expect(events.at(-1)).toMatchObject({ world: world.name, pattern: PATTERN, event: "rerouted" });
+  });
+
+  test("a router result of rule leaves an already served type alone", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo);
+
+    // A gate that fires on nothing in the corpus downgrades to "rule": real
+    // signal, real router call, no upgrade earned, so no churn.
+    const probe = { ...ruleDraft(), trigger_event: "PreToolUse:Bash", gate: { command_matches: "this-matches-nothing-xyz" } };
+    const chat = new FakeChat({ draft: probe });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(chat.roles).toEqual(["drafter", "judge"]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+    const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(rules.text).toContain(ruleTag(PATTERN));
+  });
+
+  test("a refine action never considers a re-route, even with hook-earning evidence", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    // promoted_at_count matches the reflection count, so there is no evidence
+    // past the watermark: plan() reads this as a scorecard refine, not a promote.
+    seedRuleServed(world, repo, { promoted_at_count: 3 });
+
+    const card = Scorecard.parse({ ref: "rule:" + PATTERN, type: "rule", name: PATTERN, misfired: 3, human_bad: 1, helpful: 1, proposal: "refine", reason: "misfires" });
+    const chat = new FakeChat({ draft: HOOK_PROBE });
+    const report = await run(
+      world,
+      makeCfg(),
+      opts({
+        apply: true,
+        chat: chat.fn,
+        gateRunner: () => {
+          throw new Error("route() was consulted on a refine");
+        },
+        cards: [card],
+      }),
+    );
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+    const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(rules.text).toContain(ruleTag(PATTERN));
+  });
+
+  test("a rehomed event ever recorded for this pattern blocks re-routing", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo);
+    recordProposalEvent(world.name, PATTERN, "rehomed");
+
+    const chat = new FakeChat({ draft: HOOK_PROBE });
+    const report = await run(
+      world,
+      makeCfg(),
+      opts({
+        apply: true,
+        chat: chat.fn,
+        gateRunner: () => {
+          throw new Error("route() was consulted over a human's own rehome");
+        },
+        cards: [observedCard(PATTERN)],
+      }),
+    );
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+    const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(rules.text).toContain(ruleTag(PATTERN));
+  });
+
+  test("a branch already staged and unreviewed blocks re-routing until it is answered", async () => {
+    const world = worldWith();
+    const repo = initTarget(world);
+    // First tick: free routing stages an ordinary rule, nothing accepted yet.
+    const first = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft: ruleDraft() }).fn }));
+    expect(first.staged).toEqual([PATTERN]);
+
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    const chat = new FakeChat({ draft: HOOK_PROBE });
+    const report = await run(
+      world,
+      makeCfg(),
+      opts({
+        apply: true,
+        chat: chat.fn,
+        gateRunner: () => {
+          throw new Error("route() was consulted while a branch awaits review");
+        },
+      }),
+    );
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+    const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(rules.text).toContain(ruleTag(PATTERN));
   });
 });
 

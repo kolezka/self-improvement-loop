@@ -3,7 +3,7 @@
 // boundary behavior.
 
 import { describe, expect, test } from "bun:test";
-import { boundedSources, JUDGE_RULES, judgeQuestions, verdictFromNouls } from "../src/prompts.ts";
+import { boundedSources, draftMessages, JUDGE_RULES, judgeQuestions, parseDraft, verdictFromNouls } from "../src/prompts.ts";
 
 const JUDGE_RULE_IDS = JUDGE_RULES.map(([id]) => id);
 
@@ -74,5 +74,55 @@ describe("verdictFromNouls", () => {
     const [passed, reason] = verdictFromNouls(answers, 0.5);
     expect(passed).toBe(false);
     expect(reason).toBe("unsafe p=0.90, threshold 0.50");
+  });
+});
+
+describe("forced drafting with wantRouteAnswer", () => {
+  test("wantRouteAnswer adds the routing ask without changing the forced body instructions on either side of it", () => {
+    const plain = draftMessages("p", ["a lesson"], null, "rule").at(-1)!.content;
+    const asked = draftMessages("p", ["a lesson"], null, "rule", { wantRouteAnswer: true }).at(-1)!.content;
+    const markEnd = "do not include secrets or tokens.";
+    const prefix = plain.slice(0, plain.indexOf(markEnd) + markEnd.length);
+    const suffix = plain.slice(plain.indexOf("Lessons to generalise:"));
+    // Byte-identical on both sides of the inserted ask: wantRouteAnswer never
+    // changes what "artifact" is told to contain.
+    expect(asked.startsWith(prefix)).toBe(true);
+    expect(asked.endsWith(suffix)).toBe(true);
+    expect(asked).toContain("trigger_event");
+    expect(asked).toContain("capability_evidence");
+    expect(plain).not.toContain("trigger_event");
+  });
+
+  test("without wantRouteAnswer, parseDraft keeps returning the empty answer on the forced path", () => {
+    const raw = JSON.stringify({ artifact: "- a bullet", trigger_event: "PreToolUse:Bash", gate: { always: true } });
+    const [body, answer] = parseDraft(raw, { forcedType: "rule" });
+    expect(body).toBe("- a bullet");
+    expect(answer.trigger_event).toBe("none");
+    expect(answer.gate).toBeNull();
+  });
+
+  test("keepRouteAnswer reads the routing fields the forced prompt asked for, body unaffected", () => {
+    const raw = JSON.stringify({
+      artifact: "- a bullet",
+      trigger_event: "PreToolUse:Bash",
+      gate: { always: true },
+      needs_own_context: false,
+      context_evidence: null,
+      capability_evidence: null,
+      no_artifact: false,
+    });
+    const [body, answer] = parseDraft(raw, { forcedType: "rule", keepRouteAnswer: true });
+    expect(body).toBe("- a bullet");
+    expect(answer.trigger_event).toBe("PreToolUse:Bash");
+    expect(answer.gate).toEqual({ always: true });
+  });
+
+  test("keepRouteAnswer falls back to the empty answer on a reply that fails validation, body still used", () => {
+    const raw = JSON.stringify({ artifact: "- a bullet", gate: "not an object" });
+    const [body, answer] = parseDraft(raw, { forcedType: "rule", keepRouteAnswer: true });
+    expect(body).toBe("- a bullet");
+    expect(answer.trigger_event).toBe("none");
+    expect(answer.gate).toBeNull();
+    expect(answer.parse_error).toBe("");
   });
 });

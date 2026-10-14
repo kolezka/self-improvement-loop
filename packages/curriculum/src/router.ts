@@ -285,7 +285,10 @@ function hookVerdict(
   // against the whole corpus so one spawn tests every payload, not one per
   // candidate hook. The trigger filter happens here, against the same
   // payloads array by index.
-  const hits = results.filter((matched, i) => matched && triggerMatches(payloads[i]!, triggerEvent, triggerMatcher)).length;
+  // The corpus samples tool calls at PreToolUse only, and every one of them
+  // also reaches PostToolUse, so a PostToolUse hook is tested as PreToolUse.
+  const corpusEvent = triggerEvent === "PostToolUse" ? "PreToolUse" : triggerEvent;
+  const hits = results.filter((matched, i) => matched && triggerMatches(payloads[i]!, corpusEvent, triggerMatcher)).length;
   if (hits === 0) {
     // A refused draft is not persisted, so the gate must survive in the reason.
     // Cut by code point: a UTF-16 slice can leave half an emoji at the end.

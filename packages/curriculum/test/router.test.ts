@@ -142,6 +142,22 @@ describe("hook: the claim is executed, not read", () => {
     expect(result.reason).toContain("2 of 20");
   });
 
+  test("a PostToolUse hook is tested against the PreToolUse samples of the same calls", () => {
+    // The hook samples only PreToolUse. Every sampled call also reaches PostToolUse.
+    uninstallFakeNudge();
+    const bash = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `cmd ${i}` } });
+    const mcpCall = { hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} };
+    const corpus = [...Array.from({ length: 18 }, (_, i) => bash(i)), mcpCall, mcpCall];
+    const result = route(
+      answer({ trigger_event: "PostToolUse:mcp__outline__update_document", gate: { always: true } }),
+      SOURCES,
+      corpus,
+      opts,
+    );
+    expect(result.artifact_type).toBe("hook");
+    expect(result.reason).toContain("2 of 20");
+  });
+
   test("a gate that fires on more than half of a recorded corpus is a broadcast too", () => {
     // With two thousand recorded tool calls in the corpus nothing but `always`
     // matches every one, so "fires on everything" alone would let a gate on

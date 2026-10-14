@@ -83,15 +83,21 @@ correction into a skill, agent, rule, nudge or CLAUDE.md edit.
    loads nudges from the world's `nudges_dir` in its target repo
    (`apps/hook/src/handlers.ts:136`). The agent writes the approved nudge JSON
    to a scratch file and `sil artifacts register` copies it into `nudges_dir`
-   in the same commit as the ledger row, so it is live on that commit.
+   in the same commit as the ledger row, so it is live on that commit. If the
+   project repo is also the world's target repo, a rule, skill or agent cannot
+   live there (register refuses paths inside the target repo): use `~/.claude/`
+   scope, or leave the lesson to the loop through `/reflect`.
 6. **Preflight, draft and show the diff.** Run `sil artifacts register ...
-   --dry-run` with the path the artifact will be written to. It runs every
+   --dry-run` with the final path the artifact will be written to: in the
+   project's main checkout or under `~/.claude/`, never a worktree path. It
+   runs every
    refusal check and prints the ledger row it would commit, without writing.
    For a rule, skill or agent the file need not exist yet. A nudge draft is
    first written to a fresh `mktemp -d` directory, since register reads and
    lints it; that is the only write allowed before the yes, its contents are
-   part of the diff shown, and the directory is removed after register or a
-   no. Show the artifact diff and that row together. Write
+   part of the diff shown. The directory is removed after register succeeds
+   or the operator says no; on a refusal it is kept, so a retry registers the
+   same approved bytes. Show the artifact diff and that row together. Write
    nothing yet. Wait for an explicit yes to both. A yes given before they were
    shown does not count.
 7. **Write.** A file inside a git repo goes on a worktree branch, committed,
@@ -105,6 +111,19 @@ correction into a skill, agent, rule, nudge or CLAUDE.md edit.
    its default branch or got dirty under the artifact paths since the
    preflight), report the refusal verbatim and the exact command to re-run.
 
+   When to run it: right away for a nudge (register commits it) and for a file
+   edited in place (under `~/.claude/`, or in a project directory without
+   git). A project artifact in a git repo sits on a branch, so it is not
+   registered yet: the agent reports the branch and the exact command and
+   never merges or pushes. Once the operator says it is merged, the agent
+   registers only if `git -C <repo> merge-base --is-ancestor <branch>
+   <default>` or `git -C <repo> diff --quiet <branch> <default> --
+   <repo-relative path>` exits 0 (the second covers squash and rebase
+   merges). `<repo-relative path>` is `--path` with `<repo>/` removed, never
+   typed by hand; if `--path` does not start with `<repo>/`, it stays pending.
+   Otherwise the agent reports the pending command and suggests pulling the
+   default branch first.
+
 Report: the file written, the branch or commit, and the register result
 verbatim.
 
@@ -117,7 +136,15 @@ artifact.
 ```
 sil artifacts register --type rule|skill|agent|hook --pattern <slug>
                        --path <abs> --note <text> [--world <name>] [--dry-run]
+                       [--json]
 ```
+
+Exit codes: 0 on success; 1 when `register()` refuses (the CLI's existing
+error handler prints `error: <reason>`); 2 for bad arguments, an unknown
+`artifacts` action, or a register-only flag (`--type`, `--pattern`, `--path`,
+`--note`, `--dry-run`) given to the listing or `rebuild`. The four types live
+in one exported `INLINE_TYPES` list in `@sil/review`, used by the CLI and by
+`register()`.
 
 World: `resolveWorld` from cwd unless `--world` is given (rule 6: filter by
 world first). Slug: must pass `isSlug`, the same check as `artifactRel`.
@@ -167,9 +194,17 @@ artifact diff in the session, and nothing goes to a remote.
 
 Refusals, each a non-zero exit with the reason:
 
-- the slug fails `isSlug`;
-- `--path` is not absolute, or the file does not exist (a `--dry-run` for a
-  rule, skill or agent skips the existence check; a nudge draft must exist);
+- the type is not in `INLINE_TYPES` (checked first, for callers outside
+  TypeScript);
+- the slug fails `isSlug`, or the note is empty;
+- the target is not a git repo, is off its default branch, or has uncommitted
+  or untracked files under the artifact paths; or the worker holds its lock;
+- `--path` is not absolute, is not a regular file, or does not exist (a
+  `--dry-run` for a rule, skill or agent skips the existence check; a nudge
+  draft must exist);
+- the path runs through a dangling symlink (named in the error);
+- the path, resolved through symlinks, is inside the target repo (rule,
+  skill and agent only: that is the loop's tree);
 - the pattern already has a loop row with status `promoted`, or a curriculum
   branch `curriculum/<world>/<pattern>` exists (a staged loop row lives only
   on that branch). The loop owns it, so the operator votes or re-homes
@@ -177,7 +212,10 @@ Refusals, each a non-zero exit with the reason:
   said no to the loop's version;
 - `--type hook` and the file is not JSON, its `pattern` field is not the slug,
   or `lintHook` reports a problem;
-- the pattern has an `inline` row with a different `external_path`. Re-running
+- the pattern has an `inline` row with a different `external_path`. Paths
+  are compared and stored resolved through symlinks (the deepest existing
+  part for a file not written yet), so a dry run previews the same row a real
+  run commits. Re-running
   with the same path updates `revised_at` and `revisions`. That is the "extend
   an existing lesson" case.
 
@@ -190,12 +228,16 @@ copies, one the loop rewrites and one it cannot see.
   recurrence. A scorecard proposal of `refine` or `retire-candidate` is still
   reported, tagged `inline: edit <external_path> by hand`.
 - `run.ts`: refuses to stage a pattern whose live row is `inline`, right after
-  `prior` is read (`run.ts:288`). A second lock in case a plan bug lets one
-  through.
-- `review accept`: refuses when the live row is `inline`, so an older staged
-  branch cannot overwrite it. `register` already refuses while such a branch
-  exists; this covers a branch created after.
-- `review retire|rehome`: refuse an inline row and print `external_path`.
+  `prior` is read. A second lock in case a plan bug lets one through. A test
+  reaches it through the test-only `RunOptions.actions`, which replaces
+  `plan()`.
+- `review accept`: refuses when the row in the ledger it merges over (at the
+  reviewed base commit) is `inline`, so an older staged branch cannot
+  overwrite it. The error names `sil review reject <pattern> --world <w>`,
+  which clears the stale branch and keeps the inline row.
+- `review retire|rehome`: check the live ledger before staging, then the
+  branch's row, and refuse an inline row, naming its path. The live check is
+  what catches a stale loop branch whose own row is not marked inline.
 - `repair.ts`: skips inline rows explicitly. Today it would still compute
   dates for them from ledger history.
 - `feedback` `propose()`: never `retire-candidate` for an inline rule, since

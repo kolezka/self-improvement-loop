@@ -95,15 +95,15 @@ git -C <repo> diff --quiet <branch> <default-branch> -- <repo-relative path>
 ```
 
 `<repo-relative path>` is `--path` with `<repo>/` removed; never type it by
-hand. Register only if one exits 0. Otherwise report the pending command, do
-not register, and tell the operator to pull the default branch locally first if
-they merged remotely. Never claim it is recorded before register succeeds.
+hand. If `--path` does not start with `<repo>/`, treat it as pending. Register
+only if one exits 0. Otherwise report the pending command, do not register, and
+tell the operator to pull the default branch first if they merged remotely.
 
 If `sil` is not on PATH (try `~/.local/bin/sil`, and in Claude Code
 `"${CLAUDE_PLUGIN_ROOT}/scripts/sil"`), say so and stop. If register refuses
 (for example, the target checkout moved off its default branch, or got dirty
 under the artifact paths since the preflight), report the refusal verbatim and
-the exact command to re-run.
+the exact command to re-run. Never claim it is recorded until register succeeds.
 
 For a nudge, remove the scratch directory only after register succeeds or the
 operator says no. If register refuses, keep it: the retry needs the same

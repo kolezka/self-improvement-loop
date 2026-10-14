@@ -272,7 +272,12 @@ function hookVerdict(
   }
 
   const hits = results.filter(Boolean).length;
-  if (hits === 0) return "gate matched nothing in the payload corpus";
+  if (hits === 0) {
+    // A refused draft is not persisted, so the gate must survive in the reason.
+    const gateText = JSON.stringify(gate);
+    const excerpt = gateText.length > 160 ? `${gateText.slice(0, 160)}...` : gateText;
+    return `gate matched nothing in the payload corpus (gate: ${excerpt})`;
+  }
   if (payloads.length > 1 && hits / payloads.length > MAX_GATE_MATCH_RATE) {
     // It would inject on a large share of the tool calls of every session.
     return `gate fires on ${hits} of ${payloads.length} recorded payloads; that is a broadcast, not a nudge`;

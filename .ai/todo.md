@@ -482,3 +482,8 @@ never asking whether the redraft actually moved the recurrence rate. See
       before boot sets the real world, so an install without a `default` world gets a
       "could not load proposal outcomes: unknown world" toast on first load. The demo
       uses world `default` instead of fixing this here.
+
+## Gate corpus diagnosis (2026-10-14, branch fix/gate-corpus-match)
+- [x] Replay candidate pipeline gates against copied default and inkitt payload corpora with the real runner; command samples preserve pipes.
+- [x] Include a bounded gate excerpt when a draft matches nothing, so future refusals retain the rejected gate.
+- [ ] The 2026-09-29 and 2026-10-02 draft gates and contemporaneous corpus were not saved. The current rotated samples cannot prove why those two drafts matched nothing.

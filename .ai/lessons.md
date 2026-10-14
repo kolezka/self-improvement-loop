@@ -168,3 +168,23 @@
 - 2026-10-14: An optional ledger field must be `.optional()`, not `.default()`, or every
   save rewrites every row. `saveLedger` drops undefined values but writes defaults, so a
   defaulted field lands in every row of an old ledger the first time anything saves it.
+- 2026-10-14: `promotion.auto_merge` and a re-route are two different "has a human looked
+  at this" questions, and a feature added later (auto_merge) must be checked against every
+  earlier feature (re-route) that also writes a ledger status, not just against the plain
+  redraft path it was built for. A type change nobody reviewed must stay `staged` whatever
+  a generic config flag says.
+- 2026-10-14: A "no change" gate that compares a redraft against the artifact it replaces
+  must never run across a type change: the old type's body and the new type's body are not
+  the same shape, so "textually/structurally identical" can only mean the type change itself
+  coincidentally reproduced the old content, never "nothing happened". Skip the gate
+  entirely when the type is changing; do not try to make the comparison "smarter".
+- 2026-10-14: A throwing stub gate runner does not prove "the router was never consulted".
+  `hookVerdict` catches a runner exception and returns a refusal string, so the gate falls
+  back to the same "no upgrade" outcome whether the runner ran and threw, or was never
+  called at all. To actually tell those apart, assert on something upstream of the runner
+  (the prompt sent to the drafter, or the number of drafter calls), or use a real runner that
+  would genuinely earn the upgrade if the guard under test failed to block it.
+- 2026-10-14: A prompt that asks for extra JSON keys "alongside" an existing one, appended
+  after a sentence that still says "holding exactly one key", teaches the model to obey the
+  sentence and drop the keys. When a forced-shape prompt grows a second ask, the reply-line
+  sentence naming the shape has to change with it, not just the paragraph that states the ask.

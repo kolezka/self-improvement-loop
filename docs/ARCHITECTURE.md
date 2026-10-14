@@ -505,8 +505,12 @@ could move it.
 
 `run()` now reconsiders the type on a `promote` action (new reflections past
 the watermark; never a `refine`, never a ledger-only redraft, since there is
-no fresh evidence to route from there). The forced drafting call asks for the
-routing fields alongside the body (`DraftOptions.wantRouteAnswer`,
+no fresh evidence to route from there), and only when the pattern is
+currently served by `rule`. A pattern already served by a `hook`, `skill` or
+`agent` never asks the drafter for routing fields at all: only a human
+`rehome` moves it, and the pattern pays no extra provider cost for a probe
+that could never fire. The forced drafting call for a served `rule` asks for
+the routing fields alongside the body (`DraftOptions.wantRouteAnswer`,
 `ParseDraftOptions.keepRouteAnswer`): the instructions for the body itself are
 unchanged either way, so what the drafter writes in the served type does not
 move, and the forced path pays for one extra set of keys in the same call
@@ -521,21 +525,44 @@ drafter/router mismatch already uses on a fresh pattern), lints, judges, and
 stages on the pattern's branch exactly like an ordinary redraft: the old type's
 artifact is removed, the new one written, `served_by` and `artifact_type` flip
 to the new type, and the commit message says so (`feat(hook): re-route
-<pattern> from rule (auto, gated)`). Nothing changes live until a human
-accepts it in review, exactly like a re-home today; accept already read the
-branch's own `served_by` and reaped every linkable type's link, so it merges
-a worker-staged type change with no code change of its own.
+<pattern> from rule (auto, gated)`). The "no change" skip that drops a redraft
+reproducing the artifact already in place never applies to a re-route: a type
+change is the change, even when the new type's text happens to read the same
+as the old one's. A re-route is also always staged for review, never
+auto-merged, whatever `promotion.auto_merge` says: it is a type change nobody
+has looked at yet, which is exactly what auto-merge exists to skip for
+everything else. Nothing changes live until a human accepts it in review,
+exactly like a re-home today; accept already read the branch's own
+`served_by` and reaped every linkable type's link, so it merges a
+worker-staged type change with no code change of its own.
 
-A re-route never overrides a human's own choice of type. It is skipped
-whenever the branch's type disagrees with the live one (`migrating`: a
-re-home, or an earlier re-route, still waiting for review), or this pattern
-has ever recorded a `rehomed` proposal event. An ordinary open restage of the
-same type does not block it: the worker restages that branch on every tick,
-and on live state every pattern with new evidence had one. A reviewing human
-is protected by `reviewed_state`, as for any restage. `rehomed` stays a human-only event on purpose: an automatic
+A re-route never overrides a human's own choice of type, checked in order of
+durability:
+
+1. `type_set_by: "human"` on the branch's ledger row or the live one. Set by
+   `rehomeInner` when a human re-homes a pattern, and carried forward by every
+   later write of that row (`stageOne`'s own redraft, `accept`, `reject`,
+   `repair`), so it survives even if the `rehomed` proposal event below never
+   makes it to disk. It is `.optional()` on `PromotionEntry`, never
+   `.default()`, so it is written only where it is set and does not rewrite
+   every other row on the next save.
+2. The branch's type disagreeing with the live one (`migrating`: a re-home,
+   or an earlier re-route, still waiting for review).
+3. This pattern ever recording a `rehomed` proposal event. Best effort: that
+   append runs after the re-home's commit already landed and swallows its own
+   write failure (a full disk, a read-only mount) rather than undoing a commit
+   that already happened, so it can miss an event the commit itself carried
+   out. `type_set_by` on the ledger row is the durable fallback for exactly
+   that failure.
+
+An ordinary open restage of the same type does not block it: the worker
+restages that branch on every tick, and on live state every pattern with new
+evidence had one. A reviewing human is protected by `reviewed_state`, as for
+any restage. `rehomed` stays a human-only event on purpose: an automatic
 re-route records its own `rerouted` event instead, so it neither misreports
 itself as a human decision nor permanently blocks its own pattern from a later
-upgrade.
+upgrade. `rerouted` is also its own series in `history.series` (`proposals_rerouted`),
+counted separately from, but still included in, `proposals_staged`.
 
 ### Inline artifacts (`/learn`)
 

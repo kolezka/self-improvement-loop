@@ -55,6 +55,12 @@ describe("sil codex install", () => {
     expect(out.join("\n")).toContain(installedSkill());
   });
 
+  test("copies learn.md next to SKILL.md", async () => {
+    expect(await run(["codex", "install"])).toBe(0);
+    const installed = join(dirname(installedSkill()), "learn.md");
+    expect(readFileSync(installed, "utf8")).toBe(readFileSync(join(dirname(SOURCE_SKILL), "learn.md"), "utf8"));
+  });
+
   test("re-running replaces a stale copy", async () => {
     mkdirSync(dirname(installedSkill()), { recursive: true });
     writeFileSync(installedSkill(), "---\nname: self-improvement-loop\ndescription: old\n---\n", "utf8");
@@ -80,6 +86,20 @@ describe("sil codex install", () => {
     expect(readFileSync(join(checkoutSkill, "SKILL.md"), "utf8")).toBe("checkout copy\n");
     expect(readFileSync(otherShim, "utf8")).toBe("#!/bin/sh\necho checkout\n");
     expect(out.join("\n")).toContain("symlink");
+  });
+
+  test("never writes through a symlink the user put at learn.md", async () => {
+    const otherLearn = join(tmp, "checkout", "learn.md");
+    mkdirSync(dirname(otherLearn), { recursive: true });
+    writeFileSync(otherLearn, "checkout learn\n", "utf8");
+    const installedLearn = join(dirname(installedSkill()), "learn.md");
+    mkdirSync(dirname(installedLearn), { recursive: true });
+    symlinkSync(otherLearn, installedLearn);
+
+    expect(await run(["codex", "install"])).toBe(0);
+    expect(readFileSync(otherLearn, "utf8")).toBe("checkout learn\n");
+    expect(readFileSync(installedSkill(), "utf8")).toBe(readFileSync(SOURCE_SKILL, "utf8"));
+    expect(out.join("\n")).toContain(`${installedLearn} is a symlink, left alone`);
   });
 
   test("warns only when the shim directory is not on PATH", async () => {

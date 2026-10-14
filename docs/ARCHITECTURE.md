@@ -527,14 +527,79 @@ branch's own `served_by` and reaped every linkable type's link, so it merges
 a worker-staged type change with no code change of its own.
 
 A re-route never overrides a human's own choice of type. It is skipped
-whenever: a re-home is still staged on the branch and not yet accepted
-(`migrating`), any staged branch at all sits unreviewed for this pattern (a
-human may be mid-review of an ordinary redraft too, and a re-route must not
-land behind that review), or this pattern has ever recorded a `rehomed`
-proposal event. `rehomed` stays a human-only event on purpose: an automatic
+whenever the branch's type disagrees with the live one (`migrating`: a
+re-home, or an earlier re-route, still waiting for review), or this pattern
+has ever recorded a `rehomed` proposal event. An ordinary open restage of the
+same type does not block it: the worker restages that branch on every tick,
+and on live state every pattern with new evidence had one. A reviewing human
+is protected by `reviewed_state`, as for any restage. `rehomed` stays a human-only event on purpose: an automatic
 re-route records its own `rerouted` event instead, so it neither misreports
 itself as a human decision nor permanently blocks its own pattern from a later
 upgrade.
+
+### Inline artifacts (`/learn`)
+
+`/learn` lets the session agent turn a correction into a rule, skill, agent or
+nudge at once, without waiting for three reflections. The agent drafts it, the
+operator approves the diff, and `sil artifacts register` records it in the
+world's ledger as an inline row. The loop sees inline rows for votes, scorecards
+and dedupe, but never redrafts, retires or re-homes them: a human edits the file.
+
+Three optional fields on a ledger row (`PromotionEntry` in `@sil/core`):
+
+| Field | Meaning |
+|---|---|
+| `origin` | `"loop"` or `"inline"`. Absent means loop, so every older row stays loop. |
+| `external_path` | Absolute path of an inline rule, skill or agent outside the target repo. Never stored in `served_by.path`, which `repair.ts` reads as a repo-relative blob path. |
+| `note` | The one-line lesson. Used as the row's gist in the knowledge map. |
+
+They are `.optional()`, not `.default()`. A default would be written into every
+row on the next save and rewrite the whole ledger file.
+
+Write path: `register()` in `@sil/review` is the single write point. It takes
+the worker lock and writes one local commit on the target repo's default branch
+through `commitOnDefault`. It never pushes. A nudge (`--type hook`) is read from a
+scratch JSON file, linted, and copied into `nudges_dir` in the same commit as its
+ledger row, so its `served_by.path` is the repo path and it has no
+`external_path`. A dry run runs every check and returns the row without writing,
+with one intended difference: for a rule, skill or agent the file need not exist
+yet, because the preview comes before the artifact is written.
+
+Path rules, checked before any write:
+
+- the type is one of `INLINE_TYPES` (`rule`, `skill`, `agent`, `hook`), also for
+  callers that are not TypeScript;
+- `--path` is absolute, and a regular file when it exists. A real run needs it to
+  exist; a dry run of a rule, skill or agent may name a file not written yet;
+- the path is resolved through symlinks. A path not written yet resolves its
+  deepest existing ancestor, so the dry-run row equals the committed row. A
+  dangling symlink on the way is refused;
+- a rule, skill or agent path that resolves inside the target repo is refused:
+  that tree belongs to the loop.
+
+Ownership refusals: a promoted loop row for the pattern, an existing
+`curriculum/<world>/<pattern>` branch, or an inline row already registered at
+a different path. A rejected or retired loop row may be replaced and keeps its
+`rejected_at_count`. Re-running with the same path bumps `revisions` and
+`revised_at` and keeps `promoted_at`.
+
+Guards in the rest of the loop:
+
+- `plan.ts`: every promoted inline row plans as `done`, with or without new
+  reflections or a scorecard. A `refine` or `retire-candidate` proposal is shown
+  in the reason, never executed.
+- `run.ts`: refuses to stage a pattern whose live row is inline, right after the
+  prior row is read. This is a second lock in case a plan bug lets one through.
+- `review accept`: refuses when the row at the reviewed base is inline, so an
+  older staged branch cannot overwrite it. The message names `sil review reject`.
+- `review retire` and `rehome`: refuse an inline row, checked on the live row and
+  on the branch row, and print its path.
+- `repair.ts`: skips inline rows. Their dates come from `register`.
+- `feedback` `propose()`: no zero-use `retire-candidate` for an inline rule,
+  whose uses are never counted. Complaints can still propose `refine`.
+- `context.ts`: an inline row's gist is its `note`.
+- `inventory()`: `served_by` shows `external_path` when set, and rows carry
+  `origin`. `sil artifacts` prints `origin=inline`.
 
 ## Web UI (`sil web`)
 
@@ -558,6 +623,11 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 | helpful / misfire | critic answer per session | all |
 | human vote | `/feedback <type>:<name> good|bad [note]` | all |
 | relevance | critic marks a rule as relevant to the session | rule |
+
+An inline rule lives in a `CLAUDE.md` that Claude Code loads itself, outside the
+rules block the loop injects, so its uses are not counted. Inline skills, agents
+and nudges are counted like loop ones, which is why their names must equal the
+pattern slug.
 
 Scorecard fields: `uses_30d`, `fires_30d`, `helpful`, `misfired`, `human_good`,
 `human_bad`, `recurrence_30d`, `last_used`, `proposal` (`keep | refine | retire-candidate`),

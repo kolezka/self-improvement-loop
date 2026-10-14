@@ -23,6 +23,13 @@ export function cmdCodexInstall(): number {
     mkdirSync(dirname(dest), { recursive: true });
     copyFileSync(join(paths.pluginRoot(), "skills", SKILL_NAME, "SKILL.md"), dest);
     console.log(`skill   ${dest}`);
+    const learnDest = join(dirname(dest), "learn.md");
+    if (schedule.isSymlink(learnDest)) {
+      console.log(`learn   ${learnDest} is a symlink, left alone`);
+    } else {
+      copyFileSync(join(paths.pluginRoot(), "skills", SKILL_NAME, "learn.md"), learnDest);
+      console.log(`learn   ${learnDest}`);
+    }
   }
 
   const shimLinked = schedule.isSymlink(schedule.shimPath());

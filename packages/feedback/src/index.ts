@@ -5,6 +5,7 @@ import {
   fsx,
   ledgerPath,
   paths,
+  servedType,
   type Config,
   type HumanFeedback,
   type Ledger,
@@ -330,7 +331,10 @@ function propose(
     return ["new", `promoted ${days}d ago, within the 7 day new window`];
   }
 
-  if (entry !== undefined && entry.status === "promoted" && uses + fires === 0 && humanGood === 0 && helpful === 0) {
+  // An inline rule lives in a CLAUDE.md the loop does not inject, so its uses
+  // are never counted. Zero uses says nothing about it.
+  const uncounted = entry !== undefined && entry.origin === "inline" && servedType(entry) === "rule";
+  if (entry !== undefined && entry.status === "promoted" && !uncounted && uses + fires === 0 && humanGood === 0 && helpful === 0) {
     const lastDt = parseTs(lastUsed);
     const basisDt = lastDt ?? promotedDt;
     const stale = basisDt === null || basisDt.getTime() < retireCutoff.getTime();

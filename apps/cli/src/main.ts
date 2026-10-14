@@ -175,7 +175,20 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .argument("[action]")
     .option("--world <name>")
     .option("--json")
-    .action(wire((action: string | undefined, opts) => cmdArtifacts({ ...opts, action: action as "rebuild" | undefined }, deps)));
+    .option("--type <type>")
+    .option("--pattern <slug>")
+    .option("--path <abs>")
+    .option("--note <text>")
+    .option("--dry-run")
+    .action(
+      wire((action: string | undefined, opts) => {
+        if (action !== undefined && action !== "rebuild" && action !== "register") {
+          console.error(`error: unknown action ${JSON.stringify(action)}; expected rebuild or register`);
+          return 2;
+        }
+        return cmdArtifacts({ ...opts, action }, deps);
+      }),
+    );
 
   const feedback = program.command("feedback");
   feedback

@@ -165,3 +165,6 @@
   one input needed to distinguish a bad drafted predicate from a thin corpus.
   Keep a bounded excerpt of the refused gate in the route reason. Rotated payload
   logs cannot recreate the corpus from the day of an older routing decision.
+- 2026-10-14: An optional ledger field must be `.optional()`, not `.default()`, or every
+  save rewrites every row. `saveLedger` drops undefined values but writes defaults, so a
+  defaulted field lands in every row of an old ledger the first time anything saves it.

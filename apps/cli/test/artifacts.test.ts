@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ledgerPath, loadConfig, worldNamed } from "@sil/core";
+import { ledgerPath, loadConfig, targetRoot, worldNamed } from "@sil/core";
 import { run } from "../src/main.ts";
 
 let tmp: string;
@@ -93,5 +93,161 @@ describe("sil artifacts", () => {
       rate_since_promotion: { sessions: 0, hits: 0, rate: null },
       rate_since_revision: { sessions: 0, hits: 0, rate: null },
     });
+  });
+});
+
+/** A promoted inline row whose artifact lives outside the target repo. Returns
+ * that path, which the listing must print as served_by. */
+function seedInlineRow(pattern: string): string {
+  const world = worldNamed(loadConfig(), "default");
+  const path = ledgerPath(world);
+  const external = join(tmp, "SKILL.md");
+  mkdirSync(dirname(path), { recursive: true });
+  const ledger = {
+    version: 1,
+    entries: {
+      [pattern]: {
+        pattern,
+        status: "promoted",
+        artifact_type: "skill",
+        served_by: { type: "skill", path: null },
+        promoted_at: "2026-09-01T00:00:00Z",
+        origin: "inline",
+        external_path: external,
+        note: "grep every caller before answering no",
+      },
+    },
+  };
+  writeFileSync(path, JSON.stringify(ledger), "utf8");
+  return external;
+}
+
+describe("sil artifacts listing of an inline row", () => {
+  test("shows origin=inline and the external path", async () => {
+    expect(await run(["init"])).toBe(0);
+    const external = seedInlineRow("deny-without-grep");
+    const { code, text } = await artifactsText();
+    expect(code).toBe(0);
+    expect(text).toContain("origin=inline");
+    expect(text).toContain(`served_by=${external}`);
+  });
+});
+
+// A real child process with a starting env built from tmp. Bun.spawnSync
+// without an explicit env ignores later process.env edits, so git run inside
+// this test process would read the operator's git config; the child's git
+// starts from this env instead.
+describe("sil artifacts register (child process)", () => {
+  const CLI = join(import.meta.dir, "..", "src", "main.ts");
+  const P = "deny-without-grep";
+  let childEnv: Record<string, string>;
+
+  beforeEach(() => {
+    const home = join(tmp, "home");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(tmp, "claude"), { recursive: true });
+    writeFileSync(join(tmp, "gitconfig"), "");
+    childEnv = {
+      PATH: process.env["PATH"] ?? "/usr/bin:/bin",
+      HOME: home,
+      CLAUDE_CONFIG_DIR: join(tmp, "claude"),
+      SIL_CONFIG_DIR: process.env["SIL_CONFIG_DIR"]!,
+      SIL_STATE_DIR: process.env["SIL_STATE_DIR"]!,
+      SIL_DATA_DIR: process.env["SIL_DATA_DIR"]!,
+      GIT_CONFIG_GLOBAL: join(tmp, "gitconfig"),
+      GIT_CONFIG_SYSTEM: join(tmp, "gitconfig"),
+    };
+  });
+
+  function sil(...args: string[]): { code: number; out: string; err: string } {
+    const proc = Bun.spawnSync([process.execPath, CLI, ...args], { env: childEnv, cwd: tmp });
+    return { code: proc.exitCode ?? -1, out: proc.stdout.toString(), err: proc.stderr.toString() };
+  }
+
+  function gitIn(repo: string, ...args: string[]): string {
+    const proc = Bun.spawnSync(["git", "-C", repo, ...args], { env: childEnv });
+    if (proc.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${proc.stderr.toString()}`);
+    return proc.stdout.toString().trim();
+  }
+
+  /** `sil init`, then the target repo and the skill file the operator wrote. */
+  function ready(): { repo: string; file: string } {
+    const init = sil("init");
+    expect(init.code).toBe(0);
+    const repo = targetRoot(worldNamed(loadConfig(), "default"));
+    const file = join(tmp, "work", "skills", P, "SKILL.md");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `---\nname: ${P}\ndescription: Use when answering no\n---\nGrep every caller first.\n`);
+    return { repo, file };
+  }
+
+  function snapshot(repo: string): { head: string; status: string; ledger: string | null } {
+    const ledger = ledgerPath(worldNamed(loadConfig(), "default"));
+    return {
+      head: gitIn(repo, "rev-parse", "HEAD"),
+      status: gitIn(repo, "status", "--porcelain", "--untracked-files=all"),
+      ledger: existsSync(ledger) ? readFileSync(ledger, "utf8") : null,
+    };
+  }
+
+  test("registers a skill: exit 0, one commit, an inline row", () => {
+    const { repo, file } = ready();
+    const before = gitIn(repo, "rev-parse", "HEAD");
+    const r = sil("artifacts", "register", "--world", "default", "--type", "skill", "--pattern", P, "--path", file, "--note", "grep every caller");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`registered skill:${P} in world default, commit `);
+    expect(gitIn(repo, "rev-list", "--count", `${before}..HEAD`)).toBe("1");
+    expect(gitIn(repo, "status", "--porcelain")).toBe("");
+    const row = JSON.parse(readFileSync(ledgerPath(worldNamed(loadConfig(), "default")), "utf8")).entries[P];
+    expect(row).toMatchObject({ origin: "inline", status: "promoted", external_path: realpathSync(file), note: "grep every caller" });
+  });
+
+  test("a dry run prints the row as JSON and changes nothing", () => {
+    const { repo, file } = ready();
+    const state = snapshot(repo);
+    const r = sil("artifacts", "register", "--world", "default", "--type", "skill", "--pattern", P, "--path", file, "--note", "n", "--dry-run", "--json");
+    expect(r.code).toBe(0);
+    const out = JSON.parse(r.out);
+    expect(out.commit).toBeNull();
+    expect(out.row).toMatchObject({ origin: "inline", external_path: realpathSync(file) });
+    expect(snapshot(repo)).toEqual(state);
+  });
+
+  test("a refusal from register exits 1 with its message and changes nothing", () => {
+    const { repo } = ready();
+    const state = snapshot(repo);
+    const missing = join(tmp, "work", "nope.md");
+    const r = sil("artifacts", "register", "--world", "default", "--type", "skill", "--pattern", P, "--path", missing, "--note", "n");
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(`error: ${missing} does not exist`);
+    expect(snapshot(repo)).toEqual(state);
+  });
+
+  test("an unknown --type exits 2 and names the flag", () => {
+    const r = sil("artifacts", "register", "--world", "default", "--type", "macro", "--pattern", P, "--path", "/x", "--note", "n");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("--type must be one of rule, skill, agent, hook");
+  });
+
+  test("a missing --path or --note exits 2", () => {
+    const r = sil("artifacts", "register", "--world", "default", "--type", "skill", "--pattern", P);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("needs --pattern, --path and --note");
+  });
+
+  test("an unknown action exits 2", () => {
+    const r = sil("artifacts", "frobnicate", "--world", "default");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('unknown action "frobnicate"');
+  });
+
+  test.each([
+    [["artifacts", "--world", "default", "--type", "skill"], "--type"],
+    [["artifacts", "rebuild", "--world", "default", "--dry-run"], "--dry-run"],
+  ])("a register-only flag without register exits 2 and names it (%p)", (argv, flag) => {
+    const r = sil(...argv);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain(`${flag} is only valid with sil artifacts register`);
   });
 });

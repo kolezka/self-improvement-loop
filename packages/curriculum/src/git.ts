@@ -236,8 +236,11 @@ export function dirtyPaths(repo: string, prefix: string | string[], opts: DirtyO
   const prefixes = (typeof prefix === "string" ? [prefix] : prefix).filter((p) => p.length > 0);
   if (prefixes.length === 0) return [];
   const mode = opts.includeUntracked ? "--untracked-files=all" : "--untracked-files=no";
-  const out = git(repo, ["status", "--porcelain", "-z", mode, "--", ...prefixes], { check: false });
-  return out
+  // Raw stdout: git() trims, which ate the leading space of a " M <path>"
+  // record and cut or dropped the first path. Failure still reads as clean.
+  const res = gitRaw(repo, ["status", "--porcelain", "-z", mode, "--", ...prefixes]);
+  if (res.code !== 0 || res.signal !== null) return [];
+  return res.stdout
     .split("\0")
     .filter((rec) => rec.length > 3)
     .map((rec) => rec.slice(3))

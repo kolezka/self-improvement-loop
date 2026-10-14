@@ -25,6 +25,11 @@ export type GateRunner = (
 export interface NudgeAdapter {
   /** Event name -> the matchers it accepts, or null when it takes none. */
   EVENTS: Record<string, ReadonlySet<string> | null>;
+  /** Whether `matcher` may be set on `event`, e.g. a built-in tool name or an
+   * `mcp__<server>__<tool>` matcher. Optional so a test fixture built before
+   * this existed keeps compiling; nudgeMatcherAllowed falls back to plain
+   * `EVENTS` set membership when a fake adapter omits it. */
+  matcherAllowed?: (event: string, matcher: string) => boolean;
   lintNudge: (payload: unknown) => string[];
   runGateCorpus: GateRunner;
 }
@@ -43,6 +48,7 @@ function fromPackage(): Partial<NudgeAdapter> {
   const ns = nudgePkg as unknown as Record<string, unknown>;
   const out: Partial<NudgeAdapter> = {};
   if (ns["EVENTS"]) out.EVENTS = ns["EVENTS"] as NudgeAdapter["EVENTS"];
+  if (typeof ns["matcherAllowed"] === "function") out.matcherAllowed = ns["matcherAllowed"] as NudgeAdapter["matcherAllowed"];
   if (typeof ns["lintNudge"] === "function") out.lintNudge = ns["lintNudge"] as NudgeAdapter["lintNudge"];
   if (typeof ns["runGateCorpus"] === "function") out.runGateCorpus = ns["runGateCorpus"] as GateRunner;
   return out;
@@ -55,4 +61,15 @@ export function nudges(): Partial<NudgeAdapter> {
 /** Events the dispatcher accepts, or null when it cannot be asked. */
 export function nudgeEvents(): NudgeAdapter["EVENTS"] | null {
   return nudges().EVENTS ?? null;
+}
+
+/** Whether `matcher` may be set on `event`, through whichever adapter is
+ * installed. The one place that falls back to plain set membership when the
+ * adapter has no `matcherAllowed` of its own, so router.ts and prompts.ts
+ * never each grow their own copy of that fallback. */
+export function nudgeMatcherAllowed(event: string, matcher: string): boolean {
+  const adapter = nudges();
+  if (typeof adapter.matcherAllowed === "function") return adapter.matcherAllowed(event, matcher);
+  const allowed = adapter.EVENTS ? adapter.EVENTS[event] : undefined;
+  return allowed !== null && allowed !== undefined && allowed.has(matcher);
 }

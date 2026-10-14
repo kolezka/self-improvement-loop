@@ -7,30 +7,27 @@
 // append and a spool move that the Stop command hook applies.
 
 import { posixBasename, posixJoin } from "@sil/core/layout";
-import { formatLesson, LESSON_ARCHIVE_AT_DELIVERIES, rulesBlockFrom, selectLessons } from "@sil/core/lessons";
+import { formatLesson, LESSON_ARCHIVE_AT_DELIVERIES, rulesBlockFrom, rulesInjectable, selectLessons } from "@sil/core/lessons";
 import type { LessonCandidate } from "@sil/core/lessons";
 import type { EngineInterface } from "claude-code";
 import { listDirIfPresent, readText, readTextIfPresent, statPath, statPathIfPresent, writeText } from "./io.ts";
 import { claimMarker, cwdUnderRepo, flushMarkers, nowIso, precomputeMarkers, spoolAppend, spoolMove } from "./state.ts";
 import type { SessionState } from "./state.ts";
 
-// The rules block is a handful of lines. Anything larger is not a rules file,
-// and reading it on the hook's hot path is time we cannot afford.
-const MAX_RULES_BYTES = 256 * 1024;
-
 // The tag the curriculum writes after a promoted rule line.
 const RULE_TAG_RE = /<!--\s*rule:([A-Za-z0-9._-]+)\s*-->/g;
 
 /** The text between the managed-block markers in the world's rules file, or ""
  * when injection is off, the file is missing, or the markers are absent. Read
- * only when the stat says a regular file under the cap: pointed at /dev/zero,
- * an unbounded read hangs the hook. */
+ * only when `rulesInjectable` says a regular file under the shared cap:
+ * pointed at /dev/zero, an unbounded read hangs the hook. */
 export async function rulesBlock($: EngineInterface, state: SessionState): Promise<string> {
-  if (state.world.rules_inject === false) return "";
   const rulesFile = state.world.rules_file;
-  if (!rulesFile) return "";
+  // Before the stat: a world with injection off or no configured path never
+  // touches the filesystem at all, exactly as before this shared the decision.
+  if (state.world.rules_inject === false || !rulesFile) return "";
   const st = await statPathIfPresent($, rulesFile);
-  if (!st || st.kind !== "file" || st.size > MAX_RULES_BYTES) return "";
+  if (!rulesInjectable(state.world, st ? { isFile: st.kind === "file", size: st.size } : null)) return "";
   const text = await readText($, rulesFile);
   if (text === null) return "";
   return rulesBlockFrom(text);

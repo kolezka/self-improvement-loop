@@ -26,8 +26,34 @@ export interface LessonCandidate {
 
 export const LESSON_ARCHIVE_AT_DELIVERIES = 5;
 
+// The rules block is a handful of lines. Anything above this is not a rules
+// file, and reading it on the hook's hot path is time a session cannot
+// afford. Shared so the command hook and the sandboxed module read the same
+// cap instead of two copies that can drift.
+export const MAX_RULES_BYTES = 256 * 1024;
+
 export function formatLesson(lesson: Lesson): string {
   return `Lesson (${lesson["pattern"] ?? ""}): ${lesson["text"] ?? ""}`;
+}
+
+/** Whether a world's rules file is eligible for live injection right now.
+ *
+ * Pure: the caller stats the path itself, through whichever filesystem
+ * interface it has (node:fs for the command hook, `$.fs` for the sandboxed
+ * module, nothing at all for a verify/preview check that only wants the
+ * same decision without reading the file), and passes the result in. `stat`
+ * is null when the path does not exist, could not be read, or was never
+ * checked. This is the one place `rules_inject` and the size cap are
+ * decided, so a reader that claims an artifact is "live" and the hook that
+ * actually injects it can never disagree. */
+export function rulesInjectable(
+  world: { rules_inject?: boolean; rules_file?: string | null },
+  stat: { isFile: boolean; size: number } | null,
+): boolean {
+  if (world.rules_inject === false) return false;
+  if (!world.rules_file) return false;
+  if (!stat || !stat.isFile) return false;
+  return stat.size <= MAX_RULES_BYTES;
 }
 
 /** The text between RULE_START and RULE_END, trimmed. "" when either marker

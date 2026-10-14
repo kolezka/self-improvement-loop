@@ -146,7 +146,7 @@ export function worldKnowledge(world: World, items: Reflection[], ledger?: Ledge
     rows.push({
       pattern,
       type,
-      gist: type === "none" ? "" : artifactGist(world, type, pattern),
+      gist: type === "none" ? "" : entry?.origin === "inline" ? (entry.note ?? "") : artifactGist(world, type, pattern),
       count: counts.get(pattern) ?? 0,
     });
   }

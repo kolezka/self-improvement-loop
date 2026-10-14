@@ -382,6 +382,17 @@ export function redraftPolicy(
   return null;
 }
 
+/** Why an inline row plans as `done`. Inline artifacts are edited by hand, so
+ * a scorecard proposal is reported here and never executed. */
+function inlineReason(entry: PromotionEntry, card: Scorecard | undefined): string {
+  const where = entry.external_path ?? entry.served_by?.path ?? "?";
+  const proposal =
+    card && (card.proposal === "refine" || card.proposal === "retire-candidate")
+      ? `; scorecard proposes ${card.proposal} (${card.reason || "no reason"}), edit it by hand`
+      : "";
+  return `inline artifact at ${where}${proposal}`;
+}
+
 /** What this world would do next, deterministic: clustered patterns sorted by
  * pattern, then ledger-only scorecard proposals sorted by pattern.
  *
@@ -409,6 +420,10 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
     const entry = ledger.entries[pattern];
     const card = byPattern.get(pattern);
     const sources = items.map((r) => r.id);
+    if (entry && entry.origin === "inline") {
+      actions.push({ pattern, count, watermark: mark, action: "done", sources, reason: inlineReason(entry, card), feedback: null });
+      continue;
+    }
 
     let action: PlanActionKind = "below-threshold";
     let reason = "";
@@ -466,6 +481,11 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
     const entry = ledger.entries[pattern]!;
     if (clustered.has(pattern) || entry.status !== "promoted") continue;
     const card = byPattern.get(pattern);
+    // Always reported, with or without a card, so an inline row never goes dark.
+    if (entry.origin === "inline") {
+      actions.push({ pattern, count: entry.promoted_at_count, watermark: watermark(ledger, pattern), action: "done", sources: [], reason: inlineReason(entry, card), feedback: null });
+      continue;
+    }
     if (!card) continue;
     const mark = watermark(ledger, pattern);
     if (card.proposal === "refine") {

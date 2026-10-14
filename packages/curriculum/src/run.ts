@@ -286,6 +286,12 @@ async function stageOne(
 
   const branch = git.branchName(world.name, pattern);
   const prior = ctx.ledger.entries[pattern] ?? null;
+  // plan() already reports inline rows as done. This is the second lock: a
+  // redraft would write a second copy into the target repo.
+  if (prior && prior.origin === "inline") {
+    report.gated_out[pattern] = "an inline artifact serves this pattern; edit it by hand";
+    return;
+  }
   const stagedEntry = branchEntry(world, ctx.target, branch, pattern);
   // A retirement owns this branch until a human answers it. Redrafting here has
   // no good outcome: the reset below throws the deletion away, and landing on

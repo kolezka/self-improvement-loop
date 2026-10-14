@@ -9,7 +9,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadConfig, paths, saveConfig, SECTIONS, targetRoot, worldNamed, writeHookSnapshot } from "@sil/core";
+import { ledgerPath, loadConfig, paths, saveConfig, SECTIONS, targetRoot, worldNamed, writeHookSnapshot } from "@sil/core";
 import * as curriculum from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
 import type { ChatFn } from "@sil/providers";
@@ -329,7 +329,7 @@ describe("inline artifact registered through the CLI", () => {
     expect(reg.stderr).toBe("");
     expect(reg.exitCode).toBe(0);
     expect(reg.stdout).toContain(`registered skill:${P} in world default`);
-    const row = store.loadLedger(join(target, "promotions.json")).entries[P]!;
+    const row = store.loadLedger(ledgerPath(world)).entries[P]!;
     expect(row.origin).toBe("inline");
     expect(row.external_path).toBe(realpathSync(skillFile));
 

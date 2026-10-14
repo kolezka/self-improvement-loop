@@ -1,4 +1,3 @@
-// packages/core/test/ledger-origin.test.ts
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,8 +23,8 @@ test("an old row parses with no origin and saves without one", () => {
   const ledger = Ledger.parse({ version: 1, entries: { "old-rule": { pattern: "old-rule", status: "promoted", artifact_type: "rule" } } });
   expect(ledger.entries["old-rule"]!.origin).toBeUndefined();
   saveLedger(path, ledger);
-  const text = readFileSync(path, "utf8");
-  for (const key of NEW_KEYS) expect(text).not.toContain(key);
+  const saved = Object.keys(JSON.parse(readFileSync(path, "utf8")).entries["old-rule"]);
+  for (const key of NEW_KEYS) expect(saved).not.toContain(key);
   expect(loadLedger(path).entries["old-rule"]!.origin).toBeUndefined();
 });
 
@@ -33,8 +32,8 @@ test("a V1 ledger (bare list of rows) saves without the new keys", () => {
   const path = tmpLedgerPath();
   const ledger = parseLedger(JSON.stringify([{ pattern: "a", status: "promoted", last_updated: "2026-01-01T00:00:00Z" }]));
   saveLedger(path, ledger);
-  const text = readFileSync(path, "utf8");
-  for (const key of NEW_KEYS) expect(text).not.toContain(key);
+  const saved = Object.keys(JSON.parse(readFileSync(path, "utf8")).entries["a"]);
+  for (const key of NEW_KEYS) expect(saved).not.toContain(key);
   expect(loadLedger(path).entries["a"]!.origin).toBeUndefined();
 });
 

@@ -44,7 +44,7 @@ test("an unused inline rule is not a retire candidate; a loop rule is", () => {
   expect(inlineCard?.proposal).not.toBe("retire-candidate");
 });
 
-// Controls: the exemption covers zero uses of an inline rule only.
+// Second regression: complaints still refine. Control: an inline skill is counted, so it can still retire.
 test("an inline rule with critic complaints still proposes refine", () => {
   const world = makeWorld();
   initTarget(world);

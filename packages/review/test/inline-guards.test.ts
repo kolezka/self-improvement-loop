@@ -109,7 +109,7 @@ async function stagedThenInline() {
     expect(existsSync(ledgerFile)).toBe(true);
     expect(readFileSync(ledgerFile, "utf8")).toBe(before.ledgerBytes);
   };
-  return { world, unchanged };
+  return { world, repo, branchRef, unchanged };
 }
 
 test("accept refuses a staged branch over an inline row and moves nothing", async () => {
@@ -120,6 +120,14 @@ test("accept refuses a staged branch over an inline row and moves nothing", asyn
   // The refusal names the command that clears the stale branch.
   expect(attempt).toThrow(`; run \`sil review reject ${P} --world ${world.name}\` to clear the stale proposal`);
   unchanged();
+});
+
+test("rejecting the stale branch, as accept advises, keeps the inline row", async () => {
+  const { world, repo, branchRef } = await stagedThenInline();
+  review.reject(world, makeCfg(), P);
+  expect(git.refExists(repo, branchRef)).toBe(false);
+  const row = loadLedger(ledgerPath(world)).entries[P]!;
+  expect(row).toMatchObject({ origin: "inline", status: "promoted", external_path: "/x/SKILL.md", note: "n" });
 });
 
 test("retire refuses an inline live row behind a staged branch and moves nothing", async () => {

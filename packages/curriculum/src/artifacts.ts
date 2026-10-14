@@ -8,7 +8,7 @@
 // dotfiles layout (`claude/skills`, `claude/hooks/nudges`, `claude/agents`,
 // `global.CLAUDE.md`) are the same code with different config.
 
-import { existsSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   type ArtifactType,
@@ -187,6 +187,55 @@ export function removeArtifact(
   return rel;
 }
 
+// --- where a skill or agent links into the Claude config dir ----------------
+
+export interface LinkInfo {
+  /** Path inside the Claude config dir this artifact type links to. */
+  link: string;
+  /** What the link should resolve to: the skill's own directory, or the
+   * agent's file directly. */
+  source: string;
+  /** The artifact file itself (SKILL.md or the agent's .md). Its existence is
+   * what decides whether the link should exist at all. */
+  full: string;
+}
+
+/** Where a skill or agent links into the Claude config dir, and what it
+ * should resolve to. Null for "hook" and "rule": neither is ever linked.
+ *
+ * Pure path arithmetic, read by `relink` (which writes the link) and by the
+ * read-only verify/preview checks, so the two can never compute a different
+ * answer for "where does this live". */
+export function linkInfo(world: World, artifactType: ArtifactType | string, pattern: string): LinkInfo | null {
+  if (artifactType !== "skill" && artifactType !== "agent") return null;
+  const target = targetRoot(world);
+  const rel = artifactRel(world, artifactType, pattern);
+  const full = join(target, rel);
+  const source = artifactType === "skill" ? dirname(full) : full;
+  const link =
+    artifactType === "skill"
+      ? join(paths.claudeConfigDir(), "skills", pattern)
+      : join(paths.claudeConfigDir(), "agents", `${pattern}.md`);
+  return { link, source, full };
+}
+
+/** Whether the live symlink for this skill or agent already resolves to its
+ * source, read-only. False for "hook"/"rule" and for a skill/agent whose
+ * artifact file is missing, whose link is absent or broken, or that points
+ * somewhere else. Never writes, unlike `relink`. */
+export function isLinked(world: World, artifactType: ArtifactType | string, pattern: string): boolean {
+  const info = linkInfo(world, artifactType, pattern);
+  if (!info || !existsSync(info.full)) return false;
+  let current: string;
+  try {
+    if (!lstatSync(info.link).isSymbolicLink()) return false;
+    current = readlinkSync(info.link);
+  } catch {
+    return false;
+  }
+  return resolve(dirname(info.link), current) === resolve(info.source);
+}
+
 // --- rules: one managed block, one tagged bullet per pattern -----------------
 
 // A per-pattern rule tag as it appears inside a line of diff output.
@@ -251,6 +300,22 @@ export function ruleBulletInText(text: string, pattern: string): string {
     if (line.replace(/\s+$/, "").endsWith(tag)) return line;
   }
   return "";
+}
+
+/** This pattern's own bullet, searched only inside the managed block, with
+ * its tag stripped. "" when the file is missing, has no managed block, or
+ * has no bullet tagged for this pattern inside that block.
+ *
+ * Deliberately narrower than `readArtifact`'s plain `ruleBulletInText` over
+ * the whole file: a duplicate or stale tag left outside the block by a hand
+ * edit must never read as this pattern's live text, because the hook that
+ * actually injects rules only ever reads what is between the markers. */
+export function ruleBulletInManagedBlock(world: World, pattern: string, root?: string | null): string {
+  const path = join(rootFor(world, root), strip(world.layout.rules_file));
+  if (!existsSync(path)) return "";
+  const text = fsx.readText(path);
+  const [, block] = splitManagedBlock(text);
+  return stripRuleTag(ruleBulletInText(block, pattern), pattern);
 }
 
 /** Why a rule write into this world would refuse, checked read-only.
@@ -355,7 +420,7 @@ function removeRuleBullet(path: string, pattern: string): boolean {
 }
 
 /** [before the start marker, between the markers, after the end marker]. */
-function splitManagedBlock(text: string): [string, string, string] {
+export function splitManagedBlock(text: string): [string, string, string] {
   const startAt = text.indexOf(RULE_START);
   const head = startAt === -1 ? text : text.slice(0, startAt);
   const rest = startAt === -1 ? "" : text.slice(startAt + RULE_START.length);

@@ -21,7 +21,6 @@ import {
   GitError,
   type Ledger,
   LockHeld,
-  paths,
   type PromotionEntry,
   type ReviewDetail,
   type ReviewDiff,
@@ -861,19 +860,13 @@ function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
  * agent ever reads, and overwriting a hand-written one loses work with no git
  * history to recover it from. */
 export function relink(world: World, pattern: string, artifactType: ArtifactType): string | null {
-  if (artifactType !== "skill" && artifactType !== "agent") return null;
-  const target = targetRoot(world);
-  const rel = artifacts.artifactRel(world, artifactType, pattern);
-  const full = join(target, rel);
-  const source = artifactType === "skill" ? dirname(full) : full;
+  const info = artifacts.linkInfo(world, artifactType, pattern);
+  if (!info) return null;
+  const { link, source, full } = info;
   // Liveness is the artifact file, never its directory. Retiring a skill deletes
   // SKILL.md and reaps the directory only when it is empty, so one other
   // committed file next to it kept the link pointing at a skill with no body.
   const live = existsSync(full);
-  const link =
-    artifactType === "skill"
-      ? join(paths.claudeConfigDir(), "skills", pattern)
-      : join(paths.claudeConfigDir(), "agents", `${pattern}.md`);
 
   mkdirSync(dirname(link), { recursive: true });
   let isLink = false;

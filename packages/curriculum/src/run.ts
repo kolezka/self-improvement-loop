@@ -118,7 +118,8 @@ function migrating(staged: PromotionEntry | null, prior: PromotionEntry | null):
 // Real artifact types a re-route may move an already-served pattern to. "rule"
 // is the router's own fallback, not evidence of anything, and "none" means the
 // drafter declined; neither may displace an artifact a prior tick earned.
-const UPGRADE_TYPES = new Set(["hook", "skill", "agent"]);
+// Exported so a verify probe judges "upgrade" by the exact same rule.
+export const UPGRADE_TYPES = new Set(["hook", "skill", "agent"]);
 
 /** Whether this pattern's type was already decided by a human, so a re-route
  * must never second-guess it.

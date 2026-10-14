@@ -9,17 +9,13 @@
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as paths from "@sil/core/paths";
-import { LESSON_ARCHIVE_AT_DELIVERIES, rulesBlockFrom, selectLessons } from "@sil/core/lessons";
+import { LESSON_ARCHIVE_AT_DELIVERIES, rulesBlockFrom, rulesInjectable, selectLessons } from "@sil/core/lessons";
 import type { Lesson, LessonCandidate } from "@sil/core/lessons";
 import { atomicWrite } from "@sil/core/fsx";
 import { cwdUnder } from "./worlds.ts";
 
 export type { Lesson };
 export { formatLesson } from "@sil/core/lessons";
-
-// The rules block is a handful of lines. Anything above this is not a rules
-// file, and reading it on the hook's hot path is time we cannot afford.
-const MAX_RULES_BYTES = 256 * 1024;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -174,18 +170,22 @@ export function pendingLessons(
  * injection is off, the file is missing, or the markers are absent.
  *
  * The path comes from the config snapshot, so it can name anything. It is
- * read only when stat says a regular file under MAX_RULES_BYTES: pointed at
- * /dev/zero, an unbounded read hangs the hook until Claude Code kills it. */
+ * read only when `rulesInjectable` says a regular file under the shared cap:
+ * pointed at /dev/zero, an unbounded read hangs the hook until Claude Code
+ * kills it. */
 export function rulesBlock(world: { rules_inject?: boolean; rules_file?: string }): string {
-  if (world.rules_inject === false) return "";
   const rulesFile = world.rules_file;
-  if (!rulesFile) return "";
+  // Before the stat: a world with injection off or no configured path never
+  // touches the filesystem at all, exactly as before this shared the decision.
+  if (world.rules_inject === false || !rulesFile) return "";
+  let stat: { isFile: boolean; size: number } | null;
   try {
     const st = statSync(rulesFile);
-    if (!st.isFile() || st.size > MAX_RULES_BYTES) return "";
+    stat = { isFile: st.isFile(), size: st.size };
   } catch {
-    return "";
+    stat = null;
   }
+  if (!rulesInjectable(world, stat)) return "";
   let text: string;
   try {
     text = readFileSync(rulesFile, "utf8");

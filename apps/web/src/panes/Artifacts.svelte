@@ -2,8 +2,11 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import Drawer from "../components/Drawer.svelte";
+  import { canRetire, LIVE_STATUSES } from "../lib/artifact-actions.ts";
   import { filterLessons, groupByPattern } from "../lib/lessons.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
+  import { isCurrentVerifyPattern } from "../lib/verify-guard.ts";
+  import type { PreviewResult, VerifyResult } from "../lib/api-types.ts";
 
   interface RateWindow {
     sessions: number;
@@ -32,16 +35,13 @@
     status: string;
     reflections: number;
     scorecard: Scorecard | null;
+    origin?: string;
   }
 
   interface Lesson {
     pattern: string;
     text: string;
   }
-
-  // A promoted artifact is the one the engine actually serves; everything else
-  // is either still waiting at the gate or already out of rotation.
-  const LIVE_STATUSES = ["promoted", "active", "live"];
 
   let rows = $state<InventoryRow[]>([]);
   let lessons = $state<Lesson[]>([]);
@@ -111,6 +111,79 @@
       await loadInventory();
     } catch (e) {
       toast(`Could not retire ${pattern}: ${(e as Error).message}`);
+    }
+  }
+
+  let previewOpen = $state(false);
+  let previewLoading = $state(false);
+  let previewData = $state<PreviewResult | null>(null);
+  let previewError = $state<string | null>(null);
+
+  async function openPreview(pattern: string) {
+    previewOpen = true;
+    previewLoading = true;
+    previewData = null;
+    previewError = null;
+    try {
+      previewData = (await call("artifacts.preview", { world: appState.world, pattern })) as PreviewResult;
+    } catch (e) {
+      previewError = (e as Error).message;
+    } finally {
+      previewLoading = false;
+    }
+  }
+
+  let verifyOpen = $state(false);
+  let verifyLoading = $state(false);
+  let verifyData = $state<VerifyResult | null>(null);
+  let verifyError = $state<string | null>(null);
+  // The pattern the latest Verify click selected, set synchronously before
+  // the request goes out. Used only to drop a response that is no longer
+  // current (see isCurrentVerifyPattern); Rehome reads the pattern from
+  // verifyData itself, never from this.
+  let verifyPattern = $state<string | null>(null);
+
+  async function openVerify(pattern: string) {
+    verifyOpen = true;
+    verifyLoading = true;
+    verifyData = null;
+    verifyError = null;
+    verifyPattern = pattern;
+    try {
+      const result = (await call("artifacts.verify", { world: appState.world, pattern })) as VerifyResult;
+      // Verify on another row can have been clicked while this request was
+      // in flight; a late response for the row no longer selected must never
+      // land under whatever row is open now.
+      if (!isCurrentVerifyPattern(pattern, verifyPattern)) return;
+      verifyData = result;
+      verifyLoading = false;
+    } catch (e) {
+      if (!isCurrentVerifyPattern(pattern, verifyPattern)) return;
+      verifyError = (e as Error).message;
+      verifyLoading = false;
+    }
+  }
+
+  const verifyUpgradeType = $derived.by((): string | null => {
+    const tc = verifyData?.type_check;
+    return tc && "upgrade" in tc && tc.upgrade ? tc.router_type : null;
+  });
+
+  async function rehomeFromVerify() {
+    // From the result actually shown, never from verifyPattern: that guards
+    // against showing the wrong result, not against acting on it, and
+    // verifyData is what the operator is looking at.
+    const pattern = verifyData?.pattern ?? null;
+    const toType = verifyUpgradeType;
+    if (!pattern || !toType) return;
+    if (!window.confirm(`Re-home ${pattern} to ${toType}? The move is staged for review, not applied yet.`)) return;
+    try {
+      await call("router.rehome", { world: appState.world, pattern, artifact_type: toType, confirm: toType === "none" });
+      toast(`${pattern}: re-home to ${toType} staged. Accept it in Review to apply the move.`, "ok");
+      verifyOpen = false;
+      await loadInventory();
+    } catch (e) {
+      toast(`Could not re-home ${pattern}: ${(e as Error).message}`);
     }
   }
 
@@ -211,7 +284,15 @@
                   <td class="muted">-</td>
                 {/if}
                 <td>
-                  <button class="small danger" onclick={() => retire(row.pattern)}>Retire</button>
+                  <div class="row-actions">
+                    <button class="small" onclick={() => openPreview(row.pattern)}>Preview</button>
+                    {#if LIVE_STATUSES.includes(row.status)}
+                      <button class="small" onclick={() => openVerify(row.pattern)}>Verify</button>
+                    {/if}
+                    {#if canRetire(row)}
+                      <button class="small danger" onclick={() => retire(row.pattern)}>Retire</button>
+                    {/if}
+                  </div>
                 </td>
               </tr>
             {/each}
@@ -286,6 +367,74 @@
   {/if}
 </Drawer>
 
+<Drawer bind:open={previewOpen} title="Preview">
+  {#if previewLoading}
+    <p class="muted">Loading the live artifact.</p>
+  {:else if previewError}
+    <div class="notice error">Could not load the preview: {previewError}</div>
+  {:else if previewData}
+    <div class="preview-meta">
+      <span class="chip">{previewData.artifact_type}</span>
+      <span class="badge mono">{previewData.path}</span>
+      <span class={previewData.live ? "chip ok" : "chip warn"}>{previewData.live ? "live" : "not active"}</span>
+    </div>
+    {#if !previewData.matches_default_branch}
+      <div class="notice warn">
+        Uncommitted local changes: this is what is served right now, but it was never accepted in review.
+      </div>
+    {/if}
+    <pre class="file">{previewData.body}</pre>
+  {/if}
+</Drawer>
+
+<Drawer bind:open={verifyOpen} title="Verify">
+  {#if verifyLoading}
+    <p class="muted">Running the offline checks and the router probe.</p>
+  {:else if verifyError}
+    <div class="notice error">Could not verify: {verifyError}</div>
+  {:else if verifyData}
+    <ul class="check-list">
+      <li>
+        <span class={verifyData.offline.exists ? "chip ok" : "chip err"}>{verifyData.offline.exists ? "pass" : "fail"}</span>
+        <span>Artifact exists</span>
+      </li>
+      <li>
+        <span class={verifyData.offline.live.live ? "chip ok" : "chip err"}>{verifyData.offline.live.live ? "pass" : "fail"}</span>
+        <span>Live: {verifyData.offline.live.detail}</span>
+      </li>
+      <li>
+        <span class={verifyData.offline.lint.length === 0 ? "chip ok" : "chip err"}>{verifyData.offline.lint.length === 0 ? "pass" : "fail"}</span>
+        <span>Lint: {verifyData.offline.lint.length === 0 ? "clean" : verifyData.offline.lint.join("; ")}</span>
+      </li>
+      {#if verifyData.offline.gate}
+        <li>
+          <span class={verifyData.offline.gate.fires ? "chip ok" : "chip err"}>{verifyData.offline.gate.fires ? "pass" : "fail"}</span>
+          <span>Gate: {verifyData.offline.gate.verdict}</span>
+        </li>
+      {/if}
+    </ul>
+    <div class="panel__head">
+      <h3>Router verdict</h3>
+    </div>
+    {#if "error" in verifyData.type_check}
+      <div class="notice error">Type check failed: {verifyData.type_check.error}</div>
+    {:else if "skipped" in verifyData.type_check}
+      <p class="muted">Skipped: {verifyData.type_check.skipped}</p>
+    {:else}
+      <p>
+        Currently <strong>{verifyData.type_check.current_type}</strong>; the router would pick
+        <strong>{verifyData.type_check.router_type}</strong>.
+      </p>
+      <p class="muted">{verifyData.type_check.reason}</p>
+      {#if verifyUpgradeType}
+        <div class="toolbar">
+          <button class="primary" onclick={rehomeFromVerify}>Rehome to {verifyUpgradeType}</button>
+        </div>
+      {/if}
+    {/if}
+  {/if}
+</Drawer>
+
 <div class="panel">
   <div class="panel__head">
     <h3>Record your own verdict</h3>
@@ -319,5 +468,48 @@
 <style>
   .verdict {
     max-width: 16rem;
+  }
+
+  .row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .preview-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .file {
+    max-height: 26rem;
+    margin: 0;
+    overflow: auto;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--panel);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .check-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin: 0 0 1rem;
+    padding: 0;
+    list-style: none;
+  }
+
+  .check-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
   }
 </style>

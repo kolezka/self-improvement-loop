@@ -42,6 +42,35 @@ nothing serves the pattern after it, so it asks for `--yes` exactly like
 This binds the accept to exactly what you looked at; if the branch changed
 underneath you, accept fails and asks you to reload.
 
+### Artifacts pane: Preview, Verify, Retire
+
+The web console's Artifacts pane lists every ledger row with up to three row
+actions.
+
+- **Preview** (every row) opens a read-only drawer with the artifact's body
+  exactly as it is on the target repo's checked-out working tree, never a
+  staged review branch. That tree is normally the default branch, but it can
+  carry local uncommitted edits; the drawer warns when the body does not
+  match what is committed on the default branch (`matches_default_branch`).
+  It also shows whether the artifact is actually active (a skill or agent's
+  symlink into `~/.claude`, a hook's file, or a rule's bullet inside the
+  managed block, with `rules_inject` and the size cap honoured, and an inline
+  file checked against where Claude Code actually loads that type from). A
+  retired or missing artifact reports a clear error instead of an empty body.
+- **Verify** (live rows only) runs the offline checks (exists, live, lint,
+  and for a hook, its own gate against the real payload corpus) plus one
+  drafter call that asks whether today's evidence would route the pattern to
+  a different type. It writes nothing: no ledger change, no branch, no
+  proposal event, no scorecard. An inline row (edited by hand) skips the
+  model call with an explicit reason; so does a pattern with no reflections
+  on disk. When the router would pick a real upgrade (hook, skill or agent,
+  different from the current type), the drawer offers "Rehome to `<type>`",
+  which calls `router.rehome` after a confirmation and stages the move for
+  review like any other rehome.
+- **Retire** now shows only on a live, non-inline row. It used to show on
+  every row and failed with `"<pattern>" is already retired` when clicked on
+  one already retired.
+
 ## Capturing a lesson now (`/learn`)
 
 `/learn [note]` turns a mistake caught in the current session into a rule, skill,

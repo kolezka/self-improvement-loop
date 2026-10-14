@@ -565,3 +565,37 @@ Spec: `docs/superpowers/specs/2026-10-14-learn-command-design.md`. Plan:
       it and previews a path under that file; the real run refuses with "does not exist".
 - [ ] not done: `apps/cli/test/init.test.ts:141` fails on this machine (its no-identity
       control finds a git identity). Present in the pre-implementation baseline.
+
+## Artifacts pane: Preview, Verify, Retire fix (branch feat/artifact-verify-preview)
+Based on `origin/fix/artifact-type-routing` (PR #68, not merged): carries
+`DraftOptions.wantRouteAnswer`, `ParseDraftOptions.keepRouteAnswer`, `route()`,
+trigger-scoped gate checks and `triggerMatches`.
+
+- [x] fix: Retire showed on every row; now `apps/web/src/lib/artifact-actions.ts`'s
+      `canRetire` (live status, not inline) gates it, red confirmed on the old
+      always-shown behaviour before the fix
+- [x] `packages/curriculum/src/artifacts.ts`: `linkInfo`/`isLinked` (read-only symlink
+      check), exported `splitManagedBlock`; `review.relink` now builds its link path
+      through `linkInfo` instead of a second copy
+- [x] `packages/curriculum/src/router.ts`: `hookVerdict` exported so a live check can
+      run a hook's own trigger and gate through the exact corpus check `route()` uses
+- [x] `packages/curriculum/src/run.ts`: `UPGRADE_TYPES` exported so a verify probe
+      judges "upgrade" by the same rule as the re-route path
+- [x] `packages/curriculum/src/verify.ts`: `previewArtifact` (live body, errors on
+      retired/missing) and `verifyArtifact` (offline exists/live/lint/gate plus one
+      drafter re-route probe built like `stageOne`'s; writes nothing; inline and
+      no-reflection rows skip the type check with an explicit reason; any provider
+      failure, including `ModelNotConfigured`, surfaces in `type_check.error` with the
+      offline results intact)
+- [x] ops: `artifacts.preview` (read, none) and `artifacts.verify` (local, none),
+      `Args.PatternArgs`; registry table now 41 ops
+- [x] web: `Preview` button (every row) and `Verify` button (live rows) next to
+      Retire, both as `Drawer` modals; Verify offers "Rehome to `<type>`" on an
+      upgrade verdict, through the existing `router.rehome` op and confirm dialog
+- [x] tests: `canRetire` red/green; `verifyArtifact` (upgrade signal, failed gate,
+      ModelNotConfigured with offline results present, inline/no-reflection skip,
+      nothing written: ledger file, branches, proposal events file all unchanged);
+      `previewArtifact` (rule/hook/skill bodies, retired error); ops registry and
+      handler pass-through tests
+- [ ] not done: no DOM test harness in this repo, so the Preview/Verify Drawer
+      markup is exercised by typecheck/svelte-check only, not a rendered assertion

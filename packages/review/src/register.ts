@@ -1,7 +1,7 @@
 // Record an artifact the operator wrote in a session (`/learn`) as an inline
 // ledger row, so votes, scorecards and the planner see it.
 
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Config, fsx, isSlug, type PromotionEntry, ReviewError, targetRoot, type World } from "@sil/core";
 import { artifacts, branchName, git, lintHook, reflections } from "@sil/curriculum";
@@ -37,11 +37,12 @@ export function register(
   if (!isSlug(pattern)) throw new ReviewError(`unsafe pattern slug ${JSON.stringify(pattern)}`);
   if (!note.trim()) throw new ReviewError("--note is required: one line naming the lesson");
   if (!isAbsolute(path)) throw new ReviewError(`--path must be absolute, got ${JSON.stringify(path)}`);
+  // Before the existence check, so a broken link is named rather than reported missing.
+  const resolved = canonical(path);
   // A preflight runs before the artifact is written, so its file may not exist yet.
   // A nudge draft is a scratch file that always exists.
   if ((type === "hook" || !opts.dryRun) && !existsSync(path)) throw new ReviewError(`${path} does not exist`);
   if (existsSync(path) && !isRegularFile(path)) throw new ReviewError(`${path} is not a file`);
-  const resolved = canonical(path);
   const nudge = type === "hook" ? readNudge(path, pattern) : null;
 
   return withWorkerLock(() => {
@@ -131,18 +132,41 @@ function isRegularFile(path: string): boolean {
 }
 
 /** `path` with symlinks resolved. A path not written yet (a dry run) resolves
- * its deepest existing ancestor, so the preview row equals the committed one. */
+ * its deepest existing ancestor, so the preview row equals the committed one.
+ * A dangling link on the way is refused: the preview would change once it is fixed. */
 function canonical(path: string): string {
   let head = resolve(path);
   const rest: string[] = [];
-  while (!existsSync(head)) {
+  for (;;) {
+    const st = lstatOrNull(head, path);
+    if (st) {
+      if (st.isSymbolicLink() && !existsSync(head)) {
+        throw new ReviewError(`${path} goes through a dangling symlink at ${join(realpathOf(dirname(head), path), basename(head))}; fix the link first`);
+      }
+      break;
+    }
     const parent = dirname(head);
     if (parent === head) break;
     rest.unshift(basename(head));
     head = parent;
   }
+  return join(realpathOf(head, path), ...rest);
+}
+
+/** lstat of `p`, or null when it or a parent is missing. Other errors are refused. */
+function lstatOrNull(p: string, path: string): Stats | null {
   try {
-    return join(realpathSync(head), ...rest);
+    return lstatSync(p);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw new ReviewError(`cannot resolve ${path}: ${(e as Error).message}`);
+  }
+}
+
+function realpathOf(p: string, path: string): string {
+  try {
+    return realpathSync(p);
   } catch (e) {
     throw new ReviewError(`cannot resolve ${path}: ${(e as Error).message}`);
   }

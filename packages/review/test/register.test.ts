@@ -314,6 +314,25 @@ describe("register", () => {
     });
   }
 
+  // A dry run would otherwise preview a path that changes once the link is fixed.
+  test.each([
+    [false, "ancestor"],
+    [true, "ancestor"],
+    [false, "leaf"],
+    [true, "leaf"],
+  ] as const)("refuses a path through a dangling symlink (dryRun %p, %s)", (dryRun, where) => {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const link = join(env.tmp, "dangling");
+    symlinkSync(join(env.tmp, "missing-target"), link);
+    const path = where === "ancestor" ? join(link, "SKILL.md") : link;
+    const state = repoState(world, repo);
+    expect(() => review.register(world, makeCfg(), "skill", P, path, "n", { dryRun })).toThrow(
+      `${path} goes through a dangling symlink at ${realpathSync(env.tmp)}/dangling; fix the link first`,
+    );
+    expect(repoState(world, repo)).toEqual(state);
+  });
+
   test.each([false, true])("refuses a target that is not a git repository (dryRun %p)", (dryRun) => {
     const world = makeWorld();
     const repo = targetRoot(world);

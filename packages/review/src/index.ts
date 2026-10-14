@@ -313,7 +313,7 @@ export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): 
  * writes. Ignored here, the refusal arrived from `merge --ff-only` after the
  * branch had already been rewritten, leaving a reviewed digest describing a
  * commit that was no longer the branch head. */
-function requireLiveReady(world: World, repo: string, defaultRef: string): void {
+export function requireLiveReady(world: World, repo: string, defaultRef: string): void {
   const branch = git.currentBranch(repo);
   if (branch !== defaultRef) {
     throw new ReviewError(
@@ -895,3 +895,5 @@ function relinkAll(world: World, pattern: string, artifactType: ArtifactType): s
   }
   return link;
 }
+
+export { type InlineType, register, type RegisterOptions, type RegisterResult } from "./register.ts";

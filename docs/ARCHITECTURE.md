@@ -492,6 +492,51 @@ plan therefore treats a `staged` row whose branch still holds only that stub as
 branch until the pattern earned `threshold` new reflections, and the artifact it
 replaces kept serving all that time.
 
+### Re-routing an already served pattern
+
+Once a pattern reaches `rule`, `skill`, `hook` or `agent`, `stageOne` forces
+every later redraft into that same type (`servedBy`, then `forcedType`): the
+drafter never reports routing fields in forced mode, so `route()` is never
+consulted again. Measured over 30 days of live logs (2026-09-14 to
+2026-10-14): only 29 fresh router decisions against 400+ redrafts carrying
+`already served by this artifact`. A pattern that became a rule early stayed a
+rule no matter what new evidence later showed, and only a human `rehome`
+could move it.
+
+`run()` now reconsiders the type on a `promote` action (new reflections past
+the watermark; never a `refine`, never a ledger-only redraft, since there is
+no fresh evidence to route from there). The forced drafting call asks for the
+routing fields alongside the body (`DraftOptions.wantRouteAnswer`,
+`ParseDraftOptions.keepRouteAnswer`): the instructions for the body itself are
+unchanged either way, so what the drafter writes in the served type does not
+move, and the forced path pays for one extra set of keys in the same call
+rather than a second model call. `route()` then runs on those fields exactly
+as it does for a fresh pattern. A result of `rule` or `none` is the router's
+own fallback, not evidence of anything, and never displaces an artifact a
+prior tick already earned: only `hook`, `skill` or `agent`, and only when it
+differs from the current type, counts as an upgrade.
+
+An upgrade redrafts once more in the new type (the same single-redraft path a
+drafter/router mismatch already uses on a fresh pattern), lints, judges, and
+stages on the pattern's branch exactly like an ordinary redraft: the old type's
+artifact is removed, the new one written, `served_by` and `artifact_type` flip
+to the new type, and the commit message says so (`feat(hook): re-route
+<pattern> from rule (auto, gated)`). Nothing changes live until a human
+accepts it in review, exactly like a re-home today; accept already read the
+branch's own `served_by` and reaped every linkable type's link, so it merges
+a worker-staged type change with no code change of its own.
+
+A re-route never overrides a human's own choice of type. It is skipped
+whenever the branch's type disagrees with the live one (`migrating`: a
+re-home, or an earlier re-route, still waiting for review), or this pattern
+has ever recorded a `rehomed` proposal event. An ordinary open restage of the
+same type does not block it: the worker restages that branch on every tick,
+and on live state every pattern with new evidence had one. A reviewing human
+is protected by `reviewed_state`, as for any restage. `rehomed` stays a human-only event on purpose: an automatic
+re-route records its own `rerouted` event instead, so it neither misreports
+itself as a human decision nor permanently blocks its own pattern from a later
+upgrade.
+
 ### Inline artifacts (`/learn`)
 
 `/learn` lets the session agent turn a correction into a rule, skill, agent or

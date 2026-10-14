@@ -132,4 +132,25 @@ describe("PreToolUse payload samples", () => {
     expect(text).not.toContain("AKIA");
     expect(text).not.toContain("token=abc");
   });
+
+  test("an MCP tool call is sampled by its full tool_name, with no tool_input", () => {
+    // sampleRecord() keys off tool_name alone with no built-in-tool allowlist,
+    // so this already worked before the curriculum validation fix; recorded
+    // here so the corpus the router tests a drafted MCP gate against is
+    // proven non-empty, not assumed.
+    writeSnapshot();
+    runHook(MAIN_TS, hookEnv, {
+      session_id: "sess-pre-6",
+      hook_event_name: "PreToolUse",
+      tool_name: "mcp__outline__update_document",
+      tool_input: { id: "doc-1", text: "new body" },
+    });
+
+    const rows = samples();
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.["tool_name"]).toBe("mcp__outline__update_document");
+    // Neither "id" nor "text" is in SAMPLED_INPUT_KEYS, so nothing from an
+    // MCP tool's own args is kept: the allowlist is command/file_path only.
+    expect(rows[0]?.["tool_input"]).toEqual({});
+  });
 });

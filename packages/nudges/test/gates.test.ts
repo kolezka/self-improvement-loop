@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { evaluate, gateTruth, hasNestedQuantifier, splitTrigger, validateGate } from "../src/gates.ts";
+import { evaluate, gateTruth, hasNestedQuantifier, matcherAllowed, splitTrigger, validateGate } from "../src/gates.ts";
 
 describe("splitTrigger", () => {
   test("event only", () => {
@@ -34,6 +34,41 @@ describe("splitTrigger", () => {
 
   test("matcher not in the allowed set for PreToolUse", () => {
     expect(splitTrigger("PreToolUse:NotATool")).toBeNull();
+  });
+
+  test("an MCP tool matcher is accepted on PreToolUse and PostToolUse", () => {
+    // Live curriculum reason, verbatim: "no workable gate (unsupported
+    // event/matcher \"PreToolUse:mcp__outline__update_document\")". hooks.json
+    // already delivers every MCP call with matcher "*"; only validation used
+    // to refuse it.
+    for (const tool of ["mcp__outline__update_document", "mcp__agent-browser__agent_browser_click", "mcp__plugin_github_github__add_comment_to_pending_review"]) {
+      expect(splitTrigger(`PreToolUse:${tool}`)).toEqual(["PreToolUse", tool]);
+      expect(splitTrigger(`PostToolUse:${tool}`)).toEqual(["PostToolUse", tool]);
+    }
+  });
+
+  test("a malformed near-miss of the MCP shape is still refused", () => {
+    for (const bad of ["mcp__", "mcp____", "mcp__server__", "mcp__server", "notmcp__a__b"]) {
+      expect(splitTrigger(`PreToolUse:${bad}`)).toBeNull();
+    }
+  });
+
+  test("an MCP matcher is refused on an event that takes no matcher", () => {
+    expect(splitTrigger("SessionStart:mcp__outline__update_document")).toBeNull();
+  });
+});
+
+describe("matcherAllowed", () => {
+  test("accepts built-in tools and MCP tool names on PreToolUse/PostToolUse", () => {
+    expect(matcherAllowed("PreToolUse", "Bash")).toBe(true);
+    expect(matcherAllowed("PreToolUse", "mcp__outline__update_document")).toBe(true);
+    expect(matcherAllowed("PostToolUse", "mcp__outline__update_document")).toBe(true);
+  });
+
+  test("rejects an unknown event, an event that takes no matcher, and a garbage matcher", () => {
+    expect(matcherAllowed("NotAnEvent", "Bash")).toBe(false);
+    expect(matcherAllowed("SessionStart", "Bash")).toBe(false);
+    expect(matcherAllowed("PreToolUse", "NotATool")).toBe(false);
   });
 });
 

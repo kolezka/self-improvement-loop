@@ -115,6 +115,32 @@ describe("dispatchWith", () => {
     expect(sink.claimed).toEqual([]);
   });
 
+  test("fires on an MCP tool matcher when tool_name equals it exactly", () => {
+    // The matcher comparison is a plain string equality, with no built-in-tool
+    // allowlist of its own: it already treated an MCP tool name like any
+    // other. Only the curriculum validation layer needed to catch up.
+    const sink = recorder();
+    const mcpNudge = nudge({
+      pattern: "outline-update-caution",
+      matcher: "mcp__outline__update_document",
+      gate: { tool_is: ["mcp__outline__update_document"] },
+    });
+    const hit = {
+      session_id: "sess-mcp",
+      hook_event_name: "PreToolUse",
+      tool_name: "mcp__outline__update_document",
+      tool_input: {},
+    };
+    expect(dispatchWith(hit, [mcpNudge], sink)).toBe("Write a good commit message.");
+    expect(sink.fires[0]?.["pattern"]).toBe("outline-update-caution");
+
+    // A different MCP tool, even from the same server, must not match.
+    const miss = { ...hit, tool_name: "mcp__outline__fetch" };
+    const sink2 = recorder();
+    expect(dispatchWith(miss, [mcpNudge], sink2)).toBeNull();
+    expect(sink2.fires).toEqual([]);
+  });
+
   test("budget exhaustion writes one breadcrumb and stops scanning", () => {
     const sink = recorder();
     const many: Nudge[] = Array.from({ length: 5000 }, (_, i) => nudge({ pattern: `n-${i}`, gate: { command_matches: "will-not-match" } }));

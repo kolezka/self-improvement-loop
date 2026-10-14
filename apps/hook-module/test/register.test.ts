@@ -142,6 +142,20 @@ function bashCall(command: string, toolUseId = "tu-1"): Record<string, unknown> 
   return { tool: "Bash", tool_use_id: toolUseId, command, description: "run a thing" };
 }
 
+function mcpCall(toolName: string, toolUseId = "tu-1"): Record<string, unknown> {
+  return { tool: toolName, tool_use_id: toolUseId };
+}
+
+const MCP_MATCHER = "mcp__outline__update_document";
+const MCP_NUDGE = {
+  pattern: "outline-update-caution",
+  event: "PreToolUse",
+  matcher: MCP_MATCHER,
+  gate: { tool_is: [MCP_MATCHER] },
+  once_per: "session",
+  text: "Double check the collection before overwriting the document.",
+};
+
 function postToolUse(f: Fixture, toolName: string, toolInput: unknown): Record<string, unknown> {
   return {
     session_id: SESSION,
@@ -473,6 +487,30 @@ describe("classic.PreToolUse", () => {
     const fires = linesFor(spool, "nudge-fires").filter((line) => line["pattern"] === "probe-nudge");
     expect(fires.length).toBe(1);
     expect(fires[0]?.["event"]).toBe("PreToolUse");
+    cleanup();
+  });
+
+  test("spools a sample and fires a nudge targeting an MCP tool matcher", async () => {
+    // Same path as the Bash case above, through the module's dispatchWith
+    // (@sil/nudges/dispatch-core), proving the in-process hook path and not
+    // only the command-hook one.
+    const f = fixture();
+    writeNudge(f, MCP_NUDGE);
+
+    const first = await f.engine.fire("classic.PreToolUse", mcpCall(MCP_MATCHER), {});
+    expect(contextOf(first)).toEqual(["Double check the collection before overwriting the document."]);
+
+    // A different MCP tool on the same server must not fire this nudge.
+    const other = await f.engine.fire("classic.PreToolUse", mcpCall("mcp__outline__fetch", "tu-2"), {});
+    expect(contextOf(other)).toEqual([]);
+
+    const spool = await drainSpool(f);
+    const samples = spool.appends.filter((a) => a.target.kind === "payload-samples").map((a) => JSON.parse(a.line));
+    expect(samples[0]?.tool_name).toBe(MCP_MATCHER);
+    expect(samples[0]?.tool_input).toEqual({});
+
+    const fires = linesFor(spool, "nudge-fires").filter((line) => line["pattern"] === "outline-update-caution");
+    expect(fires.length).toBe(1);
     cleanup();
   });
 

@@ -483,6 +483,54 @@ never asking whether the redraft actually moved the recurrence rate. See
       "could not load proposal outcomes: unknown world" toast on first load. The demo
       uses world `default` instead of fixing this here.
 
+## Re-route an already served pattern on new evidence (branch feat/reroute-existing-artifacts)
+
+Goal: once a pattern was served by a type, `forcedType` sent every later redraft
+through the same type forever (29 fresh router decisions against 400+ `already
+served by this artifact` redrafts over 30 days); only a human `rehome` could move
+it. See `docs/ARCHITECTURE.md` "Re-routing an already served pattern".
+
+- [x] `prompts.ts`: `DraftOptions.wantRouteAnswer` adds the routing-field ask to the
+      forced prompt without touching the body instructions; `ParseDraftOptions.keepRouteAnswer`
+      reads them back (falls back to `emptyAnswer()` on a reply that fails validation)
+- [x] `run.ts` `stageOne`: `rerouteEligible` (promote action, not ledger-only, not a human
+      choice) gates one extra `route()` call on the forced answer; an upgrade to `hook`,
+      `skill` or `agent` that differs from the current type redrafts once more in the new
+      shape (reusing the existing drafter/router mismatch redraft path), stages with the old
+      artifact removed and `served_by`/`artifact_type` flipped, commit message
+      `feat(hook): re-route <pattern> from rule (auto, gated)`
+- [x] `humanSetType`: never re-routes over a pending re-home or an earlier pending re-route
+      still awaiting review (`migrating`: the branch's type disagrees with the live one), or
+      a `rehomed` proposal event ever recorded for the pattern
+- [x] new proposal event kind `rerouted` (`packages/store/src/proposal-events.ts`), distinct
+      from `rehomed`: reusing `rehomed` would misreport an automatic re-route as a human
+      decision and, since a `rehomed` event blocks future re-routing, would permanently
+      freeze the pattern after its first auto-upgrade
+- [x] accept needed no change: `entryType`/`artifactBody`/`foreignChanges` already read the
+      branch's own `served_by` and allow every type's path for the pattern, so a worker-staged
+      type change merges through the same path as a human re-home; proved with an end-to-end
+      review test, not just by reading the code
+- [x] tests: `prompts.test.ts` (wantRouteAnswer/keepRouteAnswer contract), `run.test.ts`
+      ("re-routing an already served pattern": upgrade, router-says-rule no-op, refine never
+      reroutes, a `rehomed` event blocks it, an open same-type restaged branch does NOT block
+      it, a pending re-route is not flipped back or re-routed again on the next tick),
+      `review.test.ts` (accept of a staged re-route installs the new artifact and removes
+      the old one)
+- [x] verify: red confirmed by reverting the source files only (`git diff` + `git checkout --`
+      + `git apply`) and re-running the new tests before restoring; green after
+- [x] fixed (2026-10-14, lead review): the first cut blocked re-routing on ANY `served_by`
+      set on the branch, staged or not. Measured on live state, every pattern with new
+      evidence had an open restaged branch of the same type (the worker restages it every
+      tick), so that check suppressed the whole feature on real data. Narrowed to
+      `migrating()` plus the `rehomed` event check only; an ordinary open branch of the
+      same type no longer blocks a re-route, and the pending-re-route case (branch type
+      disagrees with the still-unaccepted live type) is covered by `migrating()` itself.
+
+## Gate corpus diagnosis (2026-10-14, branch fix/gate-corpus-match)
+- [x] Replay candidate pipeline gates against copied default and inkitt payload corpora with the real runner; command samples preserve pipes.
+- [x] Include a bounded gate excerpt when a draft matches nothing, so future refusals retain the rejected gate.
+- [ ] The 2026-09-29 and 2026-10-02 draft gates and contemporaneous corpus were not saved. The current rotated samples cannot prove why those two drafts matched nothing.
+
 ## /learn inline lessons (2026-10-14, branch feat/learn-command)
 Implemented on feat/learn-command. Not merged, not released, not installed live.
 Spec: `docs/superpowers/specs/2026-10-14-learn-command-design.md`. Plan:

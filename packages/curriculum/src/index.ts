@@ -47,6 +47,7 @@ export {
   judgeQuestions,
   KNOWLEDGE_HEADER,
   parseDraft,
+  type ParseDraftOptions,
   parseSummary,
   parseVerdict,
   RECENT_LESSONS,

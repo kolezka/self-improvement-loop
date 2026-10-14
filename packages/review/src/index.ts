@@ -63,10 +63,10 @@ export {
 export { type RemoteOps, setRemoteOps };
 
 /** Inline artifacts are edited by hand; review actions never touch them. */
-function refuseInline(entry: PromotionEntry | null | undefined, pattern: string, action: string): void {
+function refuseInline(entry: PromotionEntry | null | undefined, pattern: string, action: string, next = ""): void {
   if (entry && entry.origin === "inline") {
     const where = entry.external_path ?? entry.served_by?.path ?? "?";
-    throw new ReviewError(`${JSON.stringify(pattern)} is an inline artifact at ${where}; ${action} it by editing that file`);
+    throw new ReviewError(`${JSON.stringify(pattern)} is an inline artifact at ${where}; ${action} it by editing that file${next}`);
   }
 }
 
@@ -360,7 +360,12 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
   }
   // An older staged branch must not overwrite a row the operator registered.
   // Read at the reviewed base, the same blob the merge below writes over.
-  refuseInline(ledgerAt(world, repo, snap.base_sha).entries[pattern], pattern, "change");
+  refuseInline(
+    ledgerAt(world, repo, snap.base_sha).entries[pattern],
+    pattern,
+    "change",
+    `; run \`sil review reject ${pattern} --world ${world.name}\` to clear the stale proposal`,
+  );
 
   const entry = branchEntry(world, repo, snap.branch_sha, pattern);
   const atype = entryType(entry);

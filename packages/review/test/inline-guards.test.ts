@@ -115,7 +115,10 @@ async function stagedThenInline() {
 test("accept refuses a staged branch over an inline row and moves nothing", async () => {
   const { world, unchanged } = await stagedThenInline();
   const detail = review.detail(world, makeCfg(), P);
-  expect(() => review.accept(world, makeCfg(), P, detail.reviewed_state)).toThrow(/inline/);
+  const attempt = () => review.accept(world, makeCfg(), P, detail.reviewed_state);
+  expect(attempt).toThrow(/inline/);
+  // The refusal names the command that clears the stale branch.
+  expect(attempt).toThrow(`; run \`sil review reject ${P} --world ${world.name}\` to clear the stale proposal`);
   unchanged();
 });
 

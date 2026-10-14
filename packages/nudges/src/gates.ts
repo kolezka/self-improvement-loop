@@ -16,8 +16,12 @@ export const MAX_QUANTIFIED_GROUPS = 3;
 // never happens.
 // hooks.json registers both tool events with matcher "*", so any tool name
 // reaches the dispatcher. The set below is what the drafter may target and
-// what lint accepts. A drafted `PreToolUse:ToolSearch` was refused as
-// unsupported and downgraded to a rule before ToolSearch was listed here.
+// what lint accepts, plus any matcher matching MCP_TOOL_MATCHER_RE below. A
+// drafted `PreToolUse:ToolSearch` was refused as unsupported and downgraded
+// to a rule before ToolSearch was listed here; the same thing happened to
+// `PreToolUse:mcp__outline__update_document` before MCP matchers were
+// accepted by pattern instead of by a closed list that can never enumerate
+// every installed server's tools.
 const TOOL_MATCHERS = ["Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "WebFetch", "WebSearch", "NotebookEdit"] as const;
 
 export const EVENTS: Record<string, ReadonlySet<string> | null> = {
@@ -26,6 +30,27 @@ export const EVENTS: Record<string, ReadonlySet<string> | null> = {
   PreToolUse: new Set(TOOL_MATCHERS),
   PostToolUse: new Set(TOOL_MATCHERS),
 };
+
+// An MCP tool's name as Claude Code reports it in tool_name: the server name
+// and the tool name joined by a double underscore, e.g.
+// `mcp__outline__update_document` or `mcp__plugin_github_github__add_comment`.
+// Checked against real recorded payloads (tests/fixtures and the live usage
+// corpus): server names carry letters, digits, `_` and `-`; tool names add
+// `.`. Two fixed-length character classes, no nested quantifier, so this
+// stays linear regardless of who installed what server.
+export const MCP_TOOL_MATCHER_RE = /^mcp__[A-Za-z0-9_-]{1,64}__[A-Za-z0-9_.-]{1,128}$/;
+
+/** Whether `matcher` may be set on `event`. The one place that decides this,
+ * so splitTrigger, lintNudge and the drafter prompt's vocabulary can never
+ * drift apart from each other or from the dispatcher that actually executes
+ * a matcher (dispatch-core.ts's plain `payload.tool_name === matcher`,
+ * which already treats a built-in tool name and an MCP one alike). */
+export function matcherAllowed(event: string, matcher: string): boolean {
+  if (!Object.hasOwn(EVENTS, event)) return false;
+  const allowed = EVENTS[event];
+  if (allowed === null || allowed === undefined) return false;
+  return allowed.has(matcher) || MCP_TOOL_MATCHER_RE.test(matcher);
+}
 
 // Events that fire only a handful of times per session. Everything else
 // fires per tool call or per turn: an unconditional gate on it is a
@@ -53,9 +78,8 @@ export function splitTrigger(trigger: string): [HookEvent, string | null] | null
   // "toString" or "constructor" would pass here and then hand a function to
   // the matcher check below.
   if (!Object.hasOwn(EVENTS, event)) return null;
-  const allowed = EVENTS[event]!;
   if (!matcher) return [event as HookEvent, null];
-  if (allowed === null || !allowed.has(matcher)) return null;
+  if (!matcherAllowed(event, matcher)) return null;
   return [event as HookEvent, matcher];
 }
 

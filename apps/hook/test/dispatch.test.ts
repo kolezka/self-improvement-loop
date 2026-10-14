@@ -64,6 +64,39 @@ describe("PreToolUse nudge dispatch", () => {
     expect(second.stdout.trim()).toBe("");
   });
 
+  test("fires a nudge targeting an MCP tool matcher", () => {
+    // Live curriculum reason, verbatim: "no workable gate (unsupported
+    // event/matcher \"PreToolUse:mcp__outline__update_document\")", because
+    // TOOL_MATCHERS was a closed list of built-in tool names. hooks.json's
+    // matcher "*" already delivered this call to the dispatcher; only a
+    // hand-placed nudge targeting it was refused by lint before this fix.
+    const nudgesDir = `${hookEnv.root}/nudges`;
+    mkdirSync(nudgesDir, { recursive: true });
+    writeFileSync(
+      `${nudgesDir}/outline.json`,
+      JSON.stringify({
+        pattern: "outline-update-caution",
+        event: "PreToolUse",
+        matcher: "mcp__outline__update_document",
+        gate: { tool_is: ["mcp__outline__update_document"] },
+        once_per: "session",
+        text: "Double check the collection before overwriting the document.",
+      }),
+    );
+    writeSnapshot({ nudges_dir: nudgesDir });
+
+    const payload = { session_id: "sess-dispatch-mcp", hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} };
+    const result = runHook(MAIN_TS, hookEnv, payload);
+    expect(JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext).toBe(
+      "Double check the collection before overwriting the document.",
+    );
+
+    // A different MCP tool on the same server must not fire this nudge.
+    const other = { ...payload, session_id: "sess-dispatch-mcp-2", tool_name: "mcp__outline__fetch" };
+    const miss = runHook(MAIN_TS, hookEnv, other);
+    expect(miss.stdout.trim()).toBe("");
+  });
+
   test("a blank nudges_dir is ignored, never falls back to cwd, and writes a breadcrumb", () => {
     // A synthetic plugin root with no "nudges" subdir: the builtin nudges
     // dir is genuinely absent too, so the missing-dir breadcrumb has nothing

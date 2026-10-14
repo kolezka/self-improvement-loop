@@ -174,6 +174,70 @@ describe("against the real out-of-process runner", () => {
     expect(result.artifact_type).not.toBe("hook");
     expect(result.reason).toContain("timed out");
   });
+
+  test("an MCP-matcher trigger is accepted and evaluated by the real out-of-process runner", () => {
+    // Live curriculum reason, verbatim: "no workable gate (unsupported
+    // event/matcher \"PreToolUse:mcp__outline__update_document\")". Proves the
+    // real gates.ts/gate-runner.ts wiring, not just the fake runner's.
+    uninstallFakeNudge();
+    const payloads = [
+      ...PAYLOADS,
+      { session_id: "f", hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} },
+    ];
+    const result = route(
+      answer({ trigger_event: "PreToolUse:mcp__outline__update_document", gate: { tool_is: ["mcp__outline__update_document"] } }),
+      SOURCES,
+      payloads,
+      realOpts,
+    );
+    expect(result.artifact_type).toBe("hook");
+  });
+});
+
+describe("MCP tool matchers end to end: route() to hook, dispatch fires it", () => {
+  // The reported cause: TOOL_MATCHERS was a closed list of built-in tools, so
+  // the drafter's trigger_event never routed past "no workable gate
+  // (unsupported event/matcher ...)" even though hooks.json's matcher "*"
+  // already delivered the MCP call to the dispatcher. This exercises the real
+  // @sil/nudges adapter (not the fixtures' fake one) through both halves: the
+  // curriculum router's hook verdict, and dispatch-core's actual fire.
+  const MCP_MATCHER = "mcp__outline__update_document";
+  const MCP_TRIGGER = `PreToolUse:${MCP_MATCHER}`;
+  const MCP_GATE = { tool_is: [MCP_MATCHER] };
+
+  test("a narrow MCP gate with MCP payloads in the corpus routes to hook, and the dispatcher fires it", async () => {
+    uninstallFakeNudge();
+    const corpus = [
+      ...PAYLOADS,
+      { session_id: "s1", hook_event_name: "PreToolUse", tool_name: MCP_MATCHER, tool_input: {} },
+      { session_id: "s2", hook_event_name: "PreToolUse", tool_name: "mcp__outline__fetch", tool_input: {} },
+    ];
+    const result = route(answer({ trigger_event: MCP_TRIGGER, gate: MCP_GATE }), SOURCES, corpus, { gateRunner: fakeGateRunner });
+    expect(result.artifact_type).toBe("hook");
+
+    const { dispatchWith } = await import("@sil/nudges/dispatch-core");
+    const drafted = {
+      pattern: "outline-update-caution",
+      event: "PreToolUse",
+      matcher: MCP_MATCHER,
+      gate: MCP_GATE,
+      once_per: "always" as const,
+      text: "Double check the collection before overwriting the document.",
+    };
+    const fires: Array<Record<string, unknown>> = [];
+    const sink = {
+      claimMarker: () => true,
+      fire: (record: Record<string, unknown>) => fires.push(record),
+      breadcrumb: () => {},
+    };
+    const hit = { session_id: "s3", hook_event_name: "PreToolUse", tool_name: MCP_MATCHER, tool_input: {} };
+    expect(dispatchWith(hit, [drafted], sink)).toBe(drafted.text);
+    expect(fires[0]?.["pattern"]).toBe("outline-update-caution");
+
+    // A different MCP tool on the same server must not fire this nudge.
+    const otherTool = { ...hit, tool_name: "mcp__outline__fetch" };
+    expect(dispatchWith(otherTool, [drafted], sink)).toBeNull();
+  });
 });
 
 describe("evidence has to be verbatim", () => {

@@ -19,7 +19,7 @@
 
 import { SECTIONS } from "@sil/core";
 import { z } from "zod";
-import { type GateRunner, nudgeEvents, nudges } from "./deps.ts";
+import { type GateRunner, nudgeEvents, nudgeMatcherAllowed, nudges } from "./deps.ts";
 import { distinctiveTerms } from "./lint.ts";
 
 // A gate that cannot be evaluated inside the deadline does not route to hook.
@@ -86,10 +86,9 @@ export function splitTrigger(trigger: string): [string, string | null] | null {
   const event = at === -1 ? raw : raw.slice(0, at);
   const matcher = at === -1 ? "" : raw.slice(at + 1);
   if (!Object.hasOwn(events, event)) return null;
-  const allowed = events[event];
   // Every supported event is valid bare: "PreToolUse" means all matchers.
   if (!matcher) return [event, null];
-  if (allowed === null || allowed === undefined || !allowed.has(matcher)) return null;
+  if (!nudgeMatcherAllowed(event, matcher)) return null;
   return [event, matcher];
 }
 

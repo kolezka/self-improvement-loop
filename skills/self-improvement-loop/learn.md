@@ -1,10 +1,9 @@
 # Capture a lesson from this session
 
 In Codex there is no slash command; the operator asks to capture a lesson and
-you follow this file. In Claude Code, `/learn [note]` sends you here.
-
-Follow the steps in order. Do not skip a confirmation. Every `sil` call after
-step 2 passes `--world <w>`, the world the operator confirmed.
+you follow this file. In Claude Code, `/learn [note]` sends you here. Follow
+the steps in order. Do not skip a confirmation. Every `sil` call after step 2
+passes `--world <w>`, the world the operator confirmed.
 
 ## 1. Locate
 
@@ -60,9 +59,7 @@ For a rule, skill or agent, `--path` is the final absolute path in the
 project's main checkout or in `~/.claude/`, never a worktree path. The file
 need not exist yet. For a nudge, write the draft JSON into a fresh `mktemp -d`
 directory and use that path: register reads and lints it. That scratch file is
-the only write allowed before the yes.
-
-Run the preflight:
+the only write allowed before the yes. Run the preflight:
 
 ```sh
 sil artifacts register --world <w> --type <rule|skill|agent|hook> \
@@ -77,31 +74,34 @@ remove the scratch directory and stop.
 
 ## 7. Write
 
-A file inside a git repo goes on a worktree branch, committed, never on the
-default branch directly. A file that only works at its installed path
-(`~/.claude/*`) is edited in place, and committed on its own if that directory
-is a repo. Run the repo's dash lint when it has one. A nudge is not written
-here: register copies it in step 8.
+Commit a file inside a git repo on a worktree branch, never on the default
+branch directly. Edit in place a file in a project directory without git, or
+one that only works at its installed path (`~/.claude/*`); commit the latter on
+its own if its directory is a repo. Run the repo's dash lint when it has one.
+Register copies a nudge in step 8.
 
 ## 8. Register
 
+The register command is the step 6 preflight without `--dry-run`. Run it now
+for a nudge (register commits it) or a file edited in place (under
+`~/.claude/`, or in a project directory without git). A project artifact in a
+git repo, new or edited, is on a branch: do not register yet. Report the branch
+and the exact command. Do not merge or push it yourself. Once the operator says
+it is merged, check that it landed:
+
 ```sh
-sil artifacts register --world <w> --type <rule|skill|agent|hook> \
-  --pattern <slug> --path <absolute path> --note "<one-line lesson>"
+git -C <repo> merge-base --is-ancestor <branch> <default-branch>
 ```
 
-Run it now only for a nudge (register commits it) or an artifact edited in
-place under `~/.claude/`. For a project artifact, new file or edit to an
-existing one, do not register yet: the file is not on the default branch.
-Report the branch and the exact command. Run it in this session only after the
-operator confirms the merge; otherwise they run it after merging.
+Register only if that exits 0. On any other exit, report the pending command
+and do not run register. The artifact is not recorded until register succeeds.
+Never claim it is.
 
-The artifact is not recorded until register succeeds. Never claim it is. If
-`sil` is not on PATH (try `~/.local/bin/sil`, and in Claude Code
+If `sil` is not on PATH (try `~/.local/bin/sil`, and in Claude Code
 `"${CLAUDE_PLUGIN_ROOT}/scripts/sil"`), say so and stop. If register refuses
 (for example, the target checkout moved off its default branch, or got dirty
-under the artifact paths since the preflight), report the refusal verbatim
-and the exact command to re-run.
+under the artifact paths since the preflight), report the refusal verbatim and
+the exact command to re-run.
 
 For a nudge, remove the scratch directory only after register succeeds or the
 operator says no. If register refuses, keep it: the retry needs the same

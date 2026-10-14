@@ -78,9 +78,9 @@ function describe(e: unknown): string {
 }
 
 /** The body shape the drafter committed to, before the router validates it. */
-function draftedType(answer: RouteAnswer): string {
+export function draftedType(answer: RouteAnswer): string {
   if (answer.trigger_event !== "none" && answer.gate !== null) return "hook";
-  if (answer.needs_own_context) return "agent";
+  if (answer.needs_own_context && answer.context_evidence !== null) return "agent";
   if (answer.capability_evidence !== null) return "skill";
   return "rule";
 }

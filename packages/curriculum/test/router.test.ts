@@ -10,11 +10,13 @@ import {
   loadPayloadCorpus,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
+  parseDraft,
   route,
   RouteAnswer,
   splitTrigger,
 } from "@sil/curriculum";
 import { cleanupEnv, fakeGateRunner, installFakeNudge, makeWorld, silEnv, type TestEnv, uninstallFakeNudge } from "./fixtures.ts";
+import { draftedType } from "../src/run.ts";
 
 const PAYLOADS = loadPayloadCorpus();
 
@@ -55,14 +57,105 @@ describe("hook: the claim is executed, not read", () => {
     );
     expect(result.artifact_type).not.toBe("hook");
     expect(result.reason).toContain("matched nothing");
+    expect(result.reason).toContain('"command_matches":"zzz-never-appears"');
   });
 
-  test("a gate that fires on everything is a broadcast, not a hook", () => {
-    // Once merged a hook runs unattended on every session of the machine. A gate
-    // that cannot tell the corpus apart will not tell production apart either.
-    const result = route(answer({ trigger_event: "PreToolUse:Bash", gate: { always: true } }), SOURCES, PAYLOADS, opts);
+  test("a rejected gate is shown without flooding the route reason", () => {
+    const result = route(
+      answer({ trigger_event: "PreToolUse:Bash", gate: { command_matches: "z".repeat(195) } }),
+      SOURCES,
+      PAYLOADS,
+      opts,
+    );
+    expect(result.reason).toContain('"command_matches":"zzzz');
+    expect(result.reason).toContain("...");
+    expect(result.reason.length).toBeLessThan(400);
+  });
+
+  test("the gate excerpt never cuts a character in half", () => {
+    // `{"command_matches":"` is 20 code units, so 139 more puts the emoji on 159 and 160.
+    const result = route(
+      answer({ trigger_event: "PreToolUse:Bash", gate: { command_matches: `${"z".repeat(139)}\u{1F600}${"z".repeat(40)}` } }),
+      SOURCES,
+      PAYLOADS,
+      opts,
+    );
+    expect(result.reason).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  test("a gate that fires on everything is a broadcast when its matcher's tool dominates the corpus", () => {
+    // Once merged a hook runs unattended on every session of the machine. A
+    // gate that cannot tell a Bash-heavy session apart will not tell
+    // production apart either. Broadcast is judged by how often the
+    // trigger's own matcher is actually called, not by how often `always`
+    // matches literally everything regardless of matcher: see the small-share
+    // MCP case below, where the same gate is NOT a broadcast.
+    const bash = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `cmd ${i}` } });
+    const read = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: `/f${i}` } });
+    const corpus = [...Array.from({ length: 8 }, (_, i) => bash(i)), ...Array.from({ length: 2 }, (_, i) => read(i))];
+    const result = route(answer({ trigger_event: "PreToolUse:Bash", gate: { always: true } }), SOURCES, corpus, opts);
     expect(result.artifact_type).not.toBe("hook");
     expect(result.reason).toContain("broadcast");
+    expect(result.reason).toContain("8 of 10");
+  });
+
+  test("a gate that never fires on the trigger's own tool is refused, not routed on an off-target hit", () => {
+    // The reported defect: hookVerdict ran the gate over the whole corpus
+    // with no notion of the trigger, so trigger
+    // PreToolUse:mcp__outline__update_document + gate {tool_is:["Bash"]}
+    // "matched" the corpus's unrelated Bash call and routed to hook, though
+    // dispatchWith never runs this gate against that Bash call at all: the
+    // matcher restricts it to the MCP tool alone.
+    uninstallFakeNudge();
+    const corpus = [
+      { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git status" } },
+      { hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} },
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/f" } },
+    ];
+    const result = route(
+      answer({ trigger_event: "PreToolUse:mcp__outline__update_document", gate: { tool_is: ["Bash"] } }),
+      SOURCES,
+      corpus,
+      opts,
+    );
+    expect(result.artifact_type).not.toBe("hook");
+    expect(result.reason).toContain("matched nothing");
+    expect(result.reason).toContain("mcp__outline__update_document");
+  });
+
+  test("always with an exact MCP matcher routes to hook when that tool is a small share of the corpus", () => {
+    // The reported defect's mirror image: a gate that only ever fires for
+    // one already-narrow MCP tool was refused as a broadcast because the old
+    // ratio was computed against how often `always` matches the whole
+    // corpus, not how often this tool is actually called.
+    uninstallFakeNudge();
+    const bash = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `cmd ${i}` } });
+    const mcpCall = { hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} };
+    const corpus = [...Array.from({ length: 18 }, (_, i) => bash(i)), mcpCall, mcpCall];
+    const result = route(
+      answer({ trigger_event: "PreToolUse:mcp__outline__update_document", gate: { always: true } }),
+      SOURCES,
+      corpus,
+      opts,
+    );
+    expect(result.artifact_type).toBe("hook");
+    expect(result.reason).toContain("2 of 20");
+  });
+
+  test("a PostToolUse hook is tested against the PreToolUse samples of the same calls", () => {
+    // The hook samples only PreToolUse. Every sampled call also reaches PostToolUse.
+    uninstallFakeNudge();
+    const bash = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `cmd ${i}` } });
+    const mcpCall = { hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} };
+    const corpus = [...Array.from({ length: 18 }, (_, i) => bash(i)), mcpCall, mcpCall];
+    const result = route(
+      answer({ trigger_event: "PostToolUse:mcp__outline__update_document", gate: { always: true } }),
+      SOURCES,
+      corpus,
+      opts,
+    );
+    expect(result.artifact_type).toBe("hook");
+    expect(result.reason).toContain("2 of 20");
   });
 
   test("a gate that fires on more than half of a recorded corpus is a broadcast too", () => {
@@ -174,6 +267,70 @@ describe("against the real out-of-process runner", () => {
     expect(result.artifact_type).not.toBe("hook");
     expect(result.reason).toContain("timed out");
   });
+
+  test("an MCP-matcher trigger is accepted and evaluated by the real out-of-process runner", () => {
+    // Live curriculum reason, verbatim: "no workable gate (unsupported
+    // event/matcher \"PreToolUse:mcp__outline__update_document\")". Proves the
+    // real gates.ts/gate-runner.ts wiring, not just the fake runner's.
+    uninstallFakeNudge();
+    const payloads = [
+      ...PAYLOADS,
+      { session_id: "f", hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} },
+    ];
+    const result = route(
+      answer({ trigger_event: "PreToolUse:mcp__outline__update_document", gate: { tool_is: ["mcp__outline__update_document"] } }),
+      SOURCES,
+      payloads,
+      realOpts,
+    );
+    expect(result.artifact_type).toBe("hook");
+  });
+});
+
+describe("MCP tool matchers end to end: route() to hook, dispatch fires it", () => {
+  // The reported cause: TOOL_MATCHERS was a closed list of built-in tools, so
+  // the drafter's trigger_event never routed past "no workable gate
+  // (unsupported event/matcher ...)" even though hooks.json's matcher "*"
+  // already delivered the MCP call to the dispatcher. This exercises the real
+  // @sil/nudges adapter (not the fixtures' fake one) through both halves: the
+  // curriculum router's hook verdict, and dispatch-core's actual fire.
+  const MCP_MATCHER = "mcp__outline__update_document";
+  const MCP_TRIGGER = `PreToolUse:${MCP_MATCHER}`;
+  const MCP_GATE = { tool_is: [MCP_MATCHER] };
+
+  test("a narrow MCP gate with MCP payloads in the corpus routes to hook, and the dispatcher fires it", async () => {
+    uninstallFakeNudge();
+    const corpus = [
+      ...PAYLOADS,
+      { session_id: "s1", hook_event_name: "PreToolUse", tool_name: MCP_MATCHER, tool_input: {} },
+      { session_id: "s2", hook_event_name: "PreToolUse", tool_name: "mcp__outline__fetch", tool_input: {} },
+    ];
+    const result = route(answer({ trigger_event: MCP_TRIGGER, gate: MCP_GATE }), SOURCES, corpus, { gateRunner: fakeGateRunner });
+    expect(result.artifact_type).toBe("hook");
+
+    const { dispatchWith } = await import("@sil/nudges/dispatch-core");
+    const drafted = {
+      pattern: "outline-update-caution",
+      event: "PreToolUse",
+      matcher: MCP_MATCHER,
+      gate: MCP_GATE,
+      once_per: "always" as const,
+      text: "Double check the collection before overwriting the document.",
+    };
+    const fires: Array<Record<string, unknown>> = [];
+    const sink = {
+      claimMarker: () => true,
+      fire: (record: Record<string, unknown>) => fires.push(record),
+      breadcrumb: () => {},
+    };
+    const hit = { session_id: "s3", hook_event_name: "PreToolUse", tool_name: MCP_MATCHER, tool_input: {} };
+    expect(dispatchWith(hit, [drafted], sink)).toBe(drafted.text);
+    expect(fires[0]?.["pattern"]).toBe("outline-update-caution");
+
+    // A different MCP tool on the same server must not fire this nudge.
+    const otherTool = { ...hit, tool_name: "mcp__outline__fetch" };
+    expect(dispatchWith(otherTool, [drafted], sink)).toBeNull();
+  });
 });
 
 describe("evidence has to be verbatim", () => {
@@ -218,6 +375,58 @@ describe("evidence has to be verbatim", () => {
 
   test("a discipline with no evidence falls through to rule", () => {
     expect(route(emptyAnswer(), SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
+  });
+});
+
+describe("empty drafter signals normalize before routing", () => {
+  const parsedDraft = (fields: Record<string, unknown>): RouteAnswer =>
+    parseDraft(JSON.stringify({ artifact: "drafted body", ...fields }))[1];
+
+  test("RouteAnswer parse and safeParse normalize blank fields", () => {
+    const fields = { trigger_event: "", gate: {}, context_evidence: "", capability_evidence: "   " };
+    const parsed = RouteAnswer.parse(fields);
+    const safe = RouteAnswer.safeParse(fields);
+    expect(safe.success).toBe(true);
+    if (!safe.success) throw new Error("expected blank routing fields to parse");
+    expect(safe.data).toEqual(parsed);
+    expect(parsed).toMatchObject({
+      trigger_event: "none",
+      gate: null,
+      context_evidence: null,
+      capability_evidence: null,
+    });
+  });
+
+  test("blank capability evidence does not claim a skill", () => {
+    for (const evidence of ["", "   "]) {
+      const parsed = parsedDraft({ capability_evidence: evidence });
+      expect(parsed.capability_evidence).toBeNull();
+      expect(draftedType(parsed)).toBe("rule");
+      expect(route(parsed, SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
+    }
+  });
+
+  test("blank context evidence does not claim an agent", () => {
+    for (const evidence of ["", "   "]) {
+      const parsed = parsedDraft({ needs_own_context: true, context_evidence: evidence });
+      expect(parsed.context_evidence).toBeNull();
+      expect(draftedType(parsed)).toBe("rule");
+      const result = route(parsed, SOURCES, PAYLOADS, opts);
+      expect(result.artifact_type).toBe("rule");
+      expect(result.reason).toContain("no context_evidence");
+    }
+  });
+
+  test("blank trigger and empty gate do not claim a hook", () => {
+    const blankTrigger = parsedDraft({ trigger_event: "", gate: WORKABLE_GATE });
+    expect(blankTrigger.trigger_event).toBe("none");
+    expect(draftedType(blankTrigger)).toBe("rule");
+    expect(route(blankTrigger, SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
+
+    const emptyGate = parsedDraft({ trigger_event: "PreToolUse:Bash", gate: {} });
+    expect(emptyGate.gate).toBeNull();
+    expect(draftedType(emptyGate)).toBe("rule");
+    expect(route(emptyGate, SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
   });
 });
 

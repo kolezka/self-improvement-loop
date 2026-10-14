@@ -140,6 +140,11 @@ export const GATE_VOCABULARY: Record<string, string> = {
   not: "taking a single predicate and inverting it",
 };
 
+// Also accepted on PreToolUse/PostToolUse, alongside the built-in tool names
+// below: gates.ts's MCP_TOOL_MATCHER_RE takes any matcher of this shape, since
+// the closed list can never enumerate every installed MCP server's tools.
+const MCP_MATCHER_NOTE = "or an MCP tool matcher of the form mcp__<server>__<tool>, e.g. mcp__outline__update_document";
+
 /** (event list, matcher list) from the dispatcher, so the prompt cannot drift
  * away from the interpreter that has to execute what it asks for. */
 function eventVocabulary(): [string, string] {
@@ -147,14 +152,14 @@ function eventVocabulary(): [string, string] {
   if (!events) {
     return [
       "PreToolUse, PostToolUse, Stop, SessionStart, UserPromptSubmit",
-      "Bash, Edit, Write, Read, Grep, Glob, Agent",
+      `Bash, Edit, Write, Read, Grep, Glob, Agent, ${MCP_MATCHER_NOTE}`,
     ];
   }
   const matchers = new Set<string>();
   for (const allowed of Object.values(events)) {
     if (allowed) for (const m of allowed) matchers.add(m);
   }
-  return [Object.keys(events).sort().join(", "), [...matchers].sort().join(", ")];
+  return [Object.keys(events).sort().join(", "), `${[...matchers].sort().join(", ")}, ${MCP_MATCHER_NOTE}`];
 }
 
 /** Self-contained: it names the gate vocabulary itself, because the forced
@@ -175,6 +180,11 @@ export function hookShape(pattern: string): string {
     "No predicate can read your own reply, so gate on the tool call that comes " +
     "before the mistake, not on the sentence that states it. The gate must be " +
     "narrow: one that fires on every tool call is a broadcast and is refused. " +
+    "An MCP matcher already narrows to one tool, so 'always', or 'tool_is' " +
+    "naming that same tool, is a valid gate there; command_matches, " +
+    "file_path_matches and prompt_matches cannot see an MCP tool's own " +
+    "arguments, only the Bash command, file path or prompt a built-in tool " +
+    "call carries. " +
     "'once_per', either 'session' or 'always'; " +
     "'text', the nudge shown to the agent: imperative, specific, under 400 " +
     "characters, naming the actual commands or checks the lessons name."

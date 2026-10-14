@@ -18,8 +18,9 @@
 // and a run that does not answer in time refuses the hook.
 
 import { SECTIONS } from "@sil/core";
+import { triggerMatches } from "@sil/nudges/dispatch-core";
 import { z } from "zod";
-import { type GateRunner, nudgeEvents, nudges } from "./deps.ts";
+import { type GateRunner, nudgeEvents, nudgeMatcherAllowed, nudges } from "./deps.ts";
 import { distinctiveTerms } from "./lint.ts";
 
 // A gate that cannot be evaluated inside the deadline does not route to hook.
@@ -37,17 +38,29 @@ export const MIN_QUOTE_CHARS = 30;
 // So a quote must also carry words that say something about this lesson.
 export const MIN_QUOTE_TERMS = 3;
 
+const blankTriggerToNone = z.string().default("none").transform((value) => (value.trim() ? value : "none"));
+const emptyGateToNull = z
+  .record(z.string(), z.unknown())
+  .nullable()
+  .default(null)
+  .transform((value) => (value !== null && Object.keys(value).length === 0 ? null : value));
+const blankEvidenceToNull = z
+  .string()
+  .nullable()
+  .default(null)
+  .transform((value) => (value !== null && !value.trim() ? null : value));
+
 /** What the drafter returns instead of choosing a type in prose. */
 export const RouteAnswer = z.object({
-  trigger_event: z.string().default("none"),
-  gate: z.record(z.string(), z.unknown()).nullable().default(null),
+  trigger_event: blankTriggerToNone,
+  gate: emptyGateToNull,
   needs_own_context: z.boolean().default(false),
   // The quote that makes `needs_own_context` checkable, exactly as
   // capability_evidence does for `skill`. A bare bool was the one signal nothing
   // could falsify, and that is precisely where the measured routing variance
   // sat: same pattern, same prompt, rule on one run and agent on the next.
-  context_evidence: z.string().nullable().default(null),
-  capability_evidence: z.string().nullable().default(null),
+  context_evidence: blankEvidenceToNull,
+  capability_evidence: blankEvidenceToNull,
   // The drafter's own "no artifact is warranted here". A field, not a caller
   // keyword: a pattern recurring 149 times may mean the discipline is inherent,
   // and the drafter is the only party that can say so.
@@ -86,10 +99,9 @@ export function splitTrigger(trigger: string): [string, string | null] | null {
   const event = at === -1 ? raw : raw.slice(0, at);
   const matcher = at === -1 ? "" : raw.slice(at + 1);
   if (!Object.hasOwn(events, event)) return null;
-  const allowed = events[event];
   // Every supported event is valid bare: "PreToolUse" means all matchers.
   if (!matcher) return [event, null];
-  if (allowed === null || allowed === undefined || !allowed.has(matcher)) return null;
+  if (!nudgeMatcherAllowed(event, matcher)) return null;
   return [event, matcher];
 }
 
@@ -227,7 +239,14 @@ export const MAX_GATE_MATCH_RATE = 0.5;
  *
  * The gate is executed against the recorded payload corpus rather than read.
  * "This is mechanically detectable" is a claim the drafter makes, and the point
- * of this module is that such claims get tested. */
+ * of this module is that such claims get tested.
+ *
+ * A "hit" needs both: the gate is true, and the payload is one the dispatcher
+ * would actually have run that gate against for this trigger (triggerMatches,
+ * the same event/matcher comparison dispatchWith uses). Running a gate
+ * without that filter let `{tool_is:["Bash"]}` on matcher
+ * `mcp__outline__update_document` "route to hook" from Bash calls in the
+ * corpus that production never reaches with this gate at all. */
 function hookVerdict(
   answer: RouteAnswer,
   payloads: Record<string, unknown>[],
@@ -237,9 +256,11 @@ function hookVerdict(
   if (answer.trigger_event === "none" || gate == null || Object.keys(gate).length === 0) {
     return "no trigger event proposed";
   }
-  if (splitTrigger(answer.trigger_event) === null) {
+  const trigger = splitTrigger(answer.trigger_event);
+  if (trigger === null) {
     return `unsupported event/matcher ${JSON.stringify(answer.trigger_event)}`;
   }
+  const [triggerEvent, triggerMatcher] = trigger;
   if (payloads.length === 0) return "no recorded payloads to test the gate against";
 
   const runner = opts.gateRunner ?? nudges().runGateCorpus;
@@ -260,8 +281,26 @@ function hookVerdict(
     return `gate runner answered for ${results.length} of ${payloads.length} payload(s)`;
   }
 
-  const hits = results.filter(Boolean).length;
-  if (hits === 0) return "gate matched nothing in the payload corpus";
+  // The runner answers the gate alone, with no notion of a trigger: it is run
+  // against the whole corpus so one spawn tests every payload, not one per
+  // candidate hook. The trigger filter happens here, against the same
+  // payloads array by index.
+  // The corpus samples tool calls at PreToolUse only, and every one of them
+  // also reaches PostToolUse, so a PostToolUse hook is tested as PreToolUse.
+  const corpusEvent = triggerEvent === "PostToolUse" ? "PreToolUse" : triggerEvent;
+  const hits = results.filter((matched, i) => matched && triggerMatches(payloads[i]!, corpusEvent, triggerMatcher)).length;
+  if (hits === 0) {
+    // A refused draft is not persisted, so the gate must survive in the reason.
+    // Cut by code point: a UTF-16 slice can leave half an emoji at the end.
+    const gateChars = Array.from(JSON.stringify(gate));
+    const excerpt = gateChars.length > 160 ? `${gateChars.slice(0, 160).join("")}...` : gateChars.join("");
+    return `gate matched nothing in the payload corpus for ${JSON.stringify(answer.trigger_event)} (gate: ${excerpt})`;
+  }
+  // The denominator stays the whole corpus, not the trigger-matching subset:
+  // this measures how often the nudge fires per session across every tool
+  // call, not how often it fires among calls to its own tool. A matcher
+  // already narrows to one tool, so `{always:true}` on an MCP matcher passes
+  // here exactly when that tool is a small share of all recorded calls.
   if (payloads.length > 1 && hits / payloads.length > MAX_GATE_MATCH_RATE) {
     // It would inject on a large share of the tool calls of every session.
     return `gate fires on ${hits} of ${payloads.length} recorded payloads; that is a broadcast, not a nudge`;

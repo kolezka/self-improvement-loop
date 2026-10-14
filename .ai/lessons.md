@@ -154,3 +154,14 @@
   freezes the pattern after its first automatic action. When adding an
   automated producer of an event, check every reader's use of that kind before
   reusing it, not just the schema.
+- 2026-10-14: A "never override a human choice" guard checked on the branch's
+  mere presence of `served_by`, not on whether its type actually disagreed
+  with the live one. Measured on live state, every pattern with new evidence
+  had an open restaged branch of the same type, so the guard suppressed the
+  whole feature it was meant to carve a narrow exception from. Check what the
+  guard's own precondition looks like against real, current data before
+  trusting a conservative-sounding default.
+- 2026-10-14: A router refusal that says only "gate matched nothing" discards the
+  one input needed to distinguish a bad drafted predicate from a thin corpus.
+  Keep a bounded excerpt of the refused gate in the route reason. Rotated payload
+  logs cannot recreate the corpus from the day of an older routing decision.

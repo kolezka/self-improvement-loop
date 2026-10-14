@@ -7,15 +7,17 @@ export type { Gate, Nudge, DispatchOptions, LoadedNudges, RejectedNudge } from "
 export { dispatch, loadNudges, loadNudgesDetailed } from "./dispatch.ts";
 
 export type { DispatchSink, DispatchBudget } from "./dispatch-core.ts";
-export { dispatchWith, lintLoadedNudges } from "./dispatch-core.ts";
+export { dispatchWith, lintLoadedNudges, triggerMatches } from "./dispatch-core.ts";
 
 export {
   MAX_MATCH_LEN,
   MAX_PATTERN_LEN,
   MAX_QUANTIFIED_GROUPS,
+  MCP_TOOL_MATCHER_RE,
   EVENTS,
   LOW_FREQUENCY_EVENTS,
   PREDICATES,
+  matcherAllowed,
   splitTrigger,
   evaluate,
   validateGate,

@@ -9,7 +9,8 @@ import { loadLedger as loadLedgerFile, saveLedger } from "@sil/store";
 import { commitOnDefault, requireLiveReady, withWorkerLock } from "./index.ts";
 import { ledgerRel } from "./snapshot.ts";
 
-export type InlineType = "rule" | "skill" | "agent" | "hook";
+export const INLINE_TYPES = ["rule", "skill", "agent", "hook"] as const;
+export type InlineType = (typeof INLINE_TYPES)[number];
 export interface RegisterOptions {
   dryRun?: boolean;
   extraDirs?: string[];
@@ -34,6 +35,10 @@ export function register(
   note: string,
   opts: RegisterOptions = {},
 ): RegisterResult {
+  // A caller that is not TypeScript (the CLI, a script) can pass any string.
+  if (!(INLINE_TYPES as readonly string[]).includes(type)) {
+    throw new ReviewError(`unknown --type ${JSON.stringify(type)}; expected one of ${INLINE_TYPES.join(", ")}`);
+  }
   if (!isSlug(pattern)) throw new ReviewError(`unsafe pattern slug ${JSON.stringify(pattern)}`);
   if (!note.trim()) throw new ReviewError("--note is required: one line naming the lesson");
   if (!isAbsolute(path)) throw new ReviewError(`--path must be absolute, got ${JSON.stringify(path)}`);

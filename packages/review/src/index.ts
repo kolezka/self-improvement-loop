@@ -920,4 +920,4 @@ function relinkAll(world: World, pattern: string, artifactType: ArtifactType): s
   return link;
 }
 
-export { type InlineType, register, type RegisterOptions, type RegisterResult } from "./register.ts";
+export { INLINE_TYPES, type InlineType, register, type RegisterOptions, type RegisterResult } from "./register.ts";

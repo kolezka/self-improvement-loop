@@ -333,6 +333,18 @@ describe("register", () => {
     expect(repoState(world, repo)).toEqual(state);
   });
 
+  // A caller that is not TypeScript (the CLI, a script) can pass any string.
+  test.each([false, true])("refuses a type outside INLINE_TYPES and writes nothing (dryRun %p)", (dryRun) => {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const f = skillFile();
+    const state = repoState(world, repo);
+    expect(() => review.register(world, makeCfg(), "macro" as review.InlineType, P, f, "n", { dryRun })).toThrow(
+      'unknown --type "macro"; expected one of rule, skill, agent, hook',
+    );
+    expect(repoState(world, repo)).toEqual(state);
+  });
+
   test.each([false, true])("refuses a target that is not a git repository (dryRun %p)", (dryRun) => {
     const world = makeWorld();
     const repo = targetRoot(world);

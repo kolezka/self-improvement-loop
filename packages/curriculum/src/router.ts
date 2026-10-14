@@ -37,17 +37,29 @@ export const MIN_QUOTE_CHARS = 30;
 // So a quote must also carry words that say something about this lesson.
 export const MIN_QUOTE_TERMS = 3;
 
+const blankTriggerToNone = z.string().default("none").transform((value) => (value.trim() ? value : "none"));
+const emptyGateToNull = z
+  .record(z.string(), z.unknown())
+  .nullable()
+  .default(null)
+  .transform((value) => (value !== null && Object.keys(value).length === 0 ? null : value));
+const blankEvidenceToNull = z
+  .string()
+  .nullable()
+  .default(null)
+  .transform((value) => (value !== null && !value.trim() ? null : value));
+
 /** What the drafter returns instead of choosing a type in prose. */
 export const RouteAnswer = z.object({
-  trigger_event: z.string().default("none"),
-  gate: z.record(z.string(), z.unknown()).nullable().default(null),
+  trigger_event: blankTriggerToNone,
+  gate: emptyGateToNull,
   needs_own_context: z.boolean().default(false),
   // The quote that makes `needs_own_context` checkable, exactly as
   // capability_evidence does for `skill`. A bare bool was the one signal nothing
   // could falsify, and that is precisely where the measured routing variance
   // sat: same pattern, same prompt, rule on one run and agent on the next.
-  context_evidence: z.string().nullable().default(null),
-  capability_evidence: z.string().nullable().default(null),
+  context_evidence: blankEvidenceToNull,
+  capability_evidence: blankEvidenceToNull,
   // The drafter's own "no artifact is warranted here". A field, not a caller
   // keyword: a pattern recurring 149 times may mean the discipline is inherent,
   // and the drafter is the only party that can say so.

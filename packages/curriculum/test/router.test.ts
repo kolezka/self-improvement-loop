@@ -10,11 +10,13 @@ import {
   loadPayloadCorpus,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
+  parseDraft,
   route,
   RouteAnswer,
   splitTrigger,
 } from "@sil/curriculum";
 import { cleanupEnv, fakeGateRunner, installFakeNudge, makeWorld, silEnv, type TestEnv, uninstallFakeNudge } from "./fixtures.ts";
+import { draftedType } from "../src/run.ts";
 
 const PAYLOADS = loadPayloadCorpus();
 
@@ -218,6 +220,58 @@ describe("evidence has to be verbatim", () => {
 
   test("a discipline with no evidence falls through to rule", () => {
     expect(route(emptyAnswer(), SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
+  });
+});
+
+describe("empty drafter signals normalize before routing", () => {
+  const parsedDraft = (fields: Record<string, unknown>): RouteAnswer =>
+    parseDraft(JSON.stringify({ artifact: "drafted body", ...fields }))[1];
+
+  test("RouteAnswer parse and safeParse normalize blank fields", () => {
+    const fields = { trigger_event: "", gate: {}, context_evidence: "", capability_evidence: "   " };
+    const parsed = RouteAnswer.parse(fields);
+    const safe = RouteAnswer.safeParse(fields);
+    expect(safe.success).toBe(true);
+    if (!safe.success) throw new Error("expected blank routing fields to parse");
+    expect(safe.data).toEqual(parsed);
+    expect(parsed).toMatchObject({
+      trigger_event: "none",
+      gate: null,
+      context_evidence: null,
+      capability_evidence: null,
+    });
+  });
+
+  test("blank capability evidence does not claim a skill", () => {
+    for (const evidence of ["", "   "]) {
+      const parsed = parsedDraft({ capability_evidence: evidence });
+      expect(parsed.capability_evidence).toBeNull();
+      expect(draftedType(parsed)).toBe("rule");
+      expect(route(parsed, SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
+    }
+  });
+
+  test("blank context evidence does not claim an agent", () => {
+    for (const evidence of ["", "   "]) {
+      const parsed = parsedDraft({ needs_own_context: true, context_evidence: evidence });
+      expect(parsed.context_evidence).toBeNull();
+      expect(draftedType(parsed)).toBe("rule");
+      const result = route(parsed, SOURCES, PAYLOADS, opts);
+      expect(result.artifact_type).toBe("rule");
+      expect(result.reason).toContain("no context_evidence");
+    }
+  });
+
+  test("blank trigger and empty gate do not claim a hook", () => {
+    const blankTrigger = parsedDraft({ trigger_event: "", gate: WORKABLE_GATE });
+    expect(blankTrigger.trigger_event).toBe("none");
+    expect(draftedType(blankTrigger)).toBe("rule");
+    expect(route(blankTrigger, SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
+
+    const emptyGate = parsedDraft({ trigger_event: "PreToolUse:Bash", gate: {} });
+    expect(emptyGate.gate).toBeNull();
+    expect(draftedType(emptyGate)).toBe("rule");
+    expect(route(emptyGate, SOURCES, PAYLOADS, opts).artifact_type).toBe("rule");
   });
 });
 

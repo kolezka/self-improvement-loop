@@ -48,11 +48,15 @@ The web console's Artifacts pane lists every ledger row with up to three row
 actions.
 
 - **Preview** (every row) opens a read-only drawer with the artifact's body
-  exactly as it is live: the default branch of the world's target repo, never
-  a staged review branch. It also shows whether the artifact is actually
-  active (a skill or agent's symlink into `~/.claude`, a hook's file, or a
-  rule's bullet inside the managed block). A retired or missing artifact
-  reports a clear error instead of an empty body.
+  exactly as it is on the target repo's checked-out working tree, never a
+  staged review branch. That tree is normally the default branch, but it can
+  carry local uncommitted edits; the drawer warns when the body does not
+  match what is committed on the default branch (`matches_default_branch`).
+  It also shows whether the artifact is actually active (a skill or agent's
+  symlink into `~/.claude`, a hook's file, or a rule's bullet inside the
+  managed block, with `rules_inject` and the size cap honoured, and an inline
+  file checked against where Claude Code actually loads that type from). A
+  retired or missing artifact reports a clear error instead of an empty body.
 - **Verify** (live rows only) runs the offline checks (exists, live, lint,
   and for a hook, its own gate against the real payload corpus) plus one
   drafter call that asks whether today's evidence would route the pattern to

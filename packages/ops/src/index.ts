@@ -62,7 +62,7 @@ export { tailLines } from "./handlers/logs.ts";
 register({ name: "review.revise", tier: "local", gate: "reviewed_state", args: Args.ReviseArgs, fn: review.reviewRevise, doc: "Ask the drafter to revise a staged proposal from a human instruction; reviewed_state must match." });
 
 // web console: preview and verify
-register({ name: "artifacts.preview", tier: "read", gate: "none", args: Args.PatternArgs, fn: artifacts.artifactsPreview, doc: "The artifact's live body (default branch), not a staged branch; errors on a retired or missing artifact." });
+register({ name: "artifacts.preview", tier: "read", gate: "none", args: Args.PatternArgs, fn: artifacts.artifactsPreview, doc: "The artifact's body on the target repo's checked-out working tree, not a staged branch; errors on a retired or missing artifact." });
 register({ name: "artifacts.verify", tier: "local", gate: "none", args: Args.PatternArgs, fn: artifacts.artifactsVerify, doc: "Offline checks plus one drafter re-route probe for the artifact a pattern already serves. Writes nothing." });
 
 export * from "./registry.ts";

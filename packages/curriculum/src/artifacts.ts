@@ -302,6 +302,22 @@ export function ruleBulletInText(text: string, pattern: string): string {
   return "";
 }
 
+/** This pattern's own bullet, searched only inside the managed block, with
+ * its tag stripped. "" when the file is missing, has no managed block, or
+ * has no bullet tagged for this pattern inside that block.
+ *
+ * Deliberately narrower than `readArtifact`'s plain `ruleBulletInText` over
+ * the whole file: a duplicate or stale tag left outside the block by a hand
+ * edit must never read as this pattern's live text, because the hook that
+ * actually injects rules only ever reads what is between the markers. */
+export function ruleBulletInManagedBlock(world: World, pattern: string, root?: string | null): string {
+  const path = join(rootFor(world, root), strip(world.layout.rules_file));
+  if (!existsSync(path)) return "";
+  const text = fsx.readText(path);
+  const [, block] = splitManagedBlock(text);
+  return stripRuleTag(ruleBulletInText(block, pattern), pattern);
+}
+
 /** Why a rule write into this world would refuse, checked read-only.
  *
  * Mirrors `writeRule`'s three guards exactly. Running the writer itself to find

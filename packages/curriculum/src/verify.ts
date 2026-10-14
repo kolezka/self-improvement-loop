@@ -2,9 +2,10 @@
 //
 // Two operations, both writing nothing:
 //
-// * `previewArtifact` reads the artifact's current body, exactly as it is
-//   live (the default branch of the target repo, never a staged review
-//   branch), plus whether it is actually active.
+// * `previewArtifact` reads the artifact's current body, exactly as it is on
+//   the target repo's checked-out working tree (never a staged review
+//   branch). That tree is normally the default branch, but it can carry
+//   local uncommitted edits; `matches_default_branch` says whether it does.
 // * `verifyArtifact` runs the offline checks (exists, live, lint, and for a
 //   hook, its gate against the real payload corpus) and, unless the row is
 //   inline or has no reflections, asks the drafter one re-route question: on
@@ -12,14 +13,16 @@
 //   writes a ledger row, a branch or a proposal event; the human rehomes by
 //   hand if they agree with the verdict.
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { type ArtifactType, type Config, fsx, type Ledger, type Reflection, ReviewError, servedType, targetRoot, type World } from "@sil/core";
+import { existsSync, lstatSync, readlinkSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { type ArtifactType, type Config, fsx, type Ledger, paths, type Reflection, ReviewError, servedType, targetRoot, type World } from "@sil/core";
+import { MAX_RULES_BYTES, rulesInjectable } from "@sil/core/lessons";
 import type { ChatFn } from "@sil/providers";
 import * as providers from "@sil/providers";
 import * as artifacts from "./artifacts.ts";
 import * as context from "./context.ts";
 import type { GateRunner } from "./deps.ts";
+import * as git from "./git.ts";
 import { lint, lintHook } from "./lint.ts";
 import { draftingTexts, loadLedger, loadPayloadCorpus, reflections, sourcesText } from "./plan.ts";
 import * as prompts from "./prompts.ts";
@@ -32,8 +35,9 @@ export interface LiveCheck {
 }
 
 export interface GateCheck {
-  /** Human-readable verdict: either "gate fires on N of M recorded
-   * payload(s)" or the reason it does not route to hook. */
+  /** Human-readable verdict: "gate fires on N of M recorded payload(s)", the
+   * reason it does not route to hook, or "malformed gate" for a gate shape
+   * that cannot even be parsed. */
   verdict: string;
   fires: boolean;
   hits: number;
@@ -66,6 +70,12 @@ export interface PreviewResult {
   path: string;
   body: string;
   live: boolean;
+  /** Whether this body is byte-identical to what is committed on the target
+   * repo's default branch. False means there are local uncommitted changes:
+   * this is what the engine is actually serving right now, but it was never
+   * accepted through review. Always true for an inline artifact, which lives
+   * outside the target repo's own history. */
+  matches_default_branch: boolean;
 }
 
 export interface VerifyOptions {
@@ -90,27 +100,82 @@ function liveEntry(world: World, pattern: string, verb: string): { ledger: Ledge
 /** The live body and the path it came from. An inline row with an
  * `external_path` reads that file directly; everything else, including an
  * inline hook (copied into the repo's own nudges dir at registration), reads
- * through the ordinary artifact reader. */
+ * through the ordinary artifact reader.
+ *
+ * A rule reads only its own bullet from inside the managed block, same as
+ * `checkLive` below: a stray or stale tag outside the block (left behind by a
+ * hand edit) must never surface as this pattern's live text. */
 function readLiveBody(world: World, pattern: string, artifactType: ArtifactType, externalPath: string | null): { path: string; body: string } {
   if (externalPath) {
     return { path: externalPath, body: existsSync(externalPath) ? fsx.readText(externalPath) : "" };
   }
-  return { path: artifacts.artifactRel(world, artifactType, pattern), body: artifacts.readArtifact(world, artifactType, pattern) };
+  const rel = artifacts.artifactRel(world, artifactType, pattern);
+  if (artifactType === "rule") {
+    return { path: rel, body: artifacts.ruleBulletInManagedBlock(world, pattern) };
+  }
+  return { path: rel, body: artifacts.readArtifact(world, artifactType, pattern) };
+}
+
+/** Whether `link` is a symlink that resolves to `target`. Used for the one
+ * case a hand-made symlink (not the loop's own) can make an inline skill or
+ * agent genuinely loadable. */
+function symlinkResolvesTo(link: string, target: string): boolean {
+  try {
+    if (!lstatSync(link).isSymbolicLink()) return false;
+    return resolve(dirname(link), readlinkSync(link)) === resolve(target);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether an inline artifact's own file sits where Claude Code would
+ * actually load it from.
+ *
+ * `register()` only checks that the path is an absolute, existing regular
+ * file; it never checks that Claude Code reads it from anywhere. A skill or
+ * agent registered at an arbitrary path (`/tmp/custom/SKILL.md`) is real on
+ * disk and never loaded by anything. Loadable means: the global Claude config
+ * location, a project `.claude/<skills|agents>/...` location (recognised by
+ * path suffix, since verify has no cwd to resolve "the project" against), or
+ * the global location being a hand-made symlink that resolves to this file.
+ * A rule is loadable only as a CLAUDE.md memory file. */
+function inlineLoadLocation(artifactType: ArtifactType, pattern: string, externalPath: string): boolean {
+  const resolved = resolve(externalPath);
+  if (artifactType === "skill") {
+    if (basename(resolved) !== "SKILL.md") return false;
+    const globalDir = join(paths.claudeConfigDir(), "skills", pattern);
+    if (resolve(globalDir, "SKILL.md") === resolved) return true;
+    if (resolved.endsWith(join(".claude", "skills", pattern, "SKILL.md"))) return true;
+    return symlinkResolvesTo(globalDir, dirname(resolved));
+  }
+  if (artifactType === "agent") {
+    const globalFile = join(paths.claudeConfigDir(), "agents", `${pattern}.md`);
+    if (resolved === resolve(globalFile)) return true;
+    if (resolved.endsWith(join(".claude", "agents", `${pattern}.md`))) return true;
+    return symlinkResolvesTo(globalFile, resolved);
+  }
+  if (artifactType === "rule") return basename(resolved) === "CLAUDE.md";
+  return false;
 }
 
 /** Whether this artifact is actually active, not just present on disk.
  *
  * An inline row with an `external_path` is the human's own file; the loop
- * never wires it up, so liveness there is just "the file exists". Everything
- * else is checked the way the loop itself would make it live: a skill or
- * agent by its symlink into the Claude config dir, a hook by its file being
- * present and passing the nudge lint, a rule by its tagged bullet being
- * inside the managed block. */
+ * never wires it up, so liveness there is whether that file is somewhere
+ * Claude Code actually loads, never just "the file exists" (see
+ * `inlineLoadLocation`). Everything else is checked the way the loop itself
+ * would make it live: a skill or agent by its symlink into the Claude config
+ * directory, a hook by its file being present and passing the nudge lint, a
+ * rule by `rules_inject` and the size cap both allowing injection and its
+ * tagged bullet being inside the managed block. */
 export function checkLive(world: World, artifactType: ArtifactType, pattern: string, externalPath: string | null = null): LiveCheck {
   if (externalPath) {
-    return existsSync(externalPath)
+    if (!existsSync(externalPath)) {
+      return { live: false, detail: `inline artifact file ${externalPath} does not exist` };
+    }
+    return inlineLoadLocation(artifactType, pattern, externalPath)
       ? { live: true, detail: `inline artifact present at ${externalPath}` }
-      : { live: false, detail: `inline artifact file ${externalPath} does not exist` };
+      : { live: false, detail: "file exists but is not in a location Claude Code loads" };
   }
   if (artifactType === "skill" || artifactType === "agent") {
     const linked = artifacts.isLinked(world, artifactType, pattern);
@@ -137,19 +202,34 @@ export function checkLive(world: World, artifactType: ArtifactType, pattern: str
   if (artifactType === "rule") {
     const rel = artifacts.artifactRel(world, "rule", pattern);
     const path = join(targetRoot(world), rel);
-    if (!existsSync(path)) return { live: false, detail: `${rel} does not exist` };
-    const text = fsx.readText(path);
-    const [, block] = artifacts.splitManagedBlock(text);
-    const tag = artifacts.ruleTag(pattern);
-    return block.includes(tag)
+    let stat: { isFile: boolean; size: number } | null;
+    try {
+      const st = statSync(path);
+      stat = { isFile: st.isFile(), size: st.size };
+    } catch {
+      stat = null;
+    }
+    if (!stat) return { live: false, detail: `${rel} does not exist` };
+    const ruleCfg = { rules_inject: world.rules_inject, rules_file: world.layout.rules_file };
+    if (!rulesInjectable(ruleCfg, stat)) {
+      const reason = world.rules_inject === false
+        ? "rules_inject is false for this world"
+        : `the file is ${stat.size} bytes, over the ${MAX_RULES_BYTES} byte injection cap`;
+      return { live: false, detail: `${rel} exists but the hook would never inject it: ${reason}` };
+    }
+    const bullet = artifacts.ruleBulletInManagedBlock(world, pattern);
+    return bullet
       ? { live: true, detail: `bullet present inside the managed block of ${rel}` }
-      : { live: false, detail: `no bullet tagged ${tag} inside the managed block of ${rel}` };
+      : { live: false, detail: `no bullet tagged ${artifacts.ruleTag(pattern)} inside the managed block of ${rel}` };
   }
   return { live: false, detail: `unknown artifact type ${JSON.stringify(artifactType)}` };
 }
 
 /** A hook body's own trigger and gate, run through the exact corpus check
- * `route()` uses, so "would this still fire today" is tested, not guessed. */
+ * `route()` uses, so "would this still fire today" is tested, not guessed.
+ * `RouteAnswer.safeParse` never throws: a gate shape the schema rejects
+ * (a string instead of an object, say) is reported as a failed check, not a
+ * crash that would also lose the offline results computed alongside it. */
 function checkHookGate(world: World, rawBody: string, gateRunner?: GateRunner): GateCheck {
   const payloads = loadPayloadCorpus(world);
   let payload: unknown;
@@ -165,8 +245,11 @@ function checkHookGate(world: World, rawBody: string, gateRunner?: GateRunner): 
   const event = typeof obj["event"] === "string" ? obj["event"] : "";
   const matcher = typeof obj["matcher"] === "string" && obj["matcher"] ? obj["matcher"] : "";
   const trigger = event ? `${event}${matcher ? `:${matcher}` : ""}` : "none";
-  const answer = RouteAnswer.parse({ trigger_event: trigger, gate: obj["gate"] ?? null });
-  const verdict = hookVerdict(answer, payloads, { gateRunner });
+  const parsed = RouteAnswer.safeParse({ trigger_event: trigger, gate: obj["gate"] ?? null });
+  if (!parsed.success) {
+    return { verdict: "malformed gate", fires: false, hits: 0, total: payloads.length };
+  }
+  const verdict = hookVerdict(parsed.data, payloads, { gateRunner });
   if (typeof verdict === "string") return { verdict, fires: false, hits: 0, total: payloads.length };
   return {
     verdict: `gate fires on ${verdict.hits} of ${verdict.total} recorded payload(s)`,
@@ -189,14 +272,57 @@ function payloadForLint(artifactType: ArtifactType, raw: string): unknown {
   }
 }
 
-/** The artifact's current body, as it is live. Throws for a retired or
- * missing artifact rather than returning an empty body. */
+/** Whether `liveBody` (already extracted the same way `readLiveBody` would)
+ * is byte-identical to what the target repo's default branch commits at
+ * `rel`. An inline artifact lives outside the target repo entirely, so there
+ * is nothing to compare and this reports true (nothing to warn about). A rule
+ * compares bullet to bullet, not the whole shared file, for the same reason
+ * `readLiveBody` only ever reads this pattern's own bullet. */
+function matchesDefaultBranch(
+  world: World,
+  pattern: string,
+  artifactType: ArtifactType,
+  externalPath: string | null,
+  rel: string,
+  liveBody: string,
+): boolean {
+  if (externalPath) return true;
+  const repo = targetRoot(world);
+  if (!git.isRepo(repo)) return true;
+  const defaultRef = git.defaultBranch(repo);
+  const shown = git.show(repo, defaultRef, rel);
+  if (!shown.found) return liveBody === "";
+  if (artifactType === "rule") {
+    const [, block] = artifacts.splitManagedBlock(shown.text);
+    const committedBullet = artifacts.stripRuleTag(artifacts.ruleBulletInText(block, pattern), pattern);
+    return committedBullet === liveBody;
+  }
+  return shown.text === liveBody;
+}
+
+/** The artifact's current body, as it is on the target checkout. Throws for
+ * a retired or missing artifact rather than returning an empty body. */
 export function previewArtifact(world: World, _cfg: Config, pattern: string): PreviewResult {
   const { artifactType, externalPath } = liveEntry(world, pattern, "preview");
   const { path, body } = readLiveBody(world, pattern, artifactType, externalPath);
   if (!body) throw new ReviewError(`${JSON.stringify(pattern)} (${artifactType}) has no readable artifact at ${path}; nothing to preview`);
   const { live } = checkLive(world, artifactType, pattern, externalPath);
-  return { pattern, artifact_type: artifactType, path, body, live };
+  const matchesDefault = matchesDefaultBranch(world, pattern, artifactType, externalPath, path, body);
+  return { pattern, artifact_type: artifactType, path, body, live, matches_default_branch: matchesDefault };
+}
+
+/** The cluster summary only when it is already cached and already covers
+ * every reflection in `items`. Never calls the drafter and never writes
+ * `digests/<pattern>.json`: verify is read-only, and the ordinary
+ * `context.clusterSummary` does both whenever the cache is missing or stale.
+ * Null falls back to the raw lessons, exactly like a cluster below the
+ * summary threshold does, so the probe still has grounding text. */
+function cachedSummaryOnly(world: World, pattern: string, items: Reflection[]): string | null {
+  if (items.length < context.SUMMARY_MIN_LESSONS) return null;
+  const cached = context.loadSummary(world.name, pattern);
+  if (!cached) return null;
+  const covered = new Set(cached.covered);
+  return items.every((r) => covered.has(r.id)) ? cached.summary : null;
 }
 
 /** One re-route probe, built exactly like `stageOne`'s in run.ts: a forced
@@ -220,7 +346,7 @@ async function probeType(
   const knowledgeRows = context.worldKnowledge(world, allItems, ledger);
   const draftOpts: prompts.DraftOptions = {
     ...caps,
-    summary: await context.clusterSummary(world, pattern, items, chat),
+    summary: cachedSummaryOnly(world, pattern, items),
     knowledge: context.renderKnowledge(knowledgeRows, pattern),
   };
   const raw = await chat(
@@ -237,9 +363,10 @@ async function probeType(
 
 /** Offline checks plus one re-route probe, for the pattern the artifact
  * already serves. Writes nothing at all: no ledger row, no branch, no
- * proposal event, no scorecard. A missing drafter role (`ModelNotConfigured`)
- * or any other provider failure surfaces in `type_check.error`, with the
- * offline results still present; it is never masked by a default answer. */
+ * proposal event, no scorecard, no cluster-summary digest. A missing drafter
+ * role (`ModelNotConfigured`) or any other provider failure surfaces in
+ * `type_check.error`, with the offline results still present; it is never
+ * masked by a default answer. */
 export async function verifyArtifact(world: World, cfg: Config, pattern: string, opts: VerifyOptions = {}): Promise<VerifyResult> {
   const { ledger, artifactType, externalPath } = liveEntry(world, pattern, "verify");
   const entry = ledger.entries[pattern]!;

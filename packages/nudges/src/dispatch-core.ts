@@ -56,6 +56,21 @@ function str(v: unknown, fallback = ""): string {
   return typeof v === "string" ? v : fallback;
 }
 
+/** Whether `payload` is the kind of call `event`/`matcher` targets: the
+ * exact comparison dispatchWith uses to decide which nudges even reach a
+ * gate. `event` is matched against `hook_event_name`; `matcher`, when set,
+ * against `tool_name`, exactly, no different for a built-in tool name or an
+ * MCP one (`mcp__<server>__<tool>`). Exported so the curriculum router's
+ * corpus check (`hookVerdict` in packages/curriculum/src/router.ts) can
+ * reuse this instead of growing a second copy of what "this trigger fires
+ * here" means: running a gate against a payload that would never reach it
+ * in production proved nothing about the hook. */
+export function triggerMatches(payload: Record<string, unknown>, event: unknown, matcher?: unknown): boolean {
+  if (event !== str(payload["hook_event_name"])) return false;
+  if (matcher && payload["tool_name"] !== matcher) return false;
+  return true;
+}
+
 /** Capped at one record per (session, kind, event): an anomaly that never
  * clears would otherwise write on every matching call for the rest of the
  * session. Same dedupe key and same field order as firelog's writeBreadcrumb,
@@ -94,9 +109,7 @@ export function dispatchWith(
 
     for (const nudge of nudges) {
       scanned++;
-      if (!isRecord(nudge) || nudge["event"] !== event) continue;
-      const matcher = nudge["matcher"];
-      if (matcher && payload["tool_name"] !== matcher) continue;
+      if (!isRecord(nudge) || !triggerMatches(payload, nudge["event"], nudge["matcher"])) continue;
 
       // Charged only for nudges that actually reach a gate: an event or
       // matcher miss is free, so a directory full of unreachable nudges

@@ -175,6 +175,11 @@ export function hookShape(pattern: string): string {
     "No predicate can read your own reply, so gate on the tool call that comes " +
     "before the mistake, not on the sentence that states it. The gate must be " +
     "narrow: one that fires on every tool call is a broadcast and is refused. " +
+    "An MCP matcher already narrows to one tool, so 'always', or 'tool_is' " +
+    "naming that same tool, is a valid gate there; command_matches, " +
+    "file_path_matches and prompt_matches cannot see an MCP tool's own " +
+    "arguments, only the Bash command, file path or prompt a built-in tool " +
+    "call carries. " +
     "'once_per', either 'session' or 'always'; " +
     "'text', the nudge shown to the agent: imperative, specific, under 400 " +
     "characters, naming the actual commands or checks the lessons name."

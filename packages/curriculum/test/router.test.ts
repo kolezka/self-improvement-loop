@@ -83,12 +83,63 @@ describe("hook: the claim is executed, not read", () => {
     expect(result.reason).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 
-  test("a gate that fires on everything is a broadcast, not a hook", () => {
-    // Once merged a hook runs unattended on every session of the machine. A gate
-    // that cannot tell the corpus apart will not tell production apart either.
-    const result = route(answer({ trigger_event: "PreToolUse:Bash", gate: { always: true } }), SOURCES, PAYLOADS, opts);
+  test("a gate that fires on everything is a broadcast when its matcher's tool dominates the corpus", () => {
+    // Once merged a hook runs unattended on every session of the machine. A
+    // gate that cannot tell a Bash-heavy session apart will not tell
+    // production apart either. Broadcast is judged by how often the
+    // trigger's own matcher is actually called, not by how often `always`
+    // matches literally everything regardless of matcher: see the small-share
+    // MCP case below, where the same gate is NOT a broadcast.
+    const bash = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `cmd ${i}` } });
+    const read = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: `/f${i}` } });
+    const corpus = [...Array.from({ length: 8 }, (_, i) => bash(i)), ...Array.from({ length: 2 }, (_, i) => read(i))];
+    const result = route(answer({ trigger_event: "PreToolUse:Bash", gate: { always: true } }), SOURCES, corpus, opts);
     expect(result.artifact_type).not.toBe("hook");
     expect(result.reason).toContain("broadcast");
+    expect(result.reason).toContain("8 of 10");
+  });
+
+  test("a gate that never fires on the trigger's own tool is refused, not routed on an off-target hit", () => {
+    // The reported defect: hookVerdict ran the gate over the whole corpus
+    // with no notion of the trigger, so trigger
+    // PreToolUse:mcp__outline__update_document + gate {tool_is:["Bash"]}
+    // "matched" the corpus's unrelated Bash call and routed to hook, though
+    // dispatchWith never runs this gate against that Bash call at all: the
+    // matcher restricts it to the MCP tool alone.
+    uninstallFakeNudge();
+    const corpus = [
+      { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git status" } },
+      { hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} },
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/f" } },
+    ];
+    const result = route(
+      answer({ trigger_event: "PreToolUse:mcp__outline__update_document", gate: { tool_is: ["Bash"] } }),
+      SOURCES,
+      corpus,
+      opts,
+    );
+    expect(result.artifact_type).not.toBe("hook");
+    expect(result.reason).toContain("matched nothing");
+    expect(result.reason).toContain("mcp__outline__update_document");
+  });
+
+  test("always with an exact MCP matcher routes to hook when that tool is a small share of the corpus", () => {
+    // The reported defect's mirror image: a gate that only ever fires for
+    // one already-narrow MCP tool was refused as a broadcast because the old
+    // ratio was computed against how often `always` matches the whole
+    // corpus, not how often this tool is actually called.
+    uninstallFakeNudge();
+    const bash = (i: number) => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `cmd ${i}` } });
+    const mcpCall = { hook_event_name: "PreToolUse", tool_name: "mcp__outline__update_document", tool_input: {} };
+    const corpus = [...Array.from({ length: 18 }, (_, i) => bash(i)), mcpCall, mcpCall];
+    const result = route(
+      answer({ trigger_event: "PreToolUse:mcp__outline__update_document", gate: { always: true } }),
+      SOURCES,
+      corpus,
+      opts,
+    );
+    expect(result.artifact_type).toBe("hook");
+    expect(result.reason).toContain("2 of 20");
   });
 
   test("a gate that fires on more than half of a recorded corpus is a broadcast too", () => {

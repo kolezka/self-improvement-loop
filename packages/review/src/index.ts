@@ -791,6 +791,11 @@ function rehomeInner(world: World, _cfg: Config, pattern: string, artifactType: 
       served_by: { type: artifactType, path: newRel },
       status: "staged",
       last_updated: fsx.nowIso(),
+      // The durable record of this human choice. Set here, on the branch
+      // row, so it reaches the live ledger through accept's own spread of
+      // this row and survives even if the `rehomed` event below fails to
+      // append; `run()`'s `humanSetType` checks this field first.
+      type_set_by: "human",
     };
     saveLedger(join(tree, rel), ledger);
     touched.push(rel);

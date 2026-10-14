@@ -78,16 +78,33 @@ describe("verdictFromNouls", () => {
 });
 
 describe("forced drafting with wantRouteAnswer", () => {
-  test("wantRouteAnswer adds the routing ask without changing the forced body instructions on either side of it", () => {
+  test("without wantRouteAnswer, the prompt is unchanged", () => {
+    const plain = draftMessages("p", ["a lesson"], null, "rule").at(-1)!.content;
+    expect(plain).toContain('Reply with a JSON object holding exactly one key, "artifact".');
+    expect(plain).not.toContain("trigger_event");
+    expect(plain).not.toContain("for a human reviewer only");
+  });
+
+  test("wantRouteAnswer asks for the routing keys alongside artifact, not instead of it, and never touches the artifact shape instructions", () => {
     const plain = draftMessages("p", ["a lesson"], null, "rule").at(-1)!.content;
     const asked = draftMessages("p", ["a lesson"], null, "rule", { wantRouteAnswer: true }).at(-1)!.content;
     const markEnd = "do not include secrets or tokens.";
-    const prefix = plain.slice(0, plain.indexOf(markEnd) + markEnd.length);
+    // The shape block, from "value is" through the no-commentary line, is
+    // byte-identical on both sides: wantRouteAnswer never changes what
+    // "artifact" is told to contain. Everything after "Lessons to
+    // generalise:" is byte-identical too.
+    const shapeBlock = plain.slice(plain.indexOf("value is"), plain.indexOf(markEnd) + markEnd.length);
     const suffix = plain.slice(plain.indexOf("Lessons to generalise:"));
-    // Byte-identical on both sides of the inserted ask: wantRouteAnswer never
-    // changes what "artifact" is told to contain.
-    expect(asked.startsWith(prefix)).toBe(true);
+    expect(asked).toContain(shapeBlock);
     expect(asked.endsWith(suffix)).toBe(true);
+
+    // The reply-line sentence has to change along with the ask: it used to
+    // keep saying "exactly one key" even once the routing fields were
+    // appended right after it, so a model obeying that sentence literally
+    // omitted them and a re-route could never fire.
+    expect(asked).toContain('Reply with a JSON object holding "artifact" plus the routing keys listed below.');
+    expect(asked).not.toContain("exactly one key");
+    expect(asked).not.toContain("for a human reviewer only");
     expect(asked).toContain("trigger_event");
     expect(asked).toContain("capability_evidence");
     expect(plain).not.toContain("trigger_event");

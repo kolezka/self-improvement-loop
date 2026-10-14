@@ -124,12 +124,21 @@ export const UPGRADE_TYPES = new Set(["hook", "skill", "agent"]);
 /** Whether this pattern's type was already decided by a human, so a re-route
  * must never second-guess it.
  *
- * Two ways that shows up: a re-home still staged on the branch and not yet
- * accepted (`migrating`: the branch's type disagrees with the live one), which
- * also covers an earlier auto re-route still pending review, since that
- * branch's type disagrees with the live ledger in exactly the same way; or a
- * `rehomed` event this pattern has ever recorded, read from the ledger
- * `recordProposalEvent` writes to, which outlives the branch that earned it.
+ * Three ways that shows up, checked in order of durability:
+ *
+ * 1. `type_set_by: "human"` on the branch's row or the live one. Set by
+ *    `rehomeInner` and carried forward by every later ledger write (accept,
+ *    reject, repair, and this module's own `stageOne`), so it survives even
+ *    when the proposal-events append below failed. This is the durable
+ *    source of truth; the other two are best-effort.
+ * 2. A re-home still staged on the branch and not yet accepted (`migrating`:
+ *    the branch's type disagrees with the live one), which also covers an
+ *    earlier auto re-route still pending review, since that branch's type
+ *    disagrees with the live ledger in exactly the same way.
+ * 3. A `rehomed` event this pattern has ever recorded, read from the ledger
+ *    `recordProposalEvent` writes to. Best effort: that append runs after the
+ *    rehome's commit already landed and swallows its own failure, so it can
+ *    miss an event the commit itself carried out.
  *
  * An ordinary open branch of the SAME type is not a human choice and must not
  * block this: the worker restages that branch on every tick regardless (new
@@ -145,6 +154,7 @@ function humanSetType(
   prior: PromotionEntry | null,
   proposalEvents: readonly ProposalEvent[],
 ): boolean {
+  if (staged?.type_set_by === "human" || prior?.type_set_by === "human") return true;
   if (migrating(staged, prior)) return true;
   return proposalEvents.some((e) => e.world === world.name && e.pattern === pattern && e.event === "rehomed");
 }
@@ -369,12 +379,16 @@ async function stageOne(
   }
 
   // Whether new evidence may move this already-served pattern to a different
-  // real type. Only a `promote` (new reflections past the watermark), never a
-  // `refine` and never a ledger-only one (the drafter has no reflections to
-  // route from there, only a complaint about the artifact it would replace),
-  // and never when a human already chose the type: see `humanSetType`.
+  // real type. Only ever probed from "rule": a human decides every other
+  // move, by `rehome`, so a pattern already served by a hook, skill or agent
+  // never asks the drafter for routing fields at all (no extra provider cost
+  // for a probe that could never fire). Only a `promote` (new reflections
+  // past the watermark), never a `refine` and never a ledger-only one (the
+  // drafter has no reflections to route from there, only a complaint about
+  // the artifact it would replace), and never when a human already chose the
+  // type: see `humanSetType`.
   const rerouteEligible =
-    forcedType !== null &&
+    forcedType === "rule" &&
     action.action === "promote" &&
     !ledgerOnly &&
     !humanSetType(world, pattern, stagedEntry, prior, ctx.proposalEvents);
@@ -523,7 +537,13 @@ async function stageOne(
   // Staging it spends a judge call and puts a review item with an empty diff in
   // front of a human. The watermark stays where it is, so the next tick tries
   // again once there is something new to say.
-  if (existing !== null && sameArtifact(body, existing)) {
+  //
+  // Never for a re-route: `existing` is the OLD type's body, so a textual (or
+  // structural) match against the NEW type's redraft is not "no change", it is
+  // exactly the change this pattern is making. Comparing them at all gated out
+  // every re-route whose redraft happened to read the same as the artifact it
+  // replaces.
+  if (rerouteFrom === null && existing !== null && sameArtifact(body, existing)) {
     report.gated_out[pattern] = "no change: the redraft reproduces the artifact already in place";
     return;
   }
@@ -571,7 +591,14 @@ async function stageOne(
   }
 
   const rel = artifacts.artifactRel(world, routedType, pattern);
-  const autoMerge = cfg.promotion.auto_merge && world.llm !== "local";
+  // A re-route is always staged for review, never auto-merged: it is a type
+  // change a human has not looked at yet, which is exactly what auto_merge
+  // exists to skip for everything else. Folding the reroute check in here,
+  // rather than only at the final `if (autoMerge)` below, is what keeps the
+  // ledger row's own `status` (and the promoted_at/revised_at/revisions that
+  // follow from it) consistent with "staged" instead of recording a merge
+  // that never happened.
+  const autoMerge = cfg.promotion.auto_merge && world.llm !== "local" && rerouteFrom === null;
   const now = fsx.nowIso();
   // Only an auto-merge promotes here: it lands directly on the default branch
   // with no separate accept, so it is the other single write point (besides
@@ -600,6 +627,11 @@ async function stageOne(
     // The scorecard as the drafter saw it: a refine proposal counts only new
     // complaints past this snapshot, and recurrence waits out a cooldown from it.
     feedback: snapshotOf(ctx.cards.get(pattern)),
+    // Carried forward explicitly, never spread: a human's type choice must
+    // survive every ordinary redraft of the row it marked, branch row first
+    // since a migration in flight (rehome accepted later) has not reached
+    // `prior` yet. Never set here; only `rehomeInner` sets it.
+    ...(stagedEntry?.type_set_by === "human" || prior?.type_set_by === "human" ? { type_set_by: "human" as const } : {}),
   };
 
   // An ordinary redraft resets its branch onto the default branch, so a staged

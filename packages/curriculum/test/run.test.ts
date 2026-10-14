@@ -44,6 +44,7 @@ import {
   commitFile,
   FakeChat,
   fakeGateRunner,
+  hookBody,
   hookDraft,
   initTarget,
   installFakeNudge,
@@ -816,6 +817,122 @@ describe("re-routing an already served pattern", () => {
     );
     const events = readProposalEvents().events;
     expect(events.at(-1)).toMatchObject({ world: world.name, pattern: PATTERN, event: "rerouted" });
+  });
+
+  test("a re-route is always staged, never auto-merged, even with auto_merge true", async () => {
+    // A re-route is a type change nobody has reviewed yet, so auto_merge must
+    // never land it directly on the default branch the way it does an
+    // ordinary redraft.
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo);
+
+    const chat = new FakeChat({ drafts: [HOOK_PROBE, hookDraft(PATTERN)] });
+    const report = await run(
+      world,
+      makeCfg({ auto_merge: true }),
+      opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }),
+    );
+
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.merged).toEqual([]);
+    expect(report.routed[PATTERN]!.reason).toContain("re-routed from rule to hook");
+    const branch = branchName(world.name, PATTERN);
+    const row = parseLedger(git.show(repo, branch, "promotions.json").text).entries[PATTERN]!;
+    expect(row.status).toBe("staged");
+  });
+
+  test("a re-route is never gated out as 'no change' merely because the redraft matches the old type's stored text", async () => {
+    // `ruleBulletInText` only ever returns one line, so the old rule's stored
+    // text is made to be, byte for byte, the exact JSON the hook redraft will
+    // produce: the narrowest case where the "no change" skip could otherwise
+    // mistake a type change for no change at all.
+    const world = worldWith();
+    const repo = initTarget(world);
+    commitFile(
+      repo,
+      "RULES.md",
+      `# Rules\n\n${RULE_START}\n${JSON.stringify(hookBody(PATTERN))} ${ruleTag(PATTERN)}\n${RULE_END}\n`,
+      "chore: rules",
+    );
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "rule",
+        served_by: { type: "rule", path: "RULES.md" },
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+
+    const chat = new FakeChat({ drafts: [HOOK_PROBE, hookDraft(PATTERN)] });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
+
+    expect(report.gated_out[PATTERN]).toBeUndefined();
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]!.reason).toContain("re-routed from rule to hook");
+  });
+
+  test("a pattern already served by a non-rule type never asks the drafter for routing fields", async () => {
+    // Only a `rule` is eligible for an automatic re-route; a hook, skill or
+    // agent already serving a pattern is moved only by a human `rehome`, so
+    // the forced redraft must never pay for the extra routing-field ask.
+    const world = worldWith();
+    const repo = initTarget(world);
+    commitFile(repo, `skills/${PATTERN}/SKILL.md`, skillBody(PATTERN, QUOTE), "chore: skill");
+    writeLedger(world, [
+      entry({
+        pattern: PATTERN,
+        status: "promoted",
+        artifact_type: "skill",
+        served_by: { type: "skill", path: `skills/${PATTERN}/SKILL.md` },
+      }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+
+    const chat = new FakeChat({ draft: { artifact: skillBody(PATTERN, `a new angle on ${QUOTE}`) } });
+    const report = await run(
+      world,
+      makeCfg(),
+      opts({
+        apply: true,
+        chat: chat.fn,
+        gateRunner: () => {
+          throw new Error("route() was consulted for a pattern already served by a non-rule type");
+        },
+        cards: [observedCard(PATTERN)],
+      }),
+    );
+
+    expect(chat.roles).toEqual(["drafter", "judge"]);
+    expect(chat.promptsFor("drafter")[0]).not.toContain("trigger_event");
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "skill", type: "skill", reason: "already served by this artifact" });
+  });
+
+  test("type_set_by: human on the live row blocks re-routing even with no rehomed event recorded", async () => {
+    // The durable fallback: a human's own choice must hold even when the
+    // best-effort proposal-events log never recorded a `rehomed` event for
+    // this pattern at all. Uses the same real, hook-earning gate as "new
+    // evidence that earns a hook re-routes..." above, deliberately not a
+    // throwing stub: a throw is swallowed into a route refusal by
+    // `hookVerdict` either way, so it cannot tell "blocked" apart from
+    // "probed, and the gate happened to fail". Only a gate that would
+    // genuinely earn the upgrade, and a count of drafter calls, can.
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo, { type_set_by: "human" });
+
+    const chat = new FakeChat({ drafts: [HOOK_PROBE, hookDraft(PATTERN)] });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
+
+    // One drafter call, not two: `wantRouteAnswer` was never even asked for,
+    // so there is no redraft in a new type to make.
+    expect(chat.roles).toEqual(["drafter", "judge"]);
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+    const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(rules.text).toContain(ruleTag(PATTERN));
   });
 
   test("a router result of rule leaves an already served type alone", async () => {

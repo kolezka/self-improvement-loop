@@ -526,6 +526,60 @@ it. See `docs/ARCHITECTURE.md` "Re-routing an already served pattern".
       same type no longer blocks a re-route, and the pending-re-route case (branch type
       disagrees with the still-unaccepted live type) is covered by `migrating()` itself.
 
+## Re-route review follow-ups (2026-10-14, branch fix/reroute-review-followups)
+
+An independent review of `feat/reroute-existing-artifacts` (merged as PR #68) found six
+defects in the feature itself. All six fixed here, each with a regression test run red
+against `origin/main` before the fix and green after.
+
+- [x] P1 `run.ts` `stageOne`: a re-route (`rerouteFrom !== null`) is now always staged,
+      never auto-merged, whatever `promotion.auto_merge` says; `autoMerge` itself is
+      `false` when a re-route is in flight, which keeps the ledger row's `status` and the
+      final `if (autoMerge)` merge in agreement instead of recording a merge that never
+      happened
+- [x] P2 `run.ts` `stageOne`: the "no change" gate (`sameArtifact(body, existing)`) is
+      skipped whenever `rerouteFrom !== null`; a type change is the change, even when the
+      new type's redraft happens to read the same as the old type's stored text
+- [x] User decision: only a `rule` is eligible for an automatic re-route probe.
+      `rerouteEligible` now checks `forcedType === "rule"` instead of `forcedType !== null`,
+      so a pattern already served by a hook, skill or agent never asks the drafter for
+      routing fields at all (no `wantRouteAnswer`, no extra provider cost); only a human
+      `rehome` moves it. `docs/ARCHITECTURE.md` re-route section rewritten to match; no
+      existing test re-routed from a non-rule type, so none needed to change
+- [x] P2 durable human choice: `PromotionEntry.type_set_by?: "human"` (optional, not
+      defaulted, per the lesson above) in `@sil/core`. `rehomeInner` sets it on the
+      branch's ledger row; `acceptInner`/`rejectInner`/`applyRepair` already spread the
+      prior row so it survives those writes unchanged; `stageOne`'s own entry
+      construction (which does not spread) now carries it forward explicitly from
+      whichever of the staged or live row has it. `humanSetType` checks it before
+      `migrating()` and before the `rehomed` proposal-event log, so a human's rehome
+      survives even when the event append silently failed (its own best-effort design,
+      unchanged)
+- [x] Prompt contradiction in `prompts.ts` `draftMessages`: with `wantRouteAnswer` the
+      reply-line sentence now says the object holds `"artifact"` plus the routing keys
+      listed below, instead of contradicting the very next paragraph by saying "exactly
+      one key"; dropped "for a human reviewer only" since the fields drive routing, not
+      just a human's read. Without `wantRouteAnswer` the prompt is byte-identical to
+      before. `prompts.test.ts` rewritten to check the shape block and suffix are
+      byte-identical between the two calls, and the reply-line sentence differs
+- [x] P3 `rerouted` is its own `history.series` entry (`proposals_rerouted`), counted
+      separately from, but still included in, `proposals_staged` (both events are
+      recorded for the same commit); mirrored in `apps/web/src/lib/api-types.ts` and
+      added as a fourth line to the Overview "Proposals" chart. No exhaustive switch over
+      proposal event kinds found in `apps/web`
+- [x] verify: red confirmed by committing the fix, then checking out `origin/main`'s copy
+      of just the eight changed source files (`git checkout origin/main -- <files>`,
+      `git checkout <wip-sha> -- <files>` to restore) and re-running the new/changed
+      tests before restoring; one test initially passed "green" for the wrong reason (a
+      throwing gate-runner stub is swallowed into a refusal by `hookVerdict`, so it cannot
+      distinguish "blocked" from "probed and the gate failed") and was rewritten to use a
+      real, genuinely hook-earning gate plus a `chat.roles` count instead; see the lesson
+      above
+- [x] full CI: `bun install`, `git diff --exit-code -- bun.lock`, `lint:dashes`,
+      `typecheck`, `check:web`, `build`, `bun test`, all green
+- [ ] not done: `apps/cli/test/init.test.ts:141` still fails on this machine (pre-existing,
+      documented below under `/learn inline lessons`, unrelated to this branch)
+
 ## Gate corpus diagnosis (2026-10-14, branch fix/gate-corpus-match)
 - [x] Replay candidate pipeline gates against copied default and inkitt payload corpora with the real runner; command samples preserve pipes.
 - [x] Include a bounded gate excerpt when a draft matches nothing, so future refusals retain the rejected gate.

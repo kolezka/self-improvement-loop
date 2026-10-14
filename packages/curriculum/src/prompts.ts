@@ -351,21 +351,26 @@ export function draftMessages(
     // wantRouteAnswer asks for routing fields ALONGSIDE "artifact", never
     // instead of it: the instructions for "artifact" below are unchanged from
     // the plain forced case, so what this call writes for the body does not
-    // move. The extra ask only tells a caller weighing a re-route what the
-    // evidence would otherwise support.
+    // move. The reply-line sentence below has to say so too: it used to keep
+    // saying "exactly one key" even when this ask was added, so a model
+    // obeying that sentence literally omitted the routing fields and a
+    // re-route could never fire.
     const routeAsk = opts.wantRouteAnswer
-      ? "\n\nAlso add these keys to the same JSON object, for a human reviewer " +
-        "only: trigger_event, gate, needs_own_context, context_evidence, " +
-        "capability_evidence, no_artifact.\n\n" +
+      ? "\n\nAlso add these keys to the same JSON object: trigger_event, gate, " +
+        "needs_own_context, context_evidence, capability_evidence, no_artifact. " +
+        "They drive whether this pattern is moved to a different artifact type.\n\n" +
         routingFields(ruleBudget(pattern, opts.maxRuleChars)) +
         '\n\nAnswer those from the evidence alone. They never change "artifact": ' +
         "write that in the required shape above regardless of what you answer here."
       : "";
+    const replyLine = opts.wantRouteAnswer
+      ? 'Reply with a JSON object holding "artifact" plus the routing keys listed below. Its '
+      : 'Reply with a JSON object holding exactly one key, "artifact". Its ';
     user =
       `${existing ? "Refine the existing" : "Write a"} ` +
       `${FORCED_SUBJECT[artifactType]} for the recurring lesson ` +
       `'${pattern}'. Its type is already decided; do not re-decide it.\n\n` +
-      'Reply with a JSON object holding exactly one key, "artifact". Its ' +
+      replyLine +
       `value is ${artifactType === "hook" ? "an object" : "a string"} in this shape:\n` +
       SHAPES[artifactType]!(pattern, opts) +
       "\n\nDo not restate this task, do not add commentary, do not leave " +

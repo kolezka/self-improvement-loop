@@ -18,7 +18,8 @@ export type SeriesName =
   | "proposals_staged"
   | "proposals_revised"
   | "proposals_accepted"
-  | "proposals_rejected";
+  | "proposals_rejected"
+  | "proposals_rerouted";
 
 export interface HistorySeries {
   world: string;

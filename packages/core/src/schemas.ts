@@ -336,6 +336,13 @@ export const PromotionEntry = z.object({
   external_path: z.string().optional(),
   // One-line lesson of an inline row, used as its gist in the knowledge map.
   note: z.string().optional(),
+  // Set by `rehomeInner` when a human re-homes this pattern, so the choice
+  // survives on the ledger row itself (accept, reject and repair all carry it
+  // forward) rather than depending only on the best-effort proposal-events
+  // log. Absent means "not a human choice yet". Optional, not defaulted: a
+  // default would be written into every row on the next save and churn the
+  // whole ledger file.
+  type_set_by: z.literal("human").optional(),
 });
 export type PromotionEntry = z.infer<typeof PromotionEntry>;
 

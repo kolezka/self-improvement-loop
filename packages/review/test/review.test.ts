@@ -1319,6 +1319,63 @@ describe("rehome and retire", () => {
   });
 });
 
+// --- a rehome's durability does not depend on the event log -----------------
+
+describe("a human's rehome survives a lost proposal event", () => {
+  test("a later promote with hook-earning evidence does not re-route a pattern a human rehomed to rule, even when the rehomed event failed to append", async () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    const world = makeWorld();
+    await accepted(world); // originally served by "skill"
+
+    // Every append to the proposal-events log fails for the duration of the
+    // rehome: `recordProposalEvent` swallows the error (review.rehome must
+    // still complete, not throw), but the "rehomed" event itself never makes
+    // it to disk.
+    const eventsPath = paths.proposalEventsFile();
+    chmodSync(eventsPath, 0o444);
+    try {
+      review.rehome(world, cfg(), PATTERN, "rule");
+    } finally {
+      chmodSync(eventsPath, 0o644);
+    }
+    expect(readProposalEvents().events.some((e) => e.pattern === PATTERN && e.event === "rehomed")).toBe(false);
+
+    // Redraft the rehome's placeholder into a real rule body, then accept it:
+    // the live ledger now agrees with the branch (`migrating` goes false), so
+    // the only guard left against an automatic re-route is `type_set_by`.
+    await run(world, cfg(), { apply: true, chat: new FakeChat({ draft: ruleDraft() }).fn, gateRunner: fakeGateRunner });
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(loadLedger(ledgerPath(world)).entries[PATTERN]!.artifact_type).toBe("rule");
+
+    // New evidence that would otherwise earn a hook upgrade. A real,
+    // genuinely hook-earning gate, not a throwing stub: a throw is swallowed
+    // into a route refusal by `hookVerdict` either way, so it cannot tell
+    // "blocked" apart from "probed, and the gate happened to fail". Worded
+    // differently from the rule text already live (`ruleDraft()`'s), so this
+    // is an ordinary redraft on new evidence, not a no-op the "no change"
+    // gate would drop for an unrelated reason.
+    addReflections(world, PATTERN, 3, { startDay: 20 });
+    const probe = {
+      ...ruleDraft(),
+      artifact: "- Before committing, run `rg` over every call site of the changed symbol and check the graphify inventory for gaps.",
+      trigger_event: "PreToolUse:Bash",
+      gate: { command_matches: "git (commit|push)" },
+    };
+    const chat = new FakeChat({ drafts: [probe, hookDraft(PATTERN)] });
+    const report = await run(world, cfg(), {
+      apply: true,
+      chat: chat.fn,
+      gateRunner: fakeGateRunner,
+      cards: [observedCard(PATTERN, "rule")],
+    });
+
+    // One drafter call, not two: `wantRouteAnswer` was never even asked for.
+    expect(chat.roles).toEqual(["drafter", "judge"]);
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+  });
+});
+
 // --- re-routing on new evidence, no human rehome -----------------------------
 
 describe("accepting a worker-staged re-route", () => {

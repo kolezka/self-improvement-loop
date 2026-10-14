@@ -79,7 +79,7 @@ or whose agent operates it.
 | Lessons delivered | `SessionStart` and `UserPromptSubmit` context | no, `sil lessons` reads them | managed block in `AGENTS.md` |
 | Skill use counted | yes | no | yes, on a read of the `SKILL.md` |
 | Agent skill | ships with the plugin | `sil codex install` | `sil openclaw install` |
-| Slash commands | `/reflect`, `/loop`, `/curriculum`, `/feedback` | none | none |
+| Slash commands | `/reflect`, `/loop`, `/curriculum`, `/feedback`, `/learn` | none | none |
 
 Claude Code and Codex load the same skill file,
 [`skills/self-improvement-loop/SKILL.md`](skills/self-improvement-loop/SKILL.md).
@@ -154,6 +154,7 @@ it:
 | `/loop` | Print loop status. `/loop web` starts the web UI, `/loop run` triggers one worker pass. |
 | `/curriculum` | Dry-run preview of what would be promoted. `/curriculum apply` drafts and stages branches, detached. |
 | `/feedback <type>:<name> good\|bad [note]` | Record a vote on an artifact. |
+| `/learn [note]` | Turn a mistake caught in this session into a rule, skill, agent or nudge now. Nothing is written to your repos before you approve the diff. |
 
 **Codex** gets the same skill from `sil codex install`. Mention it with
 `$self-improvement-loop`, or let Codex pick it from its description. A Codex
@@ -174,7 +175,7 @@ and the skill tells the agent to say so instead of running `sil reflect`.
 | `sil lessons` | List the lessons waiting in the inbox. Delivers nothing. |
 | `sil curriculum plan`, `run --apply` | Preview a promotion pass, or draft and stage branches. |
 | `sil review list`, `show`, `accept`, `reject`, `rehome`, `retire` | Review staged artifacts from the terminal. |
-| `sil artifacts` | List artifacts with their scorecards. `sil artifacts rebuild --world <w>` recomputes them. |
+| `sil artifacts` | List artifacts with their scorecards. `sil artifacts rebuild --world <w>` recomputes them. `sil artifacts register` records an inline artifact from `/learn`. |
 | `sil feedback add <type>:<name> good\|bad` | Rate an artifact. `sil feedback list` shows every vote. |
 | `sil worlds list`, `add`, `import-kb` | Manage worlds. |
 | `sil llm list`, `use`, `set-model` | Inspect and switch model endpoints per role. |

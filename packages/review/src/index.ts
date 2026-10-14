@@ -22,6 +22,7 @@ import {
   type Ledger,
   LockHeld,
   paths,
+  type PromotionEntry,
   type ReviewDetail,
   type ReviewDiff,
   type ReviewItem,
@@ -60,6 +61,14 @@ export {
   type RepairResult,
 } from "./repair.ts";
 export { type RemoteOps, setRemoteOps };
+
+/** Inline artifacts are edited by hand; review actions never touch them. */
+function refuseInline(entry: PromotionEntry | null | undefined, pattern: string, action: string, next = ""): void {
+  if (entry && entry.origin === "inline") {
+    const where = entry.external_path ?? entry.served_by?.path ?? "?";
+    throw new ReviewError(`${JSON.stringify(pattern)} is an inline artifact at ${where}; ${action} it by editing that file${next}`);
+  }
+}
 
 // --- injectable seams --------------------------------------------------------
 
@@ -292,10 +301,11 @@ export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): 
     rows.push({
       pattern,
       artifact_type: entry.artifact_type,
-      served_by: entry.served_by ? entry.served_by.path : null,
+      served_by: entry.external_path ?? (entry.served_by ? entry.served_by.path : null),
       status: entry.status,
       reflections: counts.get(pattern) ?? 0,
       scorecard: cards.get(pattern) ?? null,
+      ...(entry.origin ? { origin: entry.origin } : {}),
     });
   }
   return rows;
@@ -313,7 +323,7 @@ export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): 
  * writes. Ignored here, the refusal arrived from `merge --ff-only` after the
  * branch had already been rewritten, leaving a reviewed digest describing a
  * commit that was no longer the branch head. */
-function requireLiveReady(world: World, repo: string, defaultRef: string): void {
+export function requireLiveReady(world: World, repo: string, defaultRef: string): void {
   const branch = git.currentBranch(repo);
   if (branch !== defaultRef) {
     throw new ReviewError(
@@ -348,6 +358,14 @@ function acceptInner(world: World, _cfg: Config, pattern: string, reviewedState:
   if (!reviewedState || reviewedState !== snap.reviewed_state) {
     throw new ReviewError("reviewed state changed since preview; reload the review and accept again");
   }
+  // An older staged branch must not overwrite a row the operator registered.
+  // Read at the reviewed base, the same blob the merge below writes over.
+  refuseInline(
+    ledgerAt(world, repo, snap.base_sha).entries[pattern],
+    pattern,
+    "change",
+    `; run \`sil review reject ${pattern} --world ${world.name}\` to clear the stale proposal`,
+  );
 
   const entry = branchEntry(world, repo, snap.branch_sha, pattern);
   const atype = entryType(entry);
@@ -749,11 +767,14 @@ function rehomeInner(world: World, _cfg: Config, pattern: string, artifactType: 
   const repo = targetRoot(world);
   const rel = ledgerRel(world);
   let newRel = "";
+  // The live row first: an existing branch carries the loop's older row.
+  refuseInline(loadLedger(world).entries[pattern], pattern, "re-home");
 
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
     const ledger = loadLedgerFile(join(tree, rel));
     const entry = ledger.entries[pattern];
     if (!entry) throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to re-home`);
+    refuseInline(entry, pattern, "re-home");
     const oldType = entryType(entry);
     if (oldType === artifactType) {
       throw new ReviewError(`${JSON.stringify(pattern)} is already served by ${JSON.stringify(artifactType)}`);
@@ -799,11 +820,14 @@ function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
   // the retired artifact again.
   const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   let removed = "";
+  // The live row first: an existing branch carries the loop's older row.
+  refuseInline(loadLedger(world).entries[pattern], pattern, "retire");
 
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
     const ledger = loadLedgerFile(join(tree, rel));
     const entry = ledger.entries[pattern];
     if (!entry) throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to retire`);
+    refuseInline(entry, pattern, "retire");
     if (entry.status === "retired") throw new ReviewError(`${JSON.stringify(pattern)} is already retired`);
     const oldType = entryType(entry);
     removed = artifacts.removeArtifact(world, oldType, pattern, tree);
@@ -895,3 +919,5 @@ function relinkAll(world: World, pattern: string, artifactType: ArtifactType): s
   }
   return link;
 }
+
+export { INLINE_TYPES, type InlineType, register, type RegisterOptions, type RegisterResult } from "./register.ts";

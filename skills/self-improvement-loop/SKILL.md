@@ -21,7 +21,7 @@ Run `sil` from PATH. If `command -v sil` finds nothing, try `~/.local/bin/sil`
 | This session is recorded | yes, by the plugin hooks | no, nothing records it |
 | Lessons injected at start | yes, as context | no, run `sil lessons` |
 | Skill use is counted | yes | no |
-| Slash commands | `/reflect`, `/loop`, `/curriculum`, `/feedback` | none, call `sil` |
+| Slash commands | `/reflect`, `/loop`, `/curriculum`, `/feedback`, `/learn` | none, call `sil` |
 
 Outside Claude Code you cannot queue the current session. Say so plainly. Do
 not run `sil reflect` there: it marks an existing queue entry, and with
@@ -46,6 +46,7 @@ table) or `sil worlds list`. Never guess it.
 | What is staged | `sil review list` |
 | Artifacts and scorecards | `sil artifacts` |
 | Rate an artifact | `sil feedback add <type>:<name> good\|bad --note "<why>"` |
+| Capture a lesson from this session now | read `learn.md` next to this file and follow it |
 | Model per role | `sil llm list` |
 | Web console | `sil web` keeps running: start it detached, read the URL it prints |
 | Logs | `sil logs hook\|worker\|web\|curriculum` |

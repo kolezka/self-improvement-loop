@@ -5,11 +5,11 @@
 // and the HTTP API on top of the same state.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadConfig, paths, saveConfig, SECTIONS, targetRoot, worldNamed, writeHookSnapshot } from "@sil/core";
+import { ledgerPath, loadConfig, paths, saveConfig, SECTIONS, targetRoot, worldNamed, writeHookSnapshot } from "@sil/core";
 import * as curriculum from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
 import type { ChatFn } from "@sil/providers";
@@ -24,7 +24,21 @@ const PATTERN = "verify-callsites";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
-const ENV_KEYS = ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT", "LITELLM_API_KEY"];
+const ENV_KEYS = [
+  "SIL_CONFIG_DIR",
+  "SIL_STATE_DIR",
+  "SIL_DATA_DIR",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_PLUGIN_ROOT",
+  "LITELLM_API_KEY",
+  "HOME",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+];
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sil-e2e-"));
@@ -35,6 +49,17 @@ beforeEach(() => {
   process.env["CLAUDE_CONFIG_DIR"] = join(tmp, "claude");
   process.env["CLAUDE_PLUGIN_ROOT"] = REPO;
   process.env["LITELLM_API_KEY"] = "sentinel-key-never-sent";
+  // Children must not read the operator's home or git config; identity is fixed.
+  process.env["HOME"] = join(tmp, "home");
+  mkdirSync(process.env["HOME"]);
+  const emptyGitConfig = join(tmp, "gitconfig-empty");
+  writeFileSync(emptyGitConfig, "");
+  process.env["GIT_CONFIG_GLOBAL"] = emptyGitConfig;
+  process.env["GIT_CONFIG_SYSTEM"] = emptyGitConfig;
+  process.env["GIT_AUTHOR_NAME"] = "sil e2e";
+  process.env["GIT_AUTHOR_EMAIL"] = "e2e@sil.invalid";
+  process.env["GIT_COMMITTER_NAME"] = "sil e2e";
+  process.env["GIT_COMMITTER_EMAIL"] = "e2e@sil.invalid";
   const init = Bun.spawnSync(["bun", CLI, "init", "--model", "fake/model"], { env: process.env });
   expect(init.exitCode).toBe(0);
   // The SessionStart hook would spawn a real detached worker (no fake chat)
@@ -59,6 +84,11 @@ function runHook(payload: Record<string, unknown>): Record<string, unknown> | nu
   expect(proc.stderr.toString()).toBe("");
   const out = proc.stdout.toString().trim();
   return out ? (JSON.parse(out) as Record<string, unknown>) : null;
+}
+
+function runCli(args: string[]): { exitCode: number; stdout: string; stderr: string } {
+  const proc = Bun.spawnSync(["bun", CLI, ...args], { env: process.env });
+  return { exitCode: proc.exitCode ?? -1, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
 }
 
 function contextOf(out: Record<string, unknown> | null): string {
@@ -277,5 +307,61 @@ describe("http api over the real backend", () => {
     } finally {
       server.stop(true);
     }
+  });
+});
+
+describe("inline artifact registered through the CLI", () => {
+  test("register an inline skill, count its use through the hook, plan reports it done", () => {
+    const P = "deny-without-grep";
+    const cfg = loadConfig();
+    const world = worldNamed(cfg, "default");
+    const target = targetRoot(world);
+    // sil init in beforeEach created the target repo.
+    expect(Bun.spawnSync(["git", "-C", target, "rev-parse", "--git-dir"], { env: process.env }).exitCode).toBe(0);
+
+    // Outside the target repo: register refuses a non-hook path inside it.
+    // The skill directory is named after the pattern slug.
+    const skillFile = join(tmp, "inline", P, "SKILL.md");
+    mkdirSync(join(tmp, "inline", P), { recursive: true });
+    writeFileSync(skillFile, `---\nname: ${P}\ndescription: Use before denying a caller exists.\n---\n\nGrep every caller first.\n`);
+
+    const reg = runCli(["artifacts", "register", "--world", "default", "--type", "skill", "--pattern", P, "--path", skillFile, "--note", "n"]);
+    expect(reg.stderr).toBe("");
+    expect(reg.exitCode).toBe(0);
+    expect(reg.stdout).toContain(`registered skill:${P} in world default`);
+    const row = store.loadLedger(ledgerPath(world)).entries[P]!;
+    expect(row.origin).toBe("inline");
+    expect(row.external_path).toBe(realpathSync(skillFile));
+
+    const cwd = join(tmp, "proj");
+    mkdirSync(cwd);
+    expect(Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd, env: process.env }).exitCode).toBe(0);
+    runHook({
+      session_id: "e2e-inline-1",
+      cwd,
+      transcript_path: join(tmp, "inline.jsonl"),
+      hook_event_name: "PostToolUse",
+      tool_name: "Skill",
+      tool_input: { skill: P },
+      tool_response: {},
+    });
+
+    const rebuilt = runCli(["artifacts", "rebuild", "--world", "default"]);
+    expect(rebuilt.exitCode).toBe(0);
+    expect(rebuilt.stdout).toContain("rebuilt scorecards for world default");
+    const card = feedback.load(world, loadConfig()).find((c) => c.ref === `skill:${P}`);
+    expect(card).toBeDefined();
+    expect(card!.uses_30d).toBe(1);
+
+    const listed = runCli(["artifacts", "--world", "default", "--json"]);
+    expect(listed.exitCode).toBe(0);
+    const decoded = JSON.parse(listed.stdout) as { inventory: Array<{ pattern: string; origin?: string }>; scorecards: Array<{ ref: string; uses_30d: number }> };
+    expect(decoded.inventory.find((r) => r.pattern === P)?.origin).toBe("inline");
+    expect(decoded.scorecards.find((c) => c.ref === `skill:${P}`)?.uses_30d).toBe(1);
+
+    const plan = runCli(["curriculum", "plan", "--world", "default", "--json"]);
+    expect(plan.exitCode).toBe(0);
+    const report = JSON.parse(plan.stdout) as { actions: Array<{ pattern: string; action: string }> };
+    expect(report.actions.find((a) => a.pattern === P)?.action).toBe("done");
   });
 });

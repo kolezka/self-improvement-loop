@@ -1,9 +1,9 @@
 // review.register(): the single write point for an inline (`/learn`) artifact.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { ledgerPath, type PromotionEntry, type World } from "@sil/core";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { ledgerPath, type PromotionEntry, targetRoot, type World } from "@sil/core";
 import { artifacts, branchName, git } from "@sil/curriculum";
 import { loadLedger } from "@sil/store";
 import { Lock } from "@sil/worker";
@@ -16,7 +16,10 @@ let env: TestEnv;
 beforeEach(() => {
   env = silEnv();
 });
-afterEach(() => cleanupEnv(env));
+afterEach(() => {
+  setSystemTime();
+  cleanupEnv(env);
+});
 
 function skillFile(): string {
   const p = join(env.tmp, "claude", "skills", P, "SKILL.md");
@@ -82,9 +85,53 @@ describe("register", () => {
     const state = repoState(world, repo);
     const future = join(env.tmp, "not-yet", `${type}.md`);
     const out = review.register(world, makeCfg(), type, P, future, "n", { dryRun: true });
-    expect(out.row.external_path).toBe(future);
+    expect(out.row.external_path).toBe(join(realpathSync(env.tmp), "not-yet", `${type}.md`));
     expect(out.row.artifact_type).toBe(type);
     expect(repoState(world, repo)).toEqual(state);
+  });
+
+  test("stores the path with symlinks resolved, and the dry run previews the same path", () => {
+    const world = makeWorld();
+    initTarget(world);
+    const real = skillFile();
+    const alias = join(env.tmp, "alias");
+    symlinkSync(join(env.tmp, "claude"), alias);
+    const viaAlias = join(alias, "skills", P, "SKILL.md");
+
+    const dry = review.register(world, makeCfg(), "skill", P, viaAlias, "n", { dryRun: true });
+    const done = review.register(world, makeCfg(), "skill", P, viaAlias, "n");
+
+    expect(done.row.external_path).toBe(realpathSync(real));
+    expect(dry.row.external_path).toBe(done.row.external_path!);
+    expect(loadLedger(ledgerPath(world)).entries[P]!.external_path).toBe(realpathSync(real));
+    const future = review.register(world, makeCfg(), "skill", "later", join(alias, "later", "SKILL.md"), "n", { dryRun: true });
+    expect(future.row.external_path).toBe(join(realpathSync(join(env.tmp, "claude")), "later", "SKILL.md"));
+  });
+
+  test("a dry run through a symlinked ancestor previews the path the real run stores once the file exists", () => {
+    const world = makeWorld();
+    initTarget(world);
+    mkdirSync(join(env.tmp, "claude"), { recursive: true });
+    const alias = join(env.tmp, "alias");
+    symlinkSync(join(env.tmp, "claude"), alias);
+    const viaAlias = join(alias, "skills", P, "SKILL.md");
+
+    const dry = review.register(world, makeCfg(), "skill", P, viaAlias, "n", { dryRun: true });
+    skillFile();
+    const done = review.register(world, makeCfg(), "skill", P, viaAlias, "n");
+
+    expect(dry.row.external_path).toBe(done.row.external_path!);
+    expect(done.row.external_path).toBe(realpathSync(join(env.tmp, "claude", "skills", P, "SKILL.md")));
+  });
+
+  test("a sibling directory whose name extends the target repo's is outside it", () => {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const sibling = join(`${repo}-notes`, "SKILL.md");
+    mkdirSync(dirname(sibling), { recursive: true });
+    writeFileSync(sibling, "x\n");
+    const out = review.register(world, makeCfg(), "skill", P, sibling, "n");
+    expect(out.commit).not.toBeNull();
   });
 
   test("a hook is copied into nudges_dir in the same commit", () => {
@@ -101,101 +148,179 @@ describe("register", () => {
     expect(row.external_path).toBeUndefined();
   });
 
-  test("re-running with the same path bumps revisions, no second row", () => {
+  test("re-running with the same path bumps revisions and revised_at, keeps promoted_at, no second row", () => {
     const world = makeWorld();
     initTarget(world);
     const f = skillFile();
+    setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
     review.register(world, makeCfg(), "skill", P, f, "n");
+    setSystemTime(new Date("2026-10-02T00:00:00.000Z"));
     review.register(world, makeCfg(), "skill", P, f, "n2");
     const ledger = loadLedger(ledgerPath(world));
     expect(Object.keys(ledger.entries)).toEqual([P]);
-    expect(ledger.entries[P]!.revisions).toBe(1);
-    expect(ledger.entries[P]!.note).toBe("n2");
+    const row = ledger.entries[P]!;
+    expect(row.revisions).toBe(1);
+    expect(row.note).toBe("n2");
+    expect(row.promoted_at).toBe("2026-10-01T00:00:00.000Z");
+    expect(row.revised_at).toBe("2026-10-02T00:00:00.000Z");
   });
 
-  type Setup = (w: World, repo: string) => () => unknown;
-  const refusals: Array<[string, Setup, RegExp]> = [
-    ["bad slug", (w) => () => review.register(w, makeCfg(), "skill", "../x", skillFile(), "n"), /unsafe pattern slug/],
-    ["relative path", (w) => () => review.register(w, makeCfg(), "skill", P, "SKILL.md", "n"), /absolute/],
-    ["missing file", (w) => () => review.register(w, makeCfg(), "skill", P, join(env.tmp, "nope.md"), "n"), /does not exist/],
-    ["missing hook file on a dry run", (w) => () => review.register(w, makeCfg(), "hook", P, join(env.tmp, "nope.json"), "n", { dryRun: true }), /does not exist/],
-    ["empty note", (w) => () => review.register(w, makeCfg(), "skill", P, skillFile(), " "), /--note/],
-    [
-      "promoted loop row",
-      (w, repo) => {
+  test("the same file spelled with ./ is the same registration", () => {
+    const world = makeWorld();
+    initTarget(world);
+    const f = skillFile();
+    const dotted = `${dirname(f)}/./SKILL.md`;
+    review.register(world, makeCfg(), "skill", P, dotted, "n");
+    review.register(world, makeCfg(), "skill", P, f, "n2");
+    const row = loadLedger(ledgerPath(world)).entries[P]!;
+    expect(row.revisions).toBe(1);
+    expect(row.external_path).toBe(realpathSync(f));
+  });
+
+  interface Refusal {
+    name: string;
+    setup: (w: World, repo: string, dryRun: boolean) => () => unknown;
+    re: RegExp;
+    /** A dry run accepts this case on purpose. */
+    realOnly?: boolean;
+  }
+  const refusals: Refusal[] = [
+    { name: "bad slug", setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "skill", "../x", skillFile(), "n", { dryRun }), re: /unsafe pattern slug/ },
+    { name: "relative path", setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "skill", P, "SKILL.md", "n", { dryRun }), re: /absolute/ },
+    {
+      name: "missing file",
+      setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "skill", P, join(env.tmp, "nope.md"), "n", { dryRun }),
+      re: /does not exist/,
+      realOnly: true,
+    },
+    { name: "missing hook file", setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "hook", P, join(env.tmp, "nope.json"), "n", { dryRun }), re: /does not exist/ },
+    {
+      name: "a directory as a skill path",
+      setup: (w, _r, dryRun) => {
+        const dir = join(env.tmp, "a-dir");
+        mkdirSync(dir, { recursive: true });
+        return () => review.register(w, makeCfg(), "skill", P, dir, "n", { dryRun });
+      },
+      re: /a-dir is not a file/,
+    },
+    {
+      name: "a directory as a hook path",
+      setup: (w, _r, dryRun) => {
+        const dir = join(env.tmp, "a-dir.json");
+        mkdirSync(dir, { recursive: true });
+        return () => review.register(w, makeCfg(), "hook", P, dir, "n", { dryRun });
+      },
+      re: /a-dir\.json is not a file/,
+    },
+    {
+      name: "a path that resolves into the target repo through a symlink",
+      setup: (w, repo, dryRun) => {
+        mkdirSync(join(repo, "docs"), { recursive: true });
+        const link = join(env.tmp, "into-repo");
+        symlinkSync(join(repo, "docs"), link);
+        writeFileSync(join(link, "SKILL.md"), "x\n");
+        return () => review.register(w, makeCfg(), "skill", P, join(link, "SKILL.md"), "n", { dryRun });
+      },
+      re: /into-repo\/SKILL\.md is inside the target repo .*; that is the loop's tree, register it there through the loop or pick a path outside/,
+    },
+    {
+      name: "a path in a repo directory whose name starts with two dots",
+      setup: (w, repo, dryRun) => {
+        mkdirSync(join(repo, "..notes"), { recursive: true });
+        writeFileSync(join(repo, "..notes", "SKILL.md"), "x\n");
+        return () => review.register(w, makeCfg(), "skill", P, join(repo, "..notes", "SKILL.md"), "n", { dryRun });
+      },
+      re: /\.\.notes\/SKILL\.md is inside the target repo/,
+    },
+    { name: "empty note", setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "skill", P, skillFile(), " ", { dryRun }), re: /--note/ },
+    {
+      name: "promoted loop row",
+      setup: (w, repo, dryRun) => {
         seedLedger(repo, w, { [P]: { pattern: P, status: "promoted", artifact_type: "rule" } });
-        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n");
+        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n", { dryRun });
       },
-      /owned by the loop/,
-    ],
-    [
-      "curriculum branch exists",
-      (w, repo) => {
+      re: /owned by the loop/,
+    },
+    {
+      name: "curriculum branch exists",
+      setup: (w, repo, dryRun) => {
         git.git(repo, ["branch", branchName(w.name, P)]);
-        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n");
+        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n", { dryRun });
       },
-      /answer it first/,
-    ],
-    [
-      "inline row at another path",
-      (w) => {
+      re: /answer it first/,
+    },
+    {
+      name: "inline row at another path",
+      setup: (w, _r, dryRun) => {
         review.register(w, makeCfg(), "skill", P, skillFile(), "n");
         const other = join(env.tmp, "other.md");
         writeFileSync(other, "x");
-        return () => review.register(w, makeCfg(), "skill", P, other, "n");
+        return () => review.register(w, makeCfg(), "skill", P, other, "n", { dryRun });
       },
-      /already registered at/,
-    ],
-    [
-      "inline skill then a hook for the same pattern",
-      (w) => {
+      re: /already registered at/,
+    },
+    {
+      name: "inline skill then a hook for the same pattern",
+      setup: (w, _r, dryRun) => {
         review.register(w, makeCfg(), "skill", P, skillFile(), "n");
         const draft = nudgeFile(hookBody(P));
-        return () => review.register(w, makeCfg(), "hook", P, draft, "n");
+        return () => review.register(w, makeCfg(), "hook", P, draft, "n", { dryRun });
       },
-      /already registered at .*SKILL\.md/,
-    ],
-    ["hook with wrong pattern", (w) => () => review.register(w, makeCfg(), "hook", P, nudgeFile(hookBody("other")), "n"), /pattern field/],
-    ["hook not JSON", (w) => () => review.register(w, makeCfg(), "hook", P, nudgeFile("{"), "n"), /not JSON/],
-    [
-      "hook with the right pattern that fails lint",
-      (w) => () => review.register(w, makeCfg(), "hook", P, nudgeFile({ ...hookBody(P), once_per: "never" }), "n"),
-      /refused by lint: .*once_per/,
-    ],
-    [
-      "target on a feature branch",
-      (w, repo) => {
+      re: /already registered at .*SKILL\.md/,
+    },
+    { name: "hook with wrong pattern", setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "hook", P, nudgeFile(hookBody("other")), "n", { dryRun }), re: /pattern field/ },
+    { name: "hook not JSON", setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "hook", P, nudgeFile("{"), "n", { dryRun }), re: /not JSON/ },
+    {
+      name: "hook with the right pattern that fails lint",
+      setup: (w, _r, dryRun) => () => review.register(w, makeCfg(), "hook", P, nudgeFile({ ...hookBody(P), once_per: "never" }), "n", { dryRun }),
+      re: /refused by lint: .*once_per/,
+    },
+    {
+      name: "target on a feature branch",
+      setup: (w, repo, dryRun) => {
         git.git(repo, ["checkout", "-q", "-b", "feature"]);
-        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n");
+        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n", { dryRun });
       },
-      /is on feature/,
-    ],
-    [
-      "tracked edit under an artifact path",
-      (w, repo) => {
+      re: /is on feature/,
+    },
+    {
+      name: "tracked edit under an artifact path",
+      setup: (w, repo, dryRun) => {
         commitFile(repo, "skills/other/SKILL.md", "x\n");
         writeFileSync(join(repo, "skills/other/SKILL.md"), "edited\n");
-        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n");
+        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n", { dryRun });
       },
-      /uncommitted or untracked files under skills\/other\/SKILL\.md/,
-    ],
-    [
-      "untracked file under an artifact path",
-      (w, repo) => {
+      re: /uncommitted or untracked files under skills\/other\/SKILL\.md/,
+    },
+    {
+      name: "untracked file under an artifact path",
+      setup: (w, repo, dryRun) => {
         mkdirSync(join(repo, "nudges"), { recursive: true });
         writeFileSync(join(repo, "nudges", "stray.json"), "{}\n");
-        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n");
+        return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n", { dryRun });
       },
-      /uncommitted or untracked files under nudges\/stray\.json/,
-    ],
+      re: /uncommitted or untracked files under nudges\/stray\.json/,
+    },
   ];
-  test.each(refusals)("refuses: %s, and writes nothing", (_name, setup, re) => {
+  for (const dryRun of [false, true]) {
+    const cases = refusals.filter((r) => !(dryRun && r.realOnly)).map((r) => [r.name, r] as const);
+    test.each(cases)(`refuses${dryRun ? " a dry run" : ""}: %s, and writes nothing`, (_name, r) => {
+      const world = makeWorld();
+      const repo = initTarget(world);
+      const call = r.setup(world, repo, dryRun);
+      const state = repoState(world, repo);
+      expect(call).toThrow(r.re);
+      expect(repoState(world, repo)).toEqual(state);
+    });
+  }
+
+  test.each([false, true])("refuses a target that is not a git repository (dryRun %p)", (dryRun) => {
     const world = makeWorld();
-    const repo = initTarget(world);
-    const call = setup(world, repo);
-    const state = repoState(world, repo);
-    expect(call).toThrow(re);
-    expect(repoState(world, repo)).toEqual(state);
+    const repo = targetRoot(world);
+    mkdirSync(repo, { recursive: true });
+    const f = skillFile();
+    expect(() => review.register(world, makeCfg(), "skill", P, f, "n", { dryRun })).toThrow(`${repo} is not a git repository`);
+    expect(existsSync(join(repo, ".git"))).toBe(false);
   });
 
   test("a rejected loop row may be replaced, keeping its rejected watermark", () => {
@@ -205,6 +330,16 @@ describe("register", () => {
     review.register(world, makeCfg(), "skill", P, skillFile(), "n");
     const row = loadLedger(ledgerPath(world)).entries[P]!;
     expect(row).toMatchObject({ origin: "inline", status: "promoted", rejected_at_count: 4 });
+  });
+
+  test("a retired loop row may be replaced, keeping its rejected watermark", () => {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    seedLedger(repo, world, { [P]: { pattern: P, status: "retired", artifact_type: "rule", served_by: null, rejected_at_count: 3 } });
+    review.register(world, makeCfg(), "skill", P, skillFile(), "n");
+    const row = loadLedger(ledgerPath(world)).entries[P]!;
+    expect(row).toMatchObject({ origin: "inline", status: "promoted", artifact_type: "skill", rejected_at_count: 3 });
+    expect(row.served_by).toEqual({ type: "skill", path: null });
   });
 
   test("refuses while the worker holds the lock", () => {

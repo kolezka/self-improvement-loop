@@ -1,8 +1,8 @@
 // Record an artifact the operator wrote in a session (`/learn`) as an inline
 // ledger row, so votes, scorecards and the planner see it.
 
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Config, fsx, isSlug, type PromotionEntry, ReviewError, targetRoot, type World } from "@sil/core";
 import { artifacts, branchName, git, lintHook, reflections } from "@sil/curriculum";
 import { loadLedger as loadLedgerFile, saveLedger } from "@sil/store";
@@ -40,10 +40,17 @@ export function register(
   // A preflight runs before the artifact is written, so its file may not exist yet.
   // A nudge draft is a scratch file that always exists.
   if ((type === "hook" || !opts.dryRun) && !existsSync(path)) throw new ReviewError(`${path} does not exist`);
+  if (existsSync(path) && !isRegularFile(path)) throw new ReviewError(`${path} is not a file`);
+  const resolved = canonical(path);
   const nudge = type === "hook" ? readNudge(path, pattern) : null;
 
   return withWorkerLock(() => {
     const repo = targetRoot(world);
+    if (!git.isRepo(repo)) throw new ReviewError(`${repo} is not a git repository`);
+    // A nudge draft is copied into the repo, so only the other types are checked.
+    if (type !== "hook" && isInside(resolved, canonical(repo))) {
+      throw new ReviewError(`${path} is inside the target repo ${repo}; that is the loop's tree, register it there through the loop or pick a path outside`);
+    }
     const defaultRef = git.defaultBranch(repo);
     // Checked here as well as inside commitOnDefault so a dry run reports it.
     requireLiveReady(world, repo, defaultRef);
@@ -53,7 +60,7 @@ export function register(
     const rel = ledgerRel(world);
     const copied = nudge ? artifacts.artifactRel(world, "hook", pattern) : null;
     const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
-    const build = (prior: PromotionEntry | undefined): PromotionEntry => buildRow(prior, pattern, type, path, note, copied, at);
+    const build = (prior: PromotionEntry | undefined): PromotionEntry => buildRow(prior, pattern, type, resolved, note, copied, at);
 
     if (opts.dryRun) {
       const prior = loadLedgerFile(join(repo, rel)).entries[pattern];
@@ -113,6 +120,40 @@ function buildRow(
     ...(external ? { external_path: external } : {}),
     note: note.trim(),
   };
+}
+
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch (e) {
+    throw new ReviewError(`cannot stat ${path}: ${(e as Error).message}`);
+  }
+}
+
+/** `path` with symlinks resolved. A path not written yet (a dry run) resolves
+ * its deepest existing ancestor, so the preview row equals the committed one. */
+function canonical(path: string): string {
+  let head = resolve(path);
+  const rest: string[] = [];
+  while (!existsSync(head)) {
+    const parent = dirname(head);
+    if (parent === head) break;
+    rest.unshift(basename(head));
+    head = parent;
+  }
+  try {
+    return join(realpathSync(head), ...rest);
+  } catch (e) {
+    throw new ReviewError(`cannot resolve ${path}: ${(e as Error).message}`);
+  }
+}
+
+/** True when `path` is `dir` or below it. Both must already be canonical. A
+ * sibling `<dir>-notes` is outside; a child named `..notes` is inside. */
+function isInside(path: string, dir: string): boolean {
+  const rel = relative(dir, path);
+  if (isAbsolute(rel)) return false;
+  return !(rel === ".." || rel.startsWith(`..${sep}`));
 }
 
 function readNudge(path: string, pattern: string): Record<string, unknown> {

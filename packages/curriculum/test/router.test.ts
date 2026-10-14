@@ -72,6 +72,17 @@ describe("hook: the claim is executed, not read", () => {
     expect(result.reason.length).toBeLessThan(400);
   });
 
+  test("the gate excerpt never cuts a character in half", () => {
+    // `{"command_matches":"` is 20 code units, so 139 more puts the emoji on 159 and 160.
+    const result = route(
+      answer({ trigger_event: "PreToolUse:Bash", gate: { command_matches: `${"z".repeat(139)}\u{1F600}${"z".repeat(40)}` } }),
+      SOURCES,
+      PAYLOADS,
+      opts,
+    );
+    expect(result.reason).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   test("a gate that fires on everything is a broadcast, not a hook", () => {
     // Once merged a hook runs unattended on every session of the machine. A gate
     // that cannot tell the corpus apart will not tell production apart either.

@@ -274,8 +274,9 @@ function hookVerdict(
   const hits = results.filter(Boolean).length;
   if (hits === 0) {
     // A refused draft is not persisted, so the gate must survive in the reason.
-    const gateText = JSON.stringify(gate);
-    const excerpt = gateText.length > 160 ? `${gateText.slice(0, 160)}...` : gateText;
+    // Cut by code point: a UTF-16 slice can leave half an emoji at the end.
+    const gateChars = Array.from(JSON.stringify(gate));
+    const excerpt = gateChars.length > 160 ? `${gateChars.slice(0, 160).join("")}...` : gateChars.join("");
     return `gate matched nothing in the payload corpus (gate: ${excerpt})`;
   }
   if (payloads.length > 1 && hits / payloads.length > MAX_GATE_MATCH_RATE) {

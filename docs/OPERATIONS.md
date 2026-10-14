@@ -104,6 +104,7 @@ Refusals and what to do:
 | Message | What to do |
 |---|---|
 | `unknown --type`, `--type must be one of ...` | Use `rule`, `skill`, `agent` or `hook`. |
+| `needs --pattern, --path and --note` | Pass all three (exit 2). |
 | `unsafe pattern slug` | Use lowercase letters and digits joined by single dashes, at most 64 characters. |
 | `--note is required` | Pass a one-line lesson. |
 | `--path must be absolute` | Pass the absolute final path. |
@@ -115,7 +116,7 @@ Refusals and what to do:
 | `is on <branch>, not <default>` | Check the default branch out in the target repo and retry. |
 | `has uncommitted or untracked files under ...` | Commit or discard them in the target repo and retry. |
 | `curriculum/<world>/<pattern> exists` | Answer it first with `sil review accept` or `sil review reject`. |
-| `is owned by the loop` | The loop already serves this pattern. Vote on it with `/feedback`, or re-home it. |
+| `is owned by the loop` | The loop already serves this pattern. Vote on it with `/feedback`, or pick a new slug. Re-homing keeps it a loop row, so it does not help. |
 | `is already registered at <path>` | One pattern, one inline file. Register the same path again to extend it, or pick a new slug. |
 | `not JSON`, `pattern field`, `refused by lint` | Fix the nudge JSON: valid object, `pattern` equal to the slug, lint clean. |
 | `worker is running` | Retry in a moment. |

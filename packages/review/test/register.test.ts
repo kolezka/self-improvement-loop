@@ -239,7 +239,7 @@ describe("register", () => {
         seedLedger(repo, w, { [P]: { pattern: P, status: "promoted", artifact_type: "rule" } });
         return () => review.register(w, makeCfg(), "skill", P, skillFile(), "n", { dryRun });
       },
-      re: /owned by the loop/,
+      re: /owned by the loop; vote on it with sil feedback, or pick a new slug$/,
     },
     {
       name: "curriculum branch exists",

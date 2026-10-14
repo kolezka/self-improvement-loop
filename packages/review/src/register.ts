@@ -100,7 +100,7 @@ function buildRow(
   at: number,
 ): PromotionEntry {
   if (prior && prior.origin !== "inline" && prior.status === "promoted") {
-    throw new ReviewError(`${JSON.stringify(pattern)} is owned by the loop; vote on it with sil feedback, or re-home it`);
+    throw new ReviewError(`${JSON.stringify(pattern)} is owned by the loop; vote on it with sil feedback, or pick a new slug`);
   }
   const external = copied ? undefined : path;
   if (prior && prior.origin === "inline" && prior.external_path !== external) {

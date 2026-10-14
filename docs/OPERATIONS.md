@@ -42,6 +42,94 @@ nothing serves the pattern after it, so it asks for `--yes` exactly like
 This binds the accept to exactly what you looked at; if the branch changed
 underneath you, accept fails and asks you to reload.
 
+## Capturing a lesson now (`/learn`)
+
+`/learn [note]` turns a mistake caught in the current session into a rule, skill,
+agent or nudge, without waiting for three reflections. In Codex, ask the agent to
+capture a lesson; it follows the same procedure from the installed skill. The
+agent works through these steps and stops for your yes at each confirmation:
+
+1. States the failure and the check that would have caught it. You confirm.
+2. Proposes the world. You confirm. Every later `sil` call passes `--world`.
+3. Looks for an existing artifact or pending cluster that covers it
+   (`sil artifacts --world <w> --json`, `sil curriculum plan --world <w>`, `rg`
+   over the usual places).
+4. Picks a type (rule, skill, agent, or nudge, registered as `--type hook`).
+5. Picks a scope: the project, or `~/.claude/`. A rule, skill or agent cannot
+   live inside the world's target repo. A nudge always goes to `nudges_dir`.
+6. Runs `sil artifacts register ... --dry-run` and shows you the artifact diff
+   and the ledger row. For a rule, skill or agent, `--path` is the final location
+   in the project's main checkout or under `~/.claude/`, never a temporary
+   worktree path; the file need not exist yet. For a nudge, `--path` is the
+   draft JSON in a fresh `mktemp -d` directory. That draft is the only thing
+   written before your yes. You approve both the artifact diff and the ledger
+   row before step 7; a yes given before they were shown does not count.
+7. Writes the file. In a git repo it goes on a branch, never on the default
+   branch. Under `~/.claude/`, or in a project directory without git, it is
+   edited in place.
+8. Registers it. A file edited in place, or a nudge, is registered at once. A
+   project file on a branch is registered only after you say the branch is
+   merged and one of these exits 0 (the second covers squash and rebase):
+
+   ```sh
+   git -C <repo> merge-base --is-ancestor <branch> <default-branch>
+   git -C <repo> diff --quiet <branch> <default-branch> -- <repo-relative path>
+   ```
+
+   `<repo-relative path>` is `--path` with `<repo>/` removed, derived rather than
+   typed by hand.
+
+   The agent never merges or pushes. Until register succeeds it reports the
+   pending command and does not claim the lesson is recorded.
+
+The nudge scratch directory is removed after register succeeds or you say no.
+If register refuses, it is kept so the retry reads the same approved bytes.
+
+### `sil artifacts register`
+
+```text
+sil artifacts register --world <w> --type <rule|skill|agent|hook>
+  --pattern <slug> --path <absolute path> --note "<one-line lesson>" [--dry-run] [--json]
+```
+
+It writes one local commit on the target repo's default branch, with the ledger
+row and, for a nudge, the copied JSON. It never pushes. Exit codes: 0 on
+success, 1 when register refuses, 2 on bad arguments. An unknown action, or a
+register flag (`--type`, `--pattern`, `--path`, `--note`, `--dry-run`) given to
+the bare listing or to `rebuild`, also exits 2, so a forgotten `register` does
+not look like success.
+
+Refusals and what to do:
+
+| Message | What to do |
+|---|---|
+| `unknown --type`, `--type must be one of ...` | Use `rule`, `skill`, `agent` or `hook`. |
+| `unsafe pattern slug` | Use lowercase letters and digits joined by single dashes, at most 64 characters. |
+| `--note is required` | Pass a one-line lesson. |
+| `--path must be absolute` | Pass the absolute final path. |
+| `<path> does not exist` | Write the file first. Only a dry run of a rule, skill or agent accepts a file not written yet. |
+| `<path> is not a file` | Point at the file, not its directory. |
+| `goes through a dangling symlink at <link>` | Fix or remove the link, then retry. |
+| `is inside the target repo` | That tree belongs to the loop. Pick a path outside it, or let the loop handle it with `/reflect`. |
+| `is not a git repository` | The world's target is not a repo. Fix the world's `target`. |
+| `is on <branch>, not <default>` | Check the default branch out in the target repo and retry. |
+| `has uncommitted or untracked files under ...` | Commit or discard them in the target repo and retry. |
+| `curriculum/<world>/<pattern> exists` | Answer it first with `sil review accept` or `sil review reject`. |
+| `is owned by the loop` | The loop already serves this pattern. Vote on it with `/feedback`, or re-home it. |
+| `is already registered at <path>` | One pattern, one inline file. Register the same path again to extend it, or pick a new slug. |
+| `not JSON`, `pattern field`, `refused by lint` | Fix the nudge JSON: valid object, `pattern` equal to the slug, lint clean. |
+| `worker is running` | Retry in a moment. |
+
+Each of these refusals leaves the live artifact and the ledger unchanged, so the
+same command can be run again once the cause is fixed.
+
+An inline row is edited by hand. `sil review retire` and `rehome` refuse it and
+print its path: edit or delete that file instead. `sil review accept` refuses an
+older staged branch for the same pattern and prints the
+`sil review reject <pattern> --world <w>` command that clears it. `sil
+curriculum plan` lists a promoted inline row as `done` and shows any scorecard
+proposal in the reason.
+
 ## Switching providers
 
 ```
@@ -340,6 +428,11 @@ fallback.
 **Provider errors.** `sil status` prints the provider's reachability for each
 world. A `claude-cli` endpoint needs the `claude` binary on `PATH`; an `openai`
 endpoint needs its `base_url` reachable and `api_key_env` set.
+
+**`/learn` says the lesson is not recorded yet.** A project artifact on a branch
+is registered only after the branch is merged and the merge check passes. Pull
+the default branch locally if you merged remotely, then ask the agent to run
+the pending register command.
 
 **Curriculum keeps gating a pattern out.** `sil curriculum plan --world <w>`
 prints the reason per pattern with no model calls. `sil curriculum run --world <w>`

@@ -482,3 +482,38 @@ never asking whether the redraft actually moved the recurrence rate. See
       before boot sets the real world, so an install without a `default` world gets a
       "could not load proposal outcomes: unknown world" toast on first load. The demo
       uses world `default` instead of fixing this here.
+
+## /learn inline lessons (2026-10-14, branch feat/learn-command)
+Implemented on feat/learn-command. Not merged, not released, not installed live.
+Spec: `docs/superpowers/specs/2026-10-14-learn-command-design.md`. Plan:
+`docs/superpowers/plans/2026-10-14-learn-command.md`.
+- [x] ledger: optional `origin`, `external_path`, `note` on `PromotionEntry`, `origin` on `RouterRow`
+- [x] `review.register()`: worker lock, one local commit on the default branch, no push;
+      shared `INLINE_TYPES`; regular file, realpath, dangling link, outside-target-repo checks;
+      nudge JSON read, linted and copied into `nudges_dir`
+- [x] prerequisite fix: `dirtyPaths` keeps the first dirty path (trimmed output cut or dropped it)
+- [x] curriculum: promoted inline rows plan as `done`, `run` refuses to stage them, gist is the note;
+      a test reaches the `run` guard through `RunOptions.actions`
+- [x] review: accept, retire and rehome refuse inline rows; repair skips them; inventory shows
+      `external_path` and `origin`
+- [x] feedback: no zero-use `retire-candidate` for an inline rule
+- [x] CLI: `sil artifacts register`, exit 0/1/2, unknown action and stray register flags exit 2,
+      listing prints `origin=inline`
+- [x] `/learn` command, `learn.md` procedure, Codex copy
+- [x] e2e: register an inline skill, count its use through the hook bundle
+- [x] docs: ARCHITECTURE, OPERATIONS, README, `.ai/lessons.md`
+- [ ] not done: manual acceptance (plan Task 9 step 4) in a scratch session after a
+      `--plugin-dir` reinstall
+- [ ] not done: tests that run git in-process (`gitRaw` without an explicit env) read the
+      operator's global git config. `Bun.spawnSync` does not see later `process.env` edits,
+      so the fixtures' `GIT_CONFIG_GLOBAL` does not reach it. `tests/e2e.test.ts:176` and
+      `:235` also spawn git with no `env`. Pre-existing, also affects the older review and
+      curriculum suites.
+- [ ] not done: `dirtyPaths` reads a failed `git status` as a clean tree, and parses the
+      second NUL record of a rename or copy as a path. Both pre-existing.
+- [ ] not done: a symlink loop in a register path is reported as a dangling symlink
+      (`existsSync` is false on ELOOP), which names the wrong cause.
+- [ ] not done: a dry run whose path passes through a regular file as an ancestor walks past
+      it and previews a path under that file; the real run refuses with "does not exist".
+- [ ] not done: `apps/cli/test/init.test.ts:141` fails on this machine (its no-identity
+      control finds a git identity). Present in the pre-implementation baseline.

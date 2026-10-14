@@ -137,3 +137,6 @@
   and a Codex agent running `sil reflect` with no flags and reporting the session
   queued. A skill that lists commands without their required flags gets guessed
   at. Test a skill change with a subagent that may read only the skill.
+- 2026-10-14: An optional ledger field must be `.optional()`, not `.default()`, or every
+  save rewrites every row. `saveLedger` drops undefined values but writes defaults, so a
+  defaulted field lands in every row of an old ledger the first time anything saves it.

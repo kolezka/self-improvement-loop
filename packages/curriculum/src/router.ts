@@ -235,6 +235,8 @@ export function route(
 // matches every one, and a gate on half of them would pass as narrow.
 export const MAX_GATE_MATCH_RATE = 0.5;
 
+export type HookVerdict = string | { hits: number; total: number };
+
 /** The hit count when the answer is a workable hook, otherwise why it is not.
  *
  * The gate is executed against the recorded payload corpus rather than read.
@@ -246,12 +248,15 @@ export const MAX_GATE_MATCH_RATE = 0.5;
  * the same event/matcher comparison dispatchWith uses). Running a gate
  * without that filter let `{tool_is:["Bash"]}` on matcher
  * `mcp__outline__update_document` "route to hook" from Bash calls in the
- * corpus that production never reaches with this gate at all. */
-function hookVerdict(
+ * corpus that production never reaches with this gate at all.
+ *
+ * Exported so a verify/preview check can run a live hook's own trigger and
+ * gate through this exact corpus check instead of a copy of it. */
+export function hookVerdict(
   answer: RouteAnswer,
   payloads: Record<string, unknown>[],
-  opts: RouteOptions,
-): string | { hits: number; total: number } {
+  opts: RouteOptions = {},
+): HookVerdict {
   const gate = answer.gate;
   if (answer.trigger_event === "none" || gate == null || Object.keys(gate).length === 0) {
     return "no trigger event proposed";

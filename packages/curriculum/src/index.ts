@@ -29,6 +29,8 @@ export { distinctiveTerms, lint, lintDescriptionCap, lintGrounding, lintHook, ty
 export {
   emptyAnswer,
   GATE_TIMEOUT_MS,
+  hookVerdict,
+  type HookVerdict,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_TERMS,
   MIN_QUOTE_WORDS,
@@ -91,5 +93,16 @@ export {
   verdictFor,
 } from "./alias-semantic.ts";
 export { branchName } from "./git.ts";
-export { draftCaps, run, type RunOptions, sameArtifact } from "./run.ts";
+export { draftCaps, run, type RunOptions, sameArtifact, UPGRADE_TYPES } from "./run.ts";
 export { type GateCorpusResult, type GateRunner, type NudgeAdapter, setNudgeAdapter } from "./deps.ts";
+export {
+  type GateCheck,
+  type LiveCheck,
+  previewArtifact,
+  type PreviewResult,
+  type TypeCheck,
+  verifyArtifact,
+  type VerifyOffline,
+  type VerifyOptions,
+  type VerifyResult,
+} from "./verify.ts";

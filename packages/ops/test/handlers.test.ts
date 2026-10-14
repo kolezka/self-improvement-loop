@@ -195,6 +195,68 @@ describe("review.revise", () => {
   });
 });
 
+describe("artifacts.preview", () => {
+  test("passes a World object and the pattern through to curriculum.previewArtifact", async () => {
+    const seen: { world: unknown; pattern: string }[] = [];
+    const restore = setDeps({
+      curriculum: {
+        ...deps.curriculum,
+        previewArtifact: (world: World, _cfg, pattern: string) => {
+          seen.push({ world, pattern });
+          return { pattern, artifact_type: "skill", path: "skills/foo-bar/SKILL.md", body: "body text", live: true } as never;
+        },
+      },
+    });
+    try {
+      const result = (await invoke("artifacts.preview", { world: "default", pattern: "foo-bar" })) as { body: string; live: boolean };
+      expect(seen).toHaveLength(1);
+      expect((seen[0]!.world as World).name).toBe("default");
+      expect(seen[0]!.pattern).toBe("foo-bar");
+      expect(result.body).toBe("body text");
+      expect(result.live).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("rejects an invalid pattern before the handler runs", async () => {
+    await expect(invoke("artifacts.preview", { world: "default", pattern: "Not A Slug!" })).rejects.toThrow();
+  });
+});
+
+describe("artifacts.verify", () => {
+  test("passes a World object and the pattern through to curriculum.verifyArtifact", async () => {
+    const seen: { world: unknown; pattern: string }[] = [];
+    const restore = setDeps({
+      curriculum: {
+        ...deps.curriculum,
+        verifyArtifact: async (world: World, _cfg, pattern: string) => {
+          seen.push({ world, pattern });
+          return {
+            pattern,
+            artifact_type: "rule",
+            offline: { exists: true, live: { live: true, detail: "ok" }, lint: [], gate: null },
+            type_check: { skipped: "no reflections recorded for this pattern; nothing to route from" },
+          } as never;
+        },
+      },
+    });
+    try {
+      const result = (await invoke("artifacts.verify", { world: "default", pattern: "foo-bar" })) as { offline: { exists: boolean } };
+      expect(seen).toHaveLength(1);
+      expect((seen[0]!.world as World).name).toBe("default");
+      expect(seen[0]!.pattern).toBe("foo-bar");
+      expect(result.offline.exists).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("rejects an invalid pattern before the handler runs", async () => {
+    await expect(invoke("artifacts.verify", { world: "default", pattern: "Not A Slug!" })).rejects.toThrow();
+  });
+});
+
 describe("router.rehome", () => {
   // Re-homing to "none" deletes the artifact. It went through with no
   // confirmation at all, while the op that does the same thing under its own

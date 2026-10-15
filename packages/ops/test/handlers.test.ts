@@ -195,6 +195,83 @@ describe("review.revise", () => {
   });
 });
 
+describe("artifacts.refine", () => {
+  test("passes world, pattern and the optional instruction through to review.refine", async () => {
+    const seen: { world: unknown; pattern: string; instruction: string | undefined }[] = [];
+    const restore = setDeps({
+      review: {
+        ...deps.review,
+        refine: async (world: World, _cfg, pattern: string, instruction?: string) => {
+          seen.push({ world, pattern, instruction });
+          return { detail: {} as never, diff: "diff text", reviewed_state: "b".repeat(64), created: true } as never;
+        },
+      },
+    });
+    try {
+      const result = (await invoke("artifacts.refine", {
+        world: "default",
+        pattern: "foo-bar",
+        instruction: "make it mention the timeout explicitly",
+      })) as { diff: string; created: boolean };
+      expect(seen).toHaveLength(1);
+      const call = seen[0]!;
+      expect((call.world as World).name).toBe("default");
+      expect(call.pattern).toBe("foo-bar");
+      expect(call.instruction).toBe("make it mention the timeout explicitly");
+      expect(result.diff).toBe("diff text");
+      expect(result.created).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("the instruction may be omitted", async () => {
+    const seen: (string | undefined)[] = [];
+    const restore = setDeps({
+      review: {
+        ...deps.review,
+        refine: async (_world: World, _cfg, _pattern: string, instruction?: string) => {
+          seen.push(instruction);
+          return { detail: {} as never, diff: "", reviewed_state: "b".repeat(64), created: false } as never;
+        },
+      },
+    });
+    try {
+      await invoke("artifacts.refine", { world: "default", pattern: "foo-bar" });
+      expect(seen).toEqual([undefined]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("passes the escalation reason through, bounded and validated server side, not trusted blind", async () => {
+    const seen: { reason: string | undefined }[] = [];
+    const restore = setDeps({
+      review: {
+        ...deps.review,
+        refine: async (_world: World, _cfg, _pattern: string, _instruction?: string, opts?: { reason?: string }) => {
+          seen.push({ reason: opts?.reason });
+          return { detail: {} as never, diff: "", reviewed_state: "b".repeat(64), created: true } as never;
+        },
+      },
+    });
+    try {
+      await invoke("artifacts.refine", {
+        world: "default",
+        pattern: "foo-bar",
+        reason: "revised 2 time(s) and still recurring in 15% of reflected sessions",
+      });
+      expect(seen).toEqual([{ reason: "revised 2 time(s) and still recurring in 15% of reflected sessions" }]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("rejects a reason over the bound, the same cap as instruction", async () => {
+    await expect(invoke("artifacts.refine", { world: "default", pattern: "foo-bar", reason: "x".repeat(4001) })).rejects.toThrow();
+  });
+});
+
 describe("artifacts.preview", () => {
   test("passes a World object and the pattern through to curriculum.previewArtifact", async () => {
     const seen: { world: unknown; pattern: string }[] = [];

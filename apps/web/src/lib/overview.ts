@@ -26,10 +26,29 @@ export function reviewHint(staged: number, escalated: number | null): string {
   return staged > 0 ? `${staged} staged, ${escalated} escalated` : `${escalated} escalated`;
 }
 
-/** Which pane the "Waiting for review" tile opens. Escalated patterns are
- * never staged, so review.queue (the Review pane) has nothing to show for
- * them. With nothing staged and a known escalation, send the human to the
- * curriculum plan (the Loop pane) instead, where escalations are listed. */
-export function reviewLink(staged: number, escalated: number | null): string {
-  return staged === 0 && escalated !== null && escalated > 0 ? "#/loop" : "#/review";
+/** Which pane the "Waiting for review" tile opens. Review now has its own
+ * Escalated section alongside staged proposals, so the tile always opens
+ * Review, whatever is staged or escalated. */
+export function reviewLink(): string {
+  return "#/review";
+}
+
+/** Distinct patterns waiting on a human: staged proposals plus escalated
+ * patterns, each counted once even when a pattern is both. An escalated
+ * pattern that already has a staged proposal opens that proposal rather than
+ * drafting a second one, so it is not a second unit of pending work. */
+export function pendingTotal(stagedPatterns: readonly string[], escalatedPatterns: readonly string[]): number {
+  return new Set([...stagedPatterns, ...escalatedPatterns]).size;
+}
+
+/** The pending-work count given two *independently* resolved results: either
+ * list is null when that call's own fetch has never succeeded (not yet
+ * loaded, or its most recent attempt failed). An unknown escalated list
+ * falls back to the staged count alone, so a `curriculum.plan` failure never
+ * erases an already-successful `review.queue` count down to zero or
+ * unknown. An unknown staged list has nothing to fall back to. */
+export function resolvedPendingCount(stagedPatterns: readonly string[] | null, escalatedPatterns: readonly string[] | null): number | null {
+  if (stagedPatterns === null) return null;
+  if (escalatedPatterns === null) return stagedPatterns.length;
+  return pendingTotal(stagedPatterns, escalatedPatterns);
 }

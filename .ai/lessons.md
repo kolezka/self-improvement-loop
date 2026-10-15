@@ -188,3 +188,12 @@
   after a sentence that still says "holding exactly one key", teaches the model to obey the
   sentence and drop the keys. When a forced-shape prompt grows a second ask, the reply-line
   sentence naming the shape has to change with it, not just the paragraph that states the ask.
+- 2026-10-15: `review.index.ts`'s `withWorkerLock<T>(fn: () => T): T` takes the lock, calls
+  `fn()`, releases in `finally`. Handed an async callback it still "works": `fn()` returns a
+  pending promise synchronously, `finally` runs immediately, and the lock is gone before the
+  awaited work (a drafter call) finishes. Nothing throws; a concurrent curriculum tick can
+  reset the branch mid-draft with no error anywhere. Wrote a separate `withWorkerLockAsync`
+  that `await`s `fn()` inside its own `try`, and a test that proves the lock is held by trying
+  to acquire it from inside the chat callback while it is "thinking" (expects `LockHeld`), not
+  just that the call eventually succeeds. A green round trip does not prove the lock was held
+  for its duration; only trying to double-acquire it mid-call does.

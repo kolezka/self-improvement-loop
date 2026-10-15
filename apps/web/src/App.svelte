@@ -4,6 +4,8 @@
   import { captureToken, call, dropReloadParam, reloadForBuild } from "./lib/api.ts";
   import { appState, toast } from "./lib/state.svelte.ts";
   import { applyTheme, loadThemeMode, saveThemeMode, THEME_MODES, watchSystemTheme, type ThemeMode } from "./lib/theme.ts";
+  import { resolvedPendingCount } from "./lib/overview.ts";
+  import { finishPoll, INITIAL_FORCE_POLL_STATE, requestPoll, type ForcePollState } from "./lib/poll.ts";
   import Icon, { type IconName } from "./components/Icon.svelte";
   import Toast from "./components/Toast.svelte";
   import Overview from "./panes/Overview.svelte";
@@ -79,8 +81,26 @@
   }
   let workerDot = $state("");
   let workerText = $state("Checking the worker");
-  let stagedCount = $state(0);
-  let statusPending = false;
+  // Staged proposals plus escalated patterns, each counted once: both wait
+  // on the same human decision in Review, and a pattern that is both must
+  // not count twice. null means unknown (nothing successfully loaded yet).
+  let pendingCount = $state<number | null>(null);
+  // Tracks whether a poll is already running, and whether a forced one
+  // arrived while it was: an unforced tick is simply skipped while busy
+  // (the routine poll's own backoff), but a forced one (a world switch, or
+  // an action that bumped statusSeq) must not be dropped, or the Review
+  // badge can show a stale escalation count until the plan cache expires on
+  // its own.
+  let pollState: ForcePollState = INITIAL_FORCE_POLL_STATE;
+  // curriculum.plan scans every reflection and recomputes scorecards, so it
+  // is not cheap to call every 10s from every open tab. Cached and reused
+  // until it goes stale or a caller forces a fresh read (a world switch, or
+  // an action that bumps statusSeq); review.queue still polls every tick.
+  const PLAN_POLL_INTERVAL_MS = 60_000;
+  let cachedEscalatedPatterns: string[] | null = null;
+  let cachedPlanWorld: string | null = null;
+  let lastPlanFetchAt = 0;
+  let lastStatusSeq = -1;
   // The build this page was served from, and the build on disk now. They differ
   // after a plugin update, which is what the reload button is for.
   let loadedBuild = $state<string | null>(null);
@@ -116,10 +136,16 @@
 
   /** Feeds the state light in the rail and the count next to Review. Both
    * read-only, so a failure downgrades the light instead of toasting on a
-   * timer. */
-  async function refreshStatus() {
-    if (statusPending) return;
-    statusPending = true;
+   * timer. `review.queue` and `curriculum.plan` are resolved independently:
+   * a plan failure must never erase an already-successful staged count down
+   * to zero. `forcePlan` skips the 60s throttle for a caller that knows
+   * something actually changed (a world switch, or an action that bumped
+   * statusSeq); the plain 10s interval tick never forces it. */
+  async function refreshStatus(forcePlan = false) {
+    const { run, next } = requestPoll(pollState, forcePlan);
+    pollState = next;
+    if (!run) return;
+    const requestWorld = appState.world;
     try {
       try {
         const status = (await call("worker.status", {})) as { lock_held: boolean; lock_pid: number | null; pending: number };
@@ -132,14 +158,45 @@
         workerText = "Worker state unknown";
       }
 
+      let stagedPatterns: string[] | null = null;
       try {
-        const items = (await call("review.queue", { world: appState.world })) as unknown[];
-        stagedCount = items.length;
+        const items = (await call("review.queue", { world: requestWorld })) as { pattern: string }[];
+        stagedPatterns = items.map((i) => i.pattern);
       } catch {
-        stagedCount = 0;
+        stagedPatterns = null;
+      }
+
+      // A world switch invalidates the cache built for the old one: never
+      // show the new world's badge with the previous world's escalations.
+      if (requestWorld !== cachedPlanWorld) {
+        cachedEscalatedPatterns = null;
+        cachedPlanWorld = requestWorld;
+      }
+      const now = Date.now();
+      const planCacheStale = cachedEscalatedPatterns === null || now - lastPlanFetchAt >= PLAN_POLL_INTERVAL_MS;
+      if (forcePlan || planCacheStale) {
+        try {
+          const plan = (await call("curriculum.plan", { world: requestWorld })) as { actions: { pattern: string; action: string }[] };
+          cachedEscalatedPatterns = plan.actions.filter((a) => a.action === "escalate").map((a) => a.pattern);
+          lastPlanFetchAt = now;
+        } catch {
+          // Keep whatever was last cached for this world (null if nothing
+          // ever succeeded): resolvedPendingCount() below falls back to the
+          // staged count alone rather than reading this as "zero".
+        }
+      }
+
+      // A slow response for a world the operator has since left must not
+      // overwrite the badge now showing the world they are actually on.
+      if (requestWorld === appState.world) {
+        pendingCount = resolvedPendingCount(stagedPatterns, cachedEscalatedPatterns);
       }
     } finally {
-      statusPending = false;
+      const { rerun, next: afterFinish } = finishPoll(pollState);
+      pollState = afterFinish;
+      // A forced request queued while this poll ran: honor it right away
+      // instead of waiting for the next tick or the cache to expire.
+      if (rerun) void refreshStatus(true);
     }
   }
 
@@ -164,7 +221,7 @@
     captureToken();
     dropReloadParam();
     window.addEventListener("hashchange", onHashChange);
-    loadWorlds().then(refreshStatus);
+    loadWorlds().then(() => refreshStatus(true));
     checkBuild();
     const stopThemeWatch = watchSystemTheme(() => applyTheme(themeMode));
     // Growing past the overlay width must not leave the page inert.
@@ -187,12 +244,22 @@
   $effect(() => {
     void hash;
     void appState.world;
-    void appState.statusSeq;
-    refreshStatus();
+    const seq = appState.statusSeq;
+    // statusSeq is bumped after an action that can change what is escalated
+    // (accept, reject, a create-proposal): force a fresh plan read instead
+    // of waiting out the 60s cache. A bare pane or world navigation (seq
+    // unchanged) still refreshes review.queue but respects the plan cache.
+    const forcePlan = seq !== lastStatusSeq;
+    lastStatusSeq = seq;
+    refreshStatus(forcePlan);
   });
 
   const pane = $derived(PANES[hash]!);
   const ActivePane = $derived(pane.component);
+  // null (nothing successfully loaded yet) reads as 0 in the rail badge,
+  // same as before this was nullable: a badge that cannot yet say a real
+  // number just stays hidden rather than show "0" as if it were known.
+  const pendingBadge = $derived(pendingCount ?? 0);
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && closeNav()} />
@@ -218,12 +285,12 @@
               class:is-active={name === hash}
               aria-current={name === hash ? "page" : undefined}
               title={PANES[name]!.title}
-              aria-label={name === "review" && stagedCount > 0 ? `${PANES[name]!.title}, ${stagedCount} staged` : PANES[name]!.title}
+              aria-label={name === "review" && pendingBadge > 0 ? `${PANES[name]!.title}, ${pendingBadge} waiting` : PANES[name]!.title}
             >
               <Icon name={name as IconName} />
               <span class="rail__text">{PANES[name]!.title}</span>
-              {#if name === "review" && stagedCount > 0}
-                <span class="rail__count" aria-label={`${stagedCount} staged`}>{stagedCount}</span>
+              {#if name === "review" && pendingBadge > 0}
+                <span class="rail__count" aria-label={`${pendingBadge} waiting`}>{pendingBadge}</span>
               {/if}
             </a>
           {/each}

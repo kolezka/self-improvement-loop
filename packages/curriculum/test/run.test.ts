@@ -13,6 +13,7 @@ import {
   ledgerPath,
   LlmConfig,
   paths,
+  type PlanAction,
   type PromotionEntry,
   RULE_END,
   RULE_START,
@@ -1344,6 +1345,73 @@ describe("a cluster refine by recurrence", () => {
     const chat = new FakeChat({ draft: { artifact: ruleBody() } });
     const second = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card()] }));
     expect(second.staged).toEqual([PATTERN]);
+  });
+});
+
+describe("manualRefine: the bypass review.refine needs", () => {
+  // review.refine runs this same pipeline with a single explicit refine
+  // action and manualRefine: true. These two gates are the ones a human's
+  // explicit request must get past that an automatic retry must not.
+  function seedLive(): { world: World; repo: string } {
+    const world = makeWorld();
+    const repo = initTarget(world);
+    const old = `- Check the call sites before you ship. ${ruleTag(PATTERN)}`;
+    commitFile(repo, "RULES.md", `# Rules\n\n${RULE_START}\n${old}\n${RULE_END}\n`, "chore: rules");
+    writeLedger(world, [
+      entry({ pattern: PATTERN, promoted_at_count: 17, status: "promoted", artifact_type: "rule", served_by: { type: "rule", path: "RULES.md" } }),
+    ]);
+    commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
+    return { world, repo };
+  }
+
+  function refineAction(overrides: Partial<PlanAction> = {}): PlanAction {
+    return { pattern: PATTERN, count: 17, watermark: 17, action: "refine", sources: [], reason: "manual refine requested", feedback: null, ...overrides };
+  }
+
+  test("skips the cached-refusal gate that blocks an ordinary automatic retry", async () => {
+    const { world } = seedLive();
+    const ids = addReflections(world, PATTERN, 3);
+    const card = Scorecard.parse({ ref: `rule:${PATTERN}`, type: "rule", name: PATTERN, proposal: "refine", reason: "misfires" });
+    const action = refineAction({ sources: ids, feedback: "scorecard says misfires" });
+
+    const refused = new FakeChat({ draft: { artifact: ruleBody() }, verdict: false, reason: "rule 3" });
+    const first = await run(world, makeCfg(), opts({ apply: true, chat: refused.fn, cards: [card], actions: [action] }));
+    expect(first.gated_out[PATTERN]).toBe("judge: rule 3");
+
+    // An automatic retry at the same scorecard state reads the cached refusal
+    // and never calls the drafter again.
+    const second = await run(world, makeCfg(), opts({ apply: true, chat: refused.fn, cards: [card], actions: [action] }));
+    expect(second.gated_out[PATTERN]).toContain("waiting for new feedback");
+    expect(refused.roles.filter((r) => r === "drafter")).toHaveLength(1);
+
+    // A human's explicit retry at the exact same scorecard state must reach
+    // the drafter instead of reading back that cached refusal.
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const manual = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [card], actions: [action], manualRefine: true }));
+    expect(manual.gated_out[PATTERN]).toBeUndefined();
+    expect(manual.staged).toEqual([PATTERN]);
+    expect(chat.roles.filter((r) => r === "drafter")).toHaveLength(1);
+  });
+
+  test("grounds a ledger-only refine in the action's own feedback, but only when manually requested", async () => {
+    const { world } = seedLive();
+    const feedbackText = "Mention every call site, read the graphify inventory, and keep calling the change safe worded concisely.";
+    const action = refineAction({ sources: [], feedback: feedbackText });
+    const draft = { artifact: ruleBody() };
+
+    // No reflections and no scorecard complaint: an automatic refine (or a
+    // worker tick that happened to carry this action) has nothing to ground
+    // the redraft in and must still refuse.
+    const automatic = await run(world, makeCfg(), opts({ apply: true, chat: new FakeChat({ draft }).fn, actions: [action] }));
+    expect(automatic.gated_out[PATTERN]).toBe("no complaint text to ground a refine in");
+
+    // The human's own instruction is real grounding text, so a manual refine
+    // with the same evidence (none) succeeds instead.
+    const chat = new FakeChat({ draft });
+    const manual = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, actions: [action], manualRefine: true }));
+    expect(manual.gated_out[PATTERN]).toBeUndefined();
+    expect(manual.staged).toEqual([PATTERN]);
+    expect(chat.promptsFor("drafter")[0]).toContain(feedbackText);
   });
 });
 

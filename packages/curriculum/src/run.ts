@@ -73,6 +73,13 @@ export interface RunOptions {
   gateRunner?: GateRunner;
   /** Tests only: use these actions instead of plan(). */
   actions?: PlanAction[];
+  /** Set only by a human-triggered manual refine (`review.refine`): skip the
+   * cached-refusal retry gate that blocks an automatic retry at the same
+   * scorecard state, and when a ledger-only refine has no reflections and no
+   * scorecard complaint to ground in, use the action's own `feedback` text
+   * (the human's instruction) instead of refusing. Every other caller leaves
+   * this unset, so the two gates it narrows keep refusing exactly as before. */
+  manualRefine?: boolean;
 }
 
 function describe(e: unknown): string {
@@ -241,7 +248,10 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
     const isRefine = action.action === "refine";
     const card = cardsByPattern.get(action.pattern) ?? null;
     // Before the cap check on purpose: a skipped refine must not look over-cap.
-    if (isRefine && card && Object.hasOwn(attempts, action.pattern) && stillRefused(attempts[action.pattern]!, attemptKey(card, ledger.entries[action.pattern] ?? null))) {
+    // manualRefine skips this gate: a human explicitly asking for a redraft at
+    // the same scorecard state must reach the drafter, not read back the last
+    // automatic refusal.
+    if (!opts.manualRefine && isRefine && card && Object.hasOwn(attempts, action.pattern) && stillRefused(attempts[action.pattern]!, attemptKey(card, ledger.entries[action.pattern] ?? null))) {
       report.gated_out[action.pattern] = "the last refine at this scorecard was gated out; waiting for new feedback";
       continue;
     }
@@ -267,6 +277,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
         typedJudge: judgeEndpoint !== null,
         judgeThreshold: judgeEndpoint?.decision_threshold ?? 0.5,
         proposalEvents,
+        manualRefine: opts.manualRefine ?? false,
       });
     } catch (e) {
       // One pattern's failure is not the run's.
@@ -309,6 +320,8 @@ interface StageContext {
    * a `rehomed` event when weighing whether to re-route an already-served
    * pattern. */
   proposalEvents: readonly ProposalEvent[];
+  /** See `RunOptions.manualRefine`. */
+  manualRefine: boolean;
 }
 
 /** One field feeds both the budget the drafter is told and the cap the lint
@@ -408,13 +421,19 @@ async function stageOne(
     // artifact would pass any redraft that kept its old vocabulary.
     const ref = ctx.cards.get(pattern)?.ref ?? null;
     const said = ref ? feedback.complaints(world, cfg, ref, prior?.promoted_at ?? null) : [];
-    if (said.length === 0) {
+    if (said.length > 0) {
+      sources = said.join("\n\n");
+      drafting.push(...said);
+      lessons.push(...said);
+    } else if (ctx.manualRefine && action.feedback) {
+      // A human-triggered refine with no scorecard complaints is grounded in
+      // their own instruction instead: already pushed into drafting/lessons
+      // above, so only the lint's grounding source needs it here.
+      sources = action.feedback;
+    } else {
       report.gated_out[pattern] = "no complaint text to ground a refine in";
       return;
     }
-    sources = said.join("\n\n");
-    drafting.push(...said);
-    lessons.push(...said);
   }
 
   // A forced rule is the one case where the type is known before drafting, so

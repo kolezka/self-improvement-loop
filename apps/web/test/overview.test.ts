@@ -6,7 +6,7 @@
 // until a human re-routes or splits it, so it always needs a human too.
 
 import { describe, expect, test } from "bun:test";
-import { countEscalations, reviewHint, reviewLink } from "../src/lib/overview.ts";
+import { countEscalations, pendingTotal, resolvedPendingCount, reviewHint, reviewLink } from "../src/lib/overview.ts";
 
 describe("countEscalations", () => {
   test("counts only the escalate actions", () => {
@@ -46,18 +46,50 @@ describe("reviewHint", () => {
 });
 
 describe("reviewLink", () => {
-  test("goes to the review pane when something is staged, whatever the escalated count", () => {
-    expect(reviewLink(2, 6)).toBe("#/review");
-    expect(reviewLink(2, 0)).toBe("#/review");
-    expect(reviewLink(2, null)).toBe("#/review");
+  // Review now displays escalations alongside staged proposals (its own
+  // Escalated section), so the tile always opens Review: there is no longer
+  // a staged-less, escalation-only case Review has nothing to show for.
+  test("always goes to the review pane, whatever is staged or escalated", () => {
+    expect(reviewLink()).toBe("#/review");
+  });
+});
+
+describe("pendingTotal", () => {
+  test("counts staged and escalated patterns, each once", () => {
+    expect(pendingTotal(["a", "b"], ["c"])).toBe(3);
   });
 
-  test("goes to the loop pane when nothing is staged but a known escalation is open", () => {
-    expect(reviewLink(0, 6)).toBe("#/loop");
+  test("a pattern that is both staged and escalated counts once, not twice", () => {
+    expect(pendingTotal(["a", "b"], ["b", "c"])).toBe(3);
   });
 
-  test("stays on the review pane when nothing is staged and escalations are 0 or unknown", () => {
-    expect(reviewLink(0, 0)).toBe("#/review");
-    expect(reviewLink(0, null)).toBe("#/review");
+  test("is 0 when nothing is staged or escalated", () => {
+    expect(pendingTotal([], [])).toBe(0);
+  });
+});
+
+describe("resolvedPendingCount", () => {
+  test("unions staged and escalated when both are known", () => {
+    expect(resolvedPendingCount(["a", "b"], ["b", "c"])).toBe(3);
+  });
+
+  // The bug: a curriculum.plan failure (an unreadable ledger, a transient
+  // error) must not erase an already-successful review.queue count. Before
+  // this fix, App.svelte's Promise.all rejected on the plan call alone and
+  // zeroed the whole badge even though three proposals were genuinely staged.
+  test("a failed escalated fetch falls back to the staged count alone, never zero", () => {
+    expect(resolvedPendingCount(["a", "b", "c"], null)).toBe(3);
+  });
+
+  test("an unknown staged count is unknown overall, even with a known escalated list", () => {
+    expect(resolvedPendingCount(null, ["a"])).toBeNull();
+  });
+
+  test("both unknown is unknown", () => {
+    expect(resolvedPendingCount(null, null)).toBeNull();
+  });
+
+  test("zero and zero is zero, not null", () => {
+    expect(resolvedPendingCount([], [])).toBe(0);
   });
 });

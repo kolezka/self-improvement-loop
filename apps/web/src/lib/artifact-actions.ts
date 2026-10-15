@@ -19,3 +19,12 @@ export interface ArtifactActionRow {
 export function canRetire(row: ArtifactActionRow): boolean {
   return LIVE_STATUSES.includes(row.status) && row.origin !== "inline";
 }
+
+/** Whether to show Refine on this row. Same eligibility as Retire:
+ * `review.refine` (packages/review/src/refine.ts) refuses a row that is not
+ * currently live (retired, or never promoted) with "not a live artifact",
+ * and separately refuses any inline row. Showing the button on either kind
+ * of row only ever produces a failed call. */
+export function canRefine(row: ArtifactActionRow): boolean {
+  return canRetire(row);
+}

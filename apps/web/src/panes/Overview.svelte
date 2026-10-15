@@ -4,7 +4,7 @@
   import type { HistorySeries } from "../lib/api-types.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { formatTime, plural } from "../lib/format.ts";
-  import { countEscalations, reviewHint as reviewHintText, reviewLink } from "../lib/overview.ts";
+  import { countEscalations, pendingTotal, reviewHint as reviewHintText, reviewLink } from "../lib/overview.ts";
   import WorkerStatus from "../components/WorkerStatus.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import BarChart from "../components/charts/BarChart.svelte";
@@ -38,6 +38,7 @@
   }
 
   interface PlanAction {
+    pattern: string;
     action: string;
   }
 
@@ -63,6 +64,11 @@
   // null means not yet loaded, or the curriculum.plan call that would have
   // counted escalations failed: the real count is unknown, not zero.
   let escalations = $state<number | null>(null);
+  // The patterns behind `review` and `escalations`, for the pending-work
+  // tile's total: a pattern that is both staged and escalated must count
+  // once, and only the real identities (not two counts) can tell that.
+  let reviewPatterns = $state<string[] | null>(null);
+  let escalatedPatterns = $state<string[] | null>(null);
   let lastLoad = $state<string | null>(null);
   let healthError = $state<string | null>(null);
   let busy = $state(false);
@@ -111,7 +117,7 @@
       toast(`Could not read the health report: ${healthError}`);
     }
 
-    const [pendingStat, reflectionsStat, planResult, reviewStat, artifactsStat, lessonsStat] = await Promise.all([
+    const [pendingStat, reflectionsStat, planResult, reviewResult, artifactsStat, lessonsStat] = await Promise.all([
       (async (): Promise<Stat> => {
         try {
           const q = (await call("queue.list", {})) as { pending: unknown[] };
@@ -121,19 +127,28 @@
         }
       })(),
       totalOf("reflections.count", { world }),
-      (async (): Promise<{ stat: Stat; threshold: number | null; escalations: number | null }> => {
+      (async (): Promise<{ stat: Stat; threshold: number | null; escalations: number | null; escalatedPatterns: string[] | null }> => {
         try {
           const plan = (await call("curriculum.plan", { world })) as PlanReport;
+          const escalated = plan.actions.filter((a) => a.action === "escalate");
           return {
             stat: { status: "ok", value: plan.actions.filter((a) => a.action === "promote").length },
             threshold: plan.threshold,
             escalations: countEscalations(plan.actions),
+            escalatedPatterns: escalated.map((a) => a.pattern),
           };
         } catch (e) {
-          return { stat: { status: "error", error: (e as Error).message }, threshold: null, escalations: null };
+          return { stat: { status: "error", error: (e as Error).message }, threshold: null, escalations: null, escalatedPatterns: null };
         }
       })(),
-      countOf("review.queue", { world }),
+      (async (): Promise<{ stat: Stat; patterns: string[] | null }> => {
+        try {
+          const items = (await call("review.queue", { world })) as { pattern: string }[];
+          return { stat: { status: "ok", value: items.length }, patterns: items.map((i) => i.pattern) };
+        } catch (e) {
+          return { stat: { status: "error", error: (e as Error).message }, patterns: null };
+        }
+      })(),
       countOf("artifacts.scorecards", { world }),
       countOf("lessons.list", { world }),
     ]);
@@ -143,7 +158,9 @@
     promote = planResult.stat;
     threshold = planResult.threshold;
     escalations = planResult.escalations;
-    review = reviewStat;
+    escalatedPatterns = planResult.escalatedPatterns;
+    review = reviewResult.stat;
+    reviewPatterns = reviewResult.patterns;
     artifacts = artifactsStat;
     lessons = lessonsStat;
     lastLoad = new Date().toISOString();
@@ -200,14 +217,16 @@
     }
   }
 
-  /** The "Waiting for review" tile's displayed count: staged reviews plus
-   * escalated patterns, since both need a human before anything moves. With
-   * the escalated count unknown (the plan call failed), falls back to the
-   * staged count alone rather than padding the unknown with a 0 and
-   * reading as if the total were complete. */
+  /** The "Waiting for review" tile's displayed count: distinct patterns
+   * either staged or escalated, since both need a human before anything
+   * moves, counted once each (an escalated pattern that already has a staged
+   * proposal is not two units of pending work). With the escalated patterns
+   * unknown (the plan call failed), falls back to the staged count alone
+   * rather than padding the unknown with a 0 and reading as if the total
+   * were complete. */
   const reviewTotal = $derived.by((): Stat => {
-    if (review.status !== "ok" || escalations === null) return review;
-    return { status: "ok", value: review.value + escalations };
+    if (review.status !== "ok" || reviewPatterns === null || escalatedPatterns === null) return review;
+    return { status: "ok", value: pendingTotal(reviewPatterns, escalatedPatterns) };
   });
 
   function stagedCount(stat: Stat): number {
@@ -290,7 +309,7 @@
       </a>
     </li>
     <li class="stage" class:is-gate={reviewTotal.status === "ok" && reviewTotal.value > 0}>
-      <a class="stage__link" href={reviewLink(stagedCount(review), escalations)}>
+      <a class="stage__link" href={reviewLink()}>
         <span class="stage__value">{@render statValue(reviewTotal)}</span>
         <span class="stage__label">Waiting for review</span>
         <span class="stage__hint">{reviewHint(review, escalations)}</span>

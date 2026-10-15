@@ -91,6 +91,14 @@ export interface ReviseResult {
   reviewed_state: string;
 }
 
+export interface RefineResult {
+  detail: ReviewDetail;
+  diff: string;
+  reviewed_state: string;
+  /** false means an existing proposal was opened untouched. */
+  created: boolean;
+}
+
 export interface WorkerRun {
   ts: string;
   reflected: number;

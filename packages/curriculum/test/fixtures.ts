@@ -10,7 +10,9 @@ import { dirname, join } from "node:path";
 import {
   type Config,
   Config as ConfigSchema,
+  fsx,
   type Layout,
+  paths,
   targetRoot,
   World as WorldSchema,
   type World,
@@ -137,6 +139,31 @@ export function addReflections(
     out.push(writeReflection(world.name, { id, created: day }, reflectionBody(pattern, day, opts.lesson)));
   }
   return out;
+}
+
+/** One reflection tied to a real reflected session: `redraftPolicy`'s rate
+ * windows (`@sil/feedback/rates.ts`) count distinct `session_id`s, so a
+ * reflection with none (the plain `addReflections` shape) never counts as a
+ * "hit" in any window and a pattern can never reach `escalate` or
+ * `observing` from `addReflections` alone. */
+export function writeSessionReflection(world: World, pattern: string, day: string, sessionId: string, lesson: string = LESSON): void {
+  writeReflection(world.name, { id: `${day}-${pattern}-${sessionId}`, created: day, session_id: sessionId }, reflectionBody(pattern, day, lesson));
+}
+
+/** `n` distinct reflected sessions on `day`, none of them `pattern`: padding
+ * for a rate window's denominator via the reflect-runs log (the worker's own
+ * `recordReflectRun` writes this same shape), without adding more reflection
+ * files than the scenario needs. */
+export function writeFillerSessions(world: World, day: string, n: number, startAt: number): void {
+  for (let i = 0; i < n; i++) {
+    fsx.appendJsonl(paths.reflectRunsFile(), {
+      ts: `${day}T00:00:00Z`,
+      world: world.name,
+      session_id: `filler-${startAt + i}`,
+      recorded: false,
+      pattern: null,
+    });
+  }
 }
 
 // --- target repos ------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canRetire } from "../src/lib/artifact-actions.ts";
+import { canRefine, canRetire } from "../src/lib/artifact-actions.ts";
 
 describe("canRetire", () => {
   test("shows Retire on a live (promoted) row", () => {
@@ -24,5 +24,26 @@ describe("canRetire", () => {
 
   test("shows Retire on a live row with no origin field (the loop's own artifacts)", () => {
     expect(canRetire({ status: "promoted", origin: undefined })).toBe(true);
+  });
+});
+
+describe("canRefine", () => {
+  // Same eligibility as Retire: review.refine refuses a row that is not
+  // currently live, or that is inline, so showing the button on either kind
+  // of row only ever produces a failed call.
+  test("shows Refine on a live (promoted) row", () => {
+    expect(canRefine({ status: "promoted" })).toBe(true);
+  });
+
+  test("hides Refine on a retired row", () => {
+    expect(canRefine({ status: "retired" })).toBe(false);
+  });
+
+  test("hides Refine on a row that was never promoted", () => {
+    expect(canRefine({ status: "rejected" })).toBe(false);
+  });
+
+  test("hides Refine on a live inline row", () => {
+    expect(canRefine({ status: "promoted", origin: "inline" })).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { fsx, HumanFeedback } from "@sil/core";
 import { listLessons } from "@sil/store";
-import type { FeedbackArgs, PatternArgs, WorldArgs } from "../args.ts";
+import type { FeedbackArgs, PatternArgs, RefineArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
 
@@ -44,3 +44,10 @@ export function artifactsVerify(args: PatternArgs) {
   return deps.curriculum.verifyArtifact(world, cfg, args.pattern);
 }
 // end: web console: preview and verify
+
+// web console: refine and escalated review
+export function artifactsRefine(args: RefineArgs) {
+  const [cfg, world] = cfgWorld(args.world);
+  return deps.review.refine(world, cfg, args.pattern, args.instruction, { reason: args.reason });
+}
+// end: web console: refine and escalated review

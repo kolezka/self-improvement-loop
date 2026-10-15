@@ -2,11 +2,11 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import Drawer from "../components/Drawer.svelte";
-  import { canRetire, LIVE_STATUSES } from "../lib/artifact-actions.ts";
+  import { canRefine, canRetire, LIVE_STATUSES } from "../lib/artifact-actions.ts";
   import { filterLessons, groupByPattern } from "../lib/lessons.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { isCurrentVerifyPattern } from "../lib/verify-guard.ts";
-  import type { PreviewResult, VerifyResult } from "../lib/api-types.ts";
+  import type { PreviewResult, RefineResult, VerifyResult } from "../lib/api-types.ts";
 
   interface RateWindow {
     sessions: number;
@@ -164,6 +164,74 @@
     }
   }
 
+  const MAX_REFINE_INSTRUCTION = 4000;
+  let refineOpen = $state(false);
+  let refinePattern = $state<string | null>(null);
+  let refineInstruction = $state("");
+  let refineBusy = $state(false);
+  let refineError = $state<string | null>(null);
+  // Bumped by every open or cancel, so a request dispatched under one of
+  // them is provably stale once another happens before it resolves.
+  let refineSeq = 0;
+
+  function openRefine(pattern: string) {
+    refinePattern = pattern;
+    refineInstruction = "";
+    refineError = null;
+    refineOpen = true;
+    refineSeq += 1;
+  }
+
+  function cancelRefine() {
+    refineOpen = false;
+    refinePattern = null;
+    refineSeq += 1;
+  }
+
+  /** Captures the world and the generation at dispatch. Both can move before
+   * the request resolves: switching worlds remounts this whole pane (the
+   * dead instance's closure still reads the live, shared appState.world),
+   * and opening or cancelling another row's drawer bumps refineSeq. Either
+   * one means the operator has moved on, so a stale completion still gets a
+   * toast, just never a navigation or a global review target nobody asked
+   * for any more. */
+  async function submitRefine() {
+    const pattern = refinePattern;
+    if (!pattern) return;
+    const requestWorld = appState.world;
+    const mySeq = refineSeq;
+    refineBusy = true;
+    refineError = null;
+    try {
+      const instruction = refineInstruction.trim();
+      const result = (await call("artifacts.refine", {
+        world: requestWorld,
+        pattern,
+        ...(instruction.length > 0 ? { instruction } : {}),
+      })) as RefineResult;
+      const stale = mySeq !== refineSeq || appState.world !== requestWorld;
+      if (stale) {
+        toast(`${pattern}: proposal ${result.created ? "staged" : "already staged"} in ${requestWorld}.`, "ok");
+      } else {
+        toast(result.created ? `${pattern}: proposal staged. Opening it in Review.` : `${pattern}: a proposal was already staged. Opening it.`, "ok");
+        refineOpen = false;
+        refinePattern = null;
+        // Review re-opens this same proposal in its own detail view (Accept,
+        // Reject, Request changes), the same controls every other staged
+        // proposal uses.
+        appState.openReviewPattern = pattern;
+        window.location.hash = "#/review";
+      }
+    } catch (e) {
+      const stale = mySeq !== refineSeq || appState.world !== requestWorld;
+      const message = (e as Error).message;
+      if (stale) toast(`could not refine ${pattern} in ${requestWorld}: ${message}`);
+      else refineError = message;
+    } finally {
+      refineBusy = false;
+    }
+  }
+
   const verifyUpgradeType = $derived.by((): string | null => {
     const tc = verifyData?.type_check;
     return tc && "upgrade" in tc && tc.upgrade ? tc.router_type : null;
@@ -289,6 +357,9 @@
                     {#if LIVE_STATUSES.includes(row.status)}
                       <button class="small" onclick={() => openVerify(row.pattern)}>Verify</button>
                     {/if}
+                    {#if canRefine(row)}
+                      <button class="small" onclick={() => openRefine(row.pattern)}>Refine</button>
+                    {/if}
                     {#if canRetire(row)}
                       <button class="small danger" onclick={() => retire(row.pattern)}>Retire</button>
                     {/if}
@@ -384,6 +455,37 @@
       </div>
     {/if}
     <pre class="file">{previewData.body}</pre>
+  {/if}
+</Drawer>
+
+<Drawer bind:open={refineOpen} title="Refine">
+  {#if refinePattern}
+    <p class="muted">
+      Drafts a new staged proposal for <strong class="mono">{refinePattern}</strong> from an optional instruction, through the
+      same pipeline a promotion uses. It never applies automatically; review it in Review afterwards.
+    </p>
+    <div class="field">
+      <label for="refine-instruction">Instruction, optional</label>
+      <textarea
+        id="refine-instruction"
+        maxlength={MAX_REFINE_INSTRUCTION}
+        placeholder="Describe what should change. Leave blank to let the drafter redraft on its own judgment."
+        bind:value={refineInstruction}
+        disabled={refineBusy}
+      ></textarea>
+      <span class="hint">{refineInstruction.length} / {MAX_REFINE_INSTRUCTION}</span>
+    </div>
+    {#if refineError}
+      <div class="notice error">Could not refine {refinePattern}: {refineError}</div>
+    {/if}
+    <div class="toolbar">
+      {#if refineBusy}
+        <span class="muted">Drafting...</span>
+      {:else}
+        <button onclick={cancelRefine}>Cancel</button>
+        <button class="primary" onclick={submitRefine}>Create proposal</button>
+      {/if}
+    </div>
   {/if}
 </Drawer>
 

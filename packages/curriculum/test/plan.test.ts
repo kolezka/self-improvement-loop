@@ -53,6 +53,8 @@ import {
   reflectionBody,
   silEnv,
   type TestEnv,
+  writeFillerSessions,
+  writeSessionReflection,
 } from "./fixtures.ts";
 
 const PATTERN = "verify-callsites";
@@ -722,30 +724,15 @@ describe("the ledger", () => {
 });
 
 // --- the redraft policy, end to end: real scorecards() feeding real plan() --
-
-/** A reflection of `pattern`, tied to a real session id so it counts toward
- * both the rate denominator (any reflected session) and this pattern's hits
- * (`buildScorecards` only counts a reflection as a hit when it carries a
- * session_id: plain `addReflections` rows do not, by design, since most of
- * this file is not about the rate). */
-function writeSessionReflection(w: World, pattern: string, day: string, sessionId: string): void {
-  writeReflection(w.name, { id: `${day}-${pattern}-${sessionId}`, created: day, session_id: sessionId }, reflectionBody(pattern, day));
-}
-
-/** `n` distinct reflected sessions on `day`, none of them this pattern: padding
- * for the rate denominator via the reflect-runs log (source 2), the same log
- * `recordReflectRun` writes in the worker. */
-function writeFillerSessions(w: World, day: string, n: number, startAt: number): void {
-  for (let i = 0; i < n; i++) {
-    fsx.appendJsonl(paths.reflectRunsFile(), {
-      ts: `${day}T00:00:00Z`,
-      world: w.name,
-      session_id: `filler-${startAt + i}`,
-      recorded: false,
-      pattern: null,
-    });
-  }
-}
+//
+// writeSessionReflection and writeFillerSessions moved to fixtures.ts (both
+// exported there now): a reflection of `pattern` tied to a real session id
+// counts toward both the rate denominator (any reflected session) and this
+// pattern's hits (`buildScorecards` only counts a reflection as a hit when it
+// carries a session_id; plain `addReflections` rows do not, by design, since
+// most of this file is not about the rate), and `n` filler sessions on a day
+// pad the rate denominator via the reflect-runs log without adding more
+// reflection files than the scenario needs.
 
 describe("observing and escalate", () => {
   test("too few reflected sessions since the live text keeps a redraft observing, not refined", () => {

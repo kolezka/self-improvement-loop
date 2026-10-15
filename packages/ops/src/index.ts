@@ -65,6 +65,9 @@ register({ name: "review.revise", tier: "local", gate: "reviewed_state", args: A
 register({ name: "artifacts.preview", tier: "read", gate: "none", args: Args.PatternArgs, fn: artifacts.artifactsPreview, doc: "The artifact's body on the target repo's checked-out working tree, not a staged branch; errors on a retired or missing artifact." });
 register({ name: "artifacts.verify", tier: "local", gate: "none", args: Args.PatternArgs, fn: artifacts.artifactsVerify, doc: "Offline checks plus one drafter re-route probe for the artifact a pattern already serves. Writes nothing." });
 
+// web console: refine and escalated review
+register({ name: "artifacts.refine", tier: "local", gate: "none", args: Args.RefineArgs, fn: artifacts.artifactsRefine, doc: "Draft (or open an existing) staged proposal to refine a live artifact from an optional human instruction and/or an escalation reason; never auto-merges, always waits for review." });
+
 export * from "./registry.ts";
 export * as opsArgs from "./args.ts";
 export { deps, setDeps, type Deps } from "./deps.ts";

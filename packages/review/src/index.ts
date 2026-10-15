@@ -49,6 +49,7 @@ import {
 
 export { DIGEST_PREFIX, type Snapshot, snapshot };
 export { revise, type ReviseOptions, type ReviseResult } from "./revise.ts";
+export { refine, type RefineOptions, type RefineResult } from "./refine.ts";
 export {
   applyRepair,
   computeRepair,
@@ -62,7 +63,7 @@ export {
 export { type RemoteOps, setRemoteOps };
 
 /** Inline artifacts are edited by hand; review actions never touch them. */
-function refuseInline(entry: PromotionEntry | null | undefined, pattern: string, action: string, next = ""): void {
+export function refuseInline(entry: PromotionEntry | null | undefined, pattern: string, action: string, next = ""): void {
   if (entry && entry.origin === "inline") {
     const where = entry.external_path ?? entry.served_by?.path ?? "?";
     throw new ReviewError(`${JSON.stringify(pattern)} is an inline artifact at ${where}; ${action} it by editing that file${next}`);
@@ -102,6 +103,29 @@ export function withWorkerLock<T>(fn: () => T): T {
   }
   try {
     return fn();
+  } finally {
+    lock.release();
+  }
+}
+
+/** Hold the worker's single-instance lock across an async write operation.
+ *
+ * `withWorkerLock`'s `finally` wraps a synchronous call: handed an async
+ * callback instead, that `finally` fires the instant the callback returns its
+ * promise, not when the promise settles, so the lock is released while the
+ * awaited work (here, a drafter call) is still running. This awaits `fn()`
+ * inside the `try`, so the lock covers the whole operation and is always
+ * released, success or failure. */
+export async function withWorkerLockAsync<T>(fn: () => Promise<T>): Promise<T> {
+  const lock = new worker.Lock();
+  try {
+    lock.acquire();
+  } catch (e) {
+    if (e instanceof LockHeld) throw new ReviewError("worker is running, retry in a moment");
+    throw new ReviewError(`cannot take the worker lock: ${(e as Error).message}`);
+  }
+  try {
+    return await fn();
   } finally {
     lock.release();
   }

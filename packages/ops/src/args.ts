@@ -93,3 +93,17 @@ export type ReflectionListArgs = z.infer<typeof ReflectionListArgs>;
 // web console: live logs and revise
 export const ReviseArgs = AcceptArgs.extend({ instruction: z.string().trim().min(1).max(4000) });
 export type ReviseArgs = z.infer<typeof ReviseArgs>;
+
+// web console: refine and escalated review
+// Both bounds match ReviseArgs.instruction, verified against the live schema
+// above. `instruction` is optional: a Refine click may carry no human text at
+// all, grounded instead in new evidence. `reason` is the server's own current
+// escalation reason (curriculum.plan's action.reason), sent by the Escalated
+// section so it reaches the drafter even when the operator typed nothing;
+// bounding and validating it here, not trusting whatever a client sends,
+// is what keeps the drafter's context to this server's own current read.
+export const RefineArgs = PatternArgs.extend({
+  instruction: z.string().trim().min(1).max(4000).optional(),
+  reason: z.string().trim().min(1).max(4000).optional(),
+});
+export type RefineArgs = z.infer<typeof RefineArgs>;

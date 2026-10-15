@@ -2,7 +2,7 @@
 // day and turning a revise instruction into a short title.
 
 import { describe, expect, test } from "bun:test";
-import { actionTarget, instructionTitle, summariseSources } from "../src/lib/review.ts";
+import { actionTarget, escalationInstructionFor, escalationRows, instructionTitle, summariseSources } from "../src/lib/review.ts";
 
 describe("summariseSources", () => {
   test("groups ids by the day encoded in their prefix and counts each day", () => {
@@ -72,5 +72,63 @@ describe("actionTarget", () => {
 
   test("returns null when the detail has not loaded yet", () => {
     expect(actionTarget("flaky-test", null)).toBeNull();
+  });
+});
+
+describe("escalationRows", () => {
+  const actions = [
+    { pattern: "flaky-test", action: "escalate", reason: "revised 2 time(s) and still recurring", sources: ["a", "b", "c"] },
+    { pattern: "timeout", action: "promote", reason: "3 new reflection(s)", sources: ["x"] },
+    { pattern: "no-grep", action: "escalate", reason: "revised 3 time(s) and still recurring", sources: [] },
+  ];
+
+  test("keeps only the escalate actions, sorted by pattern", () => {
+    const rows = escalationRows(actions, []);
+    expect(rows.map((r) => r.pattern)).toEqual(["flaky-test", "no-grep"]);
+  });
+
+  test("carries the reason and the evidence count", () => {
+    const rows = escalationRows(actions, []);
+    expect(rows[0]).toMatchObject({ pattern: "flaky-test", reason: "revised 2 time(s) and still recurring", evidenceCount: 3 });
+    expect(rows[1]).toMatchObject({ pattern: "no-grep", evidenceCount: 0 });
+  });
+
+  test("marks a pattern that already has a staged proposal, instead of dropping it", () => {
+    const rows = escalationRows(actions, ["flaky-test"]);
+    expect(rows.find((r) => r.pattern === "flaky-test")?.hasProposal).toBe(true);
+    expect(rows.find((r) => r.pattern === "no-grep")?.hasProposal).toBe(false);
+  });
+
+  test("returns an empty list when nothing is escalated", () => {
+    expect(escalationRows([{ pattern: "timeout", action: "promote", reason: "", sources: [] }], [])).toEqual([]);
+  });
+});
+
+describe("escalationInstructionFor", () => {
+  test("returns the stored instruction for a pattern", () => {
+    const store = new Map([["flaky-test", "mention the timeout"]]);
+    expect(escalationInstructionFor(store, "flaky-test")).toBe("mention the timeout");
+  });
+
+  test("returns an empty string for a pattern with nothing stored", () => {
+    expect(escalationInstructionFor(new Map(), "flaky-test")).toBe("");
+  });
+
+  // The regression this guards: "constructor" is a valid pattern slug. A
+  // plain object keyed by pattern (`store[pattern]`) returns
+  // Object.prototype's own `constructor` function for that key instead of
+  // undefined, and calling .trim() on a function throws before any request
+  // goes out. A Map has no such inherited keys.
+  test("returns an empty string for the pattern 'constructor', not an inherited value", () => {
+    const store = new Map<string, string>();
+    expect(escalationInstructionFor(store, "constructor")).toBe("");
+    expect(escalationInstructionFor(store, "toString")).toBe("");
+    expect(escalationInstructionFor(store, "__proto__")).toBe("");
+  });
+
+  test("'constructor' stores and reads back like any other pattern", () => {
+    const store = new Map<string, string>();
+    store.set("constructor", "a real instruction");
+    expect(escalationInstructionFor(store, "constructor")).toBe("a real instruction");
   });
 });

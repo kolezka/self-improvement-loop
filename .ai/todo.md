@@ -620,6 +620,184 @@ Spec: `docs/superpowers/specs/2026-10-14-learn-command-design.md`. Plan:
 - [ ] not done: `apps/cli/test/init.test.ts:141` fails on this machine (its no-identity
       control finds a git identity). Present in the pre-implementation baseline.
 
+## Refine and escalated review (branch feat/refine-escalated-review)
+
+Goal: a human can turn a plain instruction, or an escalated pattern's own
+reason and reflections, into a staged proposal for a live artifact, through
+the same lint/judge/hook/no-change pipeline a promotion uses, never auto-
+merged. See `docs/OPERATIONS.md` "Escalated patterns, and Refine".
+
+- [x] `packages/curriculum/src/run.ts`: `RunOptions.manualRefine` narrows two
+      gates only: skips the cached-refusal retry gate (`stillRefused`) that
+      blocks an automatic retry at the same scorecard state, and lets a
+      ledger-only refine with no reflections and no scorecard complaint
+      ground in the action's own `feedback` text instead of refusing. Every
+      other gate (lint, judge, hook, no-change, inline, auto-merge decided by
+      the caller's own cfg) is untouched.
+- [x] `packages/review/src/refine.ts`: `refine(world, cfg, pattern,
+      instruction?, opts?)`. Opens an existing proposal (ordinary refine, a
+      staged rehome stub, or a staged retirement) untouched and with no model
+      call; else adapts one explicit `action: "refine"` to `run()` with
+      `manualRefine: true` and `promotion.auto_merge` forced false, holding
+      the worker lock across the whole async call via a new
+      `withWorkerLockAsync` (the existing `withWorkerLock`'s `finally` wraps
+      a synchronous call, so an async callback would release the lock before
+      the drafter finishes, not after).
+- [x] ops: `artifacts.refine` (local, none), `Args.RefineArgs` (instruction
+      optional, same 4000-char bound as `review.revise`, verified against the
+      live schema); registry table now 42 ops.
+- [x] Escalations come from `curriculum.plan` actions with `action ===
+      "escalate"`, read fresh wherever needed; no new persistent status.
+      `apps/web/src/lib/review.ts`: `escalationRows` joins them with the
+      staged queue so a pattern that already has a proposal is marked
+      (`hasProposal`), not dropped or double-drafted.
+      `apps/web/src/lib/overview.ts`: `pendingTotal` counts staged and
+      escalated patterns once each for the same reason; `reviewLink` always
+      opens Review now that it shows both.
+- [x] web: Review pane gains an Escalated section (reason, evidence count,
+      optional instruction, Create/Open proposal); Artifacts gains a Refine
+      drawer next to Preview/Verify/Retire, gated by `canRefine` (same
+      eligibility as `canRetire`). Either entry point's result opens in
+      Review's existing detail/diff/Accept/Reject/Request-changes view
+      (`appState.openReviewPattern`, read once on mount). Overview's tile and
+      the nav rail's count both switch to `pendingTotal`.
+- [x] tests: `run.test.ts` (manualRefine bypasses cached refusal; grounds a
+      ledger-only refine in the instruction, but only when manually
+      requested), `refine.test.ts` (eligibility refusals with no model call,
+      fresh proposal creation, the instruction reaching the drafter, never
+      auto-merging even with `auto_merge: true`, a judge refusal staying
+      visible with ledger/target untouched, an existing staged/retired/
+      rehomed proposal opened with no model call, the worker lock held
+      across the whole async drafting call and released on success and on
+      error, distinct world routing), `ops/test/refine.test.ts` (integration:
+      `artifacts.refine` through the real registry, real review + curriculum
+      + git, only the drafter transport mocked; create -> Request changes ->
+      stale-digest Accept refused -> fresh Accept; Reject preserves the live
+      artifact), web pure-helper tests (`canRefine`, `escalationRows`,
+      `pendingTotal`, `reviewLink`).
+- [x] verify: full CI sequence green (install, lockfile diff, lint:dashes,
+      typecheck, check:web, build, bun test). Two unrelated failures, both
+      confirmed pre-existing and machine/timing specific, zero diff in either
+      one's dependency chain: `apps/cli/test/init.test.ts:141` (documented
+      above under two earlier branches: this machine's no-identity control
+      finds a git identity anyway) and a flaky concurrent-Stop timing test in
+      `apps/hook/test/stop.test.ts` (3/3 green in isolation).
+- [ ] not done: no DOM test harness in this repo (same gap noted under the
+      Preview/Verify/Retire branch), so the Refine drawer and the Escalated
+      section are exercised by typecheck/svelte-check and pure-helper tests
+      only, not a rendered assertion.
+
+### Fix round 1 (independent review, 8 findings)
+
+Review: `/tmp/sil-refine-sol-review-e0e0b56d.md`. All lead-verified items fixed
+here, each with a test run red against the code just before the fix.
+
+- [x] P1: `refine()` treated an auto-merged branch (left in place by
+      `autoMergeBranch`, excluded from `review.queue` the same way) as an
+      existing proposal, so a manual refine after an auto-merge silently
+      opened the stale leftover instead of drafting. Fixed: a branch that is
+      an ancestor of the default branch is deleted first, then the normal
+      create path runs; an unmerged branch is still opened untouched.
+- [x] P1: the Escalated section sent only the typed instruction, never the
+      planner's own reason, so the escalation budget and recurrence rate the
+      operator saw never reached the drafter, and the reason's "change the
+      type" advice could not be bypassed server side either way (refine
+      always keeps the current type). Fixed server side, not client side, so
+      it cannot be skipped: `RefineOptions.reason` (and `Args.RefineArgs.reason`,
+      bounded like `instruction`) is composed with `instruction` and a fixed
+      type-change-goes-through-Rehome line at one point in `refine.ts`.
+      Review.svelte sends the escalated row's current reason; a static hint
+      above the list also says so.
+- [x] P2: a ledger row that stayed "promoted" after its file was deleted and
+      committed (outside the loop) drafted a brand-new file instead of
+      refusing. Fixed: `refine()` reuses `readLiveBody` (now exported from
+      `verify.ts`, the same function Preview reads through) and refuses
+      before any model call when the body is empty.
+- [x] P2+P2: `App.svelte`'s status poll called `curriculum.plan` (a full
+      reflection scan plus scorecards) every 10s from every open tab via a
+      shared `Promise.all` with `review.queue`, so a plan failure zeroed an
+      otherwise-healthy staged badge. Fixed: the two calls resolve
+      independently; `curriculum.plan` is cached and reused for 60s unless a
+      world switch or a `statusSeq` bump forces a fresh read;
+      `resolvedPendingCount` (new pure helper, `overview.ts`) falls back to
+      the staged count alone when the escalated list is unknown, never to
+      zero.
+- [x] P2: a late `artifacts.refine` response in Review or Artifacts could
+      hijack the operator's selection or navigate them into a world they had
+      since left. Fixed: both capture the world and a request generation at
+      dispatch (Review reuses its existing `seq` counter via `openPattern`;
+      Artifacts gets its own `refineSeq`) and compare on completion; a stale
+      result still gets a toast, never a refresh, a selection, or a
+      navigation.
+- [x] P3: `constructor` is a valid pattern slug, and the Escalated section's
+      instruction store was a plain object indexed by pattern, so
+      `store["constructor"]` read `Object.prototype`'s own function instead
+      of undefined and `.trim()` on it threw. Fixed: a `Map<string, string>`
+      (`escalationInstructionFor`, new pure helper, `review.ts`), which has no
+      inherited keys to collide with.
+- [x] Test honesty: the "staged refine" existing-proposal test staged via an
+      ordinary `promote` action that happened to land (plan() would have
+      classified it `promote`, not `refine`, for that fixture); now stages an
+      explicit `action: "refine"` through `RunOptions.actions` so the premise
+      is true by construction. The worker-lock-held test now asserts the
+      caught error is specifically `LockHeld`, not any thrown error.
+- [x] not fixed, by lead's ruling, documented instead: P2 `gitRaw`
+      (`packages/curriculum/src/git.ts`) calls `Bun.spawnSync` with no `env`
+      option, so it reads whatever environment this Bun process started
+      with, not `silEnv()`'s later `process.env.GIT_CONFIG_GLOBAL`/
+      `GIT_CONFIG_SYSTEM` overrides. Pre-existing in a helper every
+      curriculum/review test already depends on, not introduced by this
+      branch; the new refine tests inherit it rather than cause it. Passing
+      `env: {...process.env}` through the one shared spawn point
+      (`gitRaw`) would fix every caller at once, but is a wider change than
+      this branch's scope. Open follow-up.
+- [x] verify: full CI sequence green again after the fixes (install, lockfile
+      diff, lint:dashes, typecheck, check:web, build, bun test).
+
+### Fix round 2 (scoped re-review of round 1, 4 small findings)
+
+Re-review: `/tmp/sil-refine-sol-rereview-e0e0b56d.md`.
+
+- [x] Finding 6 completed: `Review.svelte`'s `createOrOpenEscalation` only
+      rechecked world/generation once, right after the `artifacts.refine`
+      call, but then awaited `refresh()` before calling `openPattern()` with
+      no second check. A selection made during that second await could still
+      be overridden. Added the same `mySeq`/`appState.world` recheck after
+      `refresh()`, returning before `openPattern()` if either moved.
+      `Artifacts.svelte`'s `submitRefine` has only the one await (the op
+      call itself) with no further await before navigating, so it needed no
+      change; checked and left as is.
+- [x] Ref-resolution bug in `isConsumedByAutoMerge` (`refine.ts`): resolved
+      `${branch}^{commit}`/`${defaultRef}^{commit}` unqualified. Git's
+      short-name lookup checks `refs/tags/` before `refs/heads/`
+      (gitrevisions(7)), so a tag sharing the branch's name and pointing at
+      a merged commit could make a genuinely unmerged, pending proposal look
+      consumed, and `git branch -D` would then delete it for real. Fixed:
+      both resolve through `refs/heads/...` explicitly. Regression test
+      creates exactly that tag and asserts the branch SHA, `created: false`
+      and zero model calls.
+- [x] `App.svelte`'s `refreshStatus`: a forced refresh (world switch or a
+      `statusSeq` bump) arriving while a poll was already in flight returned
+      immediately and was silently dropped; the badge could show a stale
+      escalation count until the 60s cache happened to expire on its own.
+      New `apps/web/src/lib/poll.ts` (`requestPoll`/`finishPoll`, a small
+      pure busy/queued state machine, unit tested on its own) queues the
+      force instead and reruns once, forced, the moment the in-flight poll
+      finishes.
+- [x] Lead-found: `Review.svelte`'s `escalationInstructions` was a plain
+      `Map` wrapped in `$state`. Svelte 5's `$state` does not deep-track
+      mutation of a Map/Set instance it merely holds (only reassignment of
+      the variable itself, or the dedicated reactive classes, are tracked),
+      so `.set()` never re-rendered the input: after a successful create it
+      kept showing the old text while the map actually held `""`, so the
+      next submit for that row silently sent nothing. Switched to
+      `SvelteMap` from `svelte/reactivity`, which tracks its own `.get()`/
+      `.set()` directly. Kept the constructor-safe `.get()` lookup
+      (`escalationInstructionFor`) and the same read/write source on both
+      sides of the input binding (checked, unchanged).
+- [x] verify: full CI sequence green again (install, lockfile diff,
+      lint:dashes, typecheck, check:web, build, bun test).
+
 ## Artifacts pane: Preview, Verify, Retire fix (branch feat/artifact-verify-preview)
 Based on `origin/fix/artifact-type-routing` (PR #68, not merged): carries
 `DraftOptions.wantRouteAnswer`, `ParseDraftOptions.keepRouteAnswer`, `route()`,

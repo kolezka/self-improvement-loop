@@ -38,6 +38,44 @@ export function instructionTitle(text: string): string {
   return line.length > 60 ? `${line.slice(0, 57)}...` : line;
 }
 
+export interface PlanActionLike {
+  pattern: string;
+  action: string;
+  reason: string;
+  sources: readonly string[];
+}
+
+export interface EscalationRow {
+  pattern: string;
+  reason: string;
+  evidenceCount: number;
+  /** True when a proposal is already staged for this pattern: Create
+   * proposal then just opens it, never redrafting or overwriting it. */
+  hasProposal: boolean;
+}
+
+/** Escalated curriculum plan actions (recurring almost as often after a
+ * redraft as before it), joined with the staged queue so a pattern that
+ * already has a proposal is marked rather than invited to draft a second
+ * one. Sorted by pattern, for a stable list across reloads. */
+export function escalationRows(actions: readonly PlanActionLike[], stagedPatterns: readonly string[]): EscalationRow[] {
+  const staged = new Set(stagedPatterns);
+  return actions
+    .filter((a) => a.action === "escalate")
+    .map((a) => ({ pattern: a.pattern, reason: a.reason, evidenceCount: a.sources.length, hasProposal: staged.has(a.pattern) }))
+    .sort((a, b) => (a.pattern < b.pattern ? -1 : a.pattern > b.pattern ? 1 : 0));
+}
+
+/** The stored optional instruction text for an escalated pattern, or "" when
+ * none has been typed yet. Takes a Map, not a plain object indexed by
+ * pattern: "constructor" is a valid pattern slug, and `store[pattern]` for
+ * that key returns `Object.prototype`'s own `constructor` function instead
+ * of undefined, which then throws the moment something calls `.trim()` on
+ * it. A Map has no inherited keys to collide with. */
+export function escalationInstructionFor(store: ReadonlyMap<string, string>, pattern: string): string {
+  return store.get(pattern) ?? "";
+}
+
 /** The pattern that Accept, Reject, Apply and Request changes may act on.
  * Returns it only when the selected list item and the loaded detail agree,
  * so a stale detail from a previous selection (still on screen while the

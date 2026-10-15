@@ -105,7 +105,7 @@ function liveEntry(world: World, pattern: string, verb: string): { ledger: Ledge
  * A rule reads only its own bullet from inside the managed block, same as
  * `checkLive` below: a stray or stale tag outside the block (left behind by a
  * hand edit) must never surface as this pattern's live text. */
-function readLiveBody(world: World, pattern: string, artifactType: ArtifactType, externalPath: string | null): { path: string; body: string } {
+export function readLiveBody(world: World, pattern: string, artifactType: ArtifactType, externalPath: string | null): { path: string; body: string } {
   if (externalPath) {
     return { path: externalPath, body: existsSync(externalPath) ? fsx.readText(externalPath) : "" };
   }

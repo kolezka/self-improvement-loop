@@ -42,9 +42,27 @@ nothing serves the pattern after it, so it asks for `--yes` exactly like
 This binds the accept to exactly what you looked at; if the branch changed
 underneath you, accept fails and asks you to reload.
 
-### Artifacts pane: Preview, Verify, Retire
+### Escalated patterns, and Refine
 
-The web console's Artifacts pane lists every ledger row with up to three row
+A promoted artifact that has used up its redraft budget and is still
+recurring almost as often as before shows up as escalated: `sil curriculum
+plan` reports it with `action: escalate`, and the Review pane's Escalated
+section lists it with its reason and how many reflections back it. Neither
+place drafts anything by itself; a human decides to change the artifact's
+type (rehome), split the pattern, or try one more redraft.
+
+"Create proposal" on an escalated row, and the Artifacts pane's **Refine**
+button on any live, non-inline row, both call the same `artifacts.refine` op
+with an optional instruction. It drafts through the same lint, judge and hook
+gates a promotion uses, always stages for review (never auto-merges, even
+with `promotion.auto_merge: true`), and opens the Review detail view on the
+result. If a proposal is already staged for that pattern (an ordinary
+refine, a staged rehome, or a staged retirement), it opens that proposal
+instead of redrafting or overwriting it.
+
+### Artifacts pane: Preview, Verify, Refine, Retire
+
+The web console's Artifacts pane lists every ledger row with up to four row
 actions.
 
 - **Preview** (every row) opens a read-only drawer with the artifact's body
@@ -67,6 +85,9 @@ actions.
   different from the current type), the drawer offers "Rehome to `<type>`",
   which calls `router.rehome` after a confirmation and stages the move for
   review like any other rehome.
+- **Refine** (live, non-inline rows) opens a drawer for an optional
+  instruction, then calls `artifacts.refine` (see "Escalated patterns, and
+  Refine" above) and opens the result in Review.
 - **Retire** now shows only on a live, non-inline row. It used to show on
   every row and failed with `"<pattern>" is already retired` when clicked on
   one already retired.

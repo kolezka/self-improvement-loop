@@ -1,10 +1,19 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import { call } from "../lib/api.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { formatTime, plural } from "../lib/format.ts";
-  import { actionTarget, instructionTitle, summariseSources } from "../lib/review.ts";
-  import type { ReviewDetail, ReviseResult } from "../lib/api-types.ts";
+  import {
+    actionTarget,
+    escalationInstructionFor,
+    escalationRows,
+    instructionTitle,
+    summariseSources,
+    type EscalationRow,
+    type PlanActionLike,
+  } from "../lib/review.ts";
+  import type { RefineResult, ReviewDetail, ReviseResult } from "../lib/api-types.ts";
   import DiffView from "../components/DiffView.svelte";
   import MarkdownBody from "../components/MarkdownBody.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -28,6 +37,25 @@
   }
 
   let items = $state<QueueItem[]>([]);
+  // Raw curriculum.plan actions; escalationRows (joined with `items` below)
+  // is what the Escalated section actually renders, recomputed whenever
+  // either changes so accepting or rejecting a staged proposal updates which
+  // escalated rows already have one.
+  let escalateActions = $state<PlanActionLike[]>([]);
+  const escalations = $derived<EscalationRow[]>(escalationRows(escalateActions, items.map((i) => i.pattern)));
+  // Per-pattern optional instruction for Create proposal, and which patterns
+  // currently have a create request in flight (disables that row's button
+  // without disabling the whole section). A Map, not a plain object: a
+  // pattern named "constructor" is a valid slug, and `{}[pattern]` for that
+  // key returns Object.prototype's own constructor function instead of
+  // undefined, which then throws the moment something calls .trim() on it.
+  // SvelteMap, not a plain Map wrapped in $state: $state does not deep-track
+  // mutation of a Map instance it merely holds, so `.set()` on a plain Map
+  // never re-rendered the input (it kept showing the old text after a
+  // successful create, and the next submit silently sent "" instead).
+  // SvelteMap tracks its own `.get()`/`.set()` reads and writes directly.
+  let escalationInstructions = new SvelteMap<string, string>();
+  let escalationBusy = $state<Set<string>>(new Set());
   let detail = $state<ReviewDetail | null>(null);
   let diffText = $state("");
   let selectedPattern = $state<string | null>(null);
@@ -86,6 +114,22 @@
     } catch (e) {
       toast(`could not load review queue: ${(e as Error).message}`);
     }
+  }
+
+  // Escalations come from curriculum.plan, not a separate review op: an
+  // escalated pattern is never staged by the planner itself, only ever by a
+  // human choosing to Create proposal for it.
+  async function loadEscalations() {
+    try {
+      const plan = (await call("curriculum.plan", { world: appState.world })) as { actions: PlanActionLike[] };
+      escalateActions = plan.actions;
+    } catch (e) {
+      toast(`could not load escalations: ${(e as Error).message}`);
+    }
+  }
+
+  async function refresh() {
+    await Promise.all([loadQueue(), loadEscalations()]);
   }
 
   async function openPattern(pattern: string) {
@@ -165,7 +209,9 @@
     detail = null;
     showRevise = false;
     reviseNote = null;
-    await loadQueue();
+    // Accepting or rejecting can change a scorecard's recurrence rate, so an
+    // escalated row can stop (or start) qualifying; refresh both lists.
+    await refresh();
     appState.statusSeq += 1;
   }
 
@@ -247,6 +293,61 @@
     }
   }
 
+  function setEscalationInstruction(pattern: string, value: string): void {
+    escalationInstructions.set(pattern, value);
+  }
+
+  /** Create proposal on an escalated row, or just open it if one is already
+   * staged (artifacts.refine decides which; a row's own `hasProposal` only
+   * changes the button label). Reuses the same detail/diff/Accept/Reject
+   * controls every other staged proposal uses: the result is just another
+   * pattern to openPattern.
+   *
+   * Captures the world and the shared `seq` generation at dispatch. `seq` is
+   * bumped by `openPattern`, so if the operator selects a different staged
+   * proposal while this request is in flight, the comparison below catches
+   * it; a world switch remounts this whole pane, but the dead instance's
+   * closure still reads the live, shared `appState.world`, which is how it
+   * notices too. Either way, a stale completion still gets a toast, just
+   * never a refresh, a selection or a navigation nobody asked for any more. */
+  async function createOrOpenEscalation(pattern: string) {
+    if (escalationBusy.has(pattern) || revising) return;
+    escalationBusy = new Set(escalationBusy).add(pattern);
+    const row = escalations.find((r) => r.pattern === pattern);
+    const text = escalationInstructionFor(escalationInstructions, pattern).trim();
+    const requestWorld = appState.world;
+    const mySeq = seq;
+    try {
+      const result = (await call("artifacts.refine", {
+        world: requestWorld,
+        pattern,
+        ...(row?.reason ? { reason: row.reason } : {}),
+        ...(text.length > 0 ? { instruction: text } : {}),
+      })) as RefineResult;
+      if (mySeq !== seq || appState.world !== requestWorld) {
+        toast(`${pattern}: proposal ${result.created ? "staged" : "already staged"} in ${requestWorld}.`, "ok");
+        return;
+      }
+      toast(result.created ? `${pattern}: proposal staged.` : `${pattern}: a proposal was already staged.`, "ok");
+      setEscalationInstruction(pattern, "");
+      await refresh();
+      // The operator may have selected a different proposal, or switched
+      // world, while refresh() itself was in flight: recheck before
+      // yanking them into this pattern's detail view.
+      if (mySeq !== seq || appState.world !== requestWorld) return;
+      await openPattern(pattern);
+      appState.statusSeq += 1;
+    } catch (e) {
+      const stale = mySeq !== seq || appState.world !== requestWorld;
+      const message = (e as Error).message;
+      toast(stale ? `could not create a proposal for ${pattern} in ${requestWorld}: ${message}` : `could not create a proposal for ${pattern}: ${message}`);
+    } finally {
+      const next = new Set(escalationBusy);
+      next.delete(pattern);
+      escalationBusy = next;
+    }
+  }
+
   // The pattern Accept, Reject, Apply and Request changes may act on. Null
   // while the detail is still loading, failed to load, or is stale for the
   // current selection.
@@ -277,11 +378,21 @@
 
   const sourcesSummary = $derived(summariseSources(detail?.sources ?? []));
 
-  onMount(loadQueue);
+  onMount(async () => {
+    await refresh();
+    // Artifacts' Refine button sets this just before navigating here, so the
+    // generated (or reopened) proposal opens in this same detail view
+    // instead of leaving the operator to find it in the list themselves.
+    const pending = appState.openReviewPattern;
+    if (pending !== null) {
+      appState.openReviewPattern = null;
+      await openPattern(pending);
+    }
+  });
 </script>
 
 <div class="toolbar">
-  <button onclick={loadQueue} disabled={revising}>Refresh</button>
+  <button onclick={refresh} disabled={revising}>Refresh</button>
 </div>
 
 <div class="split">
@@ -484,6 +595,61 @@
   </div>
 </div>
 
+<div class="panel escalated">
+  <div class="panel__head">
+    <h3>Escalated</h3>
+    <span class="badge warn">{escalations.length}</span>
+    <span class="spacer"></span>
+    <span class="meta">Recurring almost as often as before a redraft. Try one more redraft, or change the type or split the pattern yourself.</span>
+  </div>
+  <div class="panel__body">
+    {#if escalations.length === 0}
+      <div class="empty">
+        <strong>Nothing escalated.</strong>
+        An artifact lands here when it keeps recurring at nearly its pre-redraft rate after using up its redraft budget.
+      </div>
+    {:else}
+      <p class="meta escalated__hint">
+        Create proposal always keeps the current artifact type and sends this row's reason to the drafter. For a type change, use Move to on the
+        proposal once it opens here, or Rehome from Artifacts.
+      </p>
+      <ul class="list">
+        {#each escalations as row (row.pattern)}
+          <li class="escalated__row">
+            <div class="row__title">
+              <span class="grow mono">{row.pattern}</span>
+              <span class="chip">{plural(row.evidenceCount, "reflection")}</span>
+              {#if row.hasProposal}
+                <span class="chip accent">proposal staged</span>
+              {/if}
+            </div>
+            <p class="meta">{row.reason}</p>
+            <div class="escalated__action">
+              <input
+                type="text"
+                maxlength={MAX_INSTRUCTION}
+                placeholder="Optional instruction for the redraft"
+                value={escalationInstructionFor(escalationInstructions, row.pattern)}
+                oninput={(e) => setEscalationInstruction(row.pattern, (e.currentTarget as HTMLInputElement).value)}
+                disabled={escalationBusy.has(row.pattern)}
+              />
+              <button disabled={escalationBusy.has(row.pattern) || revising} onclick={() => createOrOpenEscalation(row.pattern)}>
+                {#if escalationBusy.has(row.pattern)}
+                  Working...
+                {:else if row.hasProposal}
+                  Open proposal
+                {:else}
+                  Create proposal
+                {/if}
+              </button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+</div>
+
 <style>
   /* review */
   .file {
@@ -662,5 +828,29 @@
     align-items: center;
     gap: 0.5rem;
     font-size: var(--fs-xs);
+  }
+
+  .escalated {
+    margin-top: 1.1rem;
+  }
+
+  .escalated__hint {
+    margin: 0 0 0.75rem;
+  }
+
+  .escalated__row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .escalated__action {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .escalated__action input {
+    flex: 1;
+    min-width: 0;
   }
 </style>

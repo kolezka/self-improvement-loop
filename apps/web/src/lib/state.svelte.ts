@@ -8,6 +8,11 @@ export const appState = $state({
   // watches it, so the Review badge drops the moment you accept a proposal
   // instead of on the next ten second poll.
   statusSeq: 0,
+  // Set by Artifacts' Refine action right before it navigates to #/review,
+  // so Review opens the generated (or reopened) proposal in the same detail
+  // view used for every other staged proposal, instead of leaving the
+  // operator to find it in the list themselves. Review clears it once read.
+  openReviewPattern: null as string | null,
 });
 
 export type ToastKind = "error" | "ok" | "info";

@@ -859,3 +859,14 @@ or `GIT_CONFIG_PARAMETERS`. Test-only; no production code changed.
 - [ ] not done: the separate `gitRaw` missing-`env` follow-up (noted above under
       `/learn inline lessons` and "Refine and escalated review") is untouched by
       this fix and stays open
+
+## /toolify reusable skills (2026-10-15, branch feat/toolify-command)
+Implemented on feat/toolify-command. Not merged, not released, not installed live.
+- [x] `commands/toolify.md` and `skills/self-improvement-loop/toolify.md`: turn
+      the last working answer in a session into a SKILL.md, registered with
+      `sil artifacts register --type skill`, same confirm gates as `/learn`
+- [x] `sil codex install` copies every procedure file (`learn.md`, `toolify.md`)
+      with the same symlink guard; codex tests parametrised over both (red on
+      toolify before the change)
+- [x] SKILL.md, README, OPERATIONS updated; manifest test lists `toolify`
+- [ ] not done: no live dogfood run of `/toolify` yet

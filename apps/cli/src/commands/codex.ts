@@ -10,6 +10,8 @@ import { paths } from "@sil/core";
 import * as schedule from "../schedule.ts";
 
 const SKILL_NAME = "self-improvement-loop";
+// Procedure files SKILL.md points at; Codex has no slash commands to reach them.
+const PROCEDURES = ["learn", "toolify"];
 
 export function codexSkillFile(): string {
   return join(schedule.home(), ".agents", "skills", SKILL_NAME, "SKILL.md");
@@ -23,12 +25,15 @@ export function cmdCodexInstall(): number {
     mkdirSync(dirname(dest), { recursive: true });
     copyFileSync(join(paths.pluginRoot(), "skills", SKILL_NAME, "SKILL.md"), dest);
     console.log(`skill   ${dest}`);
-    const learnDest = join(dirname(dest), "learn.md");
-    if (schedule.isSymlink(learnDest)) {
-      console.log(`learn   ${learnDest} is a symlink, left alone`);
-    } else {
-      copyFileSync(join(paths.pluginRoot(), "skills", SKILL_NAME, "learn.md"), learnDest);
-      console.log(`learn   ${learnDest}`);
+    for (const name of PROCEDURES) {
+      const procDest = join(dirname(dest), `${name}.md`);
+      const label = name.padEnd(7);
+      if (schedule.isSymlink(procDest)) {
+        console.log(`${label} ${procDest} is a symlink, left alone`);
+      } else {
+        copyFileSync(join(paths.pluginRoot(), "skills", SKILL_NAME, `${name}.md`), procDest);
+        console.log(`${label} ${procDest}`);
+      }
     }
   }
 

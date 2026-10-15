@@ -55,10 +55,10 @@ describe("sil codex install", () => {
     expect(out.join("\n")).toContain(installedSkill());
   });
 
-  test("copies learn.md next to SKILL.md", async () => {
+  test.each(["learn.md", "toolify.md"])("copies %s next to SKILL.md", async (procedure) => {
     expect(await run(["codex", "install"])).toBe(0);
-    const installed = join(dirname(installedSkill()), "learn.md");
-    expect(readFileSync(installed, "utf8")).toBe(readFileSync(join(dirname(SOURCE_SKILL), "learn.md"), "utf8"));
+    const installed = join(dirname(installedSkill()), procedure);
+    expect(readFileSync(installed, "utf8")).toBe(readFileSync(join(dirname(SOURCE_SKILL), procedure), "utf8"));
   });
 
   test("re-running replaces a stale copy", async () => {
@@ -88,18 +88,18 @@ describe("sil codex install", () => {
     expect(out.join("\n")).toContain("symlink");
   });
 
-  test("never writes through a symlink the user put at learn.md", async () => {
-    const otherLearn = join(tmp, "checkout", "learn.md");
-    mkdirSync(dirname(otherLearn), { recursive: true });
-    writeFileSync(otherLearn, "checkout learn\n", "utf8");
-    const installedLearn = join(dirname(installedSkill()), "learn.md");
-    mkdirSync(dirname(installedLearn), { recursive: true });
-    symlinkSync(otherLearn, installedLearn);
+  test.each(["learn.md", "toolify.md"])("never writes through a symlink the user put at %s", async (procedure) => {
+    const other = join(tmp, "checkout", procedure);
+    mkdirSync(dirname(other), { recursive: true });
+    writeFileSync(other, "checkout copy\n", "utf8");
+    const installed = join(dirname(installedSkill()), procedure);
+    mkdirSync(dirname(installed), { recursive: true });
+    symlinkSync(other, installed);
 
     expect(await run(["codex", "install"])).toBe(0);
-    expect(readFileSync(otherLearn, "utf8")).toBe("checkout learn\n");
+    expect(readFileSync(other, "utf8")).toBe("checkout copy\n");
     expect(readFileSync(installedSkill(), "utf8")).toBe(readFileSync(SOURCE_SKILL, "utf8"));
-    expect(out.join("\n")).toContain(`${installedLearn} is a symlink, left alone`);
+    expect(out.join("\n")).toContain(`${installed} is a symlink, left alone`);
   });
 
   test("warns only when the shim directory is not on PATH", async () => {

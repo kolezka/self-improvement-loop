@@ -135,6 +135,27 @@ agent works through these steps and stops for your yes at each confirmation:
 The nudge scratch directory is removed after register succeeds or you say no.
 If register refuses, it is kept so the retry reads the same approved bytes.
 
+## Saving a working answer as a skill (`/toolify`)
+
+`/toolify [note]` turns the last answer that worked in the current session (a
+Redash query, a set of API calls, a command sequence) into a skill, so a later
+session repeats it without finding it again. In Codex, ask the agent to save
+the answer as a tool. The agent:
+
+1. Extracts the request, the exact query or commands that ran, the fixed
+   values, the parameters and the expected result. Only facts confirmed by tool
+   output count. You confirm the summary.
+2. Proposes the world and checks for an existing skill, as `/learn` does.
+3. Proposes a scope (project `.claude/skills/` or `~/.claude/skills/`) and a
+   slug, which is also the skill's `name`.
+4. Drafts SKILL.md (trigger, parameters, steps, expected result, what to check
+   when it stops working). Secrets become environment variable names.
+5. Runs `sil artifacts register --type skill ... --dry-run` and shows you the
+   file and the ledger row. Nothing is written before your yes.
+6. Writes and registers it under the same rules as `/learn` steps 7 and 8.
+
+A stale tool is voted down with `/feedback skill:<slug> bad`.
+
 ### `sil artifacts register`
 
 ```text

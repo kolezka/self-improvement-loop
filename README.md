@@ -79,7 +79,7 @@ or whose agent operates it.
 | Lessons delivered | `SessionStart` and `UserPromptSubmit` context | no, `sil lessons` reads them | managed block in `AGENTS.md` |
 | Skill use counted | yes | no | yes, on a read of the `SKILL.md` |
 | Agent skill | ships with the plugin | `sil codex install` | `sil openclaw install` |
-| Slash commands | `/reflect`, `/loop`, `/curriculum`, `/feedback`, `/learn` | none | none |
+| Slash commands | `/reflect`, `/loop`, `/curriculum`, `/feedback`, `/learn`, `/toolify` | none | none |
 
 Claude Code and Codex load the same skill file,
 [`skills/self-improvement-loop/SKILL.md`](skills/self-improvement-loop/SKILL.md).
@@ -155,6 +155,7 @@ it:
 | `/curriculum` | Dry-run preview of what would be promoted. `/curriculum apply` drafts and stages branches, detached. |
 | `/feedback <type>:<name> good\|bad [note]` | Record a vote on an artifact. |
 | `/learn [note]` | Turn a mistake caught in this session into a rule, skill, agent or nudge now. Nothing is written to your repos before you approve the diff. |
+| `/toolify [note]` | Save the last working answer (a query, API calls, commands) as a skill, so it can be repeated without finding it again. Nothing is written before you approve the file. |
 
 **Codex** gets the same skill from `sil codex install`. Mention it with
 `$self-improvement-loop`, or let Codex pick it from its description. A Codex

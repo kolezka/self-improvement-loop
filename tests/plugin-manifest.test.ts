@@ -146,8 +146,8 @@ const commandFiles = readdirSync(join(ROOT, "commands"))
   .sort();
 
 describe("commands/*.md", () => {
-  test("exactly reflect, loop, curriculum, feedback, learn are present", () => {
-    expect(new Set(commandFiles.map((f) => f.replace(/\.md$/, "")))).toEqual(new Set(["reflect", "loop", "curriculum", "feedback", "learn"]));
+  test("exactly reflect, loop, curriculum, feedback, learn, toolify are present", () => {
+    expect(new Set(commandFiles.map((f) => f.replace(/\.md$/, "")))).toEqual(new Set(["reflect", "loop", "curriculum", "feedback", "learn", "toolify"]));
   });
 
   test.each(commandFiles)("%s has a description in its frontmatter", (name) => {

@@ -112,17 +112,25 @@ describe("sil init on a machine with no git identity", () => {
   // environment this process started with, not one it changed since.
   const CLI = join(import.meta.dir, "..", "src", "main.ts");
 
-  function strippedEnv(): Record<string, string> {
+  // A test can pass a fixture env here instead of mutating process.env.
+  function strippedEnv(inherited: Record<string, string | undefined> = process.env): Record<string, string> {
     const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
+    for (const [key, value] of Object.entries(inherited)) {
       if (value === undefined) continue;
       if (key.startsWith("GIT_AUTHOR_") || key.startsWith("GIT_COMMITTER_") || key === "EMAIL") continue;
+      // A parent process can inject identity through these. Drop them all.
+      if (key === "GIT_CONFIG_PARAMETERS" || key === "GIT_CONFIG_COUNT" || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) continue;
       env[key] = value;
     }
     // An empty file is a config with nothing in it, so git reads no identity
     // from the global or the system scope.
     env["GIT_CONFIG_GLOBAL"] = "/dev/null";
     env["GIT_CONFIG_SYSTEM"] = "/dev/null";
+    // Also reject git's OS-level identity guess, not just a configured one,
+    // so an intact environment can never pass as the no-identity control.
+    env["GIT_CONFIG_COUNT"] = "1";
+    env["GIT_CONFIG_KEY_0"] = "user.useConfigOnly";
+    env["GIT_CONFIG_VALUE_0"] = "true";
     return env;
   }
 
@@ -145,5 +153,28 @@ describe("sil init on a machine with no git identity", () => {
 
     const cfg = loadConfig();
     expect(commits(targetRoot(worldNamed(cfg, "default")), env)).toBe(true);
+  });
+
+  test("strippedEnv rejects an identity inherited through command-scope git config", () => {
+    // A parent process can already have these set to inject an identity.
+    // A fresh object, not process.env, so this fixture cannot leak elsewhere.
+    const inherited: Record<string, string | undefined> = {
+      ...process.env,
+      GIT_CONFIG_COUNT: "3",
+      GIT_CONFIG_KEY_0: "user.useConfigOnly",
+      GIT_CONFIG_VALUE_0: "false",
+      GIT_CONFIG_KEY_1: "user.name",
+      GIT_CONFIG_VALUE_1: "Fixture Name",
+      GIT_CONFIG_KEY_2: "user.email",
+      GIT_CONFIG_VALUE_2: "fixture@example.invalid",
+      GIT_CONFIG_PARAMETERS: "'user.name=Fixture Parameters' 'user.email=fixture-parameters@example.invalid'",
+    };
+
+    const env = strippedEnv(inherited);
+
+    const repo = join(tmp, "inherited-config");
+    mkdirSync(repo, { recursive: true });
+    expect(Bun.spawnSync(["git", "init", "-q", "-b", "main", repo], { env }).exitCode).toBe(0);
+    expect(commits(repo, env)).toBe(false);
   });
 });

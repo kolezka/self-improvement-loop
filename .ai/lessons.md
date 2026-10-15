@@ -197,3 +197,9 @@
   to acquire it from inside the chat callback while it is "thinking" (expects `LockHeld`), not
   just that the call eventually succeeds. A green round trip does not prove the lock was held
   for its duration; only trying to double-acquire it mid-call does.
+- 2026-10-15: `init.test.ts`'s no-identity control pointed global/system config at
+  `/dev/null`, but that does not stop git's OS-level identity guess, and an
+  inherited `GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_COUNT`/`KEY_*`/`VALUE_*` can
+  inject one too. Fix: force `user.useConfigOnly=true`; clear `GIT_CONFIG_PARAMETERS`
+  outright since useConfigOnly cannot block it; overwrite counted config, scrubbing
+  leftover keys for hygiene. Assert on an actual git commit, never env shape alone.

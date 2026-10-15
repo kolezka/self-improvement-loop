@@ -577,8 +577,7 @@ against `origin/main` before the fix and green after.
       above
 - [x] full CI: `bun install`, `git diff --exit-code -- bun.lock`, `lint:dashes`,
       `typecheck`, `check:web`, `build`, `bun test`, all green
-- [ ] not done: `apps/cli/test/init.test.ts:141` still fails on this machine (pre-existing,
-      documented below under `/learn inline lessons`, unrelated to this branch)
+- [x] `apps/cli/test/init.test.ts:141` fixed 2026-10-15, see "Git identity test fix" below
 
 ## Gate corpus diagnosis (2026-10-14, branch fix/gate-corpus-match)
 - [x] Replay candidate pipeline gates against copied default and inkitt payload corpora with the real runner; command samples preserve pipes.
@@ -617,8 +616,7 @@ Spec: `docs/superpowers/specs/2026-10-14-learn-command-design.md`. Plan:
       (`existsSync` is false on ELOOP), which names the wrong cause.
 - [ ] not done: a dry run whose path passes through a regular file as an ancestor walks past
       it and previews a path under that file; the real run refuses with "does not exist".
-- [ ] not done: `apps/cli/test/init.test.ts:141` fails on this machine (its no-identity
-      control finds a git identity). Present in the pre-implementation baseline.
+- [x] `apps/cli/test/init.test.ts:141` fixed 2026-10-15, see "Git identity test fix" below
 
 ## Refine and escalated review (branch feat/refine-escalated-review)
 
@@ -831,3 +829,33 @@ trigger-scoped gate checks and `triggerMatches`.
       handler pass-through tests
 - [ ] not done: no DOM test harness in this repo, so the Preview/Verify Drawer
       markup is exercised by typecheck/svelte-check only, not a rendered assertion
+
+## Git identity test fix (2026-10-15, branch chore/release-1.2.0)
+
+`apps/cli/test/init.test.ts:141`'s no-identity control stripped `GIT_AUTHOR_*`,
+`GIT_COMMITTER_*` and `EMAIL`, but not the OS-level identity git can still guess
+with none of those set, and not an inherited `GIT_CONFIG_COUNT`/`KEY_*`/`VALUE_*`
+or `GIT_CONFIG_PARAMETERS`. Test-only; no production code changed.
+
+- [x] `strippedEnv` now takes an optional `inherited` env (default `process.env`)
+      so a test can hand it a fixture instead of mutating `process.env`; it strips
+      inherited `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`/`KEY_*`/`VALUE_*`,
+      then sets one command-scope entry, `user.useConfigOnly=true`
+- [x] new regression test with fixture `GIT_CONFIG_*` and `GIT_CONFIG_PARAMETERS`
+      identity values, exercising real git commits; both it and the original
+      control test reproduced red before the fix (fixture identity leaked through
+      and OS-guessed identity passed) and green after
+- [x] verify: full `init.test.ts` (10 pass), `lint:dashes`, `bun run build`, full
+      `bun test` (1957 pass, 0 fail, 123 files)
+- [x] lead's independent mutation check (disposable copies, `/tmp/sil-identity-mutation-bb741aeb`):
+      removing the `GIT_CONFIG_PARAMETERS` exclusion reopens the new regression
+      (expected false, got true); removing `ensureRepo`'s local name/email in
+      production fails the original end-to-end assertion (`init.exitCode` expected
+      0, received 1) after the control still passes, proving this test actually
+      catches a real production identity regression. Both restores passed,
+      production diff empty. The `GIT_CONFIG_COUNT`/`KEY_*`/`VALUE_*` loop scrub was
+      not separately mutated: it is redundant with the unconditional
+      `GIT_CONFIG_COUNT=1` set below it, kept as hygiene only.
+- [ ] not done: the separate `gitRaw` missing-`env` follow-up (noted above under
+      `/learn inline lessons` and "Refine and escalated review") is untouched by
+      this fix and stays open

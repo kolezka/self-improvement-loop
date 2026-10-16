@@ -622,6 +622,8 @@ Guards in the rest of the loop:
 - `review retire` and `rehome`: refuse an inline row, checked on the live row and
   on the branch row, and print its path.
 - `repair.ts`: skips inline rows. Their dates come from `register`.
+- `review delete`: takes an inline row, writes a `deleted` tombstone and leaves an
+  external file in place. `register` treats that tombstone as a free slug.
 - `feedback` `propose()`: no zero-use `retire-candidate` for an inline rule,
   whose uses are never counted. Complaints can still propose `refine`.
 - `context.ts`: an inline row's gist is its `note`.

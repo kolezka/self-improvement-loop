@@ -25,7 +25,7 @@ import { cmdLogs } from "./commands/logs.ts";
 import { cmdOpenclawEnqueue, cmdOpenclawInstall, cmdOpenclawScan, cmdOpenclawStatus, cmdOpenclawSync } from "./commands/openclaw.ts";
 import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
-import { cmdReviewAccept, cmdReviewList, cmdReviewRehome, cmdReviewReject, cmdReviewRetire, cmdReviewShow } from "./commands/review.ts";
+import { cmdReviewAccept, cmdReviewDelete, cmdReviewList, cmdReviewRehome, cmdReviewReject, cmdReviewRetire, cmdReviewShow } from "./commands/review.ts";
 import { cmdScheduleInstall, cmdScheduleShow, cmdScheduleUninstall } from "./commands/schedule.ts";
 import { cmdStatus } from "./commands/status.ts";
 import { cmdWeb } from "./commands/web.ts";
@@ -135,6 +135,12 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .requiredOption("--world <name>")
     .option("--yes")
     .action(wire((pattern: string, opts) => cmdReviewRetire(pattern, opts, deps)));
+  review
+    .command("delete")
+    .argument("<pattern>")
+    .requiredOption("--world <name>")
+    .option("--yes")
+    .action(wire((pattern: string, opts) => cmdReviewDelete(pattern, opts, deps)));
 
   const reflections = program.command("reflections");
   reflections

@@ -270,3 +270,7 @@
   worth asking explicitly whenever two hook paths (or any two
   implementations of one contract) each compute a shared gate separately
   instead of sharing the function that computes it.
+- Deleting a ledger row is not neutral: `watermark()` returns 0 for a missing
+  row, so the reflections already on disk read as new evidence and the next
+  tick stages the same artifact again. Removing a pattern means keeping a
+  tombstone that holds the watermark, not dropping the row.

@@ -103,11 +103,12 @@ function buildRow(
     throw new ReviewError(`${JSON.stringify(pattern)} is owned by the loop; vote on it with sil feedback, or pick a new slug`);
   }
   const external = copied ? undefined : path;
-  if (prior && prior.origin === "inline" && prior.external_path !== external) {
-    throw new ReviewError(`${JSON.stringify(pattern)} is already registered at ${prior.external_path ?? prior.served_by?.path ?? "?"}`);
+  // A deleted inline row is a tombstone, so registering the slug again starts fresh.
+  const again = prior?.origin === "inline" && prior.status !== "deleted";
+  if (again && prior!.external_path !== external) {
+    throw new ReviewError(`${JSON.stringify(pattern)} is already registered at ${prior!.external_path ?? prior!.served_by?.path ?? "?"}`);
   }
   const now = fsx.nowIso();
-  const again = prior?.origin === "inline";
   return {
     pattern,
     // Reflections already on disk are the evidence that led here, not recurrence.

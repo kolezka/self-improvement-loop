@@ -213,6 +213,9 @@ or opens a PR.
 `sil review retire <pattern> --world <w> --yes` stages the removal of a live
 artifact, and `sil review rehome <pattern> --type <type> --world <w>` stages a
 move to another type. Both take effect only when their branch is accepted.
+`sil review delete <pattern> --world <w> --yes` hides a retired, rejected or
+inline row, or discards a staged proposal that was never accepted. It refuses a
+live loop artifact: retire that first.
 
 `promotion.auto_merge: true` in `config.yaml` skips the review: curriculum
 fast-forwards a staged branch into the target repo's default branch on its own.

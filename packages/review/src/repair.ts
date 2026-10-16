@@ -94,6 +94,8 @@ export function computeRepair(snapshots: readonly LedgerSnapshot[]): RepairedRow
     const current = live.entries[pattern]!;
     // An inline row's dates come from register, not from ledger history.
     if (current.origin === "inline") continue;
+    // A tombstone serves nothing, so it has no dates to repair.
+    if (current.status === "deleted") continue;
 
     let span: Span | null = null;
     let lastClosed: Span | null = null;

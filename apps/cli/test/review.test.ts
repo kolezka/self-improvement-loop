@@ -70,3 +70,13 @@ describe("sil review rehome", () => {
     expect(code).toBe(2);
   });
 });
+
+describe("sil review delete", () => {
+  test("needs --yes", async () => {
+    expect(await run(["init"])).toBe(0);
+
+    const { code } = await captureStderr(() => run(["review", "delete", "some-pattern", "--world", "default"]));
+
+    expect(code).toBe(2);
+  });
+});

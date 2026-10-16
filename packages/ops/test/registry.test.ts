@@ -1,4 +1,4 @@
-// Registry self-checks and the full 42-op tier/gate table. Every test that
+// Registry self-checks and the full 43-op tier/gate table. Every test that
 // mutates REGISTRY (self-check tests register throwaway ops) restores the
 // snapshot taken at the start of the test so other test files still see the
 // real 41 ops registered by the side-effecting "../src/index.ts" import.
@@ -85,6 +85,7 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "skill.reject": ["local", "none"],
   "router.rehome": ["local", "confirm"],
   "router.retire": ["local", "confirm"],
+  "router.delete": ["local", "confirm"],
   "router.inventory": ["read", "none"],
   "artifacts.scorecards": ["read", "none"],
   "artifacts.rebuild": ["local", "none"],
@@ -100,7 +101,7 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "artifacts.refine": ["local", "none"],
 };
 
-describe("the 42 real ops", () => {
+describe("the 43 real ops", () => {
   test("registry has exactly the expected op names", () => {
     expect(new Set(REGISTRY.keys())).toEqual(new Set(Object.keys(EXPECTED)));
   });

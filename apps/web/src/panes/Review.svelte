@@ -234,6 +234,13 @@
     void act(() => call("skill.reject", { world: appState.world, pattern }), "rejected");
   }
 
+  function discard() {
+    const pattern = actionTarget(selectedPattern, detail);
+    if (!pattern) return;
+    if (!window.confirm(`Discard ${pattern}? The branch is deleted and the pattern is hidden until new evidence brings it back.`)) return;
+    void act(() => call("router.delete", { world: appState.world, pattern, confirm: true }), "discarded");
+  }
+
   function rehome() {
     const pattern = actionTarget(selectedPattern, detail);
     if (!pattern) return;
@@ -570,6 +577,14 @@
             Request changes
           </button>
           <button class="danger" disabled={revising || target === null} onclick={reject}>Reject proposal</button>
+          <button
+            class="danger"
+            disabled={revising || target === null || detail.live}
+            title={detail.live ? "This pattern is live. Reject the branch, or retire the artifact in Artifacts." : undefined}
+            onclick={discard}
+          >
+            Discard
+          </button>
           <span class="toolbar__spacer"></span>
           <label class="control">
             <span>Move to</span>

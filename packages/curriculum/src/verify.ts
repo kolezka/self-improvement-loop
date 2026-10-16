@@ -90,7 +90,9 @@ function liveEntry(world: World, pattern: string, verb: string): { ledger: Ledge
   const ledger = loadLedger(world);
   const entry = ledger.entries[pattern];
   if (!entry) throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to ${verb}`);
-  if (entry.status === "retired") throw new ReviewError(`${JSON.stringify(pattern)} is retired; nothing to ${verb}`);
+  if (entry.status === "retired" || entry.status === "deleted") {
+    throw new ReviewError(`${JSON.stringify(pattern)} is ${entry.status}; nothing to ${verb}`);
+  }
   const atype = servedType(entry);
   if (atype === "none") throw new ReviewError(`${JSON.stringify(pattern)} has no artifact type; nothing to ${verb}`);
   const externalPath = entry.origin === "inline" ? (entry.external_path ?? null) : null;

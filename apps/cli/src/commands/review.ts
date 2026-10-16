@@ -1,4 +1,4 @@
-// sil review: list, show, accept, reject, rehome, retire staged artifacts.
+// sil review: list, show, accept, reject, rehome, retire, delete staged artifacts.
 
 import type { ArtifactType } from "@sil/core";
 import { loadConfig, worldNamed } from "@sil/core";
@@ -114,5 +114,25 @@ export function cmdReviewRetire(pattern: string, opts: ReviewRetireOptions, deps
   const out = deps.review.retire(world, cfg, pattern);
   console.log(`staged the retirement of ${pattern} on ${out.branch} in world ${world.name}`);
   console.log(`accept it to remove the artifact: sil review show ${pattern} --world ${world.name}`);
+  return 0;
+}
+
+export interface ReviewDeleteOptions {
+  world: string;
+  yes?: boolean;
+}
+
+export function cmdReviewDelete(pattern: string, opts: ReviewDeleteOptions, deps: Deps = defaultDeps): number {
+  if (!opts.yes) {
+    console.error("error: sil review delete needs --yes to confirm");
+    return 2;
+  }
+  const cfg = loadConfig();
+  const world = worldNamed(cfg, opts.world);
+  const out = deps.review.remove(world, cfg, pattern);
+  console.log(`deleted ${pattern} in world ${world.name} (${out.commit})`);
+  if (out.branch_deleted) console.log(`discarded the staged branch ${out.branch_deleted}`);
+  if (out.removed) console.log(`removed ${out.removed}`);
+  if (out.kept) console.log(`left the inline file in place: ${out.kept}`);
   return 0;
 }

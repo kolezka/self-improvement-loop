@@ -50,6 +50,7 @@ register({ name: "skill.accept", tier: "remote", gate: "reviewed_state", args: A
 register({ name: "skill.reject", tier: "local", gate: "none", args: Args.PatternArgs, fn: review.skillReject, doc: "Reject a staged proposal; delete its branch." });
 register({ name: "router.rehome", tier: "local", gate: "confirm", args: Args.RehomeArgs, fn: review.routerRehome, doc: "Re-route a pattern to a different artifact type; artifact_type \"none\" removes it and requires confirm: true." });
 register({ name: "router.retire", tier: "local", gate: "confirm", args: Args.RetireArgs, fn: review.routerRetire, doc: "Retire an artifact; requires confirm: true." });
+register({ name: "router.delete", tier: "local", gate: "confirm", args: Args.DeleteArgs, fn: review.routerDelete, doc: "Delete a retired, rejected, inline or never-accepted pattern; keeps a hidden tombstone. Requires confirm: true." });
 register({ name: "router.inventory", tier: "read", gate: "none", args: Args.WorldArgs, fn: review.routerInventory, doc: "Router state joined with scorecards." });
 register({ name: "artifacts.scorecards", tier: "read", gate: "none", args: Args.WorldArgs, fn: artifacts.artifactsScorecards, doc: "Per-artifact usage scorecards." });
 register({ name: "artifacts.rebuild", tier: "local", gate: "none", args: Args.WorldArgs, fn: artifacts.artifactsRebuild, doc: "Recompute scorecards for a world." });

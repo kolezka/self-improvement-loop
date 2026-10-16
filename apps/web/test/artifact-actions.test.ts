@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canRefine, canRetire } from "../src/lib/artifact-actions.ts";
+import { canDelete, canRefine, canRetire } from "../src/lib/artifact-actions.ts";
 
 describe("canRetire", () => {
   test("shows Retire on a live (promoted) row", () => {
@@ -45,5 +45,20 @@ describe("canRefine", () => {
 
   test("hides Refine on a live inline row", () => {
     expect(canRefine({ status: "promoted", origin: "inline" })).toBe(false);
+  });
+});
+
+describe("canDelete", () => {
+  // removeInner refuses a live loop artifact: that removal goes through retire.
+  test("hides Delete on a live loop row", () => {
+    expect(canDelete({ status: "promoted" })).toBe(false);
+  });
+
+  test.each(["retired", "rejected", "staged"])("shows Delete on a %s row", (status) => {
+    expect(canDelete({ status })).toBe(true);
+  });
+
+  test("shows Delete on a live inline row", () => {
+    expect(canDelete({ status: "promoted", origin: "inline" })).toBe(true);
   });
 });

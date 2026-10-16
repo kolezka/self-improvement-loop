@@ -182,8 +182,8 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .option("--dry-run")
     .action(
       wire((action: string | undefined, opts) => {
-        if (action !== undefined && action !== "rebuild" && action !== "register") {
-          console.error(`error: unknown action ${JSON.stringify(action)}; expected rebuild or register`);
+        if (action !== undefined && action !== "rebuild" && action !== "register" && action !== "relink") {
+          console.error(`error: unknown action ${JSON.stringify(action)}; expected rebuild, register or relink`);
           return 2;
         }
         return cmdArtifacts({ ...opts, action }, deps);
@@ -247,6 +247,7 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .option("--target <path>")
     .option("--llm <llm>")
     .option("--layout <layout>", "", "default")
+    .option("--claude-config-dir <path>", "Claude config dir this world's skills and agents link into")
     .action(wire((name: string, opts) => cmdWorldsAdd(name, opts)));
   worlds
     .command("import-kb")

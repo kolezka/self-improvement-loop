@@ -251,3 +251,64 @@ describe("sil artifacts register (child process)", () => {
     expect(r.err).toContain(`${flag} is only valid with sil artifacts register`);
   });
 });
+
+describe("sil artifacts relink", () => {
+  async function capture(argv: string[]): Promise<{ code: number; text: string }> {
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    let code: number;
+    try {
+      code = await run(argv);
+    } finally {
+      console.log = orig;
+    }
+    return { code, text: logs.join("\n") };
+  }
+
+  function seedLiveSkill(pattern: string, claudeDir: string): void {
+    seedPromotedRow(pattern);
+    const cfgPath = join(process.env["SIL_CONFIG_DIR"]!, "config.yaml");
+    const text = readFileSync(cfgPath, "utf8").replace("claude_config_dir: null", `claude_config_dir: ${claudeDir}`);
+    writeFileSync(cfgPath, text, "utf8");
+    const world = worldNamed(loadConfig(), "default");
+    const skill = join(targetRoot(world), "skills", pattern, "SKILL.md");
+    mkdirSync(dirname(skill), { recursive: true });
+    writeFileSync(skill, "---\nname: x\n---\n", "utf8");
+  }
+
+  test("links live skills into the world's claude_config_dir, not CLAUDE_CONFIG_DIR", async () => {
+    expect(await run(["init"])).toBe(0);
+    const worldDir = join(tmp, "world-claude");
+    const envDir = join(tmp, "env-claude");
+    seedLiveSkill("demo-skill", worldDir);
+    const prev = process.env["CLAUDE_CONFIG_DIR"];
+    process.env["CLAUDE_CONFIG_DIR"] = envDir;
+    try {
+      const dry = await capture(["artifacts", "relink", "--world", "default", "--dry-run"]);
+      expect(dry.code).toBe(0);
+      expect(dry.text).toContain("demo-skill");
+      expect(existsSync(join(worldDir, "skills", "demo-skill"))).toBe(false);
+
+      const real = await capture(["artifacts", "relink", "--world", "default"]);
+      expect(real.code).toBe(0);
+      expect(realpathSync(join(worldDir, "skills", "demo-skill"))).toBe(realpathSync(join(targetRoot(worldNamed(loadConfig(), "default")), "skills", "demo-skill")));
+      expect(existsSync(join(envDir, "skills", "demo-skill"))).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env["CLAUDE_CONFIG_DIR"];
+      else process.env["CLAUDE_CONFIG_DIR"] = prev;
+    }
+  });
+
+  test("needs --world", async () => {
+    expect(await run(["init"])).toBe(0);
+    const errs: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => errs.push(a.map(String).join(" "));
+    try {
+      expect(await run(["artifacts", "relink"])).toBe(2);
+    } finally {
+      console.error = orig;
+    }
+  });
+});

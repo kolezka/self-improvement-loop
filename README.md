@@ -272,6 +272,22 @@ map to a world by the longest `repos` prefix match on `cwd`; a world with no
 sil worlds add work --repos ~/Development/work --target ~/dotfiles --llm cloud
 ```
 
+Accepted skills and agents are symlinked into a Claude config dir. Set
+`claude_config_dir` on a world (or pass `--claude-config-dir` to `sil worlds add`)
+when it runs under its own `CLAUDE_CONFIG_DIR`. Without it, links go to the
+`CLAUDE_CONFIG_DIR` (else `~/.claude`) of whichever process accepts the artifact,
+so a worker or review UI started in another world's shell links into that
+world's dir.
+
+```sh
+sil worlds add work --repos ~/Development/work --claude-config-dir ~/Development/work/.claude
+sil artifacts relink --world work --dry-run   # list what would change
+sil artifacts relink --world work             # link every live skill and agent
+```
+
+`relink` never replaces a real file or directory, and it only reports links into
+this world that sit in another world's config dir; remove those by hand.
+
 To keep a V1 (`dotfiles-next`) target repo's on-disk contract
 (`claude/skills`, `claude/hooks/nudges`, `claude/agents`, `global.CLAUDE.md`,
 `claude/skills/promotions.json`), add `--layout v1`:

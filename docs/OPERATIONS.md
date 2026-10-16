@@ -204,6 +204,11 @@ proposal in the reason.
 
 ## Switching providers
 
+A `litellm` endpoint exists only when `sil init --llm-base-url <url>` created
+one, or an operator added it to `llm.yaml` by hand. A plain `sil init` writes
+only the `claude` endpoint and makes it active; the examples below assume a
+`litellm` endpoint is already there.
+
 ```
 sil llm list                             endpoints, reachability, and who serves each role
 sil llm use claude                       send every role to `claude -p`
@@ -213,8 +218,10 @@ sil llm set-model critic sonnet --endpoint claude
 
 `sil llm use <endpoint>` sets `active` and clears the per role overrides, so it is a
 full switch. Adding `--role` touches that one role and leaves `active` alone. Model
-names live on the endpoint, so a switch never rewrites them: LiteLLM keeps
-`deepseek/deepseek-flash` (the `sil init` default) while the claude endpoint keeps `sonnet`.
+names live on the endpoint, so a switch never rewrites them: a `litellm` endpoint
+keeps the model `--model` gave it at init time (`deepseek/deepseek-flash` if none
+was given) while the claude endpoint keeps `sonnet` unless `--claude-model` said
+otherwise.
 
 The split that worked in the live run: critic on claude-cli, drafter and judge on
 LiteLLM. The critic reads a whole transcript and has to return strict JSON, which

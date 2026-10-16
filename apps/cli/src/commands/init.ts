@@ -96,7 +96,12 @@ export function cmdInit(opts: InitOptions): number {
     console.log("  sil llm use litellm --role drafter      send one role back to LiteLLM");
   } else {
     console.log("  sil llm use claude                      already active; every role runs through `claude -p`");
-    console.log("  pass --llm-base-url next time to also configure a LiteLLM endpoint");
+    // init never rewrites an existing llm.yaml, so "run init again" does
+    // nothing here; there is no `sil llm add`, so adding a LiteLLM endpoint
+    // now is a hand edit, named precisely rather than left to guesswork.
+    console.log("  to add a LiteLLM endpoint, add an entry to llm.yaml's endpoints list:");
+    console.log('    - name: litellm, kind: openai, base_url: <url>, api_key_env: LITELLM_API_KEY, models: {critic: <model>, drafter: <model>, judge: <model>}');
+    console.log("  then sil llm use litellm");
   }
   console.log("  sil web                                 open the review UI");
   console.log("  sil schedule install --web              run the worker and web UI on a schedule");

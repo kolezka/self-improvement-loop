@@ -458,6 +458,23 @@ describe("SessionStart before sil init", () => {
     expect(text).not.toContain("scripts/sil");
     cleanup();
   });
+
+  // Locks in parity with apps/hook's equivalent test: this path already
+  // reads "present" as "the read succeeded" (io.ts's readText swallows a
+  // rejected fs.read into null), so an existing-but-unreadable snapshot was
+  // already a not-initialized hint here. The drift apps/hook's test guards
+  // was the other side treating existsSync-true as "present" regardless of
+  // whether the read itself worked. The file is real (writeSnapshot(f) wrote
+  // it to disk); only the engine's own fs.read is faked to fail.
+  test("treats a snapshot that exists but whose read is rejected the same as not initialized", async () => {
+    const f = fixture({ fail: { read: true } });
+    writeSnapshot(f);
+    const result = await f.engine.fire("classic.SessionStart", sessionStart(f), {});
+    const text = contextOf(result)[0] ?? "";
+    expect(text).toBe(notInitializedLine(f.pluginRoot));
+    expect(text).not.toContain("self-improvement-loop is active:");
+    cleanup();
+  });
 });
 
 describe("classic.UserPromptSubmit", () => {

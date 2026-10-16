@@ -4,7 +4,7 @@
 // test_lesson_not_redelivered_in_same_session.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
 import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
@@ -138,5 +138,27 @@ describe("SessionStart before sil init", () => {
     const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
     expect(text).toContain("self-improvement-loop is active");
     expect(text).not.toContain("scripts/sil");
+  });
+
+  // Regression: this path decided "present" with a plain existsSync, which is
+  // true for a file this process then fails to read, so a snapshot that
+  // exists but is unreadable (bad permissions, a half-written disk) still
+  // claimed "is active" here while apps/hook-module (which decides it from
+  // whether the read itself succeeded) hinted at init for the exact same
+  // file. Both now use "the read succeeded", not "the path exists".
+  test("treats an existing but unreadable snapshot the same as not initialized", () => {
+    if (process.getuid?.() === 0) return; // root ignores file permissions
+    writeSnapshot();
+    chmodSync(paths.hookSnapshotFile(), 0o000);
+    try {
+      const payload = { session_id: "sess-start-unreadable", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
+      const result = runHook(MAIN_TS, hookEnv, payload);
+      expect(result.exitCode).toBe(0);
+      const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
+      expect(text).toContain(`"${hookEnv.pluginRoot}/scripts/sil" init`);
+      expect(text).not.toContain("self-improvement-loop is active");
+    } finally {
+      chmodSync(paths.hookSnapshotFile(), 0o644);
+    }
   });
 });

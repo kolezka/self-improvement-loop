@@ -33,3 +33,20 @@ export function loadSnapshot(): HookSnapshot {
   }
   return coerceSnapshot(obj, defaults);
 }
+
+/** Whether `sil init` has run: the snapshot file was actually read and
+ * parsed, not merely present. An existing file this process cannot read
+ * (permissions, a half-written disk) must read the same as "never
+ * init'ed", the definition apps/hook-module's `state.snapshotPresent`
+ * already uses (`readTextIfPresent` succeeding), so the SessionStart status
+ * line cannot say "active" in one hook path while the other says nothing or
+ * hints at init. `existsSync` alone is not this signal: it is true for a
+ * file that then fails to read. */
+export function snapshotPresent(): boolean {
+  try {
+    readFileSync(paths.hookSnapshotFile(), "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { RULE_END, RULE_START } from "@sil/core/consts";
+import { notInitializedLine } from "@sil/core/hook-snapshot";
 import { register, resetForTests } from "../src/register.ts";
 import { peekState } from "../src/state.ts";
 import { FakeEngine } from "./fake-engine.ts";
@@ -280,6 +281,7 @@ describe("classic.SessionStart", () => {
     // would take the command hooks away without the module doing their work.
     for (const probe of [pidProbe("", 1), pidProbe("garbage\n")]) {
       const f = fixture({ runs: [probe] });
+      writeSnapshot(f);
       const result = await f.engine.fire("classic.SessionStart", sessionStart(f), CORE_CONTEXT);
       expect(f.engine.indexOfCall("env.set SIL_HOOK_MODULE")).toBe(-1);
       expect(f.engine.env["SIL_HOOK_MODULE"]).toBeUndefined();
@@ -292,6 +294,7 @@ describe("classic.SessionStart", () => {
 
   test("appends the rules block, three lessons and the status line to the core context", async () => {
     const f = fixture();
+    writeSnapshot(f);
     writeRules(f, "- always check twice <!--rule:check-twice-->\n- never guess <!--rule:no-guessing-->");
     writeLesson(f, "oldest", { created: "2026-01-01" });
     writeLesson(f, "second", { created: "2026-02-01" });
@@ -428,6 +431,31 @@ describe("classic.SessionStart", () => {
     writeLesson(f, "elsewhere", { created: "2026-01-01", repo: join(f.root, "other-repo") });
     const result = await f.engine.fire("classic.SessionStart", sessionStart(f), {});
     expect(contextOf(result)[0]).not.toContain("Lesson (elsewhere)");
+    cleanup();
+  });
+});
+
+// Regression: before `sil init`, the module injected the same "is active"
+// line as an initialized session, with no hint that nothing gets reflected
+// until init runs and no pointer to the command that fixes it.
+describe("SessionStart before sil init", () => {
+  test("hints at init instead of claiming the loop is active, naming the real plugin root", async () => {
+    const f = fixture();
+    const result = await f.engine.fire("classic.SessionStart", sessionStart(f), {});
+    const text = contextOf(result)[0] ?? "";
+    expect(text).toBe(notInitializedLine(f.pluginRoot));
+    expect(text).toContain(`"${f.pluginRoot}/scripts/sil" init`);
+    expect(text).not.toContain("self-improvement-loop is active:");
+    cleanup();
+  });
+
+  test("goes back to the active line once the hook snapshot exists", async () => {
+    const f = fixture();
+    writeSnapshot(f);
+    const result = await f.engine.fire("classic.SessionStart", sessionStart(f), {});
+    const text = contextOf(result)[0] ?? "";
+    expect(text).toContain("self-improvement-loop is active:");
+    expect(text).not.toContain("scripts/sil");
     cleanup();
   });
 });
@@ -842,14 +870,12 @@ describe("a failing engine call never costs the chain", () => {
     writeNudge(f, BASH_NUDGE);
 
     // SessionStart keeps the status line: a failed step may not take down the
-    // ones beside it.
+    // ones beside it. No snapshot was written, and fs.read is faked to fail
+    // besides, so this session reads as never initialized: the not-set-up
+    // hint, not the active line.
     const start = await f.engine.fire("classic.SessionStart", sessionStart(f), CORE_CONTEXT);
     expect(contextOf(start)[0]).toBe("from core");
-    expect(contextOf(start)[1]).toBe(
-      "self-improvement-loop is active: /reflect queues this session for " +
-        "background reflection, /loop shows status, /feedback <type>:<name> " +
-        "good|bad rates an artifact.",
-    );
+    expect(contextOf(start)[1]).toBe(notInitializedLine(f.pluginRoot));
 
     for (const [event, e] of [
       ["classic.UserPromptSubmit", userPrompt(f)],
@@ -971,6 +997,7 @@ describe("layout roots", () => {
     expect(f.engine.env["SIL_HOOK_MODULE"]).toBeUndefined();
 
     // Positive control: absolute roots, still no HOME, and the same event works.
+    writeSnapshot(f);
     resetForTests();
     const configured = new FakeEngine({
       sessionId: SESSION,

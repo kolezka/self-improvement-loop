@@ -2,9 +2,10 @@
 // _dispatch_nudge, _handle_*, HANDLERS, and sil/usage.py's append_event /
 // read_events / artifact_ref (folded in here: only handlers need them).
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { appendLine, atomicWrite } from "@sil/core/fsx";
+import { sessionStartStatusLine } from "@sil/core/hook-snapshot";
 import { SAMPLES_KEEP_LINES, SAMPLES_ROTATE_AT_BYTES, sampleRecord } from "@sil/core/samples";
 import type { HookEvent } from "@sil/core/consts";
 import { claimMarker, dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
@@ -184,11 +185,11 @@ function handleSessionStart(payload: Record<string, unknown>, world: HookWorld, 
   const lessons = pendingLessons(worldName, sessionId, cwd, 3);
   if (lessons.length > 0) parts.push(lessons.map(formatLesson).join("\n"));
 
-  parts.push(
-    "self-improvement-loop is active: /reflect queues this session for " +
-      "background reflection, /loop shows status, /feedback <type>:<name> " +
-      "good|bad rates an artifact.",
-  );
+  // Same existence check maybeKickWorker uses below: hook-config.json present
+  // means `sil init` has run. Decided here, not inside sessionStartStatusLine,
+  // so apps/hook-module can pass the boolean its own state already carries.
+  const snapshotPresent = existsSync(paths.hookSnapshotFile());
+  parts.push(sessionStartStatusLine(snapshotPresent, snapshot.plugin_root || null));
 
   const nudgeText = dispatchNudge(payload, world, sessionId);
   if (nudgeText) parts.push(nudgeText);

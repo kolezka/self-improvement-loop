@@ -7,7 +7,22 @@ Arguments: `$1` is optional, one of `web`, `run`, or empty.
 
 ## No argument: status
 
-Run and print the output verbatim, as a short summary (not the raw JSON):
+First check whether the loop has ever been set up:
+
+```sh
+"${CLAUDE_PLUGIN_ROOT}/scripts/sil" status --json
+```
+
+If any world's `provider.endpoint` is `null` (typically with `provider.error`
+naming a missing `llm.yaml` or no endpoints), `sil init` has never run. In that
+case, run it and report its output instead of status:
+
+```sh
+"${CLAUDE_PLUGIN_ROOT}/scripts/sil" init
+```
+
+Otherwise, run plain status and print the output verbatim, as a short summary
+(not the raw JSON):
 
 ```sh
 "${CLAUDE_PLUGIN_ROOT}/scripts/sil" status

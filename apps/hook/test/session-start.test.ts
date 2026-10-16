@@ -115,3 +115,28 @@ describe("SessionStart", () => {
     expect(startJson.cwd).toBe(hookEnv.root);
   });
 });
+
+// Regression: before `sil init`, the hook injected the same "is active" line
+// as an initialized install, with no hint that sessions queue but are never
+// reflected, and no pointer to the command that fixes it.
+describe("SessionStart before sil init", () => {
+  test("hints at init instead of claiming the loop is active, naming the real plugin root", () => {
+    // No writeSnapshot(): hook-config.json does not exist, same as a fresh
+    // install that has never run `sil init`.
+    const payload = { session_id: "sess-start-no-init", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
+    const result = runHook(MAIN_TS, hookEnv, payload);
+    expect(result.exitCode).toBe(0);
+    const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
+    expect(text).toContain(`"${hookEnv.pluginRoot}/scripts/sil" init`);
+    expect(text).not.toContain("self-improvement-loop is active");
+  });
+
+  test("goes back to the active line once sil init has written the snapshot", () => {
+    writeSnapshot();
+    const payload = { session_id: "sess-start-after-init", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
+    const result = runHook(MAIN_TS, hookEnv, payload);
+    const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
+    expect(text).toContain("self-improvement-loop is active");
+    expect(text).not.toContain("scripts/sil");
+  });
+});

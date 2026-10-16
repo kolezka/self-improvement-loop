@@ -213,16 +213,24 @@ declare module "claude-code" {
   /** A non-streaming hook: `($, e, next) => result`. */
   export type Hook<E, R> = ($: EngineInterface, e: Frozen<E>, next: Next<E, R>) => R | Promise<R>;
 
+  /** What `on(...)` returns: the real type adds `.to`, `.is` and more, but the
+   * module only ever calls `.catch`, the last-resort handler for a hook promise
+   * that rejected (an unhandled `next(e)` rejection, since nothing inside the
+   * handler itself may throw by this module's own convention). */
+  export interface Registration {
+    catch(handler: (error: unknown) => void): void;
+  }
+
   /** Registration. The real `On` is generic over every event name, glob and
    * matcher and returns a `Registration` that takes one `.catch`; this lists
-   * the six events the module registers and drops the return value. */
+   * the six events the module registers. */
   export type On = {
-    (event: "classic.SessionStart", hook: Hook<SessionStartHookInput, ClassicContextResult>): unknown;
-    (event: "classic.UserPromptSubmit", hook: Hook<UserPromptSubmitHookInput, ClassicContextResult>): unknown;
-    (event: "classic.PreToolUse", hook: Hook<ToolCallEnvelope, PreToolUseResult>): unknown;
-    (event: "classic.PostToolUse", hook: Hook<PostToolUseHookInput, ClassicContextResult>): unknown;
-    (event: "classic.Stop", hook: Hook<StopHookInput, ClassicContextResult>): unknown;
-    (event: "classic.SessionEnd", hook: Hook<SessionEndHookInput, ClassicPlainResult>): unknown;
+    (event: "classic.SessionStart", hook: Hook<SessionStartHookInput, ClassicContextResult>): Registration;
+    (event: "classic.UserPromptSubmit", hook: Hook<UserPromptSubmitHookInput, ClassicContextResult>): Registration;
+    (event: "classic.PreToolUse", hook: Hook<ToolCallEnvelope, PreToolUseResult>): Registration;
+    (event: "classic.PostToolUse", hook: Hook<PostToolUseHookInput, ClassicContextResult>): Registration;
+    (event: "classic.Stop", hook: Hook<StopHookInput, ClassicContextResult>): Registration;
+    (event: "classic.SessionEnd", hook: Hook<SessionEndHookInput, ClassicPlainResult>): Registration;
     (event: "session.end", hook: Hook<SessionEndInput, SessionEndResult>): unknown;
   };
 

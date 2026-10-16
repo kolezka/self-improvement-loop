@@ -169,6 +169,13 @@ async function writeStartJson($: EngineInterface, state: SessionState, head: str
   if (written) state.startMtimeMs = Date.now();
 }
 
+/** Last-resort guard on each gating hook's registration, for a hook promise
+ * that rejects with nothing left inside to catch it, e.g. an unhandled
+ * `next(e)` rejection from another plugin's own chain. Swallowed rather than
+ * acted on: rule 1 is hooks never block, and this module keeps no error
+ * channel that is safe to write to from outside a handler's own session state. */
+function onRegistrationError(): void {}
+
 // A top level function declaration, not a const: `claude plugin validate`
 // refuses a module whose `register` export is anything else.
 export function register(on: On): void {
@@ -256,7 +263,7 @@ export function register(on: On): void {
 
     const r = await next(e);
     return text ? { ...r, additionalContext: [...(r.additionalContext ?? []), text] } : r;
-  });
+  }).catch(onRegistrationError);
 
   on("classic.UserPromptSubmit", async ($, e, next) => {
     const started = performance.now();
@@ -294,7 +301,7 @@ export function register(on: On): void {
 
     const r = await next(e);
     return text ? { ...r, additionalContext: [...(r.additionalContext ?? []), text] } : r;
-  });
+  }).catch(onRegistrationError);
 
   on("classic.PreToolUse", async ($, e, next) => {
     const started = performance.now();
@@ -354,7 +361,7 @@ export function register(on: On): void {
 
     const r = await next(e);
     return text ? { ...r, additionalContext: [...(r.additionalContext ?? []), text] } : r;
-  });
+  }).catch(onRegistrationError);
 
   on("classic.PostToolUse", async ($, e, next) => {
     const started = performance.now();
@@ -385,7 +392,7 @@ export function register(on: On): void {
 
     const r = await next(e);
     return text ? { ...r, additionalContext: [...(r.additionalContext ?? []), text] } : r;
-  });
+  }).catch(onRegistrationError);
 
   on("classic.Stop", async ($, e, next) => {
     // Never ensureState: a session this module did not handle has nothing
@@ -408,7 +415,7 @@ export function register(on: On): void {
       if (state && flight) settleSpool(state, flight, false);
     }
     return r;
-  });
+  }).catch(onRegistrationError);
 
   on("classic.SessionEnd", async ($, e, next) => {
     let state: SessionState | null = null;
@@ -426,7 +433,7 @@ export function register(on: On): void {
       if (state && flight) settleSpool(state, flight, false);
     }
     return r;
-  });
+  }).catch(onRegistrationError);
 
   // The engine's own end event, which is confirmed to fire. Best effort: if
   // classic.SessionEnd already flushed, there is nothing left to write.

@@ -489,6 +489,9 @@ async function stageOne(
         rerouteFrom = forcedType;
         routedType = probe.artifact_type;
         routedReason = `re-routed from ${forcedType} to ${probe.artifact_type} on new evidence: ${probe.reason}`;
+      } else {
+        // Keep the probe's answer, or a probe that said no reads the same as one that never ran.
+        routedReason = `${routedReason}; re-route probe kept ${forcedType}: ${probe.reason}`;
       }
     }
   } else {

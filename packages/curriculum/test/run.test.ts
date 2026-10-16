@@ -726,7 +726,11 @@ describe("served_by suppression", () => {
     expect(report.staged).toEqual([PATTERN]);
     expect(chat.roles).toEqual(["drafter", "judge"]);
     expect(chat.promptsFor("drafter")[0]).toContain("Its type is already decided");
-    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+    expect(report.routed[PATTERN]).toEqual({
+      drafted: "rule",
+      type: "rule",
+      reason: "already served by this artifact; re-route probe kept rule: no workable gate (no trigger event proposed), no own-context need, no capability evidence",
+    });
     const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(found).toBe(true);
     expect(text).toContain(ruleTag(PATTERN));
@@ -949,7 +953,13 @@ describe("re-routing an already served pattern", () => {
 
     expect(report.staged).toEqual([PATTERN]);
     expect(chat.roles).toEqual(["drafter", "judge"]);
-    expect(report.routed[PATTERN]).toEqual({ drafted: "rule", type: "rule", reason: "already served by this artifact" });
+    // The probe ran, so its verdict is in the report. A bare "already served"
+    // here looked exactly like a probe that never ran.
+    expect(report.routed[PATTERN]).toEqual({
+      drafted: "rule",
+      type: "rule",
+      reason: expect.stringMatching(/^already served by this artifact; re-route probe kept rule: no workable gate \(gate matched nothing/),
+    });
     const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(rules.text).toContain(ruleTag(PATTERN));
   });

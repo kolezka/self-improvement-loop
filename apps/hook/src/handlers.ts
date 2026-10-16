@@ -5,10 +5,12 @@
 import { readFileSync, statSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { appendLine, atomicWrite } from "@sil/core/fsx";
+import { sessionStartStatusLine } from "@sil/core/hook-snapshot";
 import { SAMPLES_KEEP_LINES, SAMPLES_ROTATE_AT_BYTES, sampleRecord } from "@sil/core/samples";
 import type { HookEvent } from "@sil/core/consts";
 import { claimMarker, dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
 import { log, nowIso } from "./log.ts";
+import { snapshotPresent as hookSnapshotWasRead } from "./snapshot.ts";
 import type { HookSnapshot, HookWorld } from "./snapshot.ts";
 import { gitHead } from "./worlds.ts";
 import { formatLesson, pendingLessons, rulesBlock } from "./lessons.ts";
@@ -184,11 +186,12 @@ function handleSessionStart(payload: Record<string, unknown>, world: HookWorld, 
   const lessons = pendingLessons(worldName, sessionId, cwd, 3);
   if (lessons.length > 0) parts.push(lessons.map(formatLesson).join("\n"));
 
-  parts.push(
-    "self-improvement-loop is active: /reflect queues this session for " +
-      "background reflection, /loop shows status, /feedback <type>:<name> " +
-      "good|bad rates an artifact.",
-  );
+  // "Present" means the file was actually read, not merely existsSync-true:
+  // an existing file this process cannot read must read the same as "never
+  // init'ed", matching apps/hook-module's state.snapshotPresent (set from
+  // whether its own read succeeded), not maybeKickWorker's cheaper
+  // existsSync-only gate below.
+  parts.push(sessionStartStatusLine(hookSnapshotWasRead(), snapshot.plugin_root || null));
 
   const nudgeText = dispatchNudge(payload, world, sessionId);
   if (nudgeText) parts.push(nudgeText);

@@ -65,8 +65,11 @@ async function capture(fn: () => Promise<number>): Promise<{ code: number; out: 
   }
 }
 
+// These tests exercise `sil llm`, not init's own defaults, and rely on a
+// litellm endpoint existing alongside claude, so init always runs with
+// --llm-base-url here regardless of what init writes by default.
 async function init(): Promise<void> {
-  const r = await capture(() => run(["init", "--model", "zai/glm-5.3-flash"]));
+  const r = await capture(() => run(["init", "--model", "zai/glm-5.3-flash", "--llm-base-url", "http://127.0.0.1:4000"]));
   expect(r.code).toBe(0);
 }
 

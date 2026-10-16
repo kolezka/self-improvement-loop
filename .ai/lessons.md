@@ -203,3 +203,70 @@
   inject one too. Fix: force `user.useConfigOnly=true`; clear `GIT_CONFIG_PARAMETERS`
   outright since useConfigOnly cannot block it; overwrite counted config, scrubbing
   leftover keys for hygiene. Assert on an actual git commit, never env shape alone.
+- 2026-10-16: A test fixture that calls `fixture()` without writing the hook
+  snapshot is not neutral once SessionStart's status line depends on
+  `snapshotPresent`: it silently became a "never initialized" fixture and the
+  old hardcoded "is active" string in those tests was masking that every one
+  of them was actually exercising the uninitialized path. When a gate is added
+  on a boolean a fixture already decides implicitly, grep every test that uses
+  the default fixture and classify each one as "should be initialized" (add
+  the write) or "is genuinely testing pre-init" (update the expectation), do
+  not assume the old assertions still describe the intended state.
+- 2026-10-16: `sil init` writing an uncommitted file directly into the
+  `learned/` git repo (not a scratch worktree) is a landmine: the curriculum
+  pipeline's first promotion later does `git merge --ff-only` straight against
+  that same live checkout, and git refuses a fast-forward that would overwrite
+  an untracked file at the same path. Any file `sil init` seeds into a target
+  it owns has to be committed there, matching `ensureRepo`'s own "one clean
+  initial commit" invariant, not left dirty "for simplicity".
+- 2026-10-16: `ModelNotConfigured` and a down provider were both routed
+  through one `isTransient` check that burns `MAX_ATTEMPTS` the same way for
+  either, but they are different failure classes: a provider outage can clear
+  on its own, a missing model config cannot until the operator edits
+  `llm.yaml`, and every session queued before that edit was previously lost to
+  `queue/failed` after three worker passes with no event changing anything.
+  Classify a config error as "retry forever, cost nothing" (unchanged
+  `attempts`), not "retry N times then give up", and skip the rest of that
+  pass's entries once one has proven the config is broken, since they would
+  fail identically.
+- 2026-10-16: A bare `git commit` with no pathspec commits the whole index,
+  not just the file the surrounding code just `git add`ed. A write path that
+  stages one file and commits must name that file on the commit itself (`git
+  commit -m ... -- <path>`), or anything else already staged in that repo
+  (a human's work in progress, another step's own stage) gets swept into a
+  commit message that only describes the one file it meant to touch.
+- 2026-10-16: A readiness probe that checks "is the endpoint reachable" is
+  not the same claim as "is every role that endpoint serves actually
+  configured". `providers.status` answers the first; `ModelNotConfigured`
+  comes from the second (a missing per-role model mapping) and can fire while
+  the first reads entirely clean. A status command surfacing "is this
+  working" has to check the thing that actually gates the worker, not a
+  proxy for it, or it tells the operator everything is fine while the queue
+  never drains.
+- 2026-10-16: "Has setup run" and "is the configured state currently healthy"
+  are two different questions, and conflating them (deciding "never
+  initialized" from a provider field reading null) makes a broken-but-set-up
+  install indistinguishable from a never-set-up one. The second re-run of
+  the setup command is then a silent no-op on existing files, which hides
+  the real error instead of fixing anything. Give the "has setup run" check
+  its own signal (the one file setup writes once and never touches again),
+  never a field that setup's own output can also leave empty on a later,
+  unrelated failure.
+- 2026-10-16: Operator-supplied config strings (a layout path, a rules file
+  name) get the same traversal risk as model-authored input, but it is easy
+  to validate only the generated-content path (a pattern slug, here) and
+  assume config is trusted. `path.join` silently collapses a `"../"` instead
+  of refusing it, so an unchecked config string plus `join` is enough to
+  write outside the directory the code believes it is scoped to. Validate
+  containment at the one shared function every path construction in the
+  module calls, not per call site, so a later path type added to the same
+  module inherits the check instead of needing its own copy remembered.
+- 2026-10-16: Two code paths computing "the same" boolean from "superficially
+  similar but different checks" (`existsSync` on a path vs. "did reading
+  that path succeed") drift exactly on the input that exercises the
+  difference: a file that exists but cannot be read. Neither error alone
+  looks wrong in isolation; the bug only shows up by asking "do both sides
+  answer the same question for an unreadable-but-present file," which is
+  worth asking explicitly whenever two hook paths (or any two
+  implementations of one contract) each compute a shared gate separately
+  instead of sharing the function that computes it.

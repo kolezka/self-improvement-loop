@@ -870,3 +870,83 @@ Implemented on feat/toolify-command. Not merged, not released, not installed liv
       toolify before the change)
 - [x] SKILL.md, README, OPERATIONS updated; manifest test lists `toolify`
 - [ ] not done: no live dogfood run of `/toolify` yet
+
+## Out of box install fixes (2026-10-16, branch fix/out-of-box-install)
+A fresh-install simulation (empty HOME) found five rough edges before an
+operator ever touches config: the hook claimed the loop was active before
+`sil init` ran, `sil init` defaulted to the author's own tailscale LiteLLM
+host, a missing LITELLM_API_KEY permanently failed every queued session after
+three worker passes, RULES.md never got created, and the docs did not say any
+of this.
+- [x] SessionStart now hints at `sil init` instead of claiming "is active"
+      when the hook snapshot does not exist, from one pure function
+      (`sessionStartStatusLine`/`notInitializedLine` in
+      `packages/core/src/hook-snapshot.ts`) used by both `apps/hook` and
+      `apps/hook-module` so the two paths cannot drift. `commands/loop.md`
+      checks `sil status --json` first and runs init when no provider is
+      configured.
+- [x] `sil init` without `--llm-base-url` now writes only the `claude`
+      endpoint and makes it active; the hardcoded `http://100.64.0.3:4000`
+      default is gone. `--llm-base-url` is what writes and activates a
+      `litellm` endpoint. "Next steps" no longer suggests `sil llm use
+      litellm` when none exists.
+- [x] `sil init` now calls `ensureRulesFile` per world and commits a freshly
+      created `learned/RULES.md` (idempotent; untracked would have blocked
+      the first curriculum fast-forward merge into that checkout).
+- [x] worker: `ModelNotConfigured` no longer burns one of `MAX_ATTEMPTS`. The
+      entry stays in `queue/pending` with `attempts` unchanged and `result`
+      recording the config error; the rest of that world's entries are
+      skipped for the remainder of the pass instead of repeating the
+      identical failure once per entry.
+- [x] docs: INSTALL.md explains the claude-cli default, `--llm-base-url`, and
+      where RULES.md lives; `/loop` documented as running init on first use.
+- [x] every fix shipped with a red/green-verified regression test (reverted
+      the relevant source file to HEAD, confirmed the new test failed,
+      restored, confirmed it passed).
+- [ ] pre-existing, unrelated: `packages/curriculum/test/plan.test.ts` has 3
+      failures (`retire-candidate` where `done`/`keep` is expected) that
+      reproduce identically on unmodified `HEAD`, so they are a pre-existing
+      date-sensitive issue, not a regression from this branch.
+
+### Fix round from independent review (2026-10-16, same branch)
+GPT Sol's review of the above found eight more issues. All fixed on the same
+branch, each with its own red/green-verified regression test except the two
+pure doc/prompt text nits (6, 7), which have no executable test in this repo
+(same as fix E above).
+- [x] P1 `seedRulesFile`'s commit had no pathspec, so an unrelated file
+      already staged in the learned repo got swept into "chore: seed learned
+      rules file". Fixed with `git commit ... -- <rel>`.
+- [x] P2 `sil status` could read entirely clean (endpoint reachable, no
+      error) while the worker had every pending entry stuck on
+      `ModelNotConfigured`, since the probe checks reachability, not whether
+      every role has a model mapped. status now counts and prints pending
+      entries whose `result` carries the new `CONFIG_ERROR_RESULT_PREFIX`
+      (`@sil/core/consts`), per world.
+- [x] P3 `rules_file`/`skills_dir`/`nudges_dir`/`agents_dir` are operator
+      config, never validated the way a pattern slug is; a `"../"` in one
+      resolved (via `join`'s own normalisation) outside the target root and
+      `ensureRulesFile` wrote there. Every join site in `artifacts.ts` now
+      goes through one `resolveContained` helper that throws
+      `ValidationError` on escape.
+- [x] P4 `/loop` and the Codex skill decided "never initialized" from
+      `provider.endpoint === null`, also true for an already-initialized
+      install with a broken `llm.yaml`, so they re-ran `sil init` (a
+      no-op) and hid the real error. `sil status`'s new top level
+      `initialized` field (config.yaml exists) is the real signal; both
+      consumers switched to it.
+- [x] P5 apps/hook decided the SessionStart hint with a plain `existsSync`,
+      true for a file that then fails to read; apps/hook-module already
+      decided it from whether the read itself succeeded. Added
+      `snapshotPresent()` to apps/hook/src/snapshot.ts so both sides agree.
+      apps/hook-module needed no change: `readText` already turns a
+      rejected `fs.read` into `null`.
+- [x] item 6 `docs/OPERATIONS.md` called the DeepSeek model "the sil init
+      default" and showed `sil llm use litellm` as if that endpoint always
+      existed. Corrected; grepped docs/skills/commands for the same
+      assumption elsewhere (none found beyond this one section).
+- [x] item 7 init's "Next steps" told the operator to "pass --llm-base-url
+      next time", but init never rewrites an existing llm.yaml. Replaced
+      with the actual hand-edit fields, since there is no `sil llm add`.
+- [x] item 8 `skills/self-improvement-loop/SKILL.md` got the same
+      "initialized" check as `/loop`, trimmed to fit the file's existing
+      120-line test budget (`tests/plugin-manifest.test.ts`).

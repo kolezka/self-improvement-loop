@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ledgerPath, paths, RULE_END, RULE_START, ruleTag } from "@sil/core";
+import { ledgerPath, paths, RULE_END, RULE_START, ruleTag, type Layout } from "@sil/core";
 import { artifacts } from "@sil/curriculum";
 import { cleanupEnv, makeWorld, silEnv, type TestEnv, V1_LAYOUT } from "./fixtures.ts";
 
@@ -267,6 +267,47 @@ describe("rules-file ownership", () => {
     mkdirSync(tree, { recursive: true });
     expect(artifacts.ensureRulesFile(world, tree)).toBe(join(tree, "RULES.md"));
     expect(existsSync(join(paths.defaultTarget(world.name), "RULES.md"))).toBe(false);
+  });
+});
+
+describe("rules file path containment", () => {
+  // Regression: `rules_file` is operator config, never validated the way a
+  // pattern slug is. `join` collapses a "../" instead of refusing it, so a
+  // layout like this used to resolve to a path outside the target root, and
+  // ensureRulesFile (and sil init's later `git add`) wrote there silently.
+  test("ensureRulesFile refuses a rules_file that escapes the target root", () => {
+    const tree = join(env.tmp, "scratch-escape");
+    mkdirSync(tree, { recursive: true });
+    const world = makeWorld({ layout: { ...V1_LAYOUT, rules_file: "../escape.md" } });
+    expect(() => artifacts.ensureRulesFile(world, tree)).toThrow();
+    expect(existsSync(join(env.tmp, "escape.md"))).toBe(false);
+  });
+
+  test("rulesProblem and ruleBulletInManagedBlock refuse the same escape, read-only", () => {
+    const tree = join(env.tmp, "scratch-escape-ro");
+    mkdirSync(tree, { recursive: true });
+    const world = makeWorld({ layout: { ...V1_LAYOUT, rules_file: "../escape.md" } });
+    expect(() => artifacts.rulesProblem(world, tree)).toThrow();
+    expect(() => artifacts.ruleBulletInManagedBlock(world, PATTERN, tree)).toThrow();
+  });
+
+  test("writeArtifact, readArtifact and removeArtifact refuse an escaping layout dir for every artifact type", () => {
+    const cases: Array<[string, Partial<Layout>]> = [
+      ["rule", { rules_file: "../escape.md" }],
+      ["skill", { skills_dir: "../escape" }],
+      ["hook", { nudges_dir: "../escape" }],
+      ["agent", { agents_dir: "../escape" }],
+    ];
+    for (const [artifactType, layoutOverride] of cases) {
+      const tree = join(env.tmp, `scratch-${artifactType}`);
+      mkdirSync(tree, { recursive: true });
+      const world = makeWorld({ layout: { ...V1_LAYOUT, ...layoutOverride } });
+      expect(() => artifacts.writeArtifact(world, artifactType, PATTERN, "x", tree)).toThrow();
+      expect(() => artifacts.readArtifact(world, artifactType, PATTERN, tree)).toThrow();
+      expect(() => artifacts.removeArtifact(world, artifactType, PATTERN, tree)).toThrow();
+      expect(existsSync(join(env.tmp, "escape.md"))).toBe(false);
+      expect(existsSync(join(env.tmp, "escape"))).toBe(false);
+    }
   });
 });
 

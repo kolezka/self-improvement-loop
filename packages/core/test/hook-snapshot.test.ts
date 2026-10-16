@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_WORKER, coerceSnapshot, cwdUnder, defaultWorldFor, resolveWorld } from "../src/hook-snapshot.ts";
+import {
+  DEFAULT_WORKER,
+  SESSION_START_ACTIVE_LINE,
+  coerceSnapshot,
+  cwdUnder,
+  defaultWorldFor,
+  notInitializedLine,
+  resolveWorld,
+  sessionStartStatusLine,
+} from "../src/hook-snapshot.ts";
 import type { HookSnapshot, HookWorld } from "../src/hook-snapshot.ts";
 
 const DEFAULTS = { defaultWorld: defaultWorldFor("/data/worlds/default/learned"), pluginRoot: "/plugin" };
@@ -151,5 +160,24 @@ describe("cwdUnder", () => {
       throw new Error("no such path");
     };
     expect(cwdUnder("/a", "/a", boom)).toBe(false);
+  });
+});
+
+describe("sessionStartStatusLine", () => {
+  test("is the active line once the snapshot exists", () => {
+    expect(sessionStartStatusLine(true, "/plugin")).toBe(SESSION_START_ACTIVE_LINE);
+    expect(sessionStartStatusLine(true, null)).toBe(SESSION_START_ACTIVE_LINE);
+  });
+
+  test("hints at init, naming the exact command, before the snapshot exists", () => {
+    const text = sessionStartStatusLine(false, "/opt/sil-plugin");
+    expect(text).toBe(notInitializedLine("/opt/sil-plugin"));
+    expect(text).toContain('"/opt/sil-plugin/scripts/sil" init');
+    expect(text).not.toContain(SESSION_START_ACTIVE_LINE);
+  });
+
+  test("keeps the literal CLAUDE_PLUGIN_ROOT when no real path is known", () => {
+    const text = notInitializedLine(null);
+    expect(text).toContain('"${CLAUDE_PLUGIN_ROOT}/scripts/sil" init');
   });
 });

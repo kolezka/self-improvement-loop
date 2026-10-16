@@ -21,6 +21,7 @@
 // its own try/catch and a failure lands in the hook_run line's `detail.error`
 // rather than anywhere a payload could leak.
 
+import { sessionStartStatusLine } from "@sil/core/hook-snapshot";
 import { sampleRecord } from "@sil/core/samples";
 import { serializeSpool, SPOOL_FILE_NAME } from "@sil/core/spool";
 import type { EngineInterface, On } from "claude-code";
@@ -49,11 +50,6 @@ export function resetForTests(): void {
   guardPid = null;
   guardPidResolved = false;
 }
-
-const STATUS_LINE =
-  "self-improvement-loop is active: /reflect queues this session for " +
-  "background reflection, /loop shows status, /feedback <type>:<name> " +
-  "good|bad rates an artifact.";
 
 // The claude process id, which is what the command hooks compare
 // SIL_HOOK_MODULE with. One shell per process, about 3 ms, cached here.
@@ -217,7 +213,7 @@ export function register(on: On): void {
         errors.push(errorSummary(err));
       }
 
-      parts.push(STATUS_LINE);
+      parts.push(sessionStartStatusLine(state.snapshotPresent, state.pluginRoot));
 
       try {
         const nudgeText = await dispatchNudges($, state, payloadOf(e, state));

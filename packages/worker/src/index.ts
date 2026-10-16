@@ -5,9 +5,11 @@ import { closeSync, openSync, readdirSync, rmSync, statSync, unlinkSync, writeFi
 import { dirname, join } from "node:path";
 import {
   ConfigError,
+  CONFIG_ERROR_RESULT_PREFIX,
   fsx,
   loadConfig,
   LockHeld,
+  ModelNotConfigured,
   paths,
   ProviderError,
   SKIPPED_BELOW_MIN_TOOL_USES,
@@ -405,6 +407,13 @@ async function reflectPending(
     return seen;
   };
 
+  // A world that just raised ModelNotConfigured will raise the identical
+  // error for every other entry of that world this pass: the model role
+  // resolution it failed on depends only on llm.yaml and the world, never on
+  // the session. Recorded here so the rest of this pass skips straight past
+  // them instead of repeating the same failing call once per entry.
+  const configBrokenWorlds = new Set<string>();
+
   for (const entry of listQueue("pending")) {
     if (worldName !== undefined && entry.world !== worldName) continue;
     const world = worldByName.get(entry.world);
@@ -413,6 +422,12 @@ async function reflectPending(
       moveToTerminal(entry, "failed", reason);
       summary.failed.push(entry.session_id);
       log({ action: "reflect", session_id: entry.session_id, result: reason });
+      continue;
+    }
+
+    if (configBrokenWorlds.has(entry.world)) {
+      summary.skipped.push(entry.session_id);
+      log({ action: "reflect", session_id: entry.session_id, result: "skipped: model not configured, not retried this pass" });
       continue;
     }
 
@@ -470,9 +485,25 @@ async function reflectPending(
     } catch (e) {
       const err = e as Error;
       const reason = `failed: ${err.constructor.name}: ${err.message}`.slice(0, 300);
+
+      if (e instanceof ModelNotConfigured) {
+        // An operator mistake, not a transient outage: nothing about the next
+        // attempt will differ until llm.yaml changes, so this must not burn
+        // one of MAX_ATTEMPTS the way a flaky provider does. The entry stays
+        // pending exactly as it was, every session recorded before the
+        // operator fixes config survives, and the rest of this world's
+        // entries are skipped above instead of repeating the same failure.
+        const updated = { ...entry, result: `${CONFIG_ERROR_RESULT_PREFIX} ${reason}` };
+        writeEntry("pending", updated);
+        configBrokenWorlds.add(entry.world);
+        summary.skipped.push(entry.session_id);
+        log({ action: "reflect", session_id: entry.session_id, result: `config error, not retried: ${reason}` });
+        continue;
+      }
+
       if (isTransient(e) && entry.attempts + 1 < MAX_ATTEMPTS) {
-        // Provider down or model not configured yet: keep the session
-        // queued so the next run retries once the operator fixes it.
+        // Provider down: keep the session queued so the next run retries
+        // once the operator fixes it.
         const updated = { ...entry, attempts: entry.attempts + 1, result: reason };
         writeEntry("pending", updated);
         summary.skipped.push(entry.session_id);

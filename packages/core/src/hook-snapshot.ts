@@ -38,6 +38,33 @@ export const DEFAULT_WORKER: WorkerConfig = {
   auto_kick: true,
 };
 
+export const SESSION_START_ACTIVE_LINE =
+  "self-improvement-loop is active: /reflect queues this session for " +
+  "background reflection, /loop shows status, /feedback <type>:<name> " +
+  "good|bad rates an artifact.";
+
+/** The SessionStart line for a session where `sil init` has never run: no
+ * hook snapshot on disk, so nothing is queued or reflected yet. `pluginRoot`
+ * expands the literal `${CLAUDE_PLUGIN_ROOT}` to a real path when the caller
+ * has one, so the printed command can be run as is; null keeps the literal,
+ * which a shell still expands on its own. */
+export function notInitializedLine(pluginRoot: string | null): string {
+  const sil = pluginRoot ? `"${pluginRoot}/scripts/sil"` : '"${CLAUDE_PLUGIN_ROOT}/scripts/sil"';
+  return (
+    `self-improvement-loop is installed but not set up yet. Run ${sil} init to turn it on. ` +
+    "Sessions are not reflected until then."
+  );
+}
+
+/** The SessionStart status line: the active line once the hook snapshot
+ * exists, the not-initialized hint before that. One function so apps/hook and
+ * apps/hook-module cannot drift on the wording or the gate; both already
+ * decide `snapshotPresent` the way `maybeKickWorker` does (hook-config.json
+ * readable), so this just renders the result. */
+export function sessionStartStatusLine(snapshotPresent: boolean, pluginRoot: string | null): string {
+  return snapshotPresent ? SESSION_START_ACTIVE_LINE : notInitializedLine(pluginRoot);
+}
+
 export function defaultWorldFor(defaultTarget: string): HookWorld {
   return {
     name: "default",

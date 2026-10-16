@@ -22,6 +22,7 @@ import {
   ValidationError,
   type World,
 } from "@sil/core";
+import { isWithin } from "@sil/core/layout";
 
 export { RULE_END, RULE_START, ruleTag };
 
@@ -95,6 +96,22 @@ function rootFor(world: World, root?: string | null): string {
   return root != null ? root : targetRoot(world);
 }
 
+/** `rel` joined onto `root`, checked to stay inside it. `artifactRel`
+ * validates a reflection-authored pattern slug, but the operator's own layout
+ * strings (`rules_file`, `skills_dir`, `nudges_dir`, `agents_dir`) are plain
+ * config and never checked for a "../" that walks out of the target. `join`
+ * already collapses one, which is exactly the problem: the result reads like
+ * a path inside `root` but is not. Every read, write and remove in this file
+ * passes through here, so a bad layout string fails loud once, not wherever
+ * it happens to be dereferenced first. */
+function resolveContained(root: string, rel: string): string {
+  const full = join(root, rel);
+  if (!isWithin(resolve(full), resolve(root))) {
+    throw new ValidationError(`path ${JSON.stringify(rel)} resolves outside target root ${JSON.stringify(root)}`);
+  }
+  return full;
+}
+
 /** This pattern's artifact text. For "rule", only its own bullet and without the
  * `<!--rule:...-->` tag, never the whole shared file.
  *
@@ -108,7 +125,7 @@ export function readArtifact(
 ): string {
   const rel = artifactRel(world, artifactType, pattern);
   if (!rel) return "";
-  const path = join(rootFor(world, root), rel);
+  const path = resolveContained(rootFor(world, root), rel);
   if (!existsSync(path)) return "";
   const text = fsx.readText(path);
   return artifactType === "rule" ? stripRuleTag(ruleBulletInText(text, pattern), pattern) : text;
@@ -127,7 +144,7 @@ export function writeArtifact(
 ): string | null {
   const rel = artifactRel(world, artifactType, pattern);
   if (!rel) return null;
-  const path = join(rootFor(world, root), rel);
+  const path = resolveContained(rootFor(world, root), rel);
   if (artifactType === "rule") {
     writeRule(path, pattern, String(payload).trim());
     return path;
@@ -172,7 +189,7 @@ export function removeArtifact(
 ): string {
   const rel = artifactRel(world, artifactType, pattern);
   if (!rel) return "";
-  const path = join(rootFor(world, root), rel);
+  const path = resolveContained(rootFor(world, root), rel);
   if (artifactType === "rule") return removeRuleBullet(path, pattern) ? rel : "";
   if (!existsSync(path)) return "";
   unlinkSync(path);
@@ -311,7 +328,7 @@ export function ruleBulletInText(text: string, pattern: string): string {
  * edit must never read as this pattern's live text, because the hook that
  * actually injects rules only ever reads what is between the markers. */
 export function ruleBulletInManagedBlock(world: World, pattern: string, root?: string | null): string {
-  const path = join(rootFor(world, root), strip(world.layout.rules_file));
+  const path = resolveContained(rootFor(world, root), strip(world.layout.rules_file));
   if (!existsSync(path)) return "";
   const text = fsx.readText(path);
   const [, block] = splitManagedBlock(text);
@@ -323,7 +340,7 @@ export function ruleBulletInManagedBlock(world: World, pattern: string, root?: s
  * Mirrors `writeRule`'s three guards exactly. Running the writer itself to find
  * out would mutate the operator's file before the scratch worktree exists. */
 export function rulesProblem(world: World, root?: string | null): string | null {
-  const path = join(rootFor(world, root), strip(world.layout.rules_file));
+  const path = resolveContained(rootFor(world, root), strip(world.layout.rules_file));
   let text: string;
   try {
     text = existsSync(path) ? fsx.readText(path) : "";
@@ -369,7 +386,7 @@ export function ownsRulesFile(world: World): boolean {
  * the world's real target, never by the directory being written into. */
 export function ensureRulesFile(world: World, root?: string | null): string | null {
   if (!ownsRulesFile(world)) return null;
-  const path = join(rootFor(world, root), strip(world.layout.rules_file));
+  const path = resolveContained(rootFor(world, root), strip(world.layout.rules_file));
   if (existsSync(path)) return path;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(

@@ -1,11 +1,12 @@
 // sil init: write config.yaml and llm.yaml templates, create data dirs, seed
 // the learned/ target repo, write the hook snapshot.
 
-import { join } from "node:path";
-import { Config, Endpoint, fsx, LlmConfig, loadConfig, paths, saveConfig, saveLlm, targetRoot, World, writeHookSnapshot } from "@sil/core";
-import { git } from "@sil/curriculum";
+import { join, relative } from "node:path";
+import { Config, Endpoint, fsx, LlmConfig, loadConfig, loadLlm, paths, saveConfig, saveLlm, targetRoot, World, writeHookSnapshot } from "@sil/core";
+import { ensureRulesFile, git } from "@sil/curriculum";
 
 // The operator's LiteLLM route for every role unless --model says otherwise.
+// Only used when --llm-base-url asks for a litellm endpoint at all.
 export const DEFAULT_LITELLM_MODEL = "deepseek/deepseek-flash";
 
 export interface InitOptions {
@@ -34,29 +35,43 @@ export function cmdInit(opts: InitOptions): number {
   }
 
   const llmPath = paths.llmFile();
+  let litellmPresent: boolean;
   if (fsx.exists(llmPath)) {
     console.log(`llm.yaml already exists at ${llmPath}, leaving it as is`);
+    litellmPresent = loadLlm().endpoints.some((e) => e.name === "litellm");
   } else {
     // Each endpoint carries its own model names: a switch changes the
-    // endpoint, never the model strings.
-    const litellmModel = opts.model || DEFAULT_LITELLM_MODEL;
-    const litellmModels = { critic: litellmModel, drafter: litellmModel, judge: litellmModel };
+    // endpoint, never the model strings. claude-cli is the only endpoint
+    // that needs no operator setup (no base_url, no API key, already on
+    // PATH if `claude` is installed), so it is the one written and made
+    // active by default. litellm only gets written, and only becomes
+    // active, once the operator names an endpoint with --llm-base-url:
+    // without one there is nothing real to point it at.
     const claudeModel = opts.claudeModel || "sonnet";
-    const endpoints = [
-      Endpoint.parse({
-        name: "litellm",
-        kind: "openai",
-        base_url: opts.llmBaseUrl || "http://100.64.0.3:4000",
-        api_key_env: opts.apiKeyEnv || "LITELLM_API_KEY",
-        models: litellmModels,
-      }),
+    const endpoints: Endpoint[] = [
       Endpoint.parse({
         name: "claude",
         kind: "claude-cli",
         models: { critic: claudeModel, drafter: claudeModel, judge: claudeModel },
       }),
     ];
-    const llm = LlmConfig.parse({ endpoints, active: "litellm" });
+    let active = "claude";
+    if (opts.llmBaseUrl) {
+      const litellmModel = opts.model || DEFAULT_LITELLM_MODEL;
+      const litellmModels = { critic: litellmModel, drafter: litellmModel, judge: litellmModel };
+      endpoints.push(
+        Endpoint.parse({
+          name: "litellm",
+          kind: "openai",
+          base_url: opts.llmBaseUrl,
+          api_key_env: opts.apiKeyEnv || "LITELLM_API_KEY",
+          models: litellmModels,
+        }),
+      );
+      active = "litellm";
+    }
+    litellmPresent = Boolean(opts.llmBaseUrl);
+    const llm = LlmConfig.parse({ endpoints, active });
     saveLlm(llm);
     console.log(`wrote ${llmPath}`);
   }
@@ -65,6 +80,7 @@ export function cmdInit(opts: InitOptions): number {
     if (world.target === null) git.ensureRepo(targetRoot(world));
     fsx.ensureDir(paths.reflectionsDir(world.name));
     fsx.ensureDir(paths.inboxDir(world.name));
+    seedRulesFile(world);
   }
   for (const bucket of ["pending", "done", "failed"] as const) fsx.ensureDir(paths.queueDir(bucket));
   for (const sub of ["logs", "sessions", "usage", "feedback"]) fsx.ensureDir(join(paths.stateDir(), sub));
@@ -75,9 +91,47 @@ export function cmdInit(opts: InitOptions): number {
   console.log("Next steps:");
   console.log("  sil status                              check worker and provider status");
   console.log("  sil llm list                            show endpoints and which one serves each role");
-  console.log("  sil llm use claude                      send every role to `claude -p`");
-  console.log("  sil llm use litellm --role drafter      send one role back to LiteLLM");
+  if (litellmPresent) {
+    console.log("  sil llm use claude                      send every role to `claude -p`");
+    console.log("  sil llm use litellm --role drafter      send one role back to LiteLLM");
+  } else {
+    console.log("  sil llm use claude                      already active; every role runs through `claude -p`");
+    // init never rewrites an existing llm.yaml, so "run init again" does
+    // nothing here; there is no `sil llm add`, so adding a LiteLLM endpoint
+    // now is a hand edit, named precisely rather than left to guesswork.
+    console.log("  to add a LiteLLM endpoint, add an entry to llm.yaml's endpoints list:");
+    console.log('    - name: litellm, kind: openai, base_url: <url>, api_key_env: LITELLM_API_KEY, models: {critic: <model>, drafter: <model>, judge: <model>}');
+    console.log("  then sil llm use litellm");
+  }
   console.log("  sil web                                 open the review UI");
   console.log("  sil schedule install --web              run the worker and web UI on a schedule");
   return 0;
+}
+
+/** Create this world's rules file when the loop owns it (the built-in
+ * `learned/` target), and commit it if it was newly created. `ensureRulesFile`
+ * returns null for an operator-owned target: nothing is written there.
+ *
+ * Committed, not left dirty: `git.ensureRepo` above already leaves this
+ * repo's working tree clean (one empty commit), and an untracked RULES.md
+ * would block the fast-forward merge the curriculum run does directly
+ * against this checkout the first time it promotes a rule here. */
+function seedRulesFile(world: World): void {
+  const path = ensureRulesFile(world);
+  if (!path) return;
+  const repo = targetRoot(world);
+  const rel = relative(repo, path);
+  const tracked = git.git(repo, ["ls-files", "--error-unmatch", rel], { check: false }) !== "";
+  if (tracked) {
+    console.log(`rules file already exists at ${path}`);
+    return;
+  }
+  git.git(repo, ["add", rel]);
+  // Pathspec, not a bare commit: a bare `git commit` takes the whole index,
+  // so anything else already staged in this repo (a human's work in
+  // progress, another init step) would be swept into "seed learned rules
+  // file" too. The pathspec form commits only `rel` and leaves every other
+  // staged path exactly as it was.
+  git.git(repo, ["commit", "-q", "-m", "chore: seed learned rules file", "--", rel]);
+  console.log(`wrote and committed rules file at ${path}`);
 }

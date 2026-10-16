@@ -7,7 +7,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig } from "@sil/core";
+import { CONFIG_ERROR_RESULT_PREFIX, fsx, loadConfig, paths } from "@sil/core";
 import type { ProviderStatus } from "@sil/providers";
 import { listQueue, listReflections } from "@sil/store";
 import { defaultDeps, type Deps } from "../deps.ts";
@@ -24,6 +24,14 @@ interface WorldInfo {
   staged: number;
   artifacts: number;
   provider: ProviderStatus;
+  /** Pending entries held by a config error (ModelNotConfigured): the worker
+   * never burns an attempt on these, so they sit in queue/pending until the
+   * operator fixes llm.yaml, and `provider` above can still read reachable
+   * and error-free (e.g. the endpoint exists and `claude` answers, but a
+   * role's model mapping is missing). This is the only place that says why
+   * the backlog is not draining when that happens. */
+  config_error_pending: number;
+  config_error: string | null;
   /** Reachability of `claude` under the installed worker unit's own baked
    * PATH, not this process's, probed once no matter how many worlds ask.
    * Present only when a worker unit is installed AND some role this world
@@ -90,6 +98,14 @@ function installedWorkerUnitPath(platform: string = process.platform): UnitDisco
 }
 
 export async function cmdStatus(opts: StatusOptions, deps: Deps = defaultDeps): Promise<number> {
+  // The one file `sil init` creates and never touches again, so its
+  // presence is "init has run", independent of whether the config it wrote
+  // (or an operator edited since) still resolves to a working provider.
+  // `/loop` and anything else deciding whether to run init must use this,
+  // never a provider field: a world's provider can read null/errored on an
+  // already-initialized install with a broken llm.yaml, and re-running init
+  // then would be a silent no-op that hides the real error.
+  const initialized = fsx.exists(paths.configFile());
   const cfg = loadConfig();
 
   // Discovery reads whatever unit file is on disk (schedule.show() plus
@@ -144,6 +160,18 @@ export async function cmdStatus(opts: StatusOptions, deps: Deps = defaultDeps): 
     }
   }
 
+  // Read once, grouped per world below: providers.status probes the
+  // endpoint, not whether every role it serves actually has a model, so an
+  // endpoint can read reachable and error-free while the worker still fails
+  // every entry with ModelNotConfigured. Those entries name the error
+  // themselves (CONFIG_ERROR_RESULT_PREFIX), which is what this surfaces.
+  let pendingEntries: ReturnType<typeof listQueue> = [];
+  try {
+    pendingEntries = listQueue("pending");
+  } catch {
+    // queue dir unreadable: leave empty, same degrade as queueCounts above
+  }
+
   const worldsInfo: WorldInfo[] = [];
   for (const w of cfg.worlds) {
     const info: WorldInfo = {
@@ -153,6 +181,8 @@ export async function cmdStatus(opts: StatusOptions, deps: Deps = defaultDeps): 
       staged: 0,
       artifacts: 0,
       provider: { endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: "unknown", endpoints: [] },
+      config_error_pending: 0,
+      config_error: null,
     };
     try {
       info.reflections = listReflections(w.name).length;
@@ -170,6 +200,11 @@ export async function cmdStatus(opts: StatusOptions, deps: Deps = defaultDeps): 
     } catch (e) {
       info.provider = { endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: (e as Error).message, endpoints: [] };
     }
+    const worldConfigErrors = pendingEntries.filter(
+      (e) => e.world === w.name && (e.result ?? "").startsWith(CONFIG_ERROR_RESULT_PREFIX),
+    );
+    info.config_error_pending = worldConfigErrors.length;
+    info.config_error = worldConfigErrors.length > 0 ? worldConfigErrors[0]!.result : null;
     // Any endpoint serving a worker role, not only the one serving critic:
     // the worker also calls claude-cli for drafter and judge (run.ts), so a
     // claude-only drafter still needs the unit's PATH checked.
@@ -182,12 +217,16 @@ export async function cmdStatus(opts: StatusOptions, deps: Deps = defaultDeps): 
     worldsInfo.push(info);
   }
 
-  const payload = { worker: workerStatus, queue: queueCounts, worlds: worldsInfo };
+  const payload = { initialized, worker: workerStatus, queue: queueCounts, worlds: worldsInfo };
   if (opts.json) {
     console.log(JSON.stringify(payload, null, 2));
     return 0;
   }
 
+  if (!initialized) {
+    console.log("not initialized: run `sil init` to write config.yaml and llm.yaml");
+    console.log();
+  }
   const workerLine = Object.keys(workerStatus).length > 0 ? JSON.stringify(workerStatus) : "(worker module not available)";
   console.log(`worker: ${workerLine}`);
   console.log(`queue: pending=${queueCounts.pending} done=${queueCounts.done} failed=${queueCounts.failed}`);
@@ -205,6 +244,12 @@ export async function cmdStatus(opts: StatusOptions, deps: Deps = defaultDeps): 
       `${info.world.padEnd(16)} ${info.llm.padEnd(6)} ${String(info.reflections).padStart(11)} ` +
         `${String(info.staged).padStart(7)} ${String(info.artifacts).padStart(9)}  ${provStr}`,
     );
+    // Printed under the row, not folded into provStr: the provider above can
+    // read entirely healthy while these entries name the actual reason the
+    // backlog is not draining.
+    if (info.config_error_pending > 0) {
+      console.log(`  ${info.config_error_pending} pending entr${info.config_error_pending === 1 ? "y" : "ies"} held by a config error: ${info.config_error}`);
+    }
   }
   return 0;
 }

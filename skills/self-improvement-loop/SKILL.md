@@ -14,6 +14,10 @@ Usage and votes then feed the next promotion pass. The engine is the `sil` CLI.
 Run `sil` from PATH. If `command -v sil` finds nothing, try `~/.local/bin/sil`
 (`sil codex install` and `sil schedule install` both write it).
 
+## First run
+
+Check `sil status --json`'s `initialized` field first. `false` means `sil init` never ran: run it and report its output. Once `true`, never rerun init, even on a provider error: report the status output instead, since init would just hide the problem by leaving existing files alone.
+
 ## Which host you are in
 
 | | Claude Code | Codex or another agent |

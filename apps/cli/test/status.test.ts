@@ -2,9 +2,29 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CONFIG_ERROR_RESULT_PREFIX, type QueueEntry } from "@sil/core";
+import { writeEntry } from "@sil/store";
 import { defaultDeps, type Deps } from "../src/deps.ts";
 import { run } from "../src/main.ts";
 import { install, MINIMAL_PATH, systemdDir } from "../src/schedule.ts";
+
+function pendingEntry(overrides: Partial<QueueEntry> = {}): QueueEntry {
+  return {
+    session_id: "s-config-error",
+    transcript_path: join(tmpdir(), "does-not-matter.jsonl"),
+    cwd: tmpdir(),
+    world: "default",
+    git_head: null,
+    first_stop: "2026-09-14T00:00:00Z",
+    last_stop: "2026-09-14T00:00:00Z",
+    stops: 1,
+    ended: true,
+    tool_uses: 9,
+    attempts: 0,
+    result: null,
+    ...overrides,
+  };
+}
 
 /** Runs `sil status --json` with console.log captured, and returns the
  * parsed payload plus the exit code. Every test below needs this dance, so
@@ -94,6 +114,85 @@ describe("sil status --json", () => {
     expect(code).toBe(0);
     expect(Object.hasOwn(payload.worlds[0], "unit_path_reachable")).toBe(false);
     expect(Object.hasOwn(payload.worlds[0], "unit_path_error")).toBe(false);
+  });
+});
+
+// Regression: /loop used to decide "never initialized" from
+// `provider.endpoint === null`, which is also null for an already-initialized
+// install whose llm.yaml is broken (e.g. the active endpoint name does not
+// resolve). That made /loop re-run `sil init` (a no-op on existing files)
+// and hide the real error instead of showing it. `initialized` names the one
+// file init writes and never touches again, independent of whether the
+// config it describes still works.
+describe("sil status initialized field", () => {
+  test("is false before sil init has ever run", async () => {
+    const { code, payload } = await statusJson(fakeDeps());
+    expect(code).toBe(0);
+    expect(payload.initialized).toBe(false);
+  });
+
+  test("is true once sil init has run, even if the provider it describes is now broken", async () => {
+    expect(await run(["init"])).toBe(0);
+
+    const brokenDeps: Deps = {
+      ...fakeDeps(),
+      providers: {
+        status: async () => ({ endpoint: null, kind: null, base_url: null, models: {}, reachable: null, error: "ModelNotConfigured: llm.yaml active endpoint \"ghost\" is not defined", endpoints: [] }),
+      } as unknown as Deps["providers"],
+    };
+
+    const { code, payload } = await statusJson(brokenDeps);
+    expect(code).toBe(0);
+    expect(payload.initialized).toBe(true);
+    // The broken provider still shows up, proving /loop would see the real
+    // error rather than nothing to go on.
+    expect(payload.worlds[0].provider.endpoint).toBeNull();
+    expect(payload.worlds[0].provider.error).toContain("ghost");
+  });
+});
+
+// Regression: ModelNotConfigured no longer burns a worker attempt, so a
+// pending entry can sit there indefinitely while providers.status (an
+// endpoint reachability probe, not a per-role model check) still reads clean.
+// Nothing told the operator why the backlog was not draining.
+describe("sil status surfaces pending entries held by a config error", () => {
+  test("counts them and shows the recorded error even when the provider itself probes clean", async () => {
+    expect(await run(["init"])).toBe(0);
+    writeEntry(
+      "pending",
+      pendingEntry({
+        result: `${CONFIG_ERROR_RESULT_PREFIX} failed: ModelNotConfigured: no model for role critic on endpoint claude`,
+      }),
+    );
+
+    const { code, payload } = await statusJson(fakeDeps());
+    expect(code).toBe(0);
+    // The mocked provider itself reads entirely healthy: this is exactly the
+    // state the old status output could not explain.
+    expect(payload.worlds[0].provider.reachable).toBe(true);
+    expect(payload.worlds[0].provider.error).toBeNull();
+    expect(payload.worlds[0].config_error_pending).toBe(1);
+    expect(payload.worlds[0].config_error).toContain("ModelNotConfigured");
+
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    try {
+      expect(await run(["status"], fakeDeps())).toBe(0);
+    } finally {
+      console.log = origLog;
+    }
+    expect(logs.join("\n")).toContain("config error");
+  });
+
+  test("a plain failed/skipped result, or one from another world, does not count", async () => {
+    expect(await run(["init"])).toBe(0);
+    writeEntry("pending", pendingEntry({ session_id: "s-other-failure", result: "failed: ProviderError: provider unreachable" }));
+    writeEntry("pending", pendingEntry({ session_id: "s-other-world", world: "elsewhere", result: `${CONFIG_ERROR_RESULT_PREFIX} x` }));
+
+    const { payload } = await statusJson(fakeDeps());
+    expect(payload.worlds[0].config_error_pending).toBe(0);
+    expect(payload.worlds[0].config_error).toBeNull();
   });
 });
 

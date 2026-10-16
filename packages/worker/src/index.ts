@@ -5,6 +5,7 @@ import { closeSync, openSync, readdirSync, rmSync, statSync, unlinkSync, writeFi
 import { dirname, join } from "node:path";
 import {
   ConfigError,
+  CONFIG_ERROR_RESULT_PREFIX,
   fsx,
   loadConfig,
   LockHeld,
@@ -492,7 +493,7 @@ async function reflectPending(
         // pending exactly as it was, every session recorded before the
         // operator fixes config survives, and the rest of this world's
         // entries are skipped above instead of repeating the same failure.
-        const updated = { ...entry, result: `config error: ${reason}` };
+        const updated = { ...entry, result: `${CONFIG_ERROR_RESULT_PREFIX} ${reason}` };
         writeEntry("pending", updated);
         configBrokenWorlds.add(entry.world);
         summary.skipped.push(entry.session_id);

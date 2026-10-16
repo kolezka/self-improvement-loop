@@ -13,16 +13,20 @@ First check whether the loop has ever been set up:
 "${CLAUDE_PLUGIN_ROOT}/scripts/sil" status --json
 ```
 
-If any world's `provider.endpoint` is `null` (typically with `provider.error`
-naming a missing `llm.yaml` or no endpoints), `sil init` has never run. In that
-case, run it and report its output instead of status:
+If the JSON's top-level `initialized` is `false`, `sil init` has never run (no
+`config.yaml` yet). In that case, run it and report its output instead of
+status:
 
 ```sh
 "${CLAUDE_PLUGIN_ROOT}/scripts/sil" init
 ```
 
-Otherwise, run plain status and print the output verbatim, as a short summary
-(not the raw JSON):
+Never run init again once `initialized` is `true`, even if a world's
+`provider` shows an error: init leaves existing `config.yaml`/`llm.yaml`
+alone and would just print "already exists, leaving it as is", hiding the
+real error. In that case the loop is set up; run plain status and print the
+output verbatim, as a short summary (not the raw JSON), including whatever
+provider or config error it reports:
 
 ```sh
 "${CLAUDE_PLUGIN_ROOT}/scripts/sil" status

@@ -16,6 +16,12 @@ export const HOOK_SNAPSHOT = "hook-config.json";
 // a host that re-scans its own sessions (OpenClaw) may queue it again.
 export const SKIPPED_BELOW_MIN_TOOL_USES = "skipped: below min_tool_uses";
 
+// A pending entry's `result` prefix when the worker hit ModelNotConfigured:
+// never a terminal state (the entry stays in queue/pending, attempts
+// unchanged), so `sil status` greps for this prefix to tell the operator why
+// the backlog is not draining even when the endpoint itself probes fine.
+export const CONFIG_ERROR_RESULT_PREFIX = "config error:";
+
 // Hook events the plugin registers.
 export const HOOK_EVENTS = [
   "SessionStart",

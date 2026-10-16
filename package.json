@@ -19,7 +19,8 @@
     "lint:dashes": "bun run scripts/lint-dashes.ts",
     "dev:web": "bun run --cwd apps/web dev",
     "sil": "bun run apps/cli/src/main.ts",
-    "demo:record": "bun run scripts/demo/record.ts"
+    "demo:record": "bun run scripts/demo/record.ts",
+    "test:changed": "bun run scripts/test-changed.ts"
   },
   "devDependencies": {
     "@sil/core": "workspace:*",

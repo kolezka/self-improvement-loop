@@ -14,12 +14,17 @@ Design record: `docs/ARCHITECTURE.md`. Operations: `docs/OPERATIONS.md`. Install
 bun install
 bun run build          # writes dist/ (untracked); hooks.json runs dist/hook.js
 bun test
+bun run test:changed   # only touched workspaces and their dependents
 bun run typecheck
 bun run check:web      # svelte-check
 bun run lint:dashes    # fails on em or en dashes in any tracked text file
 bun run sil <args>     # CLI from source
 make dev-install       # claude --plugin-dir .
 ```
+
+While iterating, run `bun run test:changed` (touched workspaces plus their `@sil/*`
+dependents; `--base <ref>`, `--dry-run`) or `bun test <path>`. The full `bun test`
+takes minutes: run it once before opening a PR, not on every edit.
 
 CI (`.github/workflows/ci.yml`) runs, in order: `bun install`, `git diff --exit-code
 -- bun.lock`, lint:dashes, typecheck, check:web, build, test. Run the same set before

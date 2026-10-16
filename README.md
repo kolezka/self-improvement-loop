@@ -411,6 +411,7 @@ bun run typecheck
 bun run check:web     # svelte-check
 bun run build         # writes dist/, which the hooks run
 bun test
+bun run test:changed  # while iterating: touched workspaces and dependents
 make dev-install      # claude --plugin-dir .
 ```
 

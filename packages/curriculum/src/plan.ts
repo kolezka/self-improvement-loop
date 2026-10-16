@@ -44,8 +44,10 @@ export interface PlanOptions {
    * not spend a slot and strand a viable one. Default true, so the plan and
    * dry-run forecast still show over-cap. */
   enforceCap?: boolean;
-  /** Injectable clock for `redraftPolicy`'s low-traffic stall check. Tests
-   * only; production leaves it at the real clock. */
+  /** Injectable clock for `redraftPolicy`'s low-traffic stall check and for the
+   * live scorecards this function computes when `cards` is not supplied. Tests
+   * only; production leaves it at the real clock. Passing `cards` directly
+   * bypasses this for the scorecard computation, since nothing is computed. */
   now?: Date;
 }
 
@@ -221,10 +223,13 @@ export function loadPayloadCorpus(world?: World | null): Record<string, unknown>
 
 /** Artifact scorecards, computed live every call, or none when the feedback
  * half is not installed. The planner decides from these, so it never acts on
- * a scorecards.json cache that a reflection or promotion made stale. */
-export function scorecards(world: World, cfg: Config): Scorecard[] {
+ * a scorecards.json cache that a reflection or promotion made stale.
+ *
+ * `now` is injectable so a caller pinning the plan's clock (tests) pins the
+ * staleness and rate windows underneath it too, not just `redraftPolicy`. */
+export function scorecards(world: World, cfg: Config, opts: { now?: Date } = {}): Scorecard[] {
   try {
-    return [...feedback.scorecards(world, cfg)];
+    return [...feedback.scorecards(world, cfg, opts)];
   } catch {
     // A missing scorecard is no proposal, not a crash.
     return [];
@@ -411,7 +416,7 @@ export function plan(world: World, cfg: Config, opts: PlanOptions = {}): PlanRep
   const cap = cfg.promotion.per_run_cap;
   const ledger = loadLedger(world);
   const groups = cluster(opts.items ?? reflections(world, opts.extraDirs ?? []));
-  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world, cfg), ledger.entries);
+  const byPattern = scorecardByPattern(opts.cards ?? scorecards(world, cfg, { now: opts.now }), ledger.entries);
   const placeholders = placeholderPatterns(world);
 
   const actions: PlanAction[] = [];

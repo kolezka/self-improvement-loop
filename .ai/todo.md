@@ -412,7 +412,7 @@ through `sessions/<id>/module-spool.json`, ingested under the session lock.
 - [ ] not done: the marketplace release still ships the `modules` key to every user; the key
       is ignored on 2.1.276 and 2.1.278 with the flag off, older builds not tested here
 
-## Web UI console polish (inspired by inkitt/source-code-graph-engine)
+## Web UI console polish (inspired by a prior internal project)
 
 - [x] restyle `apps/web/src/app.css`: bordered surfaces, 240px rail with icons, 48px top bar,
       thin scrollbars, token names kept so panes need no change
@@ -580,7 +580,7 @@ against `origin/main` before the fix and green after.
 - [x] `apps/cli/test/init.test.ts:141` fixed 2026-10-15, see "Git identity test fix" below
 
 ## Gate corpus diagnosis (2026-10-14, branch fix/gate-corpus-match)
-- [x] Replay candidate pipeline gates against copied default and inkitt payload corpora with the real runner; command samples preserve pipes.
+- [x] Replay candidate pipeline gates against copied default and real-world payload corpora with the real runner; command samples preserve pipes.
 - [x] Include a bounded gate excerpt when a draft matches nothing, so future refusals retain the rejected gate.
 - [ ] The 2026-09-29 and 2026-10-02 draft gates and contemporaneous corpus were not saved. The current rotated samples cannot prove why those two drafts matched nothing.
 

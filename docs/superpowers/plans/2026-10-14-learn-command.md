@@ -64,7 +64,7 @@
 - [ ] **Step 1: Fresh base**
 
 ```bash
-cd /Users/me/Development/self-improvement-loop
+cd <repo>
 git fetch
 git log --oneline HEAD..origin/main
 git branch -a | rg -i "learn|inline|register"

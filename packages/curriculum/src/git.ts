@@ -114,8 +114,8 @@ export function refExists(repo: string, ref: string): boolean {
  * Git cannot hold `curriculum/x` and `curriculum/x/y` at once, so the world
  * segment is never optional. Casefolded at this one construction site: refs are
  * case-sensitive, a world is spelled both ways by different config files, and
- * the day this was missing V1 staged `curriculum/Inkitt/<p>` while the review
- * pane globbed `curriculum/inkitt/*` and reported nothing pending. */
+ * the day this was missing V1 staged `curriculum/Acme/<p>` while the review
+ * pane globbed `curriculum/acme/*` and reported nothing pending. */
 export function branchName(world: string, pattern: string): string {
   return `curriculum/${world.toLowerCase()}/${pattern}`;
 }

@@ -670,9 +670,10 @@ describe("pruneQueueBucket", () => {
 
 describe("transient provider failure", () => {
   test("keeps the session queued up to MAX_ATTEMPTS then fails it", async () => {
-    // No saveLlm here: the critic must fail to resolve the model role before
-    // even reaching chat, and that ModelNotConfigured (a ConfigError) must
-    // retry the same as a ProviderError from the chat call itself.
+    // A real, resolvable llm.yaml: the failure must come from the chat call
+    // itself (a down provider), not from model resolution, which is the
+    // separate ModelNotConfigured case covered below.
+    prepareEnv();
     const entryCfg = cfg({ minToolUses: 0 });
     const transcript = writeSampleTranscript(tmpDir);
     const entry: QueueEntry = {
@@ -709,5 +710,71 @@ describe("transient provider failure", () => {
     expect(summary.failed).toEqual(["s-retry"]);
     expect(loadEntry("pending", "s-retry")).toBeNull();
     expect(loadEntry("failed", "s-retry")).not.toBeNull();
+  });
+});
+
+// --- ModelNotConfigured keeps the session queued forever, never burns attempts ----
+
+describe("ModelNotConfigured does not burn attempts", () => {
+  function pendingEntry(sessionId: string): QueueEntry {
+    const cwd = join(tmpDir, sessionId);
+    return {
+      session_id: sessionId,
+      transcript_path: writeSampleTranscript(cwd, sessionId),
+      cwd,
+      world: "default",
+      git_head: null,
+      first_stop: "2026-09-14T00:00:00Z",
+      last_stop: "2026-09-14T00:00:00Z",
+      stops: 1,
+      ended: true,
+      tool_uses: 9,
+      attempts: 0,
+      result: null,
+    };
+  }
+
+  // Regression: ModelNotConfigured used to be treated as transient, the same
+  // as a down provider, so it burned one of MAX_ATTEMPTS every run and the
+  // entry (and every session recorded before the operator noticed) was
+  // permanently lost to queue/failed after three worker passes, even though
+  // nothing about the session was ever at fault.
+  test("stays pending with attempts unchanged across many runs, never reaches failed", async () => {
+    // No saveLlm: llm.yaml does not exist, so resolving the critic's model
+    // role raises ModelNotConfigured before chat is ever called.
+    const entryCfg = cfg({ minToolUses: 0 });
+    writeEntry("pending", pendingEntry("s-no-model"));
+
+    for (let i = 0; i < MAX_ATTEMPTS + 2; i++) {
+      const summary = await runOnce(entryCfg, { curriculum: false });
+      expect(summary.failed).toEqual([]);
+      expect(summary.skipped).toEqual(["s-no-model"]);
+      const again = loadEntry("pending", "s-no-model");
+      expect(again).not.toBeNull();
+      expect(again!.attempts).toBe(0);
+      expect(again!.result).toContain("config error");
+      expect(again!.result).toContain("ModelNotConfigured");
+    }
+    expect(loadEntry("failed", "s-no-model")).toBeNull();
+  });
+
+  test("skips the rest of the world's entries in the same pass without touching them", async () => {
+    const entryCfg = cfg({ minToolUses: 0 });
+    writeEntry("pending", pendingEntry("s-config-a"));
+    writeEntry("pending", pendingEntry("s-config-b"));
+
+    const summary = await runOnce(entryCfg, { curriculum: false });
+    expect(summary.failed).toEqual([]);
+    expect(new Set(summary.skipped)).toEqual(new Set(["s-config-a", "s-config-b"]));
+
+    const first = loadEntry("pending", "s-config-a")!;
+    expect(first.result).toContain("config error");
+
+    // Never attempted this pass: skipped on sight once the world was marked
+    // broken, so its entry is untouched rather than carrying a second,
+    // redundant config error of its own.
+    const second = loadEntry("pending", "s-config-b")!;
+    expect(second.attempts).toBe(0);
+    expect(second.result).toBeNull();
   });
 });

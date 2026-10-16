@@ -21,7 +21,14 @@ Then in any Claude Code session:
 /loop
 ```
 
-This prints status and confirms the plugin is wired up.
+If the loop has never been set up, `/loop` now runs `sil init` first and
+reports its output; otherwise it prints status and confirms the plugin is
+wired up. To run init directly instead, use the full path into the plugin
+cache:
+
+```
+~/.claude/plugins/cache/kolezka/self-improvement-loop/<version>/scripts/sil init
+```
 
 The marketplace entry tracks the `release` branch of this repo, which a release
 run moves to the newest release commit. Only those commits carry the prebuilt
@@ -51,12 +58,30 @@ scripts/sil init
 
 This writes `~/.config/self-improvement-loop/config.yaml` and `llm.yaml` with one
 catch-all world, and a `learned/` git repo that world's artifacts land in until you
-point it at a real target. Edit `llm.yaml` and set `models.critic`,
-`models.drafter` and `models.judge`, then check status:
+point it at a real target. The default `llm.yaml` routes every role through the
+`claude` CLI (`claude -p`) with model `sonnet`, so a plain `sil init` needs no
+further setup as long as `claude` is on `PATH`. To route through a LiteLLM or
+other OpenAI-compatible endpoint instead, pass `--llm-base-url`:
+
+```
+scripts/sil init --llm-base-url http://localhost:4000 --model deepseek/deepseek-flash
+```
+
+That writes a second endpoint named `litellm` and makes it active, and the
+worker needs `LITELLM_API_KEY` (or whatever `--api-key-env` names) set in its
+environment before it can use it. `sil llm use claude` and `sil llm use
+litellm` switch between them later; `--llm-base-url` only has an effect the
+first time, while `llm.yaml` does not exist yet. Check which endpoint serves
+each role:
 
 ```
 scripts/sil status
 ```
+
+`sil init` also creates (or finds) `learned/RULES.md` and prints its path.
+Promoted rules live in the marked block inside that file, and the SessionStart
+hook injects them into every session on its own; there is nothing to add to
+your own CLAUDE.md.
 
 Then run `sil import payloads --days 30` once, so the curriculum router has a
 corpus of real tool calls to test drafted hook gates against from the start

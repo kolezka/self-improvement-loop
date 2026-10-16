@@ -203,3 +203,29 @@
   inject one too. Fix: force `user.useConfigOnly=true`; clear `GIT_CONFIG_PARAMETERS`
   outright since useConfigOnly cannot block it; overwrite counted config, scrubbing
   leftover keys for hygiene. Assert on an actual git commit, never env shape alone.
+- 2026-10-16: A test fixture that calls `fixture()` without writing the hook
+  snapshot is not neutral once SessionStart's status line depends on
+  `snapshotPresent`: it silently became a "never initialized" fixture and the
+  old hardcoded "is active" string in those tests was masking that every one
+  of them was actually exercising the uninitialized path. When a gate is added
+  on a boolean a fixture already decides implicitly, grep every test that uses
+  the default fixture and classify each one as "should be initialized" (add
+  the write) or "is genuinely testing pre-init" (update the expectation), do
+  not assume the old assertions still describe the intended state.
+- 2026-10-16: `sil init` writing an uncommitted file directly into the
+  `learned/` git repo (not a scratch worktree) is a landmine: the curriculum
+  pipeline's first promotion later does `git merge --ff-only` straight against
+  that same live checkout, and git refuses a fast-forward that would overwrite
+  an untracked file at the same path. Any file `sil init` seeds into a target
+  it owns has to be committed there, matching `ensureRepo`'s own "one clean
+  initial commit" invariant, not left dirty "for simplicity".
+- 2026-10-16: `ModelNotConfigured` and a down provider were both routed
+  through one `isTransient` check that burns `MAX_ATTEMPTS` the same way for
+  either, but they are different failure classes: a provider outage can clear
+  on its own, a missing model config cannot until the operator edits
+  `llm.yaml`, and every session queued before that edit was previously lost to
+  `queue/failed` after three worker passes with no event changing anything.
+  Classify a config error as "retry forever, cost nothing" (unchanged
+  `attempts`), not "retry N times then give up", and skip the rest of that
+  pass's entries once one has proven the config is broken, since they would
+  fail identically.

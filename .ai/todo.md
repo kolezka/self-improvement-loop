@@ -870,3 +870,43 @@ Implemented on feat/toolify-command. Not merged, not released, not installed liv
       toolify before the change)
 - [x] SKILL.md, README, OPERATIONS updated; manifest test lists `toolify`
 - [ ] not done: no live dogfood run of `/toolify` yet
+
+## Out of box install fixes (2026-10-16, branch fix/out-of-box-install)
+A fresh-install simulation (empty HOME) found five rough edges before an
+operator ever touches config: the hook claimed the loop was active before
+`sil init` ran, `sil init` defaulted to the author's own tailscale LiteLLM
+host, a missing LITELLM_API_KEY permanently failed every queued session after
+three worker passes, RULES.md never got created, and the docs did not say any
+of this.
+- [x] SessionStart now hints at `sil init` instead of claiming "is active"
+      when the hook snapshot does not exist, from one pure function
+      (`sessionStartStatusLine`/`notInitializedLine` in
+      `packages/core/src/hook-snapshot.ts`) used by both `apps/hook` and
+      `apps/hook-module` so the two paths cannot drift. `commands/loop.md`
+      checks `sil status --json` first and runs init when no provider is
+      configured.
+- [x] `sil init` without `--llm-base-url` now writes only the `claude`
+      endpoint and makes it active; the hardcoded `http://100.64.0.3:4000`
+      default is gone. `--llm-base-url` is what writes and activates a
+      `litellm` endpoint. "Next steps" no longer suggests `sil llm use
+      litellm` when none exists.
+- [x] `sil init` now calls `ensureRulesFile` per world and commits a freshly
+      created `learned/RULES.md` (idempotent; untracked would have blocked
+      the first curriculum fast-forward merge into that checkout).
+- [x] worker: `ModelNotConfigured` no longer burns one of `MAX_ATTEMPTS`. The
+      entry stays in `queue/pending` with `attempts` unchanged and `result`
+      recording the config error; the rest of that world's entries are
+      skipped for the remainder of the pass instead of repeating the
+      identical failure once per entry.
+- [x] docs: INSTALL.md explains the claude-cli default, `--llm-base-url`, and
+      where RULES.md lives; `/loop` documented as running init on first use.
+- [x] every fix shipped with a red/green-verified regression test (reverted
+      the relevant source file to HEAD, confirmed the new test failed,
+      restored, confirmed it passed).
+- [ ] not done: `skills/self-improvement-loop/SKILL.md` was not updated with
+      the same "run init if not set up" guidance `commands/loop.md` got; out
+      of this brief's stated scope, worth a follow-up.
+- [ ] pre-existing, unrelated: `packages/curriculum/test/plan.test.ts` has 3
+      failures (`retire-candidate` where `done`/`keep` is expected) that
+      reproduce identically on unmodified `HEAD`, so they are a pre-existing
+      date-sensitive issue, not a regression from this branch.

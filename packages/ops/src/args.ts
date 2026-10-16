@@ -39,6 +39,9 @@ export type RehomeArgs = z.infer<typeof RehomeArgs>;
 export const RetireArgs = PatternArgs.extend({ confirm: z.literal(true) });
 export type RetireArgs = z.infer<typeof RetireArgs>;
 
+export const DeleteArgs = PatternArgs.extend({ confirm: z.literal(true) });
+export type DeleteArgs = z.infer<typeof DeleteArgs>;
+
 export const SessionArgs = z.object({ session_id: z.string().regex(SESSION_ID_RE) });
 export type SessionArgs = z.infer<typeof SessionArgs>;
 

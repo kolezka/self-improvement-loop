@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import Drawer from "../components/Drawer.svelte";
-  import { canRefine, canRetire, LIVE_STATUSES } from "../lib/artifact-actions.ts";
+  import { canDelete, canRefine, canRetire, LIVE_STATUSES } from "../lib/artifact-actions.ts";
   import { filterLessons, groupByPattern } from "../lib/lessons.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
   import { isCurrentVerifyPattern } from "../lib/verify-guard.ts";
@@ -111,6 +111,18 @@
       await loadInventory();
     } catch (e) {
       toast(`Could not retire ${pattern}: ${(e as Error).message}`);
+    }
+  }
+
+  async function remove(pattern: string, inline: boolean) {
+    const file = inline ? " The file it points at stays where it is." : "";
+    if (!window.confirm(`Delete ${pattern}? It disappears from this list and any staged branch is discarded.${file}`)) return;
+    try {
+      const res = (await call("router.delete", { world: appState.world, pattern, confirm: true })) as { kept: string | null };
+      toast(res.kept ? `${pattern} deleted. ${res.kept} was left in place.` : `${pattern} deleted.`, "ok");
+      await loadInventory();
+    } catch (e) {
+      toast(`Could not delete ${pattern}: ${(e as Error).message}`);
     }
   }
 
@@ -362,6 +374,9 @@
                     {/if}
                     {#if canRetire(row)}
                       <button class="small danger" onclick={() => retire(row.pattern)}>Retire</button>
+                    {/if}
+                    {#if canDelete(row)}
+                      <button class="small danger" onclick={() => remove(row.pattern, row.origin === "inline")}>Delete</button>
                     {/if}
                   </div>
                 </td>

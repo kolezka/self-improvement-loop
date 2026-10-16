@@ -11,7 +11,7 @@ import { fsx, paths } from "@sil/core";
 // that choice). Recording an automatic re-route under "rehomed" would both
 // misreport it as a human action and permanently block the pattern's own
 // future re-routes, so it gets its own kind instead.
-export const PROPOSAL_EVENT_KINDS = ["staged", "revised", "accepted", "rejected", "retired", "rehomed", "rerouted"] as const;
+export const PROPOSAL_EVENT_KINDS = ["staged", "revised", "accepted", "rejected", "retired", "rehomed", "rerouted", "deleted"] as const;
 export type ProposalEventKind = (typeof PROPOSAL_EVENT_KINDS)[number];
 
 const ProposalEventSchema = z.object({

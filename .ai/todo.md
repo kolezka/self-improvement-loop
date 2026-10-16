@@ -950,3 +950,10 @@ pure doc/prompt text nits (6, 7), which have no executable test in this repo
 - [x] item 8 `skills/self-improvement-loop/SKILL.md` got the same
       "initialized" check as `/loop`, trimmed to fit the file's existing
       120-line test budget (`tests/plugin-manifest.test.ts`).
+- [x] `sil review delete` / `router.delete`: hides a retired, rejected or
+      inline row and discards a never-accepted staged proposal. Writes a
+      `deleted` tombstone that keeps the watermark, so the loop does not
+      re-stage on evidence it already had. Refuses a live loop artifact
+      (retire first). An inline file outside the repo stays; an inline hook's
+      repo copy is removed. Web: Delete in Artifacts, Discard in Review
+      (disabled on `detail.live`). Tests: packages/review/test/delete.test.ts.

@@ -28,3 +28,11 @@ export function canRetire(row: ArtifactActionRow): boolean {
 export function canRefine(row: ArtifactActionRow): boolean {
   return canRetire(row);
 }
+
+/** Whether to show Delete on this row. The complement of Retire:
+ * `router.delete` (`removeInner` in packages/review/src/index.ts) refuses a
+ * live loop artifact, which has to be retired through review first, and
+ * takes every other row, inline ones included. */
+export function canDelete(row: ArtifactActionRow): boolean {
+  return !canRetire(row);
+}

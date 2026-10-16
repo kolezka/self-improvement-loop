@@ -64,6 +64,16 @@ export {
 } from "./repair.ts";
 export { type RemoteOps, setRemoteOps };
 
+/** A loop artifact the default branch serves. Delete refuses it; retire is the way out. */
+function isLiveLoop(entry: PromotionEntry | null | undefined): boolean {
+  return Boolean(entry && entry.status === "promoted" && entry.origin !== "inline");
+}
+
+/** A deleted row is a tombstone. Only new evidence brings the pattern back. */
+function refuseDeleted(entry: PromotionEntry | null | undefined, pattern: string, action: string): void {
+  if (entry && entry.status === "deleted") throw new ReviewError(`${JSON.stringify(pattern)} is deleted; nothing to ${action}`);
+}
+
 /** Inline artifacts are edited by hand; review actions never touch them. */
 export function refuseInline(entry: PromotionEntry | null | undefined, pattern: string, action: string, next = ""): void {
   if (entry && entry.origin === "inline") {
@@ -183,6 +193,17 @@ export type RetireResult = {
   removed: string;
 };
 
+export type RemoveResult = {
+  pattern: string;
+  /** The staged branch this delete discarded, if there was one. */
+  branch_deleted: string | null;
+  /** Repo-relative file taken out with the row, "" when none. */
+  removed: string;
+  /** An inline file outside the repo, left in place. */
+  kept: string | null;
+  commit: string;
+};
+
 // --- read side ---------------------------------------------------------------
 
 /** Every pattern staged for this world and not yet merged, sorted by pattern. */
@@ -299,7 +320,18 @@ export function detail(world: World, _cfg: Config, pattern: string, opts: Review
     sources,
     reviewed_state: snap.reviewed_state,
     accept_blocked: blocked,
+    live: liveOnDefault(world, pattern),
   };
+}
+
+/** `detail.live`, false on an unreadable ledger. The proposal must still
+ * render so accept can refuse it, and delete reads the same ledger and fails loudly. */
+function liveOnDefault(world: World, pattern: string): boolean {
+  try {
+    return isLiveLoop(loadLedger(world).entries[pattern]);
+  } catch {
+    return false;
+  }
 }
 
 /** What accepting this exact commit would change on the default branch. */
@@ -323,6 +355,7 @@ export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): 
   const rows: RouterRow[] = [];
   for (const pattern of Object.keys(ledger.entries).sort()) {
     const entry = ledger.entries[pattern]!;
+    if (entry.status === "deleted") continue;
     rows.push({
       pattern,
       artifact_type: entry.artifact_type,
@@ -794,6 +827,7 @@ function rehomeInner(world: World, _cfg: Config, pattern: string, artifactType: 
   let newRel = "";
   // The live row first: an existing branch carries the loop's older row.
   refuseInline(loadLedger(world).entries[pattern], pattern, "re-home");
+  refuseDeleted(loadLedger(world).entries[pattern], pattern, "re-home");
 
   const branch = stageOnBranch(world, repo, pattern, (tree) => {
     const ledger = loadLedgerFile(join(tree, rel));
@@ -858,6 +892,7 @@ function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
     const entry = ledger.entries[pattern];
     if (!entry) throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger; nothing to retire`);
     refuseInline(entry, pattern, "retire");
+    refuseDeleted(entry, pattern, "retire");
     if (entry.status === "retired") throw new ReviewError(`${JSON.stringify(pattern)} is already retired`);
     const oldType = entryType(entry);
     removed = artifacts.removeArtifact(world, oldType, pattern, tree);
@@ -874,6 +909,82 @@ function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
 
   recordProposalEvent(world.name, pattern, "retired");
   return { branch, pattern, removed };
+}
+
+/** Delete a pattern nothing loop-owned serves any more: a retired or rejected
+ * row, an inline row, or a staged proposal that was never accepted.
+ *
+ * The row stays as a `deleted` tombstone holding the watermark. Removing it
+ * outright reads the reflections already on disk as new evidence, and the
+ * next tick stages the same artifact again.
+ *
+ * A live loop artifact is refused: removing it goes through retire, which a
+ * human reviews. An inline file outside the repo is left in place; a human
+ * wrote it and nothing else holds a copy. */
+export function remove(world: World, cfg: Config, pattern: string, opts: ReviewOptions = {}): RemoveResult {
+  return withWorkerLock(() => removeInner(world, cfg, pattern, opts));
+}
+
+function removeInner(world: World, _cfg: Config, pattern: string, opts: ReviewOptions): RemoveResult {
+  const repo = targetRoot(world);
+  const defaultRef = git.defaultBranch(repo);
+  requireLiveReady(world, repo, defaultRef);
+  const rel = ledgerRel(world);
+  const branch = branchName(world.name, pattern);
+  const hasBranch = git.refExists(repo, `refs/heads/${branch}`);
+  const live = loadLedger(world).entries[pattern];
+
+  if (isLiveLoop(live)) {
+    throw new ReviewError(`${JSON.stringify(pattern)} is live; retire it first with sil review retire, or reject its staged branch`);
+  }
+  if (!hasBranch) {
+    if (!live) throw new ReviewError(`${JSON.stringify(pattern)} is not in the ledger and has no staged branch; nothing to delete`);
+    refuseDeleted(live, pattern, "delete");
+  }
+  const branchRow = hasBranch ? branchEntry(world, repo, branch, pattern) : null;
+  const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
+  let removed = "";
+  let row: PromotionEntry | null = null;
+
+  const sha = commitOnDefault(world, repo, defaultRef, `chore(ledger): delete ${pattern}`, (tree) => {
+    const ledger = loadLedgerFile(join(tree, rel));
+    const prior = ledger.entries[pattern];
+    const touched = [rel];
+    // An inline hook was copied into the repo, so git holds it and can take it out.
+    if (prior && prior.origin === "inline" && !prior.external_path && prior.served_by?.path) {
+      removed = artifacts.removeArtifact(world, entryType(prior), pattern, tree);
+      if (removed) touched.push(removed);
+    }
+    row = {
+      pattern,
+      promoted_at_count: prior?.promoted_at_count ?? 0,
+      rejected_at_count: Math.max(prior?.rejected_at_count ?? 0, branchRow?.promoted_at_count ?? 0, at),
+      artifact_type: prior ? prior.artifact_type : entryType(branchRow),
+      last_updated: fsx.nowIso(),
+      promoted_at: prior?.promoted_at ?? null,
+      revised_at: prior?.revised_at ?? null,
+      revisions: prior?.revisions ?? 0,
+      commit: prior?.commit ?? null,
+      feedback: prior?.feedback ?? null,
+      ...(prior?.origin ? { origin: prior.origin } : {}),
+      ...(prior?.external_path ? { external_path: prior.external_path } : {}),
+      status: "deleted",
+      served_by: null,
+    };
+    ledger.entries[pattern] = row;
+    saveLedger(join(tree, rel), ledger);
+    return touched;
+  });
+
+  if (hasBranch) git.git(repo, ["branch", "-q", "-D", branch], { check: false });
+  recordProposalEvent(world.name, pattern, "deleted");
+  return {
+    pattern,
+    branch_deleted: hasBranch ? branch : null,
+    removed,
+    kept: row!.origin === "inline" ? (row!.external_path ?? null) : null,
+    commit: sha.slice(0, 12),
+  };
 }
 
 // --- making an accepted artifact active --------------------------------------

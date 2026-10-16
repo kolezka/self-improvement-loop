@@ -310,7 +310,9 @@ export type ArtifactType = z.infer<typeof ArtifactType>;
 export const ArtifactRef = z.object({ type: ArtifactType, path: z.string().nullable().default(null) });
 export type ArtifactRef = z.infer<typeof ArtifactRef>;
 
-export const PromotionStatus = z.enum(["staged", "promoted", "rejected", "retired"]);
+// "deleted" is a tombstone: hidden from every listing, kept so its watermark
+// stops the loop from staging the same pattern again on the evidence it has.
+export const PromotionStatus = z.enum(["staged", "promoted", "rejected", "retired", "deleted"]);
 export type PromotionStatus = z.infer<typeof PromotionStatus>;
 
 export const PromotionEntry = z.object({
@@ -452,6 +454,9 @@ export const ReviewDetail = ReviewItem.extend({
   sources: z.array(z.string()).default([]),
   reviewed_state: z.string().regex(/^[0-9a-f]{64}$/),
   accept_blocked: z.string().nullable().default(null),
+  // The default branch serves this pattern from the loop, so delete refuses it
+  // and only reject or retire can answer the branch.
+  live: z.boolean().default(false),
 });
 export type ReviewDetail = z.infer<typeof ReviewDetail>;
 

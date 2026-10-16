@@ -23,6 +23,7 @@ sil review accept verify-callsites --world default --reviewed-state <hash from s
 sil review reject some-pattern --world default
 sil review rehome some-pattern --type rule --world default
 sil review retire old-pattern --world default --yes
+sil review delete old-pattern --world default --yes
 sil feedback add skill:verify-callsites good --note "caught a real bug"
 ```
 
@@ -37,6 +38,16 @@ the pattern needs `promotion.threshold` new reflections before it is proposed
 again. `sil review rehome <pattern> --type none --yes` is a retirement as well:
 nothing serves the pattern after it, so it asks for `--yes` exactly like
 `retire` (the `router.rehome` op wants `confirm: true` for the same reason).
+
+`sil review delete <pattern> --world <w> --yes` (op `router.delete`, which wants
+`confirm: true`) takes a pattern out of every listing. It works on a retired or
+rejected row, an inline row, and a staged proposal that was never accepted,
+whose branch it deletes. It commits straight to the default branch, like
+`reject`, and pushes nothing. It refuses a live loop artifact: retire that and
+accept the retirement first. The row stays in the ledger as a `deleted`
+tombstone with the watermark raised to the current reflection count, so the
+loop does not stage the pattern again until `promotion.threshold` new
+reflections arrive. `retire`, `rehome` and Verify refuse a tombstone.
 
 `accept` always needs `--reviewed-state`: paste the hash `sil review show` prints.
 This binds the accept to exactly what you looked at; if the branch changed
@@ -60,10 +71,10 @@ result. If a proposal is already staged for that pattern (an ordinary
 refine, a staged rehome, or a staged retirement), it opens that proposal
 instead of redrafting or overwriting it.
 
-### Artifacts pane: Preview, Verify, Refine, Retire
+### Artifacts pane: Preview, Verify, Refine, Retire, Delete
 
-The web console's Artifacts pane lists every ledger row with up to four row
-actions.
+The web console's Artifacts pane lists every ledger row with up to five row
+actions. Rows deleted with `sil review delete` are not listed.
 
 - **Preview** (every row) opens a read-only drawer with the artifact's body
   exactly as it is on the target repo's checked-out working tree, never a
@@ -91,6 +102,13 @@ actions.
 - **Retire** now shows only on a live, non-inline row. It used to show on
   every row and failed with `"<pattern>" is already retired` when clicked on
   one already retired.
+- **Delete** shows on every row Retire does not: retired, rejected and inline
+  rows. It calls `router.delete` after a confirmation. An inline file outside
+  the target repo is left in place and the toast names it.
+
+The Review pane has **Discard** next to Reject. It calls `router.delete` on the
+selected proposal and is disabled when the pattern is live on the default
+branch (`detail.live`), where Reject is the way to drop the branch.
 
 ## Capturing a lesson now (`/learn`)
 
@@ -196,7 +214,9 @@ Each of these refusals leaves the live artifact and the ledger unchanged, so the
 same command can be run again once the cause is fixed.
 
 An inline row is edited by hand. `sil review retire` and `rehome` refuse it and
-print its path: edit or delete that file instead. `sil review accept` refuses an
+print its path: edit or delete that file instead. `sil review delete` takes an
+inline row out of the ledger but leaves its file where it is; an inline hook was
+copied into the target repo, so that copy is removed in the same commit. `sil review accept` refuses an
 older staged branch for the same pattern and prints the
 `sil review reject <pattern> --world <w>` command that clears it. `sil
 curriculum plan` lists a promoted inline row as `done` and shows any scorecard

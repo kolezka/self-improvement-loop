@@ -85,7 +85,7 @@ push` or `remote: pr` also pushes or opens a PR. The human decides, not you.
   --yes` stages a removal branch. The artifact stays live until that branch
   is accepted with the steps above.
 - `sil review rehome <pattern> --type skill|hook|rule|agent --world <w>`
-  stages a move to another type. It also applies only on accept.
+  stages a move, applied on accept. `sil review delete <p> --world <w> --yes` hides a non-live row.
 
 Never edit or delete artifact files in the target repo by hand.
 

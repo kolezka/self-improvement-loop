@@ -83,6 +83,7 @@ export interface ReviewDetail {
   sources: string[];
   reviewed_state: string;
   accept_blocked: string | null;
+  live: boolean;
 }
 
 export interface ReviseResult {

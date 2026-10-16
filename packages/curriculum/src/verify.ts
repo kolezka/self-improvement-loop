@@ -15,7 +15,7 @@
 
 import { existsSync, lstatSync, readlinkSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { type ArtifactType, type Config, fsx, type Ledger, paths, type Reflection, ReviewError, servedType, targetRoot, type World } from "@sil/core";
+import { type ArtifactType, type Config, fsx, type Ledger, type Reflection, ReviewError, servedType, targetRoot, type World, worldClaudeConfigDir } from "@sil/core";
 import { MAX_RULES_BYTES, rulesInjectable } from "@sil/core/lessons";
 import type { ChatFn } from "@sil/providers";
 import * as providers from "@sil/providers";
@@ -139,17 +139,18 @@ function symlinkResolvesTo(link: string, target: string): boolean {
  * path suffix, since verify has no cwd to resolve "the project" against), or
  * the global location being a hand-made symlink that resolves to this file.
  * A rule is loadable only as a CLAUDE.md memory file. */
-function inlineLoadLocation(artifactType: ArtifactType, pattern: string, externalPath: string): boolean {
+function inlineLoadLocation(world: World, artifactType: ArtifactType, pattern: string, externalPath: string): boolean {
   const resolved = resolve(externalPath);
+  const claudeDir = worldClaudeConfigDir(world);
   if (artifactType === "skill") {
     if (basename(resolved) !== "SKILL.md") return false;
-    const globalDir = join(paths.claudeConfigDir(), "skills", pattern);
+    const globalDir = join(claudeDir, "skills", pattern);
     if (resolve(globalDir, "SKILL.md") === resolved) return true;
     if (resolved.endsWith(join(".claude", "skills", pattern, "SKILL.md"))) return true;
     return symlinkResolvesTo(globalDir, dirname(resolved));
   }
   if (artifactType === "agent") {
-    const globalFile = join(paths.claudeConfigDir(), "agents", `${pattern}.md`);
+    const globalFile = join(claudeDir, "agents", `${pattern}.md`);
     if (resolved === resolve(globalFile)) return true;
     if (resolved.endsWith(join(".claude", "agents", `${pattern}.md`))) return true;
     return symlinkResolvesTo(globalFile, resolved);
@@ -173,7 +174,7 @@ export function checkLive(world: World, artifactType: ArtifactType, pattern: str
     if (!existsSync(externalPath)) {
       return { live: false, detail: `inline artifact file ${externalPath} does not exist` };
     }
-    return inlineLoadLocation(artifactType, pattern, externalPath)
+    return inlineLoadLocation(world, artifactType, pattern, externalPath)
       ? { live: true, detail: `inline artifact present at ${externalPath}` }
       : { live: false, detail: "file exists but is not in a location Claude Code loads" };
   }

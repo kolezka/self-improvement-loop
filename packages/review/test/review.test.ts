@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type Ledger,
@@ -20,7 +20,7 @@ import {
   targetRoot,
   type World,
 } from "@sil/core";
-import { branchName, git, plan, run, type RunOptions } from "@sil/curriculum";
+import { artifacts as artifactsMod, branchName, git, plan, run, type RunOptions } from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
 import { loadLedger, parseLedger, readProposalEvents, saveLedger } from "@sil/store";
 import { Lock } from "@sil/worker";
@@ -1700,5 +1700,113 @@ describe("the remote half", () => {
     const detail = review.detail(world, cfg(), PATTERN);
     review.accept(world, cfg(), PATTERN, detail.reviewed_state);
     expect(touched).toBe(false);
+  });
+});
+
+// --- per-world Claude config dir ----------------------------------------------
+
+describe("a world's own Claude config dir", () => {
+  // The env dir silEnv sets plays the other world's config here: the bug was a
+  // default-world accept, run from a shell that had the inkitt CLAUDE_CONFIG_DIR,
+  // linking into the inkitt config.
+  const envDir = (): string => paths.claudeConfigDir();
+  const ownDir = (): string => join(env.tmp, "claude-default");
+
+  /** Every entry under a config dir's skills/ and agents/, with link targets. */
+  function listing(dir: string): string[] {
+    const out: string[] = [];
+    for (const sub of ["skills", "agents"]) {
+      const base = join(dir, sub);
+      if (!existsSync(base)) continue;
+      for (const name of readdirSync(base).sort()) {
+        const p = join(base, name);
+        const st = lstatSync(p);
+        out.push(`${sub}/${name} ${st.isSymbolicLink() ? `-> ${readlinkSync(p)}` : st.isDirectory() ? "dir" : "file"}`);
+      }
+    }
+    return out;
+  }
+
+  test("accept links into the world's dir regardless of CLAUDE_CONFIG_DIR", async () => {
+    const world = makeWorld({ claude_config_dir: ownDir() });
+    const repo = seed(world);
+    await stage(world);
+    const out = review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+
+    const link = join(ownDir(), "skills", PATTERN);
+    expect(out.link).toBe(link);
+    expect(realpathSync(link)).toBe(realpathSync(join(repo, "skills", PATTERN)));
+    expect(existsSync(join(envDir(), "skills"))).toBe(false);
+  });
+
+  test("retiring reaps the link in the world's dir", async () => {
+    const world = makeWorld({ claude_config_dir: ownDir() });
+    await accepted(world);
+    const link = join(ownDir(), "skills", PATTERN);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    review.retire(world, cfg(), PATTERN);
+    review.accept(world, cfg(), PATTERN, review.detail(world, cfg(), PATTERN).reviewed_state);
+    expect(() => lstatSync(link)).toThrow();
+  });
+
+  /** The owner's state: accepted with no field set, from a shell whose env
+   * pointed at the other world's config. Then the field is added. */
+  async function strayState(): Promise<{ world: World; other: World; config: ReturnType<typeof makeCfg>; stray: string; repo: string }> {
+    const repo = await accepted(makeWorld());
+    const stray = join(envDir(), "skills", PATTERN);
+    expect(lstatSync(stray).isSymbolicLink()).toBe(true);
+    // An unrelated link the other world owns, which must survive untouched.
+    mkdirSync(join(envDir(), "agents"), { recursive: true });
+    symlinkSync("/nonexistent/inkitt/agents/theirs.md", join(envDir(), "agents", "theirs.md"));
+    const world = makeWorld({ claude_config_dir: ownDir() });
+    const other = makeWorld({ name: "inkitt", repos: ["/nonexistent/inkitt"], claude_config_dir: envDir() });
+    return { world, other, config: makeCfg({ worlds: [world, other] }), stray, repo };
+  }
+
+  test("relinkWorld dry run reports the stray and writes nothing", async () => {
+    const { world, config, stray } = await strayState();
+    const before = { own: listing(ownDir()), other: listing(envDir()) };
+    expect(artifactsMod.isLinked(world, "skill", PATTERN)).toBe(false);
+
+    const out = review.relinkWorld(world, config, { dryRun: true });
+
+    expect(out.config_dir).toBe(ownDir());
+    expect(out.items).toEqual([{ pattern: PATTERN, artifact_type: "skill", link: join(ownDir(), "skills", PATTERN), action: "linked" }]);
+    expect(out.strays.map((s) => s.link)).toEqual([stray]);
+    expect({ own: listing(ownDir()), other: listing(envDir()) }).toEqual(before);
+  });
+
+  test("relinkWorld links into the world's dir, reports strays and leaves the other world's dir alone", async () => {
+    const { world, config, stray, repo } = await strayState();
+    const otherBefore = listing(envDir());
+
+    const out = review.relinkWorld(world, config);
+
+    const link = join(ownDir(), "skills", PATTERN);
+    expect(out.items.map((i) => i.action)).toEqual(["linked"]);
+    expect(realpathSync(link)).toBe(realpathSync(join(repo, "skills", PATTERN)));
+    expect(artifactsMod.isLinked(world, "skill", PATTERN)).toBe(true);
+    expect(out.strays.map((s) => s.link)).toEqual([stray]);
+    expect(listing(envDir())).toEqual(otherBefore);
+
+    // Idempotent: a second run changes nothing and still reports the stray.
+    const again = review.relinkWorld(world, config);
+    expect(again.items.map((i) => i.action)).toEqual(["unchanged"]);
+    expect(again.strays.map((s) => s.link)).toEqual([stray]);
+  });
+
+  test("relinkWorld refuses a real directory at the link path and keeps going", async () => {
+    const { world, config } = await strayState();
+    const real = join(ownDir(), "skills", PATTERN);
+    mkdirSync(real, { recursive: true });
+    writeFileSync(join(real, "SKILL.md"), "hand written\n", "utf8");
+
+    for (const dryRun of [true, false]) {
+      const out = review.relinkWorld(world, config, { dryRun });
+      expect(out.items.map((i) => i.action)).toEqual(["refused"]);
+      expect(out.items[0]!.detail).toContain("refusing to replace");
+    }
+    expect(lstatSync(real).isDirectory()).toBe(true);
+    expect(readFileSync(join(real, "SKILL.md"), "utf8")).toBe("hand written\n");
   });
 });

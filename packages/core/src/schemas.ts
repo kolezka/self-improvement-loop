@@ -46,6 +46,14 @@ export const World = z.object({
   rules_inject: z.boolean().default(true),
   outline: OutlineExport.nullable().default(null),
   llm_config: z.string().nullable().default(null),
+  // Claude config dir this world's skills and agents link into. Null keeps the
+  // env (CLAUDE_CONFIG_DIR, else ~/.claude) of whichever process links them.
+  // Absolute or ~ only: a relative path would resolve against cwd.
+  claude_config_dir: z
+    .string()
+    .refine((p) => p.startsWith("/") || p === "~" || p.startsWith("~/"), "must be absolute or start with ~/")
+    .nullable()
+    .default(null),
 });
 export type World = z.infer<typeof World>;
 

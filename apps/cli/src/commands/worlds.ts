@@ -22,6 +22,7 @@ export interface WorldsAddOptions {
   target?: string;
   llm?: "local" | "cloud";
   layout?: "v1" | "default";
+  claudeConfigDir?: string;
 }
 
 export function cmdWorldsAdd(name: string, opts: WorldsAddOptions): number {
@@ -36,6 +37,7 @@ export function cmdWorldsAdd(name: string, opts: WorldsAddOptions): number {
     repos: (opts.repos ?? []).map((p) => paths.expandHome(p)),
     target: opts.target ? paths.expandHome(opts.target) : null,
     layout,
+    claude_config_dir: opts.claudeConfigDir ?? null,
   });
   cfg.worlds.push(world);
   saveConfig(cfg);

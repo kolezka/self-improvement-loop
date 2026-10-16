@@ -40,7 +40,7 @@ function world(name = "default"): World {
     remote: "none",
     rules_inject: true,
     outline: null,
-    llm_config: null,
+    llm_config: null, claude_config_dir: null,
   };
 }
 

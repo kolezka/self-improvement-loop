@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 function world(overrides: Partial<World> = {}): World {
-  return { name: "w1", llm: "cloud", repos: [], target: null, layout: { skills_dir: "skills", nudges_dir: "nudges", agents_dir: "agents", rules_file: "RULES.md", ledger: "promotions.json" }, remote: "none", rules_inject: true, outline: null, llm_config: null, ...overrides };
+  return { name: "w1", llm: "cloud", repos: [], target: null, layout: { skills_dir: "skills", nudges_dir: "nudges", agents_dir: "agents", rules_file: "RULES.md", ledger: "promotions.json" }, remote: "none", rules_inject: true, outline: null, llm_config: null, claude_config_dir: null, ...overrides };
 }
 
 function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {

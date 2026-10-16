@@ -11,7 +11,7 @@
 //   skill's pull request because the guard judged commit counts rather than
 //   paths.
 
-import { lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -30,7 +30,9 @@ import {
   ruleTag,
   targetRoot,
   type World,
+  worldClaudeConfigDir,
 } from "@sil/core";
+import { isWithin } from "@sil/core/layout";
 import { artifacts, branchName, git, loadLedger, reflections, scorecardByPattern, scorecards } from "@sil/curriculum";
 import { loadLedger as loadLedgerFile, parseLedger, recordProposalEvent, saveLedger } from "@sil/store";
 import * as feedback from "@sil/feedback";
@@ -914,11 +916,15 @@ export function relink(world: World, pattern: string, artifactType: ArtifactType
     if (resolve(dirname(link), current) === resolve(source)) return link;
     unlinkSync(link);
   } else if (existsSync(link)) {
-    throw new ReviewError(`${link} already exists and is not a symlink; refusing to replace it. Move it aside and relink.`);
+    throw new ReviewError(refuseReplace(link));
   }
   if (!live) return null;
   symlinkSync(source, link, artifactType === "skill" ? "dir" : "file");
   return link;
+}
+
+function refuseReplace(link: string): string {
+  return `${link} already exists and is not a symlink; refusing to replace it. Move it aside and relink.`;
 }
 
 /** Make the config directory match the repo for every linkable type.
@@ -940,6 +946,125 @@ function relinkAll(world: World, pattern: string, artifactType: ArtifactType): s
     }
   }
   return link;
+}
+
+// --- repairing a world's links -------------------------------------------------
+
+export interface RelinkItem {
+  pattern: string;
+  artifact_type: "skill" | "agent";
+  link: string;
+  /** linked: created (or would be). replaced: a symlink pointing elsewhere was
+   * (or would be) swapped. unchanged: already right. refused: a real file or
+   * directory sits there and is never replaced. */
+  action: "linked" | "replaced" | "unchanged" | "refused";
+  detail?: string;
+}
+
+export interface StrayLink {
+  /** The symlink, inside another world's Claude config dir. */
+  link: string;
+  /** Where it resolves, inside this world's target repo. */
+  target: string;
+  config_dir: string;
+}
+
+export interface RelinkWorldResult {
+  world: string;
+  config_dir: string;
+  dry_run: boolean;
+  items: RelinkItem[];
+  strays: StrayLink[];
+}
+
+/** What `relink` would do to a live artifact's link, without writing. */
+function plannedLink(link: string, source: string): Pick<RelinkItem, "action" | "detail"> {
+  let isLink = false;
+  try {
+    isLink = lstatSync(link).isSymbolicLink();
+  } catch {
+    return { action: "linked" };
+  }
+  if (!isLink) return { action: "refused", detail: refuseReplace(link) };
+  const current = resolve(dirname(link), readlinkSync(link));
+  if (current === resolve(source)) return { action: "unchanged" };
+  return { action: "replaced", detail: `was ${current}` };
+}
+
+function realOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** Symlinks in other worlds' Claude config dirs that resolve into this world's
+ * target repo. Read-only: an operator decides what to remove. */
+function strayLinks(world: World, cfg: Config, ownDir: string): StrayLink[] {
+  const root = resolve(targetRoot(world));
+  const realRoot = realOr(root);
+  const dirs = new Set<string>();
+  for (const w of cfg.worlds) {
+    if (w.name === world.name) continue;
+    const dir = resolve(worldClaudeConfigDir(w));
+    if (dir !== ownDir) dirs.add(dir);
+  }
+  const out: StrayLink[] = [];
+  for (const dir of [...dirs].sort()) {
+    for (const sub of ["skills", "agents"]) {
+      let names: string[];
+      try {
+        names = readdirSync(join(dir, sub)).sort();
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        const link = join(dir, sub, name);
+        try {
+          if (!lstatSync(link).isSymbolicLink()) continue;
+          const target = resolve(dirname(link), readlinkSync(link));
+          if (isWithin(target, root) || isWithin(realOr(target), realRoot)) out.push({ link, target, config_dir: dir });
+        } catch {
+          // gone between readdir and lstat; nothing to report
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Link every live skill and agent of a world into the world's Claude config
+ * dir, and report links into this world found in other worlds' dirs.
+ *
+ * Only live artifacts (the file is on disk) are touched: a dead row is left
+ * alone here, because reaping a symlink by name could remove one the operator
+ * made by hand. Strays are reported, never deleted. A real file or directory at
+ * a link path is refused per item, so one hand-written skill does not stop the
+ * rest of the repair. */
+export function relinkWorld(world: World, cfg: Config, opts: { dryRun?: boolean } = {}): RelinkWorldResult {
+  const ownDir = resolve(worldClaudeConfigDir(world));
+  const ledger = loadLedger(world);
+  const items: RelinkItem[] = [];
+  for (const pattern of Object.keys(ledger.entries).sort()) {
+    const entry = ledger.entries[pattern]!;
+    const atype = entry.artifact_type;
+    if ((atype !== "skill" && atype !== "agent") || entry.external_path) continue;
+    const info = artifacts.linkInfo(world, atype, pattern);
+    if (!info || !existsSync(info.full)) continue;
+    const planned = plannedLink(info.link, info.source);
+    const item: RelinkItem = { pattern, artifact_type: atype, link: info.link, ...planned };
+    if (!opts.dryRun && planned.action !== "unchanged" && planned.action !== "refused") {
+      try {
+        relink(world, pattern, atype);
+      } catch (e) {
+        item.action = "refused";
+        item.detail = (e as Error).message;
+      }
+    }
+    items.push(item);
+  }
+  return { world: world.name, config_dir: ownDir, dry_run: Boolean(opts.dryRun), items, strays: strayLinks(world, cfg, ownDir) };
 }
 
 export { INLINE_TYPES, type InlineType, register, type RegisterOptions, type RegisterResult } from "./register.ts";

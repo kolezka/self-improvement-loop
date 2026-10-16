@@ -79,6 +79,13 @@ export function targetRoot(world: World): string {
   return paths.expandHome(world.target ?? paths.defaultTarget(world.name));
 }
 
+/** The Claude config dir a world's skills and agents link into. Every link
+ * location for a world goes through here, so the answer depends on the world,
+ * not on the env of the process that accepts or verifies an artifact. */
+export function worldClaudeConfigDir(world: Pick<World, "claude_config_dir">): string {
+  return world.claude_config_dir ? paths.expandHome(world.claude_config_dir) : paths.claudeConfigDir();
+}
+
 export function ledgerPath(world: World): string {
   return join(targetRoot(world), world.layout.ledger);
 }

@@ -21,6 +21,7 @@ import {
   targetRoot,
   ValidationError,
   type World,
+  worldClaudeConfigDir,
 } from "@sil/core";
 import { isWithin } from "@sil/core/layout";
 
@@ -229,10 +230,8 @@ export function linkInfo(world: World, artifactType: ArtifactType | string, patt
   const rel = artifactRel(world, artifactType, pattern);
   const full = join(target, rel);
   const source = artifactType === "skill" ? dirname(full) : full;
-  const link =
-    artifactType === "skill"
-      ? join(paths.claudeConfigDir(), "skills", pattern)
-      : join(paths.claudeConfigDir(), "agents", `${pattern}.md`);
+  const claudeDir = worldClaudeConfigDir(world);
+  const link = artifactType === "skill" ? join(claudeDir, "skills", pattern) : join(claudeDir, "agents", `${pattern}.md`);
   return { link, source, full };
 }
 

@@ -45,3 +45,18 @@ describe("sil worlds add", () => {
     expect(code).toBe(2);
   });
 });
+
+describe("sil worlds add --claude-config-dir", () => {
+  test("stores the world's Claude config dir", async () => {
+    expect(await run(["init"])).toBe(0);
+    expect(await run(["worlds", "add", "work", "--claude-config-dir", "~/work/.claude"])).toBe(0);
+    const cfgText = readFileSync(paths.configFile(), "utf8");
+    expect(cfgText).toContain("claude_config_dir: ~/work/.claude");
+  });
+
+  test("rejects a relative dir", async () => {
+    expect(await run(["init"])).toBe(0);
+    const code = await run(["worlds", "add", "work", "--claude-config-dir", "work/.claude"]);
+    expect(code).not.toBe(0);
+  });
+});

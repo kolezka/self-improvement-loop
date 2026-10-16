@@ -7,7 +7,7 @@ import { resolveWorld } from "../common.ts";
 import { defaultDeps, type Deps } from "../deps.ts";
 
 export interface ArtifactsOptions {
-  action?: "rebuild" | "register";
+  action?: "rebuild" | "register" | "relink";
   world?: string;
   json?: boolean;
   type?: string;
@@ -55,6 +55,22 @@ export function cmdArtifacts(opts: ArtifactsOptions, deps: Deps = defaultDeps): 
     else if (out.commit === null) console.log(`dry run: would register ${opts.type}:${opts.pattern}\n${JSON.stringify(out.row, null, 2)}`);
     else console.log(`registered ${opts.type}:${opts.pattern} in world ${world.name}, commit ${out.commit}`);
     return 0;
+  }
+  if (opts.action === "relink") {
+    if (!opts.world) {
+      console.error("error: sil artifacts relink needs --world");
+      return 2;
+    }
+    const out = deps.review.relinkWorld(world, cfg, { dryRun: opts.dryRun });
+    if (opts.json) {
+      console.log(JSON.stringify(out, null, 2));
+    } else {
+      const verb = out.dry_run ? "would link" : "linked";
+      console.log(`world ${out.world}: ${verb} into ${out.config_dir}`);
+      for (const it of out.items) console.log(`  ${it.action.padEnd(9)} ${it.artifact_type.padEnd(5)} ${it.pattern}${it.detail ? `  (${it.detail})` : ""}`);
+      for (const s of out.strays) console.log(`  stray     ${s.link} -> ${s.target} (in another world's dir; remove it by hand)`);
+    }
+    return out.items.some((i) => i.action === "refused") ? 1 : 0;
   }
   for (const [key, flag] of REGISTER_FLAGS) {
     if (opts[key] !== undefined) {

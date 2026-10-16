@@ -231,7 +231,12 @@ describe("the watermark", () => {
   test("a promoted pattern waits for threshold new reflections", () => {
     addReflections(world, PATTERN, 5);
     writeLedger(world, [entry({ pattern: PATTERN, promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
-    expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
+    // Pinned near the fixture's last_updated: with no promoted_at, that is the
+    // retire clock's basis, and the unpinned real clock eventually reads this
+    // promoted, never-used row as stale and proposes retire-candidate instead
+    // of keep, flipping this to retire-candidate instead of done.
+    const now = new Date("2026-09-05T00:00:00Z");
+    expect(actions(plan(world, makeCfg({ threshold: 3 }), { now }))[PATTERN]!.action).toBe("done");
 
     addReflections(world, PATTERN, 2, { startDay: 20 });
     // Past observe_min_sessions: this test is about the watermark, not the
@@ -352,10 +357,12 @@ describe("scorecards", () => {
     // an "empty scorecards file" state that skips the row entirely.
     addReflections(world, PATTERN, 4);
     writeLedger(world, [entry({ pattern: PATTERN, promoted_at_count: 4, status: "promoted", artifact_type: "skill" })]);
-    const cards = scorecards(world, makeCfg({ threshold: 3 }));
+    // Pinned near last_updated, see the watermark test above for why.
+    const now = new Date("2026-09-05T00:00:00Z");
+    const cards = scorecards(world, makeCfg({ threshold: 3 }), { now });
     expect(cards.map((c) => c.ref)).toEqual([`skill:${PATTERN}`]);
     expect(cards[0]!.proposal).toBe("keep");
-    expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
+    expect(actions(plan(world, makeCfg({ threshold: 3 }), { now }))[PATTERN]!.action).toBe("done");
   });
 
   test("the planner sees an event appended after the cache went stale, without an explicit rebuild", () => {
@@ -706,7 +713,9 @@ describe("a re-homed pattern", () => {
     liveLedger(repo);
     stageBranch(repo, agentBody(PATTERN));
 
-    expect(actions(plan(world, makeCfg({ threshold: 3 })))[PATTERN]!.action).toBe("done");
+    // Pinned near last_updated, see "the watermark" describe block for why.
+    const now = new Date("2026-09-05T00:00:00Z");
+    expect(actions(plan(world, makeCfg({ threshold: 3 }), { now }))[PATTERN]!.action).toBe("done");
   });
 });
 

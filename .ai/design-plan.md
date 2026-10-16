@@ -42,7 +42,7 @@ sticky detail side.
 Under 64rem the rail shrinks to icons only. Under 45rem it becomes an overlay
 opened from a menu button; focus moves into it, the content behind it is
 inert, and Escape or the scrim closes it. Surfaces are told apart by borders,
-not shadows (after inkitt/source-code-graph-engine). The theme is set on
+not shadows (following a pattern used in a prior project). The theme is set on
 `<html data-theme>` by an inline script before first paint and stored under
 `sil.theme`.
 

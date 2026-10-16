@@ -49,7 +49,7 @@ Each line above has its test in the owning task (Tasks 6, 7, 4, 3).
 
 Shared-file rule: `packages/ops/src/index.ts` and `packages/ops/src/args.ts` are touched by both server teammates. server-data adds its lines first; server-live rebases onto that commit before registering `review.revise`. Each adds lines only in its own marked block.
 
-Each teammate works in its own worktree `/Users/me/Development/sil-wcux-<teammate>` on branch `feat/wcux-<teammate>`, created by the lead from `feat/web-console-ux` after Task 0. The lead merges each branch into `feat/web-console-ux`. Commit only your own paths (`git add <paths>`, never `-A`, never `git stash`, never `git checkout -- <other paths>`). Before committing, run the CI subset for your scope. A test failure in a path you do not own is reported to the lead, not fixed.
+Each teammate works in its own worktree `<repo>/../sil-wcux-<teammate>` on branch `feat/wcux-<teammate>`, created by the lead from `feat/web-console-ux` after Task 0. The lead merges each branch into `feat/web-console-ux`. Commit only your own paths (`git add <paths>`, never `-A`, never `git stash`, never `git checkout -- <other paths>`). Before committing, run the CI subset for your scope. A test failure in a path you do not own is reported to the lead, not fixed.
 
 ---
 

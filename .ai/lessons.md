@@ -101,7 +101,7 @@
   redraft at all. When a ledger tracks an artifact's state but not its identity,
   read the artifact's own content at each historical commit instead of trusting a
   bookkeeping field to double as a version key.
-- 2026-09-30: A dry run on live data (world inkitt) showed a pattern with 2 real
+- 2026-09-30: A dry run on live data (an internal world) showed a pattern with 2 real
   accepted redrafts as 3 revisions. `git log <path>` without `--first-parent`
   interleaves commits from every branch that ever touched the shared ledger file,
   by date, not by what actually happened on the branch being read. A sibling

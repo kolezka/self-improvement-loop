@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, loadLlm, paths, targetRoot, worldNamed } from "@sil/core";
@@ -153,6 +153,46 @@ describe("sil init rules file", () => {
     mkdirSync(target, { recursive: true });
     expect(await run(["init", "--target", target])).toBe(0);
     expect(existsSync(join(target, "RULES.md"))).toBe(false);
+  });
+
+  // Regression: the seeding commit had no pathspec, so it committed the whole
+  // index. An unrelated file staged in the learned repo (a human's work in
+  // progress, or any other process that stages before init runs) got swept
+  // into "chore: seed learned rules file" along with RULES.md.
+  test("committing a re-seeded rules file touches only that path, not other staged work", async () => {
+    expect(await run(["init"])).toBe(0);
+    const repo = targetRoot(worldNamed(loadConfig(), "default"));
+    const rulesPath = join(repo, "RULES.md");
+
+    // Remove and commit the removal, so the next init call finds nothing on
+    // disk and genuinely re-seeds it (ensureRulesFile only writes when the
+    // file is missing).
+    git.git(repo, ["rm", "-f", "-q", "RULES.md"]);
+    git.git(repo, ["commit", "-q", "-m", "test: remove rules file"]);
+    expect(existsSync(rulesPath)).toBe(false);
+
+    // Unrelated work staged but not committed in the same repo.
+    writeFileSync(join(repo, "unrelated.txt"), "work in progress\n", "utf8");
+    git.git(repo, ["add", "unrelated.txt"]);
+
+    const headBefore = git.git(repo, ["rev-parse", "HEAD"]);
+    expect(await run(["init"])).toBe(0);
+    expect(existsSync(rulesPath)).toBe(true);
+
+    const headAfter = git.git(repo, ["rev-parse", "HEAD"]);
+    expect(headAfter).not.toBe(headBefore);
+
+    // The new commit touches only RULES.md.
+    const changed = git
+      .git(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", headAfter])
+      .split("\n")
+      .filter(Boolean);
+    expect(changed).toEqual(["RULES.md"]);
+
+    // unrelated.txt is still staged, not committed and not unstaged.
+    const status = git.git(repo, ["status", "--porcelain", "--", "unrelated.txt"]);
+    expect(status).toBe("A  unrelated.txt");
+    expect(git.git(repo, ["diff", "--cached", "--name-only"])).toContain("unrelated.txt");
   });
 });
 

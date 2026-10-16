@@ -122,6 +122,11 @@ function seedRulesFile(world: World): void {
     return;
   }
   git.git(repo, ["add", rel]);
-  git.git(repo, ["commit", "-q", "-m", "chore: seed learned rules file"]);
+  // Pathspec, not a bare commit: a bare `git commit` takes the whole index,
+  // so anything else already staged in this repo (a human's work in
+  // progress, another init step) would be swept into "seed learned rules
+  // file" too. The pathspec form commits only `rel` and leaves every other
+  // staged path exactly as it was.
+  git.git(repo, ["commit", "-q", "-m", "chore: seed learned rules file", "--", rel]);
   console.log(`wrote and committed rules file at ${path}`);
 }

@@ -38,8 +38,9 @@ beforeEach(() => {
     saved[k] = process.env[k];
     process.env[k] = join(tmp, k.toLowerCase());
   }
-  // The real providers.status probes every configured endpoint, and `sil init`
-  // seeds a LiteLLM host. Keep the real key and the network out of the tests.
+  // The real providers.status probes every configured endpoint, and a test
+  // that passes --llm-base-url to init seeds a LiteLLM host. Keep the real
+  // key and the network out of the tests regardless.
   saved["LITELLM_API_KEY"] = process.env["LITELLM_API_KEY"];
   delete process.env["LITELLM_API_KEY"];
   globalThis.fetch = (async () => {
@@ -189,7 +190,10 @@ describe("sil status with a scheduled worker unit", () => {
   });
 
   test("probes when drafter, not critic, is the claude-cli endpoint", async () => {
-    expect(await run(["init"])).toBe(0);
+    // --llm-base-url: this test needs a real litellm endpoint active, which
+    // init no longer writes by default (regression: it used to default to a
+    // hardcoded tailscale address and make it active unconditionally).
+    expect(await run(["init", "--llm-base-url", "http://127.0.0.1:4000"])).toBe(0);
     // Critic (and judge) stay on litellm; only drafter moves to claude-cli.
     expect(await run(["llm", "use", "claude", "--role", "drafter"])).toBe(0);
 

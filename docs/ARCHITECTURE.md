@@ -518,7 +518,10 @@ rather than a second model call. `route()` then runs on those fields exactly
 as it does for a fresh pattern. A result of `rule` or `none` is the router's
 own fallback, not evidence of anything, and never displaces an artifact a
 prior tick already earned: only `hook`, `skill` or `agent`, and only when it
-differs from the current type, counts as an upgrade.
+differs from the current type, counts as an upgrade. When the probe runs and
+earns no upgrade, the routed reason carries its verdict
+(`already served by this artifact; re-route probe kept rule: <reason>`), so a
+probe that said no is told apart from one that never ran.
 
 An upgrade redrafts once more in the new type (the same single-redraft path a
 drafter/router mismatch already uses on a fresh pattern), lints, judges, and

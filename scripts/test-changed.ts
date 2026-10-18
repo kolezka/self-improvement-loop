@@ -14,7 +14,7 @@ export type Plan =
   | { mode: "workspaces"; workspaces: { dir: string; reason: string }[] };
 
 // Paths with no tests behind them. README.md is not here: tests/plugin-manifest.test.ts scans it.
-const DOCS_ONLY = /^(docs\/|\.ai\/|\.claude\/|LICENSE$|(?!README\.md$)[^/]+\.md$)/;
+const DOCS_ONLY = /^(docs\/|\.claude\/|LICENSE$|(?!README\.md$)[^/]+\.md$)/;
 
 export function planTests(changed: string[], workspaces: Workspace[]): Plan {
   const touched = new Set<string>();

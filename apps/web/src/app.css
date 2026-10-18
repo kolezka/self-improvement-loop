@@ -1,7 +1,7 @@
 /* Design system for the operator console. Panes compose these classes and add
    only what is unique to them, so a token change lands everywhere at once.
    Surfaces are told apart by borders, not shadows, so dense tables stay easy
-   to read. See .ai/design-plan.md for the palette and layout reasoning. */
+   to read. */
 
 :root {
   color-scheme: light;

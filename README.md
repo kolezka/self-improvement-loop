@@ -8,7 +8,7 @@ same skill.
 
 [![CI](https://github.com/kolezka/self-improvement-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/kolezka/self-improvement-loop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kolezka/self-improvement-loop?label=release)](https://github.com/kolezka/self-improvement-loop/releases)
-[![License](https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Runtime](https://img.shields.io/badge/runtime-Bun%201.4.2%2B-black)](https://bun.sh)
 
 ![Demo: how the loop works, then in the web console a staged skill is reviewed and accepted, its usage and votes are tracked, and a misfiring hook is flagged for a rewrite](docs/media/demo.gif)
@@ -443,13 +443,4 @@ needs `ffmpeg` and a Chromium binary (`CHROMIUM_PATH`, default
 
 ## License
 
-Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE)
-(SPDX: `PolyForm-Noncommercial-1.0.0`). Any noncommercial use is free: run it,
-study it, change it, share it. That covers personal and hobby use, research, and
-use by schools, charities, public research bodies and government institutions.
-
-Commercial use is not granted by that license. See
-[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) or contact mariusz@raqz.pl.
-
-This license is not OSI-approved, because it restricts a field of endeavour.
-Call it source-available, not open source.
+[MIT](LICENSE) (SPDX: `MIT`).

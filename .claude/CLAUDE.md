@@ -43,8 +43,6 @@ fails the drift test with a diff that looks like a source problem.
 - `packages/*` (`@sil/*`): core, store, transcript, providers, critic, worker,
   curriculum, review, feedback, nudges, ops, openclaw.
 - `hooks/hooks.json`, `commands/`, `skills/`, `.claude-plugin/`: plugin surface.
-- `.ai/todo.md`, `.ai/lessons.md`: working plan and lessons. Update both when a task
-  lands.
 
 ## Design rules (from ARCHITECTURE.md, do not break)
 
@@ -84,7 +82,7 @@ refused at load.
 - Tests that drive the worker must disable `worker.auto_kick` after `sil init`, or a
   real detached worker steals the queue entry.
 - Use `Object.hasOwn`, never `x in obj`, for lookups keyed by untrusted strings.
-  This trap was written twice. Grep `.ai/lessons.md` for the construct.
+  This trap was written twice.
 - An empty path string means cwd. Never default a path to `""`.
 - Bound regex input at load time and prefer linear matchers. Heuristic
   nested-quantifier checks have been bypassed.

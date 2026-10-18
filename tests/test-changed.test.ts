@@ -45,7 +45,7 @@ describe("planTests", () => {
   });
 
   test("docs-only changes run nothing", () => {
-    expect(planTests(["docs/OPERATIONS.md", ".ai/todo.md", ".claude/CLAUDE.md"], graph).mode).toBe("none");
+    expect(planTests(["docs/OPERATIONS.md", "LICENSE", ".claude/CLAUDE.md"], graph).mode).toBe("none");
     expect(planTests([], graph).mode).toBe("none");
   });
 });

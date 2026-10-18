@@ -48,7 +48,7 @@ describe("plugin.json", () => {
     expect(data.description).toBeTruthy();
     expect(data.author.name).toBe("Mariusz Rakus");
     expect(data.repository).toBe("https://github.com/kolezka/self-improvement-loop");
-    expect(data.license).toBe("PolyForm-Noncommercial-1.0.0");
+    expect(data.license).toBe("MIT");
     expect(Array.isArray(data.keywords) && data.keywords.length > 0).toBe(true);
   });
 });

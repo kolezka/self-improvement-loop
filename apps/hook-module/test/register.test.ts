@@ -1003,7 +1003,7 @@ describe("layout roots", () => {
     // HOME empty with no SIL_*/XDG_* override makes every root relative
     // (".local/state/self-improvement-loop"), and a relative path resolves
     // against the session cwd: the loop's state would land in the user's repo.
-    // The "empty path is ." trap from .ai/lessons.md.
+    // The "empty path is ." trap from .claude/CLAUDE.md.
     const f = fixture({ env: {}, runs: [pidProbe("4242\n")] });
     const result = await f.engine.fire("classic.SessionStart", sessionStart(f), CORE_CONTEXT);
     expect(contextOf(result)).toEqual(["from core"]);

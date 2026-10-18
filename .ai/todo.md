@@ -2,7 +2,7 @@
 
 Design: `docs/ARCHITECTURE.md`. The interim Python V2 was the port source and is
 gone from the tree (last Python commit 97d8b42). Default branch is `main`
-(fast-forwarded from `feat/loop-v2`), repo is private, license is proprietary.
+(fast-forwarded from `feat/loop-v2`), repo is private, license is MIT.
 
 ## Phase 0: contracts
 - [x] monorepo: workspaces, tsconfig, bunfig, scripts/build.ts (committed dist/ + srchash), scripts/lint-dashes.ts
@@ -28,8 +28,8 @@ gone from the tree (last Python commit 97d8b42). Default branch is `main`
 - [x] repo set to private
 - [x] `main` created from `feat/loop-v2` (c01128d), pushed, set as default branch
 - [x] license switched to proprietary (LICENSE, plugin.json, package.json, README)
+- [x] relicensed back to MIT, COMMERCIAL-LICENSE.md removed (2026-10-18)
 - [ ] delete `feat/loop-v2` on origin and the stale local `master` (cc10ccb) once nothing references them
-- [ ] decide whether the MIT commit in history matters; the repo was public for about 5 hours
 
 ## Phase 4: release (operator)
 - [ ] `scripts/register-marketplace.sh`, push its branch, open the PR to kolezka/marketplace

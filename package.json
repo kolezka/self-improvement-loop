@@ -2,7 +2,7 @@
   "name": "self-improvement-loop",
   "version": "1.2.4",
   "private": true,
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "MIT",
   "type": "module",
   "workspaces": [
     "packages/*",

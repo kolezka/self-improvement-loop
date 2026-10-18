@@ -207,3 +207,14 @@ describe("no em dash or en dash in plugin-facing text", () => {
     expect(text.includes(EN)).toBe(false);
   });
 });
+
+// Built-in nudges fire for every installer, before `sil init` and in every
+// world, with no way to turn them off. Personal lessons belong in a world's
+// nudges_dir. The dir stays so the hook does not log nudge_dir_missing.
+describe("built-in nudges", () => {
+  test("the plugin ships none", () => {
+    const dir = join(ROOT, "nudges");
+    expect(statSync(dir).isDirectory()).toBe(true);
+    expect(readdirSync(dir).filter((n) => n.endsWith(".json"))).toEqual([]);
+  });
+});

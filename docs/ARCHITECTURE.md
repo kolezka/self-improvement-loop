@@ -238,7 +238,8 @@ next Stop or SessionEnd of any session, once it is 30 minutes old.
 | SessionEnd | Mark queue entry `ended: true`. |
 
 Nudge dispatch is the V1 `nudge_dispatch.py` contract: sorted `*.json` from the
-world's `nudges_dir` plus the plugin's built-in nudges, one winner per event,
+world's `nudges_dir` plus the plugin's built-in `nudges/` (empty by design: a
+built-in fires for every user in every world), one winner per event,
 once-per-session markers, fire log, breadcrumbs, never blocks. A nudge may only
 target SessionStart, UserPromptSubmit, PreToolUse or PostToolUse, the four events
 where the hook can deliver text; lint rejects the rest so a fire is always a

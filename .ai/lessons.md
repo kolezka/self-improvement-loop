@@ -274,3 +274,6 @@
   row, so the reflections already on disk read as new evidence and the next
   tick stages the same artifact again. Removing a pattern means keeping a
   tombstone that holds the watermark, not dropping the row.
+- When a command starts writing under HOME (here `sil init` writing
+  `~/.local/bin/sil`), every test that calls it writes to the real home unless
+  HOME is sandboxed. Fix it once in the test preload, not per test file.

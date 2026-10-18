@@ -957,3 +957,18 @@ pure doc/prompt text nits (6, 7), which have no executable test in this repo
       (retire first). An inline file outside the repo stays; an inline hook's
       repo copy is removed. Web: Delete in Artifacts, Discard in Review
       (disabled on `detail.live`). Tests: packages/review/test/delete.test.ts.
+
+## Out of box follow-up (2026-10-18, branch fix/oob-followup)
+
+Clean-room test: marketplace install of 1.2.4 into an empty HOME, then a real
+session and a worker pass. Install, hint, init, queue and reflection all work.
+
+- [x] `sil init` installs `~/.local/bin/sil` and warns when its dir is off PATH.
+      Its "Next steps" said `sil status`, but nothing put `sil` on PATH.
+- [x] hooks run `scripts/hook`, which finds bun in `~/.bun/bin`,
+      `/opt/homebrew/bin`, `/usr/local/bin` and prints an install hint when there
+      is none. Before, every Stop failed with `bun: command not found` and no
+      session was queued. `scripts/sil` prints the same hint.
+- [x] `tests/preload.ts` gives every test a throwaway HOME.
+- [ ] open: the three built-in nudges in `nudges/` are personal lessons that fire
+      for every installer. Waiting on a decision (move to own world, opt-in, drop).

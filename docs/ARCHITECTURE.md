@@ -209,7 +209,7 @@ With `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, Claude Code loads a hooks module
 (`dist/hook-module.js`, registered via `hooks.json`'s top-level `modules` key)
 that owns SessionStart, UserPromptSubmit, PreToolUse and PostToolUse in
 process; the four command-hook entries for those events are guarded with
-`[ "$SIL_HOOK_MODULE" = "$PPID" ] || bun dist/hook.js` and skip once the module
+`[ "$SIL_HOOK_MODULE" = "$PPID" ] || sh scripts/hook` and skip once the module
 sets `SIL_HOOK_MODULE` to the pid of its own claude process. The comparison is
 with the hook shell's parent pid, so a nested `claude` started from a Bash tool
 call inherits the variable, does not match, and keeps its four command hooks;

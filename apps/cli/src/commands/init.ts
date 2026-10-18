@@ -1,9 +1,10 @@
 // sil init: write config.yaml and llm.yaml templates, create data dirs, seed
 // the learned/ target repo, write the hook snapshot.
 
-import { join, relative } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import { Config, Endpoint, fsx, LlmConfig, loadConfig, loadLlm, paths, saveConfig, saveLlm, targetRoot, World, writeHookSnapshot } from "@sil/core";
 import { ensureRulesFile, git } from "@sil/curriculum";
+import * as schedule from "../schedule.ts";
 
 // The operator's LiteLLM route for every role unless --model says otherwise.
 // Only used when --llm-base-url asks for a litellm endpoint at all.
@@ -87,6 +88,14 @@ export function cmdInit(opts: InitOptions): number {
 
   const snap = writeHookSnapshot(cfg);
   console.log(`wrote hook snapshot at ${snap}`);
+  // The next steps below say `sil`, and a plugin install puts nothing on PATH.
+  const shimLinked = schedule.isSymlink(schedule.shimPath());
+  const shim = schedule.installShim();
+  console.log(shimLinked ? `${shim} is a symlink, left alone` : `wrote sil shim at ${shim}`);
+  const binDir = dirname(shim);
+  if (!(process.env["PATH"] ?? "").split(delimiter).includes(binDir)) {
+    console.warn(`warning: ${binDir} is not on PATH; add it, or run ${shim} by its full path`);
+  }
   console.log();
   console.log("Next steps:");
   console.log("  sil status                              check worker and provider status");

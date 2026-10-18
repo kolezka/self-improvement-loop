@@ -63,6 +63,11 @@ JSEOF
   CDPATH= cd -- "$script_dir/.." && pwd
 }
 
+if ! command -v bun >/dev/null 2>&1; then
+  echo "sil needs bun, install it from https://bun.sh and run this again." >&2
+  exit 127
+fi
+
 ROOT="$(resolve_root)"
 
 # Claude Code sets this for hooks and commands, but nothing sets it for a

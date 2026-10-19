@@ -157,7 +157,8 @@ describe("loadNudges lints before it loads", () => {
     const builtin = new URL("../../../nudges", import.meta.url).pathname;
     const { nudges, rejected } = loadNudgesDetailed([builtin]);
     expect(rejected).toEqual([]);
-    expect(nudges.length).toBeGreaterThan(0);
+    // Empty by design, see tests/plugin-manifest.test.ts "built-in nudges".
+    expect(nudges).toEqual([]);
   });
 });
 

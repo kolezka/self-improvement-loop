@@ -85,6 +85,8 @@ describe("version", () => {
 // the spool handshake and other work the sandbox cannot do.
 const MODULE_GUARDED_EVENTS = new Set(["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"]);
 const GUARD_PREFIX = '[ "$SIL_HOOK_MODULE" = "$PPID" ] || ';
+// The launcher finds bun outside PATH and says so when there is none.
+const LAUNCHER = 'sh "${CLAUDE_PLUGIN_ROOT}/scripts/hook"';
 
 describe("hooks.json", () => {
   const data = JSON.parse(readFileSync(join(ROOT, "hooks", "hooks.json"), "utf8"));
@@ -103,11 +105,11 @@ describe("hooks.json", () => {
     expect(data.modules).toEqual(["../dist/hook-module.js"]);
   });
 
-  test("every event calls bun dist/hook.js with a timeout of 5s or less", () => {
+  test("every event calls the scripts/hook launcher with a timeout of 5s or less", () => {
     for (const entries of Object.values(hooks)) {
       const cmd = entries[0]!.hooks[0]!;
       expect(cmd.type).toBe("command");
-      expect(cmd.command.endsWith('bun "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"')).toBe(true);
+      expect(cmd.command.endsWith(LAUNCHER)).toBe(true);
       expect(cmd.timeout).toBeLessThanOrEqual(10);
     }
   });
@@ -123,7 +125,7 @@ describe("hooks.json", () => {
     for (const event of ["Stop", "SubagentStop", "SessionEnd"]) {
       const cmd = hooks[event]![0]!.hooks[0]!.command;
       expect(cmd.startsWith(GUARD_PREFIX)).toBe(false);
-      expect(cmd).toBe('bun "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"');
+      expect(cmd).toBe(LAUNCHER);
     }
   });
 

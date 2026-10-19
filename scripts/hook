@@ -1,0 +1,20 @@
+#!/bin/sh
+# Runs dist/hook.js under bun for every hook event. Claude Code started from
+# the desktop app or an IDE often lacks the shell's bun dir on PATH, so look in
+# the usual install dirs too (same list as scripts/sil).
+if ! command -v bun >/dev/null 2>&1; then
+  for d in "$HOME/.bun/bin" /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$d/bun" ]; then
+      PATH="$d:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "self-improvement-loop needs bun, install it from https://bun.sh. Sessions are not recorded until then." >&2
+  exit 1
+fi
+
+exec bun "$(dirname -- "$0")/../dist/hook.js"

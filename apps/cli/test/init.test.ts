@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, loadLlm, paths, targetRoot, worldNamed } from "@sil/core";
@@ -11,10 +11,10 @@ const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sil-init-"));
-  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"]) {
-    saved[k] = process.env[k];
-    process.env[k] = join(tmp, k.toLowerCase());
-  }
+  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "HOME", "PATH"]) saved[k] = process.env[k];
+  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"]) process.env[k] = join(tmp, k.toLowerCase());
+  // init writes ~/.local/bin/sil, so never let it reach the real home.
+  process.env["HOME"] = join(tmp, "home");
 });
 
 afterEach(() => {
@@ -35,6 +35,26 @@ describe("sil init", () => {
 
     const cfgText = readFileSync(paths.configFile(), "utf8");
     expect(cfgText).toContain("default");
+  });
+
+  test("installs the sil shim so the commands it prints work", async () => {
+    expect(await run(["init"])).toBe(0);
+    const shim = join(tmp, "home", ".local", "bin", "sil");
+    expect(existsSync(shim)).toBe(true);
+    expect(statSync(shim).mode & 0o111).not.toBe(0);
+  });
+
+  test("warns when the shim directory is not on PATH", async () => {
+    process.env["PATH"] = "/usr/bin:/bin";
+    const warned: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => void warned.push(a.join(" "));
+    try {
+      expect(await run(["init"])).toBe(0);
+    } finally {
+      console.warn = orig;
+    }
+    expect(warned.join("\n")).toContain(join(tmp, "home", ".local", "bin"));
   });
 
   test("is idempotent: a second run does not overwrite existing files", async () => {

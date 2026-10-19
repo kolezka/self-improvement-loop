@@ -2,8 +2,12 @@
 
 ## Requirements
 
-- `bun` (>= 1.4.2) on `PATH`. Every part of the plugin runs on it: the hook
-  fast path, the CLI, the worker and the web UI.
+- `bun` (>= 1.4.2), from https://bun.sh. Every part of the plugin runs on it:
+  the hook fast path, the CLI, the worker and the web UI. The hooks and `sil`
+  also look in `~/.bun/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, so a
+  Claude Code started from the desktop app or an IDE finds it without the
+  shell's `PATH`. With no bun at all, each hook prints an install hint and
+  sessions are not recorded.
 - `git`.
 - A model endpoint: either a local LiteLLM/OpenAI-compatible proxy, or the
   `claude` CLI on `PATH`.
@@ -78,7 +82,9 @@ each role:
 scripts/sil status
 ```
 
-`sil init` also creates (or finds) `learned/RULES.md` and prints its path.
+`sil init` also installs the `sil` shim at `~/.local/bin/sil` and warns when
+that directory is not on `PATH`, so the commands below work in a plain shell.
+It creates (or finds) `learned/RULES.md` and prints its path.
 Promoted rules live in the marked block inside that file, and the SessionStart
 hook injects them into every session on its own; there is nothing to add to
 your own CLAUDE.md.
@@ -132,7 +138,7 @@ Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment before starting
 `claude`. Nothing changes without it: the plugin runs exactly as above, one
 command hook per event. With it set, Claude Code loads the plugin's hooks
 module (`dist/hook-module.js`) and runs SessionStart, UserPromptSubmit,
-PreToolUse and PostToolUse in process instead of spawning `bun dist/hook.js`
+PreToolUse and PostToolUse in process instead of spawning `scripts/hook`
 for those four events. The command hooks for those four are guarded by
 `[ "$SIL_HOOK_MODULE" = "$PPID" ] ||`, which compares the variable the module
 sets with the hook shell's parent pid, so a nested `claude` run from a Bash tool

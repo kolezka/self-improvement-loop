@@ -13,6 +13,7 @@
 // failure mode the gates catch.
 
 import type { ChatMessage, NoulQuestion } from "@sil/providers";
+import type { ZodError } from "zod";
 import { nudgeEvents } from "./deps.ts";
 // The rule budget, computed by the lint's own arithmetic rather than restated:
 // a prompt quoting a number the lint no longer uses is a gate the drafter
@@ -39,10 +40,21 @@ export const MAX_SOURCE_CHARS = 120_000;
 // instead made every run a fresh generation, and the artifact churned.
 export const RECENT_LESSONS = 12;
 
+// Older reflections' "What worked" sections, quoted verbatim beside the summary.
+// The router takes a capability quote from any source reflection, and the
+// summary paraphrases, so a procedure only an older reflection names never
+// reached the drafter in a form it could quote. Only sections with a few
+// inline commands qualify, newest first, so the block moves only when new
+// reflections arrive.
+export const EARLIER_EVIDENCE_CHARS = 4000;
+export const MIN_EXCERPT_CODE_SPANS = 2;
+const CODE_SPAN_RE = /`[^`\n]+`/g;
+
 // Headers this module writes into the drafting prompt. `lint.ts` refuses an
 // artifact that echoes one, so the two lists move together.
 export const SUMMARY_HEADER = "Summary of every lesson recorded for this pattern";
 export const KNOWLEDGE_HEADER = "Artifacts this world already has";
+export const EARLIER_EVIDENCE_HEADER = "Verbatim excerpts from older reflections";
 
 const FENCE_RE = /^```[A-Za-z]*\s*\n([\s\S]*?)\n?```\s*$/;
 const THINK_RE = /^\s*<think>[\s\S]*?<\/think>\s*/i;
@@ -68,6 +80,21 @@ export function boundedSources(lessons: string[]): string {
     );
   }
   return kept.join("\n\n---\n\n");
+}
+
+/** The "What worked" excerpts worth quoting from `worked` (oldest first), newest
+ * first, within EARLIER_EVIDENCE_CHARS. */
+export function earlierEvidence(worked: string[]): string[] {
+  const kept: string[] = [];
+  let total = 0;
+  for (const raw of [...worked].reverse()) {
+    const text = (raw ?? "").trim();
+    if ((text.match(CODE_SPAN_RE) ?? []).length < MIN_EXCERPT_CODE_SPANS) continue;
+    if (total + text.length > EARLIER_EVIDENCE_CHARS) break;
+    kept.push(text);
+    total += text.length;
+  }
+  return kept;
 }
 
 // --- artifact shapes ---------------------------------------------------------
@@ -104,6 +131,10 @@ export interface DraftOptions {
   /** The world's other patterns and the artifacts already serving them.
    * Absent in a young world with nothing else to compare against. */
   knowledge?: string | null;
+  /** The "What worked" section of each source reflection, same order as the
+   * lessons (`plan.workedSections`). Read only for the reflections the prompt
+   * does not quote in full. */
+  workedSections?: string[];
   /** Forced path only: also ask for the routing fields alongside "artifact",
    * so a caller considering a re-route of an already-served pattern reads a
    * real signal instead of the empty default. Never changes the instructions
@@ -254,15 +285,28 @@ export const JUDGE_SYSTEM =
  * The summary carries the lessons that no longer fit; the knowledge map carries
  * what the rest of the world already says, so a new artifact narrows or
  * declines instead of restating a neighbour under a new name. */
-function contextBlock(summary: string, total: number, quoted: number, knowledge: string | null): string {
+function contextBlock(
+  summary: string,
+  total: number,
+  quoted: number,
+  knowledge: string | null,
+  excerpts: string[],
+): string {
   let out = "";
   if (summary) {
     out += `${SUMMARY_HEADER} (${total} in total, oldest to newest):\n\n${summary}\n\n`;
     if (quoted < total) {
       out +=
         `The ${quoted} most recent lesson(s) follow in full. The other ${total - quoted} reach you ` +
-        "only through the summary above, and what you write must still cover them.\n\n";
+        `${excerpts.length > 0 ? "through the summary above and the excerpts below" : "only through the summary above"}, ` +
+        "and what you write must still cover them.\n\n";
     }
+  }
+  if (excerpts.length > 0) {
+    out +=
+      `${EARLIER_EVIDENCE_HEADER} (the "What worked" section of ${excerpts.length} of them, newest first). ` +
+      "They are copied exactly, so you may quote them as evidence:\n\n" +
+      `${excerpts.join("\n\n---\n\n")}\n\n`;
   }
   if (knowledge && knowledge.trim()) {
     out +=
@@ -338,7 +382,9 @@ export function draftMessages(
   // the older ones are in the summary, and re-quoting them is what made every
   // run redraft from scratch.
   const quoted = summary && lessons.length > RECENT_LESSONS ? lessons.slice(-RECENT_LESSONS) : lessons;
-  const head = contextBlock(summary, lessons.length, quoted.length, opts.knowledge ?? null);
+  const excerpts =
+    quoted.length < lessons.length ? earlierEvidence((opts.workedSections ?? []).slice(0, lessons.length - quoted.length)) : [];
+  const head = contextBlock(summary, lessons.length, quoted.length, opts.knowledge ?? null, excerpts);
   const sources = boundedSources(quoted);
   const tail = existing
     ? "\n\nExisting artifact to refine. Keep its wording wherever the lessons " +
@@ -550,9 +596,9 @@ export interface ParseDraftOptions {
   forcedType?: string | null;
   /** On the forced path, also parse the routing fields the prompt asked for
    * (see `DraftOptions.wantRouteAnswer`) instead of the empty default. A reply
-   * that fails validation falls back to `emptyAnswer()`: the forced body it
-   * came with is used either way, and "no signal" is the safe no-churn answer
-   * for a caller deciding whether to re-route. */
+   * that fails validation carries `parse_error`, never `emptyAnswer()`: the
+   * forced body is used either way, but an unreadable probe routed exactly like
+   * a considered "no", and nobody could tell the two apart in the logs. */
   keepRouteAnswer?: boolean;
 }
 
@@ -589,7 +635,7 @@ export function parseDraft(raw: string, opts: ParseDraftOptions = {}): [unknown,
       fields[k] = v;
     }
     const parsed = RouteAnswer.safeParse(fields);
-    return [coerceBody(body, forcedType), parsed.success ? parsed.data : emptyAnswer()];
+    return [coerceBody(body, forcedType), parsed.success ? parsed.data : invalidAnswer(parsed.error)];
   }
 
   const fields: Record<string, unknown> = {};
@@ -602,9 +648,20 @@ export function parseDraft(raw: string, opts: ParseDraftOptions = {}): [unknown,
   }
   const parsed = RouteAnswer.safeParse(fields);
   if (!parsed.success) {
-    return ["", RouteAnswer.parse({ parse_error: "routing fields failed validation: ZodError" })];
+    return ["", invalidAnswer(parsed.error)];
   }
   return [coerceBody(body, null), parsed.data];
+}
+
+const MAX_PARSE_ERROR_CHARS = 240;
+
+/** A RouteAnswer naming the fields that failed, so an operator can see what
+ * the model sent instead of a bare "ZodError". */
+function invalidAnswer(error: ZodError): RouteAnswer {
+  const issues = error.issues.map((i) => `${i.path.map(String).join(".") || "reply"}: ${i.message}`).join("; ");
+  const chars = Array.from(`routing fields failed validation: ${issues}`);
+  const text = chars.length > MAX_PARSE_ERROR_CHARS ? `${chars.slice(0, MAX_PARSE_ERROR_CHARS - 3).join("")}...` : chars.join("");
+  return RouteAnswer.parse({ parse_error: text });
 }
 
 /** An object for a hook, text for every other type.

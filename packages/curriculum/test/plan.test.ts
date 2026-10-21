@@ -23,6 +23,8 @@ import {
   cluster,
   draftingTexts,
   draftMessages,
+  EARLIER_EVIDENCE_CHARS,
+  EARLIER_EVIDENCE_HEADER,
   git,
   lessonTexts,
   loadPayloadCorpus,
@@ -37,6 +39,7 @@ import {
   substantiveQuote,
   watermark,
   withoutSections,
+  workedSections,
 } from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
 import { loadLedger, saveAliases, saveLedger, writeReflection } from "@sil/store";
@@ -611,7 +614,7 @@ describe("the drafter's view of a reflection", () => {
   // The fixture body's "Not verified" section, verbatim.
   const NOT_VERIFIED = "Whether the graphify extraction covers wrapped call sites.";
 
-  test("it is what failed, the lesson and the verification, not the lesson line alone", () => {
+  test("it is what worked, what failed, the lesson and the verification, not the lesson line alone", () => {
     // The lesson line is one imperative under 300 characters by the critic's
     // own contract, which is a rule by construction. The procedure and the
     // investigation that would justify a skill or an agent live in the other
@@ -621,9 +624,21 @@ describe("the drafter's view of a reflection", () => {
     expect(text).toContain(LESSON);
     expect(text).toContain("## What failed & why");
     expect(text).toContain("## Verification");
-    expect(text).not.toContain("## What worked");
     expect(text).not.toContain("## Not verified");
     expect(text).not.toContain(NOT_VERIFIED);
+  });
+
+  test("it keeps What worked, because the router accepts a quote from it", () => {
+    // The drafter was never shown this section while the router took quotes
+    // from it, so a procedure named only here could not be quoted at all.
+    addReflections(world, PATTERN, 1);
+    const items = reflections(world);
+    const [text] = draftingTexts(items);
+    const worked = "Reading the promotions ledger before touching the branch.";
+    expect(text).toContain("## What worked");
+    expect(text).toContain(worked);
+    expect(sourcesText(items)).toContain(worked);
+    expect(workedSections(items)).toEqual([worked]);
   });
 
   test("the judge still reads the lesson line", () => {
@@ -640,6 +655,55 @@ describe("the drafter's view of a reflection", () => {
     expect(substantiveQuote(NOT_VERIFIED, items.map((r) => r.body).join("\n\n"))).toBe(true);
     expect(substantiveQuote(NOT_VERIFIED, sourcesText(items))).toBe(false);
     expect(substantiveQuote(LESSON, sourcesText(items))).toBe(true);
+  });
+
+  test("older reflections' What worked reaches the drafter verbatim beside the summary", () => {
+    // 14 reflections, so the prompt quotes the newest 12 and the oldest two
+    // reached the drafter only through the paraphrasing summary.
+    const procedure =
+      "Ran `bun run build` before `bun test tests/dist.test.ts`, then compared `dist/hook.js` with the release tag.";
+    const oneSpan = "Checked `git status` and moved on, nothing else to report from that session.";
+    const count = RECENT_LESSONS + 2;
+    for (let i = 0; i < count; i++) {
+      const day = `2026-09-${String(i + 1).padStart(2, "0")}`;
+      const worked = i === 0 ? procedure : i === 1 ? oneSpan : "Reading the promotions ledger before touching the branch.";
+      const body = reflectionBody(PATTERN, day).replace("Reading the promotions ledger before touching the branch.", worked);
+      writeReflection(world.name, { id: `${day}-${PATTERN}`, created: day }, body);
+    }
+    const items = cluster(reflections(world)).find((g) => g.pattern === PATTERN)!.items;
+    const build = (sections: string[]) =>
+      draftMessages(PATTERN, draftingTexts(items), null, null, { summary: "Earlier lessons, summarised.", workedSections: sections })
+        .at(-1)!.content;
+
+    const prompt = build(workedSections(items));
+    expect(prompt).toContain(EARLIER_EVIDENCE_HEADER);
+    expect(prompt).toContain(procedure);
+    // One code span is narration, not a procedure.
+    expect(prompt).not.toContain(oneSpan);
+    expect(prompt).not.toContain(NOT_VERIFIED);
+    // Same input, same prompt: the block moves only when reflections arrive.
+    expect(build(workedSections(items))).toBe(prompt);
+    // The forced prompt carries it too.
+    const forced = draftMessages(PATTERN, draftingTexts(items), null, "rule", {
+      summary: "Earlier lessons, summarised.",
+      workedSections: workedSections(items),
+      wantRouteAnswer: true,
+    }).at(-1)!.content;
+    expect(forced).toContain(procedure);
+
+    // The budget holds: an oversized excerpt is left out rather than cut.
+    const huge = `${"`a` `b` ".repeat(EARLIER_EVIDENCE_CHARS / 4)}`;
+    const sections = workedSections(items);
+    sections[1] = huge;
+    const bounded = build(sections);
+    expect(bounded).not.toContain(huge.trim());
+    expect(bounded).not.toContain(EARLIER_EVIDENCE_HEADER);
+
+    // Without a summary every reflection is quoted in full, so there is no block.
+    const plain = draftMessages(PATTERN, draftingTexts(items), null, null, { workedSections: workedSections(items) }).at(-1)!
+      .content;
+    expect(plain).not.toContain(EARLIER_EVIDENCE_HEADER);
+    expect(plain).toContain(procedure);
   });
 
   test("withoutSections cuts heading to next heading, first or last section alike", () => {

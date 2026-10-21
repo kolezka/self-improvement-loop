@@ -410,10 +410,26 @@ export type PlanReport = z.infer<typeof PlanReport>;
 // router (or the served_by row) settled on, and why. Recorded for every
 // pattern that reached the router, staged or not. Without it a downgrade from
 // hook to rule is invisible: the log shows a staged rule and nothing else.
+// What the drafter answered, so a log shows whether a rule came from a "no"
+// or from a reply nobody could read. Strings are cut to a few hundred chars.
+export const RouteSignals = z.object({
+  trigger_event: z.string(),
+  has_gate: z.boolean(),
+  needs_own_context: z.boolean(),
+  context_evidence: z.string().nullable(),
+  capability_evidence: z.string().nullable(),
+  no_artifact: z.boolean(),
+  parse_error: z.string().nullable(),
+});
+export type RouteSignals = z.infer<typeof RouteSignals>;
+
 export const RouteRecord = z.object({
   drafted: z.string(),
   type: ArtifactType,
   reason: z.string(),
+  // Absent when nothing routed from a drafter answer (a forced type with no
+  // probe), and in reports written before it existed.
+  signals: RouteSignals.optional(),
 });
 export type RouteRecord = z.infer<typeof RouteRecord>;
 

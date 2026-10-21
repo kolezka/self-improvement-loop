@@ -325,15 +325,20 @@ lint, judge, one commit carrying artifact and ledger, scratch worktree, branch
 Three things keep all four artifact types reachable, each added after a measured
 failure:
 
-- The drafter reads each reflection's `What failed & why`, `Reusable lesson`
-  and `Verification` sections, not the lesson line alone. The critic writes
+- The drafter reads each reflection's `What worked`, `What failed & why`,
+  `Reusable lesson` and `Verification` sections, not the lesson line alone. The critic writes
   that line as one imperative under 300 characters, which fits one rule bullet
   at the default cap; on lesson-only input the drafter proposed hook or rule on every
   one of five real clusters, and with the fuller text it took a 56-reflection
-  pattern to a skill the router accepted. The judge still reads the lesson
-  lines, which are the conclusions it checks an artifact against. `Not
-  verified` is cut from the router's quote haystack as well, so a claim the
-  critic refused to stand behind can never buy a skill or an agent.
+  pattern to a skill the router accepted. `What worked` was cut too until
+  October 2026, while the router kept accepting quotes from it: that section is
+  where a reflection names the commands of a procedure, so the one quote a
+  skill needs was the one text the drafter never saw. The judge still reads the
+  lesson lines, which are the conclusions it checks an artifact against, plus
+  the quote the router verified when it routed to `skill` or `agent`, so an
+  artifact built on that quote is not refused as unsupported. `Not verified`
+  is cut from the drafter's input and from the router's quote haystack, so a
+  claim the critic refused to stand behind can never buy a skill or an agent.
 - The payload corpus is the plugin's fixtures plus the world's recorded
   `usage/payloads/<world>.jsonl` samples (newest 2000, deduplicated). A narrow
   gate on a real command (`--no-verify`, `pkill`) can never match twenty
@@ -343,6 +348,11 @@ failure:
 - The run report records `routed[pattern] = {drafted, type, reason}` for every
   pattern that reached the router, so a downgrade shows in `sil curriculum run`
   and the web worker status instead of looking like a rule that was asked for.
+  When the type was routed from a drafter answer (a fresh pattern, or a
+  re-route probe) it also carries `signals`: the trigger event, whether a gate
+  came with it, `needs_own_context`, both evidence quotes (cut to 200
+  characters), `no_artifact` and `parse_error`. Without them nobody could tell
+  from a log whether a rule came from a "no" or from a reply nobody read.
 
 New: the planner reads scorecards and adds
 `refine` (misfires outnumber helpful votes) and `retire-candidate` (no use in
@@ -451,13 +461,22 @@ failures that produces were measured in the default world:
   reused untouched while nothing is new, so the drafting input barely moves
   between runs. The prompt then quotes the `RECENT_LESSONS` (12) newest lessons
   in full and tells the drafter the rest reach it through the summary.
+* **Earlier evidence.** The summary is built from lesson lines and paraphrases,
+  and the router only accepts a verbatim quote, so evidence in an older
+  reflection could never buy a skill: 92% of reflections sat in clusters over
+  12. The prompt therefore also quotes, verbatim and labelled as quotable, the
+  `What worked` section of older reflections that names at least two inline
+  commands, newest first, up to `EARLIER_EVIDENCE_CHARS` (4000). The selection
+  depends only on the reflections, so the block moves only when new ones
+  arrive, like the summary. `Not verified` text never enters it.
 * **The knowledge map.** Every other pattern in the world, its reflection count
   and the artifact serving it, one line each, with the instruction not to
   restate a neighbour under a new name. Without it a drafter cannot know the
   world already promoted a near-identical rule under a different pattern.
 
-Neither is a gate: lint's grounding check and the judge keep reading the full
-source text of every reflection in the cluster. A summariser call that fails
+None of these is a gate: lint's grounding check and the router's quote check
+keep reading the full source text of every reflection in the cluster, and the
+judge keeps reading every lesson line. A summariser call that fails
 falls back to the cached summary, then to the raw lessons, and never blocks a
 promotion. A redraft that reproduces the artifact already in place is reported
 as `no change` and stages nothing, so an unchanged line never reaches review.
@@ -522,7 +541,11 @@ prior tick already earned: only `hook`, `skill` or `agent`, and only when it
 differs from the current type, counts as an upgrade. When the probe runs and
 earns no upgrade, the routed reason carries its verdict
 (`already served by this artifact; re-route probe kept rule: <reason>`), so a
-probe that said no is told apart from one that never ran.
+probe that said no is told apart from one that never ran. A probe reply whose
+routing fields fail validation carries `parse_error` naming the fields, and the
+reason reads `re-route probe kept rule: unreadable drafter reply: ...`. It used
+to fall back to the empty answer, which printed the same "no workable gate"
+line as a drafter that considered the evidence and said no.
 
 An upgrade redrafts once more in the new type (the same single-redraft path a
 drafter/router mismatch already uses on a fresh pattern), lints, judges, and

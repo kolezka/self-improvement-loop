@@ -149,6 +149,21 @@ describe("forced drafting with wantRouteAnswer", () => {
     expect(routed.reason).toStartWith("unreadable drafter reply: routing fields failed validation: needs_own_context");
   });
 
+  test("keepRouteAnswer reports missing routing keys as unreadable, naming them", () => {
+    const [body, answer] = parseDraft(JSON.stringify({ artifact: "- a bullet" }), { forcedType: "rule", keepRouteAnswer: true });
+    expect(body).toBe("- a bullet");
+    expect(answer.parse_error).toBe(
+      "routing keys missing from reply: trigger_event, gate, needs_own_context, context_evidence, capability_evidence, no_artifact",
+    );
+    expect(route(answer, "", []).artifact_type).toBe("none");
+  });
+
+  test("the fresh path routes on defaults for missing keys but records them, and the reply cannot set them", () => {
+    const [, answer] = parseDraft(JSON.stringify({ artifact: "- a bullet", gate: null, missing_keys: ["x"] }));
+    expect(answer.parse_error).toBe("");
+    expect(answer.missing_keys).toEqual(["trigger_event", "needs_own_context", "context_evidence", "capability_evidence", "no_artifact"]);
+  });
+
   test("the fresh path names the failing fields too, within a bounded length", () => {
     const raw = JSON.stringify({ artifact: "x", gate: "not an object", no_artifact: "no", needs_own_context: "y".repeat(500) });
     const [body, answer] = parseDraft(raw);

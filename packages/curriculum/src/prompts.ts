@@ -90,7 +90,8 @@ export function earlierEvidence(worked: string[]): string[] {
   for (const raw of [...worked].reverse()) {
     const text = (raw ?? "").trim();
     if ((text.match(CODE_SPAN_RE) ?? []).length < MIN_EXCERPT_CODE_SPANS) continue;
-    if (total + text.length > EARLIER_EVIDENCE_CHARS) break;
+    // Skipped, not a stop: one long section must not hide every older one.
+    if (total + text.length > EARLIER_EVIDENCE_CHARS) continue;
     kept.push(text);
     total += text.length;
   }
@@ -135,6 +136,11 @@ export interface DraftOptions {
    * lessons (`plan.workedSections`). Read only for the reflections the prompt
    * does not quote in full. */
   workedSections?: string[];
+  /** Drafting text that is not a reflection (artifact feedback, scorecard
+   * complaints). Always quoted after the lessons, and never counted or
+   * windowed as one: counted, it pushed the oldest reflection out of a full
+   * cluster of RECENT_LESSONS. */
+  extra?: string[];
   /** Forced path only: also ask for the routing fields alongside "artifact",
    * so a caller considering a re-route of an already-served pattern reads a
    * real signal instead of the empty default. Never changes the instructions
@@ -385,7 +391,7 @@ export function draftMessages(
   const excerpts =
     quoted.length < lessons.length ? earlierEvidence((opts.workedSections ?? []).slice(0, lessons.length - quoted.length)) : [];
   const head = contextBlock(summary, lessons.length, quoted.length, opts.knowledge ?? null, excerpts);
-  const sources = boundedSources(quoted);
+  const sources = boundedSources([...quoted, ...(opts.extra ?? [])]);
   const tail = existing
     ? "\n\nExisting artifact to refine. Keep its wording wherever the lessons " +
       "still support it and change only what a new lesson requires; a rewrite " +
@@ -629,28 +635,53 @@ export function parseDraft(raw: string, opts: ParseDraftOptions = {}): [unknown,
   const body = data["artifact"] ?? "";
   if (forcedType !== null) {
     if (!opts.keepRouteAnswer) return [coerceBody(body, forcedType), emptyAnswer()];
-    const fields: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (k === "artifact" || k === "parse_error") continue;
-      fields[k] = v;
+    const parsed = RouteAnswer.safeParse(replyFields(data));
+    if (!parsed.success) return [coerceBody(body, forcedType), invalidAnswer(parsed.error)];
+    // A probe reply that left keys out passed on defaults and read as a
+    // considered "no". Here a fallback costs nothing, so it is unreadable.
+    const missing = missingKeys(data);
+    if (missing.length > 0) {
+      return [
+        coerceBody(body, forcedType),
+        RouteAnswer.parse({ parse_error: `routing keys missing from reply: ${missing.join(", ")}`, missing_keys: missing }),
+      ];
     }
-    const parsed = RouteAnswer.safeParse(fields);
-    return [coerceBody(body, forcedType), parsed.success ? parsed.data : invalidAnswer(parsed.error)];
+    return [coerceBody(body, forcedType), parsed.data];
   }
 
-  const fields: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(data)) {
-    // `parse_error` describes our reading of the reply, so the reply does not
-    // get to set it: a model echoing the schema back could otherwise send an
-    // operator after a provider that worked perfectly.
-    if (k === "artifact" || k === "parse_error") continue;
-    fields[k] = v;
-  }
-  const parsed = RouteAnswer.safeParse(fields);
+  const parsed = RouteAnswer.safeParse(replyFields(data));
   if (!parsed.success) {
     return ["", invalidAnswer(parsed.error)];
   }
-  return [coerceBody(body, null), parsed.data];
+  // Still routed on the defaults: on a fresh pattern dropping the reply costs
+  // more than the rule fallback. Recorded so the log shows it.
+  return [coerceBody(body, null), { ...parsed.data, missing_keys: missingKeys(data) }];
+}
+
+/** The keys a routing answer is asked for, in prompt order. */
+export const ROUTING_KEYS = [
+  "trigger_event",
+  "gate",
+  "needs_own_context",
+  "context_evidence",
+  "capability_evidence",
+  "no_artifact",
+] as const;
+
+function missingKeys(data: Record<string, unknown>): string[] {
+  return ROUTING_KEYS.filter((k) => !Object.hasOwn(data, k));
+}
+
+/** The reply minus the keys it does not get to set. `parse_error` and
+ * `missing_keys` describe our reading of the reply: a model echoing the schema
+ * back could otherwise send an operator after a provider that worked. */
+function replyFields(data: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (k === "artifact" || k === "parse_error" || k === "missing_keys") continue;
+    fields[k] = v;
+  }
+  return fields;
 }
 
 const MAX_PARSE_ERROR_CHARS = 240;

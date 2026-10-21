@@ -351,7 +351,8 @@ failure:
   When the type was routed from a drafter answer (a fresh pattern, or a
   re-route probe) it also carries `signals`: the trigger event, whether a gate
   came with it, `needs_own_context`, both evidence quotes (cut to 200
-  characters), `no_artifact` and `parse_error`. Without them nobody could tell
+  characters), `no_artifact`, `parse_error` and `missing_keys` (requested keys
+  the reply left out; a fresh pattern still routes on the defaults). Without them nobody could tell
   from a log whether a rule came from a "no" or from a reply nobody read.
 
 New: the planner reads scorecards and adds
@@ -468,7 +469,9 @@ failures that produces were measured in the default world:
   `What worked` section of older reflections that names at least two inline
   commands, newest first, up to `EARLIER_EVIDENCE_CHARS` (4000). The selection
   depends only on the reflections, so the block moves only when new ones
-  arrive, like the summary. `Not verified` text never enters it.
+  arrive, like the summary. A section too long for what is left of the budget
+  is skipped, not a stop. Artifact feedback and scorecard complaints are quoted
+  after the lessons and never count toward the window. `Not verified` text never enters it.
 * **The knowledge map.** Every other pattern in the world, its reflection count
   and the artifact serving it, one line each, with the instruction not to
   restate a neighbour under a new name. Without it a drafter cannot know the
@@ -542,7 +545,8 @@ differs from the current type, counts as an upgrade. When the probe runs and
 earns no upgrade, the routed reason carries its verdict
 (`already served by this artifact; re-route probe kept rule: <reason>`), so a
 probe that said no is told apart from one that never ran. A probe reply whose
-routing fields fail validation carries `parse_error` naming the fields, and the
+routing fields fail validation, or that leaves a requested key out, carries
+`parse_error` naming the fields, and the
 reason reads `re-route probe kept rule: unreadable drafter reply: ...`. It used
 to fall back to the empty answer, which printed the same "no workable gate"
 line as a drafter that considered the evidence and said no.

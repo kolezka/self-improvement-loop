@@ -420,6 +420,8 @@ export const RouteSignals = z.object({
   capability_evidence: z.string().nullable(),
   no_artifact: z.boolean(),
   parse_error: z.string().nullable(),
+  // Routing keys the reply left out. Optional for reports written before it.
+  missing_keys: z.array(z.string()).optional(),
 });
 export type RouteSignals = z.infer<typeof RouteSignals>;
 

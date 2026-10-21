@@ -115,6 +115,7 @@ function routeSignals(answer: RouteAnswer): RouteSignals {
     capability_evidence: clip(answer.capability_evidence),
     no_artifact: answer.no_artifact,
     parse_error: clip(answer.parse_error || null),
+    ...(answer.missing_keys.length > 0 ? { missing_keys: answer.missing_keys } : {}),
   };
 }
 
@@ -371,12 +372,15 @@ async function stageOne(
   // The drafter reads what failed and how it was verified; the judge reads the
   // conclusions it checks the artifact against.
   const drafting = draftingTexts(items);
+  // Drafting text that is not a reflection, kept apart so the prompt's window
+  // and counts stay about reflections.
+  const extra: string[] = [];
   const lessons = lessonTexts(items);
   const caps = draftCaps(cfg);
   if (action.feedback) {
     // The misfire reasons travel with the evidence, so the redraft is told what
     // was wrong with the artifact it is replacing.
-    drafting.push(`Artifact feedback: ${action.feedback}`);
+    extra.push(`Artifact feedback: ${action.feedback}`);
     lessons.push(`Artifact feedback: ${action.feedback}`);
   }
   // A scorecard refine of a row with no reflections on disk.
@@ -446,11 +450,11 @@ async function stageOne(
     const said = ref ? feedback.complaints(world, cfg, ref, prior?.promoted_at ?? null) : [];
     if (said.length > 0) {
       sources = said.join("\n\n");
-      drafting.push(...said);
+      extra.push(...said);
       lessons.push(...said);
     } else if (ctx.manualRefine && action.feedback) {
       // A human-triggered refine with no scorecard complaints is grounded in
-      // their own instruction instead: already pushed into drafting/lessons
+      // their own instruction instead: already pushed into extra/lessons
       // above, so only the lint's grounding source needs it here.
       sources = action.feedback;
     } else {
@@ -479,6 +483,7 @@ async function stageOne(
     summary: await context.clusterSummary(world, pattern, items, chat),
     knowledge: context.renderKnowledge(ctx.knowledge, pattern),
     workedSections: workedSections(items),
+    extra,
   };
 
   let raw: string;

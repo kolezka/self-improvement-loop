@@ -691,13 +691,15 @@ describe("the drafter's view of a reflection", () => {
     }).at(-1)!.content;
     expect(forced).toContain(procedure);
 
-    // The budget holds: an oversized excerpt is left out rather than cut.
+    // The budget holds: an oversized newer excerpt is skipped, not cut, and the
+    // short older procedure behind it still gets in.
     const huge = `${"`a` `b` ".repeat(EARLIER_EVIDENCE_CHARS / 4)}`;
     const sections = workedSections(items);
     sections[1] = huge;
     const bounded = build(sections);
     expect(bounded).not.toContain(huge.trim());
-    expect(bounded).not.toContain(EARLIER_EVIDENCE_HEADER);
+    expect(bounded).toContain(EARLIER_EVIDENCE_HEADER);
+    expect(bounded).toContain(procedure);
 
     // Without a summary every reflection is quoted in full, so there is no block.
     const plain = draftMessages(PATTERN, draftingTexts(items), null, null, { workedSections: workedSections(items) }).at(-1)!

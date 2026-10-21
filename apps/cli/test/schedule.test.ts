@@ -381,11 +381,23 @@ describe("install", () => {
       const { written } = install(kind, 60, false, () => {}, installerPath);
       const content = readFileSync(written.find((p) => p.includes("worker"))!, "utf8");
       const jobPath = unitPath(kind, content) ?? OS_MINIMAL_PATH;
-      for (const [i, bin] of HOOK_BINS.entries()) {
-        expect(resolveBinDir(bin, jobPath)).toBe(hookDirs[i]!);
-      }
+      for (const bin of HOOK_BINS) expect(resolveBinDir(bin, jobPath)).not.toBeNull();
     });
   }
+
+  // A hook interpreter's dir often holds other tools too; it must not change
+  // which system binary the worker runs.
+  test("a HOOK_BINS dir never shadows a MINIMAL_PATH binary", () => {
+    const workerDir = makeFakeBinIn("workerbin", "claude");
+    writeFileSync(join(workerDir, "bun"), "#!/bin/sh\n", "utf8");
+    chmodSync(join(workerDir, "bun"), 0o755);
+    const nodeDir = makeFakeBinIn("nodebin", "node");
+    writeFileSync(join(nodeDir, "sh"), "#!/bin/sh\n", "utf8");
+    chmodSync(join(nodeDir, "sh"), 0o755);
+    const jobPath = workerPath([workerDir, nodeDir, "/usr/bin", "/bin"].join(":"));
+    expect(resolveBinDir("node", jobPath)).toBe(nodeDir);
+    expect(resolveBinDir("sh", jobPath)).not.toBe(nodeDir);
+  });
 
   test("a missing HOOK_BINS interpreter is left out without a warning", () => {
     const dir = makeFakeBin("claude");

@@ -80,16 +80,18 @@ export function resolveWorkerBins(envPath: string): Record<string, string | null
   return out;
 }
 
-/** The PATH to bake into the installed unit: resolved WORKER_BINS dirs, then
- * resolved HOOK_BINS dirs, ahead of MINIMAL_PATH. An unresolved bin is left
- * out here, never an error; resolveWorkerBins is where a caller checks for a miss. */
+/** The PATH to bake into the installed unit: resolved WORKER_BINS dirs ahead
+ * of MINIMAL_PATH, then resolved HOOK_BINS dirs last so they never shadow a
+ * system tool. An unresolved bin is left out here, never an error;
+ * resolveWorkerBins is where a caller checks for a miss. */
 export function workerPath(envPath: string): string {
   const dirs: string[] = [];
-  const hookDirs = HOOK_BINS.map((bin) => resolveBinDir(bin, envPath));
-  for (const dir of [...Object.values(resolveWorkerBins(envPath)), ...hookDirs]) {
+  const add = (dir: string | null) => {
     if (dir && !dirs.includes(dir)) dirs.push(dir);
-  }
-  for (const dir of MINIMAL_PATH) if (!dirs.includes(dir)) dirs.push(dir);
+  };
+  for (const dir of Object.values(resolveWorkerBins(envPath))) add(dir);
+  for (const dir of MINIMAL_PATH) add(dir);
+  for (const bin of HOOK_BINS) add(resolveBinDir(bin, envPath));
   return dirs.join(":");
 }
 

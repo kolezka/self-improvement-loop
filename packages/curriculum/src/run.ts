@@ -25,6 +25,7 @@ import {
   type PlanAction,
   type PromotionEntry,
   type Reflection,
+  type RouteSignals,
   type RunReport,
   type Scorecard,
   targetRoot,
@@ -58,6 +59,7 @@ import {
   scorecardByPattern,
   scorecards,
   sourcesText,
+  workedSections,
 } from "./plan.ts";
 import * as prompts from "./prompts.ts";
 import { type RouteAnswer, route } from "./router.ts";
@@ -93,6 +95,28 @@ export function draftedType(answer: RouteAnswer): string {
   if (answer.needs_own_context && answer.context_evidence !== null) return "agent";
   if (answer.capability_evidence !== null) return "skill";
   return "rule";
+}
+
+const MAX_SIGNAL_CHARS = 200;
+
+function clip(text: string | null): string | null {
+  if (text === null) return null;
+  const chars = Array.from(text);
+  return chars.length > MAX_SIGNAL_CHARS ? `${chars.slice(0, MAX_SIGNAL_CHARS).join("")}...` : text;
+}
+
+/** The drafter's routing answer as the run report records it. */
+function routeSignals(answer: RouteAnswer): RouteSignals {
+  return {
+    trigger_event: clip(answer.trigger_event)!,
+    has_gate: answer.gate !== null,
+    needs_own_context: answer.needs_own_context,
+    context_evidence: clip(answer.context_evidence),
+    capability_evidence: clip(answer.capability_evidence),
+    no_artifact: answer.no_artifact,
+    parse_error: clip(answer.parse_error || null),
+    ...(answer.missing_keys.length > 0 ? { missing_keys: answer.missing_keys } : {}),
+  };
 }
 
 /** What artifact type already serves this pattern, branch first.
@@ -348,12 +372,15 @@ async function stageOne(
   // The drafter reads what failed and how it was verified; the judge reads the
   // conclusions it checks the artifact against.
   const drafting = draftingTexts(items);
+  // Drafting text that is not a reflection, kept apart so the prompt's window
+  // and counts stay about reflections.
+  const extra: string[] = [];
   const lessons = lessonTexts(items);
   const caps = draftCaps(cfg);
   if (action.feedback) {
     // The misfire reasons travel with the evidence, so the redraft is told what
     // was wrong with the artifact it is replacing.
-    drafting.push(`Artifact feedback: ${action.feedback}`);
+    extra.push(`Artifact feedback: ${action.feedback}`);
     lessons.push(`Artifact feedback: ${action.feedback}`);
   }
   // A scorecard refine of a row with no reflections on disk.
@@ -423,11 +450,11 @@ async function stageOne(
     const said = ref ? feedback.complaints(world, cfg, ref, prior?.promoted_at ?? null) : [];
     if (said.length > 0) {
       sources = said.join("\n\n");
-      drafting.push(...said);
+      extra.push(...said);
       lessons.push(...said);
     } else if (ctx.manualRefine && action.feedback) {
       // A human-triggered refine with no scorecard complaints is grounded in
-      // their own instruction instead: already pushed into drafting/lessons
+      // their own instruction instead: already pushed into extra/lessons
       // above, so only the lint's grounding source needs it here.
       sources = action.feedback;
     } else {
@@ -455,6 +482,8 @@ async function stageOne(
     ...caps,
     summary: await context.clusterSummary(world, pattern, items, chat),
     knowledge: context.renderKnowledge(ctx.knowledge, pattern),
+    workedSections: workedSections(items),
+    extra,
   };
 
   let raw: string;
@@ -480,10 +509,14 @@ async function stageOne(
   // only, never churn: a router result of "rule" (the fallback) or "none"
   // never moves an artifact a prior tick already earned.
   let rerouteFrom: string | null = null;
+  // Whether `answer` is what the type was routed from. A forced type without a
+  // probe never reads it.
+  let routedFromAnswer = forcedType === null;
   if (forcedType !== null) {
     routedType = forcedType;
     routedReason = "already served by this artifact";
     if (rerouteEligible) {
+      routedFromAnswer = true;
       const probe = route(answer, sources, ctx.payloads, { gateRunner: ctx.gateRunner });
       if (UPGRADE_TYPES.has(probe.artifact_type) && probe.artifact_type !== forcedType) {
         rerouteFrom = forcedType;
@@ -505,6 +538,7 @@ async function stageOne(
     drafted: forcedType ?? draftedType(answer),
     type: routedType as ArtifactType,
     reason: routedReason,
+    ...(routedFromAnswer ? { signals: routeSignals(answer) } : {}),
   };
 
   if (routedType === "none") {
@@ -576,6 +610,12 @@ async function stageOne(
       `repo integrity: uncommitted changes under a routed artifact path (${dirty.join(", ")}); commit or discard them`;
     return;
   }
+
+  // The quote the router checked is what earned a skill or an agent, and it may
+  // come from a section the lesson lines do not carry. Without it the judge
+  // reads the artifact as unsupported by its sources.
+  const verified = routedType === "skill" ? answer.capability_evidence : routedType === "agent" ? answer.context_evidence : null;
+  if (routedFromAnswer && verified) lessons.push(`Evidence quoted verbatim from the sources: ${verified.trim()}`);
 
   const judgeBody = typeof body === "string" ? body : hookText(body);
   let passed: boolean;

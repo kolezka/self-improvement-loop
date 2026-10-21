@@ -48,6 +48,7 @@ const SCAFFOLD_MARKERS = [
   "write the first one that applies",
   "summary of every lesson recorded for this pattern",
   "artifacts this world already has",
+  "verbatim excerpts from older reflections",
 ] as const;
 
 const SENTENCE_END = /[.!?](?:\s|$)/g;

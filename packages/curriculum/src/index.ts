@@ -44,6 +44,9 @@ export {
 export {
   type DraftOptions,
   draftMessages,
+  EARLIER_EVIDENCE_CHARS,
+  EARLIER_EVIDENCE_HEADER,
+  earlierEvidence,
   JUDGE_RULES,
   judgeMessages,
   judgeQuestions,
@@ -73,6 +76,7 @@ export {
   sourcesText,
   watermark,
   withoutSections,
+  workedSections,
 } from "./plan.ts";
 export {
   type AliasSemanticOptions,

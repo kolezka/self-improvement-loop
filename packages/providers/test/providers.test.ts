@@ -181,6 +181,27 @@ describe("chat claude-cli kind", () => {
     expect(chatCall).toContain("sys");
   });
 
+  // Telemetry tools need to tell these headless runs apart from the user's own
+  // `claude -p`; a resource attribute is the only label OTel carries per run.
+  test("tags the run with a launcher resource attribute and keeps existing ones", async () => {
+    const envs: (Record<string, string | undefined> | undefined)[] = [];
+    spawnSyncImpl.run = (cmd, opts) => {
+      if (cmd.includes("-p")) envs.push(opts.env);
+      return fakeResult({ stdout: Buffer.from(JSON.stringify({ result: "ok" })) });
+    };
+    const saved = process.env["OTEL_RESOURCE_ATTRIBUTES"];
+    process.env["OTEL_RESOURCE_ATTRIBUTES"] = "team=x";
+    try {
+      const ep = endpoint({ name: "cli", kind: "claude-cli" });
+      await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm: llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } }) });
+    } finally {
+      if (saved === undefined) delete process.env["OTEL_RESOURCE_ATTRIBUTES"];
+      else process.env["OTEL_RESOURCE_ATTRIBUTES"] = saved;
+    }
+    expect(envs[0]?.["OTEL_RESOURCE_ATTRIBUTES"]).toBe("team=x,launcher=self-improvement-loop");
+    expect(envs[0]?.["PATH"]).toBe(process.env["PATH"]);
+  });
+
   test("raises on missing result field", async () => {
     spawnSyncImpl.run = () => fakeResult({ stdout: Buffer.from(JSON.stringify({ not_result: "x" })) });
     const ep = endpoint({ name: "cli", kind: "claude-cli" });

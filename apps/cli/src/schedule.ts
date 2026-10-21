@@ -61,6 +61,10 @@ export const MINIMAL_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 // install resolves claude/bun's dir from whatever PATH ran it, not a guess.
 export const WORKER_BINS = ["claude", "bun"] as const;
 
+// Interpreters the user's hooks run under. The worker's claude fires those hooks,
+// so a missing one fails them (exit 127). Optional: baked when found, never warned.
+export const HOOK_BINS = ["node", "python3"] as const;
+
 /** The directory on `envPath` holding an executable named `bin`, or null. */
 export function resolveBinDir(bin: string, envPath: string): string | null {
   const resolved = Bun.which(bin, { PATH: envPath });
@@ -76,12 +80,13 @@ export function resolveWorkerBins(envPath: string): Record<string, string | null
   return out;
 }
 
-/** The PATH to bake into the installed unit: resolved WORKER_BINS dirs
- * ahead of MINIMAL_PATH. An unresolved bin is left out here, never an
- * error; resolveWorkerBins is where a caller checks for a miss. */
+/** The PATH to bake into the installed unit: resolved WORKER_BINS dirs, then
+ * resolved HOOK_BINS dirs, ahead of MINIMAL_PATH. An unresolved bin is left
+ * out here, never an error; resolveWorkerBins is where a caller checks for a miss. */
 export function workerPath(envPath: string): string {
   const dirs: string[] = [];
-  for (const dir of Object.values(resolveWorkerBins(envPath))) {
+  const hookDirs = HOOK_BINS.map((bin) => resolveBinDir(bin, envPath));
+  for (const dir of [...Object.values(resolveWorkerBins(envPath)), ...hookDirs]) {
     if (dir && !dirs.includes(dir)) dirs.push(dir);
   }
   for (const dir of MINIMAL_PATH) if (!dirs.includes(dir)) dirs.push(dir);

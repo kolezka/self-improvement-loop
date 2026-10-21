@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
 import {
+  HOOK_BINS,
   install,
   LAUNCHD_WORKER_PLIST,
   launchdDir,
@@ -365,5 +366,33 @@ describe("install", () => {
     }
     expect(warnings.some((w) => w.includes("bun") && w.includes("not found on PATH"))).toBe(true);
     expect(warnings.some((w) => w.includes("claude"))).toBe(false);
+  });
+
+  // Regression: the worker's claude runs the user's hooks, and a node hook
+  // failed with exit 127 in every reflection because node was not on the job PATH.
+  for (const kind of ["systemd", "launchd"] as const) {
+    test(`${kind} install lets the user's hooks resolve every HOOK_BINS interpreter the installer has`, () => {
+      const workerDir = makeFakeBinIn("workerbin", "claude");
+      writeFileSync(join(workerDir, "bun"), "#!/bin/sh\n", "utf8");
+      chmodSync(join(workerDir, "bun"), 0o755);
+      const hookDirs = HOOK_BINS.map((bin) => makeFakeBinIn(`hookbin-${bin}`, bin));
+      const installerPath = [workerDir, ...hookDirs, "/usr/bin", "/bin"].join(":");
+
+      const { written } = install(kind, 60, false, () => {}, installerPath);
+      const content = readFileSync(written.find((p) => p.includes("worker"))!, "utf8");
+      const jobPath = unitPath(kind, content) ?? OS_MINIMAL_PATH;
+      for (const [i, bin] of HOOK_BINS.entries()) {
+        expect(resolveBinDir(bin, jobPath)).toBe(hookDirs[i]!);
+      }
+    });
+  }
+
+  test("a missing HOOK_BINS interpreter is left out without a warning", () => {
+    const dir = makeFakeBin("claude");
+    writeFileSync(join(dir, "bun"), "#!/bin/sh\n", "utf8");
+    chmodSync(join(dir, "bun"), 0o755);
+    expect(workerPath(`${dir}:/usr/bin`)).toBe(`${dir}:/usr/bin:/bin:/usr/sbin:/sbin`);
+    const { resolvedBins } = install("systemd", 60, false, () => {}, `${dir}:/usr/bin`);
+    for (const bin of HOOK_BINS) expect(bin in resolvedBins).toBe(false);
   });
 });

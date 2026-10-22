@@ -300,7 +300,7 @@ const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", quot: '"', ap
 // One pass, so "&amp;lt;" stays "&lt;". Numeric references decode the way
 // plutil does; one outside Unicode is left as written.
 function xmlUnescape(s: string): string {
-  return s.replace(/&(#x[0-9a-fA-F]{1,6}|#[0-9]{1,7}|lt|gt|quot|apos|amp);/g, (whole, ref: string) => {
+  return s.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|lt|gt|quot|apos|amp);/g, (whole, ref: string) => {
     if (!ref.startsWith("#")) return NAMED_ENTITIES[ref]!;
     const code = ref[1] === "x" ? Number.parseInt(ref.slice(2), 16) : Number.parseInt(ref.slice(1), 10);
     return code <= 0x10ffff ? String.fromCodePoint(code) : whole;

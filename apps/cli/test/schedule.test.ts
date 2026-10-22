@@ -235,6 +235,8 @@ describe("renderLaunchd", () => {
     const encoded = rendered.replace(`<string>${live}</string>`, `<string>${live.replace(/:/g, "&#58;")}</string>`);
     expect(encoded).toContain("&#58;");
     expect(unitPath("launchd", encoded)).toBe(live);
+    const padded = rendered.replace(`<string>${live}</string>`, `<string>${live.replace(/:/g, "&#00000058;")}</string>`);
+    expect(unitPath("launchd", padded)).toBe(live);
 
     const fragment = rendered.slice(rendered.indexOf("<dict>"), rendered.lastIndexOf("</plist>"));
     expect(unitPath("launchd", fragment)).toBeNull();

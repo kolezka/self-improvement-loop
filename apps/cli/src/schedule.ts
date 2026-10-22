@@ -157,7 +157,9 @@ export function unitPath(kind: "systemd" | "launchd", content: string): string |
     const m = content.match(/^Environment="PATH=(.*)"$/m);
     return m ? m[1]!.replace(/%%/g, "%") : null;
   }
-  const m = content.match(/<key>PATH<\/key><string>(.*)<\/string>/);
+  // Whitespace between key and value is allowed: plutil and Xcode put them on
+  // separate lines, and launchd reads that file the same way.
+  const m = content.match(/<key>PATH<\/key>\s*<string>([^<]*)<\/string>/);
   return m ? xmlUnescape(m[1]!) : null;
 }
 

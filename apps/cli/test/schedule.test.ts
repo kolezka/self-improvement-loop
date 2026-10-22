@@ -182,6 +182,26 @@ describe("renderLaunchd", () => {
     }
   });
 
+  // The plist on disk is not always the one we rendered: plutil, Xcode or a
+  // hand edit put key and value on separate lines. launchd still reads it.
+  test("reads the PATH back from any layout launchd accepts, not only the rendered one", () => {
+    const dir = makeFakeBin("claude");
+    const rendered = renderLaunchd(60, false, `${dir}:/usr/bin`)[LAUNCHD_WORKER_PLIST]!;
+    const expected = unitPath("launchd", rendered);
+    expect(expected).toStartWith(`${dir}:`);
+
+    const reflowed = rendered.replace(/<key>PATH<\/key><string>/, "<key>PATH</key>\n\t\t<string>");
+    expect(reflowed).not.toBe(rendered);
+    expect(unitPath("launchd", reflowed)).toBe(expected);
+
+    if (existsSync("/usr/bin/plutil")) {
+      const p = join(tmp, "apple.plist");
+      writeFileSync(p, rendered, "utf8");
+      expect(Bun.spawnSync(["/usr/bin/plutil", "-convert", "xml1", p]).exitCode).toBe(0);
+      expect(unitPath("launchd", readFileSync(p, "utf8"))).toBe(expected);
+    }
+  });
+
   // Falls back to a bare-& scan when plutil is unavailable (non-macOS); an
   // unescaped & is exactly what an XML parser would also reject here.
   function plistIsWellFormed(content: string): boolean {

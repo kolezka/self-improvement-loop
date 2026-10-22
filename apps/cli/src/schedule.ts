@@ -157,9 +157,12 @@ export function unitPath(kind: "systemd" | "launchd", content: string): string |
     const m = content.match(/^Environment="PATH=(.*)"$/m);
     return m ? m[1]!.replace(/%%/g, "%") : null;
   }
-  // Whitespace between key and value is allowed: plutil and Xcode put them on
-  // separate lines, and launchd reads that file the same way.
-  const m = content.match(/<key>PATH<\/key>\s*<string>([^<]*)<\/string>/);
+  // plutil and Xcode put key and value on separate lines, so whitespace is
+  // allowed. Comments go first and only EnvironmentVariables counts, so a
+  // commented-out PATH is never read as the live one.
+  const live = content.replace(/<!--[\s\S]*?-->/g, "");
+  const env = live.match(/<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/);
+  const m = env?.[1]!.match(/<key>PATH<\/key>\s*<string>([^<]*)<\/string>/);
   return m ? xmlUnescape(m[1]!) : null;
 }
 

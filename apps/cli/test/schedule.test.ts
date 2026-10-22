@@ -202,6 +202,20 @@ describe("renderLaunchd", () => {
     }
   });
 
+  test("a PATH in a comment or outside EnvironmentVariables is never read as the live one", () => {
+    const dir = makeFakeBin("claude");
+    const rendered = renderLaunchd(60, false, `${dir}:/usr/bin`)[LAUNCHD_WORKER_PLIST]!;
+    const expected = unitPath("launchd", rendered);
+    const decoy = "<!--\n<key>PATH</key>\n<string>/decoy/commented</string>\n-->\n";
+    const withComment = rendered.replace("<dict>", `<dict>\n${decoy}`);
+    expect(withComment).toContain("/decoy/commented");
+    expect(unitPath("launchd", withComment)).toBe(expected);
+
+    const outside = rendered.replace("<dict>", "<dict>\n<key>PATH</key><string>/decoy/outside</string>");
+    expect(outside).toContain("/decoy/outside");
+    expect(unitPath("launchd", outside)).toBe(expected);
+  });
+
   // Falls back to a bare-& scan when plutil is unavailable (non-macOS); an
   // unescaped & is exactly what an XML parser would also reject here.
   function plistIsWellFormed(content: string): boolean {

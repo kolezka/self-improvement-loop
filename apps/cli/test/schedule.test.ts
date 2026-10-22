@@ -229,6 +229,20 @@ describe("renderLaunchd", () => {
     expect(unitPath("launchd", nested)).toBe(expected);
   });
 
+  test("decodes numeric references and rejects what plutil would not read", () => {
+    const rendered = renderLaunchd(60, false, "/usr/bin")[LAUNCHD_WORKER_PLIST]!;
+    const live = unitPath("launchd", rendered)!;
+    const encoded = rendered.replace(`<string>${live}</string>`, `<string>${live.replace(/:/g, "&#58;")}</string>`);
+    expect(encoded).toContain("&#58;");
+    expect(unitPath("launchd", encoded)).toBe(live);
+
+    const fragment = rendered.slice(rendered.indexOf("<dict>"), rendered.lastIndexOf("</plist>"));
+    expect(unitPath("launchd", fragment)).toBeNull();
+    expect(unitPath("launchd", `${rendered}<plist><dict/></plist>`)).toBeNull();
+    expect(() => unitPath("launchd", `<plist>${"<array>".repeat(50_000)}`)).not.toThrow();
+    expect(unitPath("launchd", `<plist>${"<array>".repeat(50_000)}`)).toBeNull();
+  });
+
   test("stays linear on hostile input", () => {
     const rendered = renderLaunchd(60, false, "/usr/bin")[LAUNCHD_WORKER_PLIST]!;
     const hostile = rendered.replace(

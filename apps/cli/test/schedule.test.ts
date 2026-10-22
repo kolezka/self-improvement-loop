@@ -182,6 +182,80 @@ describe("renderLaunchd", () => {
     }
   });
 
+  // The plist on disk is not always the one we rendered: plutil, Xcode or a
+  // hand edit put key and value on separate lines. launchd still reads it.
+  test("reads the PATH back from any layout launchd accepts, not only the rendered one", () => {
+    const dir = makeFakeBin("claude");
+    const rendered = renderLaunchd(60, false, `${dir}:/usr/bin`)[LAUNCHD_WORKER_PLIST]!;
+    const expected = unitPath("launchd", rendered);
+    expect(expected).toStartWith(`${dir}:`);
+
+    const reflowed = rendered.replace(/<key>PATH<\/key><string>/, "<key>PATH</key>\n\t\t<string>");
+    expect(reflowed).not.toBe(rendered);
+    expect(unitPath("launchd", reflowed)).toBe(expected);
+
+    if (existsSync("/usr/bin/plutil")) {
+      const p = join(tmp, "apple.plist");
+      writeFileSync(p, rendered, "utf8");
+      expect(Bun.spawnSync(["/usr/bin/plutil", "-convert", "xml1", p]).exitCode).toBe(0);
+      expect(unitPath("launchd", readFileSync(p, "utf8"))).toBe(expected);
+    }
+  });
+
+  test("a PATH in a comment or outside EnvironmentVariables is never read as the live one", () => {
+    const dir = makeFakeBin("claude");
+    const rendered = renderLaunchd(60, false, `${dir}:/usr/bin`)[LAUNCHD_WORKER_PLIST]!;
+    const expected = unitPath("launchd", rendered);
+    const decoy = "<!--\n<key>PATH</key>\n<string>/decoy/commented</string>\n-->\n";
+    const withComment = rendered.replace("<dict>", `<dict>\n${decoy}`);
+    expect(withComment).toContain("/decoy/commented");
+    expect(unitPath("launchd", withComment)).toBe(expected);
+
+    const outside = rendered.replace("<dict>", "<dict>\n<key>PATH</key><string>/decoy/outside</string>");
+    expect(outside).toContain("/decoy/outside");
+    expect(unitPath("launchd", outside)).toBe(expected);
+
+    const cdata =
+      "<key>Comment</key><string><![CDATA[<key>EnvironmentVariables</key><dict><key>PATH</key>" +
+      "<string>/decoy/cdata</string></dict>]]></string>";
+    const withCdata = rendered.replace("<dict>", `<dict>\n${cdata}`);
+    expect(unitPath("launchd", withCdata)).toBe(expected);
+
+    const nested = rendered.replace(
+      "<key>EnvironmentVariables</key><dict>",
+      "<key>EnvironmentVariables</key><dict><key>Extra</key><dict><key>A</key><string>b</string></dict>",
+    );
+    expect(nested).not.toBe(rendered);
+    expect(unitPath("launchd", nested)).toBe(expected);
+  });
+
+  test("decodes numeric references and rejects what plutil would not read", () => {
+    const rendered = renderLaunchd(60, false, "/usr/bin")[LAUNCHD_WORKER_PLIST]!;
+    const live = unitPath("launchd", rendered)!;
+    const encoded = rendered.replace(`<string>${live}</string>`, `<string>${live.replace(/:/g, "&#58;")}</string>`);
+    expect(encoded).toContain("&#58;");
+    expect(unitPath("launchd", encoded)).toBe(live);
+    const padded = rendered.replace(`<string>${live}</string>`, `<string>${live.replace(/:/g, "&#00000058;")}</string>`);
+    expect(unitPath("launchd", padded)).toBe(live);
+
+    const fragment = rendered.slice(rendered.indexOf("<dict>"), rendered.lastIndexOf("</plist>"));
+    expect(unitPath("launchd", fragment)).toBeNull();
+    expect(unitPath("launchd", `${rendered}<plist><dict/></plist>`)).toBeNull();
+    expect(() => unitPath("launchd", `<plist>${"<array>".repeat(50_000)}`)).not.toThrow();
+    expect(unitPath("launchd", `<plist>${"<array>".repeat(50_000)}`)).toBeNull();
+  });
+
+  test("stays linear on hostile input", () => {
+    const rendered = renderLaunchd(60, false, "/usr/bin")[LAUNCHD_WORKER_PLIST]!;
+    const hostile = rendered.replace(
+      "<dict>",
+      `<dict>\n<key>Junk</key><string><![CDATA[${"<!--".repeat(200_000)}]]></string>`,
+    );
+    const started = performance.now();
+    expect(unitPath("launchd", hostile)).toBe(unitPath("launchd", rendered));
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   // Falls back to a bare-& scan when plutil is unavailable (non-macOS); an
   // unescaped & is exactly what an XML parser would also reject here.
   function plistIsWellFormed(content: string): boolean {

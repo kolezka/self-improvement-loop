@@ -157,8 +157,136 @@ export function unitPath(kind: "systemd" | "launchd", content: string): string |
     const m = content.match(/^Environment="PATH=(.*)"$/m);
     return m ? m[1]!.replace(/%%/g, "%") : null;
   }
-  const m = content.match(/<key>PATH<\/key><string>(.*)<\/string>/);
-  return m ? xmlUnescape(m[1]!) : null;
+  // Parsed, not pattern-matched: plutil reflows the file, and comments or
+  // CDATA can hold text that looks like a PATH key.
+  const top = parsePlist(content);
+  const env = isDict(top) && Object.hasOwn(top, "EnvironmentVariables") ? top["EnvironmentVariables"] : null;
+  const path = isDict(env) && Object.hasOwn(env, "PATH") ? env["PATH"] : null;
+  return typeof path === "string" ? path : null;
+}
+
+type PlistValue = string | boolean | PlistValue[] | PlistDict;
+interface PlistDict {
+  [key: string]: PlistValue;
+}
+
+function isDict(v: PlistValue | null | undefined): v is PlistDict {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// A worker plist is a few hundred bytes and three levels deep; anything past
+// these limits is not ours, and refusing it keeps the parser from overflowing.
+const MAX_PLIST_CHARS = 1_000_000;
+const MAX_PLIST_DEPTH = 32;
+
+/** The top-level value of an XML plist, or null when it is not one we can
+ * read. One forward pass with indexOf, so the cost stays linear. */
+function parsePlist(xml: string): PlistValue | null {
+  if (xml.length > MAX_PLIST_CHARS) return null;
+  let i = 0;
+
+  // Skips whitespace, comments, the XML declaration and the doctype.
+  const skipMisc = (): boolean => {
+    for (;;) {
+      while (i < xml.length && /\s/.test(xml[i]!)) i++;
+      if (xml.startsWith("<!--", i)) {
+        const end = xml.indexOf("-->", i + 4);
+        if (end === -1) return false;
+        i = end + 3;
+      } else if (xml.startsWith("<?", i) || xml.startsWith("<!DOCTYPE", i)) {
+        const end = xml.indexOf(">", i);
+        if (end === -1) return false;
+        i = end + 1;
+      } else {
+        return true;
+      }
+    }
+  };
+
+  // Character data up to `</tag>`, with CDATA kept as text and comments dropped.
+  const readText = (tag: string): string | null => {
+    let out = "";
+    for (;;) {
+      const lt = xml.indexOf("<", i);
+      if (lt === -1) return null;
+      out += xmlUnescape(xml.slice(i, lt));
+      i = lt;
+      if (xml.startsWith("<![CDATA[", i)) {
+        const end = xml.indexOf("]]>", i + 9);
+        if (end === -1) return null;
+        out += xml.slice(i + 9, end);
+        i = end + 3;
+      } else if (xml.startsWith("<!--", i)) {
+        const end = xml.indexOf("-->", i + 4);
+        if (end === -1) return null;
+        i = end + 3;
+      } else if (xml.startsWith(`</${tag}>`, i)) {
+        i += tag.length + 3;
+        return out;
+      } else {
+        return null;
+      }
+    }
+  };
+
+  const readValue = (depth: number): PlistValue | null => {
+    if (depth > MAX_PLIST_DEPTH || !skipMisc() || xml[i] !== "<") return null;
+    const close = xml.indexOf(">", i);
+    if (close === -1) return null;
+    const raw = xml.slice(i + 1, close).trim();
+    i = close + 1;
+    if (raw.endsWith("/")) {
+      const name = raw.slice(0, -1).trim();
+      if (name === "true") return true;
+      if (name === "false") return false;
+      if (name === "dict") return Object.create(null) as PlistDict;
+      if (name === "array") return [];
+      return name === "string" ? "" : null;
+    }
+    const name = raw.split(/\s/, 1)[0]!;
+    if (name === "dict") {
+      const dict = Object.create(null) as PlistDict;
+      for (;;) {
+        if (!skipMisc()) return null;
+        if (xml.startsWith("</dict>", i)) {
+          i += 7;
+          return dict;
+        }
+        if (!xml.startsWith("<key>", i)) return null;
+        i += 5;
+        const key = readText("key");
+        if (key === null) return null;
+        const value = readValue(depth + 1);
+        if (value === null) return null;
+        dict[key] = value;
+      }
+    }
+    if (name === "array") {
+      const items: PlistValue[] = [];
+      for (;;) {
+        if (!skipMisc()) return null;
+        if (xml.startsWith("</array>", i)) {
+          i += 8;
+          return items;
+        }
+        const value = readValue(depth + 1);
+        if (value === null) return null;
+        items.push(value);
+      }
+    }
+    // string, integer, real, date, data: all kept as their text.
+    return readText(name);
+  };
+
+  // Exactly one <plist> root and nothing after it, the way plutil reads it.
+  if (!skipMisc() || !(xml.startsWith("<plist>", i) || xml.startsWith("<plist ", i))) return null;
+  const open = xml.indexOf(">", i);
+  if (open === -1) return null;
+  i = open + 1;
+  const inner = readValue(1);
+  if (inner === null || !skipMisc() || !xml.startsWith("</plist>", i)) return null;
+  i += 8;
+  return skipMisc() && i === xml.length ? inner : null;
 }
 
 // A path containing & < or > breaks plist XML (plutil -lint rejects it and
@@ -167,8 +295,16 @@ function xmlEscape(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
+
+// One pass, so "&amp;lt;" stays "&lt;". Numeric references decode the way
+// plutil does; one outside Unicode is left as written.
 function xmlUnescape(s: string): string {
-  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  return s.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|lt|gt|quot|apos|amp);/g, (whole, ref: string) => {
+    if (!ref.startsWith("#")) return NAMED_ENTITIES[ref]!;
+    const code = ref[1] === "x" ? Number.parseInt(ref.slice(2), 16) : Number.parseInt(ref.slice(1), 10);
+    return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+  });
 }
 
 // launchd drops stdout and stderr unless told where to put them. Both go to

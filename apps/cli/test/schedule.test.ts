@@ -214,6 +214,30 @@ describe("renderLaunchd", () => {
     const outside = rendered.replace("<dict>", "<dict>\n<key>PATH</key><string>/decoy/outside</string>");
     expect(outside).toContain("/decoy/outside");
     expect(unitPath("launchd", outside)).toBe(expected);
+
+    const cdata =
+      "<key>Comment</key><string><![CDATA[<key>EnvironmentVariables</key><dict><key>PATH</key>" +
+      "<string>/decoy/cdata</string></dict>]]></string>";
+    const withCdata = rendered.replace("<dict>", `<dict>\n${cdata}`);
+    expect(unitPath("launchd", withCdata)).toBe(expected);
+
+    const nested = rendered.replace(
+      "<key>EnvironmentVariables</key><dict>",
+      "<key>EnvironmentVariables</key><dict><key>Extra</key><dict><key>A</key><string>b</string></dict>",
+    );
+    expect(nested).not.toBe(rendered);
+    expect(unitPath("launchd", nested)).toBe(expected);
+  });
+
+  test("stays linear on hostile input", () => {
+    const rendered = renderLaunchd(60, false, "/usr/bin")[LAUNCHD_WORKER_PLIST]!;
+    const hostile = rendered.replace(
+      "<dict>",
+      `<dict>\n<key>Junk</key><string><![CDATA[${"<!--".repeat(200_000)}]]></string>`,
+    );
+    const started = performance.now();
+    expect(unitPath("launchd", hostile)).toBe(unitPath("launchd", rendered));
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   // Falls back to a bare-& scan when plutil is unavailable (non-macOS); an

@@ -1,6 +1,11 @@
 // Shared, mutable app state via Svelte 5 runes. Panes read it; only the
 // world selector and the boot sequence write to appState.
 
+import { createLeaveGuards } from "./curated-lessons.ts";
+
+/** A pane with unsaved work registers here; App asks before a world or pane change. */
+export const leaveGuards = createLeaveGuards();
+
 export const appState = $state({
   world: "default",
   worldNames: [] as string[],

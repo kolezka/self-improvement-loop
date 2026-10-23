@@ -8,6 +8,9 @@
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
+  "dependencies": {
+    "@sil/core": "workspace:*"
+  },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "svelte": "^5.57.0",

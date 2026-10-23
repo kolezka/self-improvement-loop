@@ -1,4 +1,4 @@
-// Registers the 33 ops the web UI and CLI invoke. Every handler validates its
+// Registers the ops the web UI and CLI invoke. Every handler validates its
 // own payload via args.ts before touching disk, git or a spawned process.
 // Same names, tiers and gates as the Python port (sil/ops.py).
 
@@ -10,10 +10,12 @@ import * as health from "./handlers/health.ts";
 import * as history from "./handlers/history.ts";
 import * as llm from "./handlers/llm.ts";
 import * as logs from "./handlers/logs.ts";
+import * as lessons from "./handlers/lessons.ts";
 import * as queue from "./handlers/queue.ts";
 import * as reflections from "./handlers/reflections.ts";
 import * as review from "./handlers/review.ts";
 import * as worlds from "./handlers/worlds.ts";
+import { ValidationError } from "@sil/core";
 import { register } from "./registry.ts";
 
 register({ name: "health.report", tier: "read", gate: "none", args: Args.NoArgs, fn: health.healthReport, doc: "Config paths, per-world provider status, worker status, versions." });
@@ -68,6 +70,26 @@ register({ name: "artifacts.verify", tier: "local", gate: "none", args: Args.Pat
 
 // web console: refine and escalated review
 register({ name: "artifacts.refine", tier: "local", gate: "none", args: Args.RefineArgs, fn: artifacts.artifactsRefine, doc: "Draft (or open an existing) staged proposal to refine a live artifact from an optional human instruction and/or an escalation reason; never auto-merges, always waits for review." });
+
+// lesson capture: curated lessons. Reads run through invoke and control reads;
+// mutations run only through the mutation dispatcher (mutation.ts), so their
+// registry entries refuse a direct invoke.
+const refuseDirect = (): never => {
+  throw new ValidationError("curation mutations run only through the mutation dispatcher");
+};
+register({ name: "lessons.projects", tier: "read", gate: "none", args: Args.LessonsProjectsArgs, fn: lessons.lessonsProjects, doc: "Project choices for one world: configured roots, validated source repos and stored scopes." });
+register({ name: "lessons.context", tier: "read", gate: "none", args: Args.LessonsContextArgs, fn: lessons.lessonsContext, doc: "Resolve a working directory to a curation scope, or the explicit choice it needs." });
+register({ name: "lessons.browse", tier: "read", gate: "none", args: Args.LessonsBrowseArgs, fn: lessons.lessonsBrowse, doc: "One page of curated and inbox lessons in a scope, with the store that answered." });
+register({ name: "lessons.get", tier: "read", gate: "none", args: Args.LessonsRecordArgs, fn: lessons.lessonsGet, doc: "One curated lesson by exact key and scope, with provenance." });
+register({ name: "lessons.locate", tier: "read", gate: "none", args: Args.LessonsLocateArgs, fn: lessons.lessonsLocate, doc: "Scope of one lesson by exact key, from its record or its source. No content." });
+register({ name: "lessons.history", tier: "read", gate: "none", args: Args.LessonsHistoryArgs, fn: lessons.lessonsHistory, doc: "Revision history of one curated lesson, newest first." });
+register({ name: "lessons.receipt", tier: "read", gate: "none", args: Args.LessonsReceiptArgs, fn: lessons.lessonsReceipt, doc: "Receipt of one curation request: committed, purged or unknown." });
+register({ name: "lessons.store", tier: "read", gate: "none", args: Args.LessonsStoreArgs, fn: lessons.lessonsStore, doc: "Curation store state and installation identity. Never creates the store." });
+register({ name: "lessons.capture", tier: "local", gate: "none", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Save a reviewed capture. Mutation dispatcher only." });
+register({ name: "lessons.edit", tier: "local", gate: "none", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Replace a lesson's curated wording. Mutation dispatcher only." });
+register({ name: "lessons.setImportant", tier: "local", gate: "none", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Set or clear the Important bookmark. Mutation dispatcher only." });
+register({ name: "lessons.acknowledgeSource", tier: "local", gate: "none", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Accept a changed inbox source as the new baseline. Mutation dispatcher only." });
+register({ name: "lessons.purge", tier: "local", gate: "confirm", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Clear a lesson's curated content and history; requires explicit confirmation. Mutation dispatcher only." });
 
 export * from "./registry.ts";
 export * as opsArgs from "./args.ts";

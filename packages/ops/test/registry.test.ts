@@ -99,9 +99,23 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "artifacts.verify": ["local", "none"],
   // web console: refine and escalated review
   "artifacts.refine": ["local", "none"],
+  // lesson capture: curated lessons
+  "lessons.projects": ["read", "none"],
+  "lessons.context": ["read", "none"],
+  "lessons.browse": ["read", "none"],
+  "lessons.get": ["read", "none"],
+  "lessons.history": ["read", "none"],
+  "lessons.receipt": ["read", "none"],
+  "lessons.store": ["read", "none"],
+  "lessons.locate": ["read", "none"],
+  "lessons.capture": ["local", "none"],
+  "lessons.edit": ["local", "none"],
+  "lessons.setImportant": ["local", "none"],
+  "lessons.acknowledgeSource": ["local", "none"],
+  "lessons.purge": ["local", "confirm"],
 };
 
-describe("the 43 real ops", () => {
+describe("the 56 real ops", () => {
   test("registry has exactly the expected op names", () => {
     expect(new Set(REGISTRY.keys())).toEqual(new Set(Object.keys(EXPECTED)));
   });

@@ -322,6 +322,20 @@ describe("reflectSession feedback refs and lesson repo", () => {
     expect(lessons).toHaveLength(1);
     expect(lessons[0]!.repo).toBe(require("node:fs").realpathSync(main));
   });
+
+  test("a session outside any git repository keys its lesson with repo null", async () => {
+    const w = world();
+    await reflectSession(entry(), { cfg: cfg(w), world: w, llm: llm(), chat: async () => goodAnswer() });
+    const lessons = listLessons("default");
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]!.repo).toBeNull();
+  });
+
+  test("the critic resolves the lesson repo through the shared core helper", () => {
+    const src = require("node:fs").readFileSync(join(import.meta.dir, "../src/index.ts"), "utf8") as string;
+    expect(src).toContain('from "@sil/core/repo-root"');
+    expect(src).not.toContain("--git-common-dir");
+  });
 });
 
 // --- bare artifact ref normalization -----------------------------------------

@@ -71,6 +71,7 @@ export {
   plan,
   type PlanOptions,
   reflections,
+  reflectionsStrict,
   scorecardByPattern,
   scorecards,
   sourcesText,

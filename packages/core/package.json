@@ -15,7 +15,8 @@
     "./layout": "./src/layout.ts",
     "./lessons": "./src/lessons.ts",
     "./hook-snapshot": "./src/hook-snapshot.ts",
-    "./spool": "./src/spool.ts"
+    "./spool": "./src/spool.ts",
+    "./control-protocol": "./src/control-protocol.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1",

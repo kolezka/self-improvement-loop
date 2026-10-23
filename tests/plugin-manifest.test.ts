@@ -2,9 +2,11 @@
 // the repo-wide no-long-dash writing rule for plugin-facing text.
 
 import { describe, expect, test } from "bun:test";
-import { globSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, globSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { HOOK_EVENTS } from "../packages/core/src/consts.ts";
+import { sourceFiles, sourceHash } from "../scripts/build.ts";
 
 // Built from code points so this file passes the dash lint itself.
 const EM = String.fromCodePoint(0x2014);
@@ -50,6 +52,44 @@ describe("plugin.json", () => {
     expect(data.repository).toBe("https://github.com/kolezka/self-improvement-loop");
     expect(data.license).toBe("MIT");
     expect(Array.isArray(data.keywords) && data.keywords.length > 0).toBe(true);
+  });
+});
+
+// --- build hash covers the plugin contract ----------------------------------
+// The hooks module is built against the state contract in types/index.d.ts and
+// loaded through the manifest, so dist/.srchash must move when either does.
+// Checked on a copy: the tracked files are never edited, since other test
+// files read them in parallel.
+
+describe("source hash", () => {
+  const CONTRACT = ["types/index.d.ts", ".claude-plugin/plugin.json"];
+
+  test("the real tree hashes the contract and the manifest", () => {
+    const files = sourceFiles();
+    for (const rel of CONTRACT) expect(files).toContain(rel);
+  });
+
+  test.each(CONTRACT)("a change to a copy of %s changes the hash of that copy", (rel) => {
+    const original = readFileSync(join(ROOT, rel));
+    const copy = mkdtempSync(join(tmpdir(), "sil-srchash-"));
+    try {
+      for (const f of [...CONTRACT, "package.json", "scripts/build.ts"]) {
+        mkdirSync(dirname(join(copy, f)), { recursive: true });
+        copyFileSync(join(ROOT, f), join(copy, f));
+      }
+      // Only the copy is walked, never the real tree.
+      expect([...sourceFiles(copy)].sort()).toEqual([".claude-plugin/plugin.json", "package.json", "scripts/build.ts", "types/index.d.ts"]);
+      const before = sourceHash(copy);
+      // Positive control: hashing is stable when nothing changed.
+      expect(sourceHash(copy)).toBe(before);
+      writeFileSync(join(copy, rel), Buffer.concat([original, Buffer.from("\n")]));
+      expect(sourceHash(copy)).not.toBe(before);
+      // The copy's tree is not the real one: the real hash ignores the edit.
+      expect(sourceHash(copy)).not.toBe(sourceHash());
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+    expect(readFileSync(join(ROOT, rel))).toEqual(original);
   });
 });
 

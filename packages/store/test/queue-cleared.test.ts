@@ -3,11 +3,11 @@
 // bring back every session the human already hid.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
-import { loadQueueCleared } from "../src/queue-cleared.ts";
+import { loadQueueCleared, setQueueCleared } from "../src/queue-cleared.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -33,18 +33,20 @@ describe("loadQueueCleared", () => {
     expect(loadQueueCleared()).toEqual({ done: null, failed: null });
   });
 
-  test("invalid JSON throws and names the path", () => {
+  // The consoles show these messages: a fixed name and reason, never the
+  // absolute path or the content (revised from "names the path").
+  test("invalid JSON throws a fixed message with no path", () => {
     const path = paths.queueClearedFile();
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "{not json", "utf8");
-    expect(() => loadQueueCleared()).toThrow(path);
+    expect(() => loadQueueCleared()).toThrow(/^the queue cutoffs \(queue\/cleared\.json\) are not valid JSON$/);
   });
 
-  test("valid JSON with the wrong shape throws and names the path", () => {
+  test("valid JSON with the wrong shape throws a fixed message with no path", () => {
     const path = paths.queueClearedFile();
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({ done: 123, failed: "ok" }), "utf8");
-    expect(() => loadQueueCleared()).toThrow(path);
+    expect(() => loadQueueCleared()).toThrow(/^the queue cutoffs \(queue\/cleared\.json\) do not have the expected shape$/);
   });
 
   test("an unreadable file throws, it does not reset the cutoff", () => {
@@ -58,5 +60,13 @@ describe("loadQueueCleared", () => {
     } finally {
       chmodSync(path, 0o644);
     }
+  });
+
+  test("setQueueCleared refuses over a malformed file and leaves it as it was", () => {
+    const path = paths.queueClearedFile();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "{not json", "utf8");
+    expect(() => setQueueCleared("done", "2026-10-23T00:00:00Z")).toThrow(/not valid JSON/);
+    expect(readFileSync(path, "utf8")).toBe("{not json");
   });
 });

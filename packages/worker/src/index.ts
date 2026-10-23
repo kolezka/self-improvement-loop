@@ -13,6 +13,7 @@ import {
   paths,
   ProviderError,
   SKIPPED_BELOW_MIN_TOOL_USES,
+  StateReadError,
   writeHookSnapshot,
   type Config,
   type QueueEntry,
@@ -21,7 +22,7 @@ import {
 import type { ChatFn } from "@sil/providers";
 import { reflectSession } from "@sil/critic";
 import { compactUsageEvents, rebuild as rebuildScorecards, recordReflectRun } from "@sil/feedback";
-import { entryPath, listQueue, loadEntry, moveEntry, reflectedSessions, writeEntry, type Bucket } from "@sil/store";
+import { entryPath, listQueue, listQueueStrict, loadEntry, moveEntry, reflectedSessions, writeEntry, type Bucket } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import { run as curriculumRun } from "@sil/curriculum";
 import { exportNew } from "./outline.ts";
@@ -541,37 +542,94 @@ function log(payload: Record<string, unknown>): void {
   fsx.appendLine(paths.logFile("worker"), JSON.stringify(line));
 }
 
-export function status(): WorkerStatus {
-  let lastRun: string | null = null;
-  let lastSummary: RunSummary | null = null;
-  const raw = fsx.readJsonOr<{ last_run?: string; last_summary?: RunSummary } | null>(join(paths.stateDir(), "worker-status.json"), null);
-  if (raw) {
-    lastRun = raw.last_run ?? null;
-    lastSummary = raw.last_summary ?? null;
-  }
+// --- status: strict reads ------------------------------------------------------
+// What status() reports is shown as the worker's state, so each input is read
+// once and either answers truly or raises StateReadError. Absence (no status
+// file, no lock, no state dir) is a real answer. The lock itself keeps the
+// tolerant readPid above: acquire and release race other writers on purpose.
 
-  const lastCurriculum: Record<string, string> = {};
-  let names: string[] = [];
+/** The lock's pid, read once: null when there is no lock file, or when it is
+ * still empty (an acquire between its create and its write). */
+function statusLockPid(path: string): number | null {
+  let text: string | null;
   try {
-    names = readdirSync(paths.stateDir());
-  } catch {
-    // no state dir yet
+    text = fsx.readTextIfPresent(path);
+  } catch (err) {
+    throw new StateReadError(`worker lock cannot be read (${fsx.errnoCode(err)})`);
   }
-  for (const name of names) {
+  if (text === null) return null;
+  const t = text.trim();
+  if (!t) return null;
+  if (!/^\d+$/.test(t)) throw new StateReadError("worker lock does not hold a pid");
+  return Number.parseInt(t, 10);
+}
+
+/** The last run's record, or nulls when the worker never wrote one. */
+function statusLastRun(path: string): { last_run: string | null; last_summary: RunSummary | null } {
+  let text: string | null;
+  try {
+    text = fsx.readTextIfPresent(path);
+  } catch (err) {
+    throw new StateReadError(`worker-status.json cannot be read (${fsx.errnoCode(err)})`);
+  }
+  if (text === null) return { last_run: null, last_summary: null };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new StateReadError("worker-status.json is not valid JSON");
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new StateReadError("worker-status.json is not a status record");
+  const rec = raw as { last_run?: unknown; last_summary?: unknown };
+  const lastRun = rec.last_run ?? null;
+  const lastSummary = rec.last_summary ?? null;
+  if (lastRun !== null && typeof lastRun !== "string") throw new StateReadError("worker-status.json has a last_run that is not a time");
+  if (lastSummary !== null && (typeof lastSummary !== "object" || Array.isArray(lastSummary))) {
+    throw new StateReadError("worker-status.json has a last_summary that is not a record");
+  }
+  return { last_run: lastRun, last_summary: lastSummary as RunSummary | null };
+}
+
+/** When each world's curriculum last ran, from its marker's mtime. A marker
+ * removed between the listing and its stat is skipped: it moved on. */
+function statusLastCurriculum(dir: string): Record<string, string> {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (err) {
+    if (fsx.errnoCode(err) === "ENOENT") return {};
+    throw new StateReadError(`the state dir cannot be listed (${fsx.errnoCode(err)})`);
+  }
+  const out: Record<string, string> = {};
+  for (const name of names.sort()) {
     if (!name.startsWith("last-curriculum-")) continue;
     const world = name.slice("last-curriculum-".length);
-    const mtime = fsx.mtimeMs(join(paths.stateDir(), name));
-    if (mtime !== null) lastCurriculum[world] = new Date(mtime).toISOString();
+    let mtime: number;
+    try {
+      mtime = statSync(join(dir, name)).mtimeMs;
+    } catch (err) {
+      if (fsx.errnoCode(err) === "ENOENT") continue;
+      throw new StateReadError(`the curriculum marker of world ${JSON.stringify(world)} cannot be read (${fsx.errnoCode(err)})`);
+    }
+    out[world] = new Date(mtime).toISOString();
   }
+  return out;
+}
 
+export function status(): WorkerStatus {
+  const { last_run, last_summary } = statusLastRun(join(paths.stateDir(), "worker-status.json"));
+  const lastCurriculum = statusLastCurriculum(paths.stateDir());
+  // Both lock fields come from this one read, never a second, tolerant one.
+  const pid = statusLockPid(paths.workerLockFile());
   return {
-    lock_held: Lock.held(),
-    lock_pid: readPid(paths.workerLockFile()),
-    pending: listQueue("pending").length,
-    done: listQueue("done").length,
-    failed: listQueue("failed").length,
-    last_run: lastRun,
-    last_summary: lastSummary,
+    lock_held: pid !== null && pidAlive(pid),
+    lock_pid: pid,
+    // Strict: a count shown as complete must not skip what it cannot read.
+    pending: listQueueStrict("pending").length,
+    done: listQueueStrict("done").length,
+    failed: listQueueStrict("failed").length,
+    last_run,
+    last_summary,
     last_curriculum: lastCurriculum,
   };
 }

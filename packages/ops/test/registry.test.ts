@@ -1,7 +1,7 @@
-// Registry self-checks and the full 43-op tier/gate table. Every test that
+// Registry self-checks and the full 46-op tier/gate table. Every test that
 // mutates REGISTRY (self-check tests register throwaway ops) restores the
 // snapshot taken at the start of the test so other test files still see the
-// real 41 ops registered by the side-effecting "../src/index.ts" import.
+// real 46 ops registered by the side-effecting "../src/index.ts" import.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
@@ -99,9 +99,13 @@ const EXPECTED: Record<string, [Tier, GateKind]> = {
   "artifacts.verify": ["local", "none"],
   // web console: refine and escalated review
   "artifacts.refine": ["local", "none"],
+  // native console
+  "console.bootstrap": ["read", "none"],
+  "console.page": ["read", "none"],
+  "console.proposalPage": ["read", "none"],
 };
 
-describe("the 43 real ops", () => {
+describe("the 46 real ops", () => {
   test("registry has exactly the expected op names", () => {
     expect(new Set(REGISTRY.keys())).toEqual(new Set(Object.keys(EXPECTED)));
   });

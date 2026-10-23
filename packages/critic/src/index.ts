@@ -13,6 +13,7 @@ import {
   modelFor,
   paths,
   SECTIONS,
+  StateReadError,
   targetRoot,
   type Config,
   type LlmConfig,
@@ -42,9 +43,14 @@ export const CLOSED_PATTERNS: ReadonlySet<string> = new Set(["evidence-level-ove
 // --- installed artifacts ----------------------------------------------------
 
 /** Every artifact ref this world currently has installed, from the ledger's
- * promoted entries and a scan of the target repo's layout dirs. Never
- * raises: a missing dir or file just contributes nothing. */
-export function installedArtifacts(world: World, _cfg: Config): string[] {
+ * promoted entries and a scan of the target repo's layout dirs. By default
+ * it never raises: a missing or unreadable dir or file contributes nothing.
+ * `strict` raises StateReadError for what exists but cannot be read. */
+export function installedArtifacts(world: World, _cfg: Config, opts: { strict?: boolean } = {}): string[] {
+  // Tolerant for the critic: anything unreadable contributes nothing. Strict
+  // (scorecards shown as complete): only what is not there is nothing; what
+  // is there but cannot be read raises StateReadError.
+  const strict = opts.strict === true;
   const refs = new Set<string>();
   try {
     const ledger = loadLedger(ledgerPath(world));
@@ -52,36 +58,47 @@ export function installedArtifacts(world: World, _cfg: Config): string[] {
       const type = servedType(entry);
       if (entry.status === "promoted" && type !== "none") refs.add(`${type}:${entry.pattern}`);
     }
-  } catch {
+  } catch (err) {
     // a corrupt or missing ledger contributes nothing
+    if (strict) throw err;
   }
 
   let root: string;
   try {
     root = targetRoot(world);
-  } catch {
+  } catch (err) {
+    if (strict) throw err;
     return [...refs].sort();
   }
 
   const skillsDir = join(root, world.layout.skills_dir);
-  for (const name of listDir(skillsDir)) {
-    if (isDir(join(skillsDir, name))) refs.add(`skill:${name}`);
+  for (const name of listDir(skillsDir, strict)) {
+    if (isDir(join(skillsDir, name), strict)) refs.add(`skill:${name}`);
   }
 
   const nudgesDir = join(root, world.layout.nudges_dir);
-  for (const name of listDir(nudgesDir)) {
-    if (name.endsWith(".json")) refs.add(`hook:${nudgePattern(join(nudgesDir, name))}`);
+  for (const name of listDir(nudgesDir, strict)) {
+    if (name.endsWith(".json")) refs.add(`hook:${nudgePattern(join(nudgesDir, name), strict)}`);
   }
 
   const agentsDir = join(root, world.layout.agents_dir);
-  for (const name of listDir(agentsDir)) {
+  for (const name of listDir(agentsDir, strict)) {
     if (name.endsWith(".md")) refs.add(`agent:${name.replace(/\.md$/, "")}`);
   }
 
   const rulesFile = join(root, world.layout.rules_file);
-  if (fsx.exists(rulesFile)) {
-    const text = fsx.readTextOr(rulesFile, "");
-    for (const m of text.matchAll(/<!--rule:([a-z0-9-]+)-->/g)) refs.add(`rule:${m[1]}`);
+  let rules: string | null;
+  if (strict) {
+    try {
+      rules = fsx.readTextIfPresent(rulesFile);
+    } catch (err) {
+      throw new StateReadError(`the rules file ${world.layout.rules_file} cannot be read (${fsx.errnoCode(err)})`);
+    }
+  } else {
+    rules = fsx.exists(rulesFile) ? fsx.readTextOr(rulesFile, "") : null;
+  }
+  if (rules !== null) {
+    for (const m of rules.matchAll(/<!--rule:([a-z0-9-]+)-->/g)) refs.add(`rule:${m[1]}`);
   }
 
   return [...refs].sort();
@@ -98,25 +115,44 @@ export function resolveArtifactRef(ref: string, installed: readonly string[]): s
   return matches.length === 1 ? matches[0]! : null;
 }
 
-function listDir(dir: string): string[] {
+function listDir(dir: string, strict = false): string[] {
   try {
     return readdirSync(dir);
-  } catch {
-    return [];
+  } catch (err) {
+    if (!strict || fsx.errnoCode(err) === "ENOENT") return [];
+    throw new StateReadError(`the artifact dir ${dir.split("/").slice(-1)[0]} cannot be listed (${fsx.errnoCode(err)})`);
   }
 }
 
-function isDir(p: string): boolean {
+function isDir(p: string, strict = false): boolean {
   try {
     return statSync(p).isDirectory();
-  } catch {
-    return false;
+  } catch (err) {
+    if (!strict || fsx.errnoCode(err) === "ENOENT") return false;
+    throw new StateReadError(`the artifact ${p.split("/").slice(-2).join("/")} cannot be read (${fsx.errnoCode(err)})`);
   }
 }
 
-function nudgePattern(p: string): string {
+function nudgePattern(p: string, strict = false): string {
   const stem = p.split("/").pop()!.replace(/\.json$/, "");
-  const raw = fsx.readJsonOr<unknown>(p, null);
+  let raw: unknown = null;
+  if (strict) {
+    let text: string | null;
+    try {
+      text = fsx.readTextIfPresent(p);
+    } catch (err) {
+      throw new StateReadError(`the nudge ${stem}.json cannot be read (${fsx.errnoCode(err)})`);
+    }
+    if (text !== null) {
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        throw new StateReadError(`the nudge ${stem}.json is not valid JSON`);
+      }
+    }
+  } else {
+    raw = fsx.readJsonOr<unknown>(p, null);
+  }
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const pattern = (raw as Record<string, unknown>)["pattern"];
     if (pattern) return String(pattern);

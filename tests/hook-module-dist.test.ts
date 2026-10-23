@@ -13,7 +13,8 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DIST, ROOT } from "../scripts/build.ts";
+import { DIST, ROOT, sourceFiles } from "../scripts/build.ts";
+import { copiedTestName, nativeTestFiles } from "../scripts/test-native.ts";
 
 const MODULE_BUNDLE = join(DIST, "hook-module.js");
 const built = existsSync(MODULE_BUNDLE) && existsSync(join(DIST, ".srchash"));
@@ -56,6 +57,26 @@ describe("dist/hook-module.js", () => {
       expect(control).toContain(needle);
       expect(bundle).not.toContain(needle);
     }
+  });
+
+  test.skipIf(!built)("registers the native console with names the validator can read", () => {
+    // `claude plugin validate` reads matchers off the source: a constant shows
+    // there as `command=?` and /sil is then listed as an unattributed gate.
+    const bundle = readFileSync(MODULE_BUNDLE, "utf8");
+    expect(bundle).toContain('on("command.run", { command: "sil" }');
+    expect(bundle).toContain('{ component: "Pane", requestId: "sil-console" }');
+    expect(bundle).toContain('name: "sil"');
+    expect(bundle).toMatch(/^\s+registerUi\(on\);$/m);
+  });
+
+  test.skipIf(!built)("compiles the console's JSX to the engine's global h, with no JSX runtime", () => {
+    const bundle = readFileSync(MODULE_BUNDLE, "utf8");
+    // A bundler default (automatic runtime) would import react/jsx-runtime,
+    // which the sandbox cannot resolve, or call React.createElement.
+    expect(bundle).not.toMatch(/jsx-runtime|jsx-dev-runtime|React\.createElement|jsxDEV\(/);
+    expect(bundle).toMatch(/\bh\(Button, \{/);
+    expect(bundle).toMatch(/\bh\(Select, \{/);
+    expect(bundle).toMatch(/\bh\(Code, \{/);
   });
 
   test.skipIf(!built)("carries no import statement for the sandbox to resolve", () => {
@@ -111,9 +132,21 @@ describe("apps/hook-module sources", () => {
     expect(offenders).toEqual([]);
   });
 
+  test("the import closure follows the TSX views, and the source hash covers them", () => {
+    const { files } = importClosure();
+    const views = join(ROOT, "apps/hook-module/src/ui/render.tsx");
+    expect(files).toContain(views);
+    // dist/.srchash must change when a .tsx feeding the bundle changes.
+    expect(sourceFiles()).toContain("apps/hook-module/src/ui/render.tsx");
+    // Native test sources feed no bundle and stay out of the hash.
+    expect(sourceFiles().filter((f) => f.endsWith(".native.tsx"))).toEqual([]);
+  });
+
   test("the module imports only the @sil subpaths kept free of Node code", () => {
     const allowed = [
       "@sil/core/consts",
+      // The native console's wire contract: pure, no imports (Task 2).
+      "@sil/core/control-protocol",
       "@sil/core/hook-snapshot",
       "@sil/core/layout",
       "@sil/core/lessons",
@@ -123,5 +156,28 @@ describe("apps/hook-module sources", () => {
     ];
     const { specifiers } = importClosure();
     expect([...specifiers].sort()).toEqual(allowed);
+  });
+});
+
+describe("native engine tests", () => {
+  const dir = join(ROOT, "apps/hook-module/native-test");
+
+  test("bun never discovers them, and the runner copies each under the name claude plugin test wants", () => {
+    // The module's own tests at the top; the transport probe's in transport/,
+    // beside the one test-only entry they load.
+    for (const [at, extra] of [[dir, ["transport"]], [join(dir, "transport"), ["probe.ts"]]] as const) {
+      const all = readdirSync(at).sort();
+      const sources = nativeTestFiles(at);
+      expect(sources.length).toBeGreaterThan(0);
+      expect([...sources, ...extra].sort()).toEqual(all);
+      for (const name of all) expect(name).not.toMatch(/\.(test|spec)\.[cm]?[jt]sx?$/);
+      expect(sources.map(copiedTestName)).toEqual(sources.map((name) => name.replace(/\.native\.tsx$/, ".test.tsx")));
+    }
+  });
+
+  test.skipIf(!built)("the transport probe command never reaches the shipped module", () => {
+    const bundle = readFileSync(MODULE_BUNDLE, "utf8");
+    expect(bundle).toContain('"sil"');
+    expect(bundle).not.toContain("sil-transport-probe");
   });
 });

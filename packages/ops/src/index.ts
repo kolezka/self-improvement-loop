@@ -5,6 +5,7 @@
 import * as Args from "./args.ts";
 import * as aliases from "./handlers/aliases.ts";
 import * as artifacts from "./handlers/artifacts.ts";
+import * as consoleOps from "./handlers/console.ts";
 import * as curriculum from "./handlers/curriculum.ts";
 import * as health from "./handlers/health.ts";
 import * as history from "./handlers/history.ts";
@@ -68,6 +69,11 @@ register({ name: "artifacts.verify", tier: "local", gate: "none", args: Args.Pat
 
 // web console: refine and escalated review
 register({ name: "artifacts.refine", tier: "local", gate: "none", args: Args.RefineArgs, fn: artifacts.artifactsRefine, doc: "Draft (or open an existing) staged proposal to refine a live artifact from an optional human instruction and/or an escalation reason; never auto-merges, always waits for review." });
+
+// native console
+register({ name: "console.bootstrap", tier: "read", gate: "none", args: Args.ConsoleBootstrapArgs, fn: consoleOps.consoleBootstrap, doc: "Configured worlds and the one that owns a cwd; reports a missing config without creating it." });
+register({ name: "console.page", tier: "read", gate: "none", args: Args.ConsolePageArgs, fn: consoleOps.consolePage, doc: "One page of a world's proposals, artifacts, reflections or lessons; total counted before the slice." });
+register({ name: "console.proposalPage", tier: "read", gate: "none", args: Args.ConsoleProposalPageArgs, fn: consoleOps.consoleProposalPage, doc: "Whole lines of a staged proposal's body or diff under 65536 bytes, bound to its reviewed_state." });
 
 export * from "./registry.ts";
 export * as opsArgs from "./args.ts";

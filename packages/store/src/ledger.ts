@@ -1,12 +1,23 @@
 // promotions.json: per world, per pattern watermarks and status.
 
-import { fsx, Ledger, type Ledger as LedgerT, type PromotionEntry } from "@sil/core";
+import { basename } from "node:path";
+import { fsx, Ledger, StateReadError, type Ledger as LedgerT, type PromotionEntry } from "@sil/core";
 
 /** The ledger at `path`, or an empty one when there is no file. A corrupt
- * ledger throws an Error naming the file. */
+ * ledger throws an Error naming the file; one that cannot be read throws
+ * StateReadError. */
 export function loadLedger(path: string): LedgerT {
-  if (!fsx.exists(path)) return Ledger.parse({});
-  return parseLedger(fsx.readText(path), path);
+  // Only a ledger that is not there (ENOENT) is empty. One that cannot be
+  // reached raises for every caller: a writer that went on from an empty
+  // ledger would drop every watermark and status in it.
+  let text: string | null;
+  try {
+    text = fsx.readTextIfPresent(path);
+  } catch (err) {
+    throw new StateReadError(`the ledger ${basename(path)} cannot be read (${fsx.errnoCode(err)})`);
+  }
+  if (text === null) return Ledger.parse({});
+  return parseLedger(text, path);
 }
 
 export function parseLedger(text: string, label = "<text>"): LedgerT {

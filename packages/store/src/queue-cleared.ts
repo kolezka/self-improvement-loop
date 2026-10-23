@@ -19,23 +19,27 @@ const DEFAULT_CLEARED: QueueCleared = { done: null, failed: null };
 /** A missing file means nothing has been hidden yet. Anything else wrong
  * with it (torn JSON, permission denied, the wrong shape) must not read as
  * that same default: it would silently bring back every hidden session. */
+// The consoles show these messages: a short name and a reason, never the
+// absolute path, the parser's text or the file's content.
+const LABEL = "the queue cutoffs (queue/cleared.json)";
+
 export function loadQueueCleared(): QueueCleared {
   const path = paths.queueClearedFile();
   let text: string;
   try {
     text = fsx.readText(path);
   } catch (err) {
-    if (err && typeof err === "object" && (err as NodeJS.ErrnoException).code === "ENOENT") return DEFAULT_CLEARED;
-    throw new ValidationError(`cannot read ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    if (fsx.errnoCode(err) === "ENOENT") return DEFAULT_CLEARED;
+    throw new ValidationError(`${LABEL} cannot be read (${fsx.errnoCode(err)})`);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (err) {
-    throw new ValidationError(`invalid JSON in ${path}: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
+    throw new ValidationError(`${LABEL} are not valid JSON`);
   }
   const result = QueueClearedSchema.safeParse(parsed);
-  if (!result.success) throw new ValidationError(`invalid queue-cleared shape in ${path}: ${result.error.message}`);
+  if (!result.success) throw new ValidationError(`${LABEL} do not have the expected shape`);
   return result.data;
 }
 

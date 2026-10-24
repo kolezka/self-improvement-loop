@@ -233,7 +233,14 @@ declare module "claude-code" {
   /** The elements the console draws with, and only the props it sets.
    * `color` is a theme key (`"error"`) or a color string in the real type. */
   export type Elements = {
-    Box: (props: { flexDirection?: "row" | "column"; gap?: number; children?: RenderChildren }) => RenderElement;
+    Box: (props: {
+      flexDirection?: "row" | "column";
+      gap?: number;
+      justifyContent?: "flex-start" | "center" | "flex-end" | "space-between" | "space-around" | "space-evenly";
+      paddingX?: number;
+      borderStyle?: string;
+      children?: RenderChildren;
+    }) => RenderElement;
     Text: (props: { bold?: boolean; dimColor?: boolean; color?: string; children?: RenderChildren }) => RenderElement;
     Button: (props: { key?: string; label?: string; onPress: (e: UiPressArgument) => void }) => RenderElement;
     /** Source text the engine's highlighter draws; `format: "diff"` reads it

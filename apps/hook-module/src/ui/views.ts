@@ -289,7 +289,9 @@ export type ConsoleBlock =
   | { kind: "line"; line: ConsoleLine; pageStatus?: true }
   | { kind: "controls"; key: string; label?: string; direction: "row" | "column"; controls: ConsoleControl[] }
   | { kind: "select"; key: string; label: string; value: string | null; options: { value: string; label: string }[] }
-  | { kind: "code"; source: string; diff: boolean };
+  | { kind: "code"; source: string; diff: boolean }
+  /** A framed group: `title` (and `meta`, drawn dim beside it) on its first row. */
+  | { kind: "card"; key: string; title: string; meta?: string; blocks: ConsoleBlock[] };
 
 export interface ConsoleLayout {
   /** The pane's `bodyColumns`. */
@@ -304,6 +306,15 @@ function line(text: string, tone: ConsoleTone = "plain"): ConsoleBlock {
 
 function controls(key: string, list: ConsoleControl[], direction: "row" | "column" = "row", label?: string): ConsoleBlock {
   return label === undefined ? { kind: "controls", key, direction, controls: list } : { kind: "controls", key, direction, controls: list, label };
+}
+
+export function card(key: string, title: string, blocks: ConsoleBlock[], meta?: string): ConsoleBlock {
+  return meta === undefined ? { kind: "card", key, title, blocks } : { kind: "card", key, title, meta, blocks };
+}
+
+/** Every block of the tree, cards opened, in drawing order. */
+export function flattenBlocks(blocks: ConsoleBlock[]): ConsoleBlock[] {
+  return blocks.flatMap((b) => (b.kind === "card" ? [b, ...flattenBlocks(b.blocks)] : [b]));
 }
 
 function control(key: string, label: string, action: ConsoleAction, isCurrent = false): ConsoleControl {
@@ -655,9 +666,12 @@ export function consoleView(state: ConsoleUiState, layout: ConsoleLayout): Conso
 
 // --- the one display boundary ----------------------------------------------------
 
-/** Characters a block draws: texts, labels, option labels and values, code. */
+/** Characters a block draws: texts, labels, option labels and values, code,
+ * a card's title and meta and everything in it. */
 export function blockChars(block: ConsoleBlock): number {
   switch (block.kind) {
+    case "card":
+      return block.title.length + (block.meta?.length ?? 0) + sum(block.blocks);
     case "line":
       return block.line.text.length;
     case "code":
@@ -679,44 +693,78 @@ function sum(blocks: ConsoleBlock[]): number {
 /** Holds the tree to `budget` characters without cutting anything quietly.
  * A proposal page that does not fit is replaced by words saying so, and its
  * end-of-text line goes with it; if the rest still does not fit, the blocks
- * past the budget are left out and a last line says how many. */
+ * past the budget are left out and a last line says how many. A cut inside a
+ * card keeps the card, its title and the blocks before the cut. */
 export function enforceDisplayBudget(blocks: ConsoleBlock[], budget: number): ConsoleBlock[] {
   if (sum(blocks) <= budget) return blocks;
   let out = blocks;
-  if (out.some((b) => b.kind === "code")) {
-    out = out.flatMap((b): ConsoleBlock[] => {
-      if (b.kind === "code") {
-        return [line(`This page is too large to show with the rest of the pane (${b.source.length} characters); it is left out, not cut. Read it with the CLI or \`sil web\`.`, "error")];
-      }
-      return b.kind === "line" && b.pageStatus ? [] : [b];
-    });
+  if (flattenBlocks(out).some((b) => b.kind === "code")) {
+    out = withoutPages(out);
     if (sum(out) <= budget) return out;
   }
   const notice = (n: number): ConsoleBlock => line(`${n} more items are not shown: the pane's display budget is full.`, "error");
-  const reserve = blockChars(notice(out.length));
-  const kept: ConsoleBlock[] = [];
+  const reserve = blockChars(notice(items(out)));
   let used = 0;
-  for (const b of out) {
-    const size = blockChars(b);
-    if (used + size + reserve > budget) break;
-    kept.push(b);
-    used += size;
-  }
-  return [...kept, notice(out.length - kept.length)];
+  let isFull = false;
+  // Keeps blocks in order until one does not fit; nothing after it is kept.
+  const fit = (list: ConsoleBlock[]): ConsoleBlock[] => {
+    const kept: ConsoleBlock[] = [];
+    for (const b of list) {
+      if (b.kind === "card") {
+        const head = b.title.length + (b.meta?.length ?? 0);
+        if (used + head + reserve > budget) {
+          isFull = true;
+          break;
+        }
+        used += head;
+        kept.push({ ...b, blocks: fit(b.blocks) });
+      } else {
+        const size = blockChars(b);
+        if (used + size + reserve > budget) {
+          isFull = true;
+          break;
+        }
+        kept.push(b);
+        used += size;
+      }
+      if (isFull) break;
+    }
+    return kept;
+  };
+  const kept = fit(out);
+  return [...kept, notice(items(out) - items(kept))];
+}
+
+/** Proposal pages, wherever they sit, swapped for words saying they are left
+ * out; their end-of-text lines go with them. */
+function withoutPages(blocks: ConsoleBlock[]): ConsoleBlock[] {
+  return blocks.flatMap((b): ConsoleBlock[] => {
+    if (b.kind === "code") {
+      return [line(`This page is too large to show with the rest of the pane (${b.source.length} characters); it is left out, not cut. Read it with the CLI or \`sil web\`.`, "error")];
+    }
+    if (b.kind === "card") return [{ ...b, blocks: withoutPages(b.blocks) }];
+    return b.kind === "line" && b.pageStatus ? [] : [b];
+  });
+}
+
+/** What the budget notice counts: every block but a card, and a card with
+ * nothing in it as one. */
+function items(blocks: ConsoleBlock[]): number {
+  return blocks.reduce((n, b) => n + (b.kind === "card" ? Math.max(1, items(b.blocks)) : 1), 0);
 }
 
 /** Every drawn string, made safe here and nowhere else: control characters
  * as symbols (opaque values such as option values and action targets kept),
  * one line at most LINE_CHARS, a note when anything was replaced, and the
  * whole tree held to DISPLAY_BUDGET. */
-function finishView(blocks: ConsoleBlock[]): ConsoleBlock[] {
+export function finishView(blocks: ConsoleBlock[]): ConsoleBlock[] {
   let replaced = 0;
   const safe = (text: string): string => {
     const p = printable(text);
     replaced += p.replaced;
     return p.text;
   };
-  const out = blocks.map((b): ConsoleBlock => {
+  const finish = (b: ConsoleBlock): ConsoleBlock => {
     switch (b.kind) {
       case "line":
         return { ...b, line: { ...b.line, text: row(safe(b.line.text), LINE_CHARS) } };
@@ -728,8 +776,14 @@ function finishView(blocks: ConsoleBlock[]): ConsoleBlock[] {
         const controls = b.controls.map((c) => ({ ...c, label: row(safe(c.label), ROW_CHARS) }));
         return b.label === undefined ? { ...b, controls } : { ...b, label: safe(b.label), controls };
       }
+      case "card": {
+        const title = row(safe(b.title), ROW_CHARS);
+        const inner = b.blocks.map(finish);
+        return b.meta === undefined ? { ...b, title, blocks: inner } : { ...b, title, meta: row(safe(b.meta), ROW_CHARS), blocks: inner };
+      }
     }
-  });
+  };
+  const out = blocks.map(finish);
   if (replaced > 0) out.push(line(`${replaced} control characters are shown as symbols.`, "dim"));
   return enforceDisplayBudget(out, DISPLAY_BUDGET);
 }

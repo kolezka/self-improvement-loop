@@ -27,11 +27,14 @@ import {
 } from "../src/ui/state.ts";
 import {
   blockChars,
+  card,
   consoleControls,
   consoleReads,
   consoleView,
   DISPLAY_BUDGET,
   enforceDisplayBudget,
+  finishView,
+  flattenBlocks,
   isWholeHunks,
   NARROW_COLUMNS,
   WORLD_WINDOW,
@@ -94,18 +97,19 @@ function reviewing(value: unknown, state = base()): ConsoleUiState {
 }
 
 function texts(blocks: ConsoleBlock[]): string {
-  return blocks
+  return flattenBlocks(blocks)
     .map((b) => {
       if (b.kind === "line") return b.line.text;
       if (b.kind === "code") return b.source;
       if (b.kind === "select") return `${b.label} ${b.options.map((o) => o.label).join(" ")}`;
+      if (b.kind === "card") return [b.title, ...(b.meta === undefined ? [] : [b.meta])].join(" ");
       return [...(b.label === undefined ? [] : [b.label]), ...b.controls.map((c) => c.label)].join(" ");
     })
     .join("\n");
 }
 
 function keys(blocks: ConsoleBlock[]): string[] {
-  return blocks.flatMap((b) => (b.kind === "controls" ? b.controls.map((c) => c.key) : b.kind === "select" ? [b.key] : []));
+  return flattenBlocks(blocks).flatMap((b) => (b.kind === "controls" ? b.controls.map((c) => c.key) : b.kind === "select" ? [b.key] : []));
 }
 
 const WIDE = { columns: 60, canSelect: true };
@@ -451,6 +455,36 @@ function withBoot(state: ConsoleUiState, worlds: string[], world = worlds[0]!): 
 function total(blocks: ConsoleBlock[]): number {
   return blocks.reduce((n, b) => n + blockChars(b), 0);
 }
+
+describe("cards", () => {
+  const plain = (text: string): ConsoleBlock => ({ kind: "line", line: { text, tone: "plain" } });
+  const bigCard = (): ConsoleBlock => card("big", "List", Array.from({ length: 50 }, (_, i) => plain(String(i % 10).repeat(2000))));
+
+  test("a card counts its title, meta and children toward the budget", () => {
+    expect(blockChars(card("k", "Worker", [plain("abc")], "global"))).toBe(6 + 6 + 3);
+  });
+
+  test("finishView makes card titles and children printable", () => {
+    const out = finishView([card("k", "a\u001bb", [plain("x\u0007")])]);
+    const first = out[0];
+    expect(first?.kind === "card" && first.title).toBe("a\u241bb");
+    const lines = flattenBlocks(out).flatMap((b) => (b.kind === "line" ? [b.line.text] : []));
+    expect(lines).toContain("x\u2407");
+    expect(lines).toContain("2 control characters are shown as symbols.");
+  });
+
+  test("a budget cut inside a card keeps the notice", () => {
+    const out = enforceDisplayBudget([bigCard()], 30000);
+    const last = flattenBlocks(out).at(-1);
+    expect(last?.kind === "line" && last.line.text).toMatch(/more items are not shown: the pane's display budget is full\.$/);
+    expect(total(out)).toBeLessThanOrEqual(30000);
+  });
+
+  test("a cut card keeps its title", () => {
+    const first = enforceDisplayBudget([bigCard()], 30000)[0];
+    expect(first?.kind === "card" && first.title).toBe("List");
+  });
+});
 
 describe("fix round 1", () => {
   test("Overview counts staged proposals from the bounded page total", () => {

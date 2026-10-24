@@ -146,11 +146,11 @@ If `$.command.run` rejects (unknown command, past a Stop, host limit), the card
 shows the error in red. The pane never claims a command ran, only that it was
 queued.
 
-This changes the pane's contract from "nothing here can change loop state" to
-"the pane changes loop state only through the plugin's own slash commands, which
-the person triggers and sees in the chat". `views.ts`'s header comment and
-`docs/INSTALL.md` ("a read-only console pane", "never calls a model") are updated
-to say so. `/learn`, `/toolify` and `/curriculum` run a model turn in the user's
+This changes the pane's contract. Reads and curated-lesson edits (capture, save,
+Important, acknowledge, purge) go through `sil ops`, as before. The new Actions
+card and artifact votes queue the plugin's own slash commands, which the person
+triggers and sees in the chat. Proposal and settings writes stay out of the pane.
+`views.ts`'s header comment and `docs/INSTALL.md` are updated to say so. `/learn`, `/toolify` and `/curriculum` run a model turn in the user's
 session, exactly as when typed. Hook design rule 1 is about hooks acting on their
 own, not about a button the person presses.
 

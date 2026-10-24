@@ -4,7 +4,10 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { ConfigError, ValidationError } from "@sil/core";
+import { ConfigError, StateReadError, ValidationError } from "@sil/core";
+import { CurationError } from "@sil/core/lesson-curation";
+import { QueueReadError } from "@sil/store";
+import { ProposalChanged } from "../src/handlers/console.ts";
 import { CONTROL_MAX_REQUEST_BYTES, CONTROL_MAX_RESPONSE_BYTES, ControlProtocolError, encodeControlResponse, type ControlResult } from "@sil/core/control-protocol";
 import "../src/index.ts";
 import { CONTROL_READ_OPS, decodeControlRequestBytes, executeControlRead, redactMessage } from "../src/control.ts";
@@ -75,7 +78,7 @@ const mutationCalls = () =>
     .reduce((n, [, c]) => n + c, 0);
 
 describe("allowlist", () => {
-  test("is exactly the fourteen bridge reads plus the three console reads", () => {
+  test("is exactly the fourteen bridge reads, three console reads and eight curated lesson reads", () => {
     expect([...CONTROL_READ_OPS].sort()).toEqual(
       [
         "worlds.list",
@@ -95,6 +98,14 @@ describe("allowlist", () => {
         "console.bootstrap",
         "console.page",
         "console.proposalPage",
+        "lessons.projects",
+        "lessons.context",
+        "lessons.browse",
+        "lessons.get",
+        "lessons.history",
+        "lessons.receipt",
+        "lessons.store",
+        "lessons.locate",
       ].sort(),
     );
   });
@@ -203,6 +214,53 @@ describe("per-read execution results", () => {
     const e = err(resp.results["bad"]);
     expect(e.code).toBe("ConfigError");
     expect(e.message).toContain("no world named fixture2");
+  });
+
+  // Merge guard: main's strict-read errors and the PR's curation errors both
+  // reach the caller by their own code, in one batch through the same path.
+  test("strict-read and curation errors both keep their own code and message", async () => {
+    stub("worker.status", () => {
+      throw new StateReadError("worker state: EACCES");
+    });
+    stub("queue.list", () => {
+      throw new QueueReadError("queue pending: ENOTDIR");
+    });
+    stub("console.bootstrap", () => {
+      throw new ProposalChanged("proposal changed between pages");
+    });
+    stub("lessons.store", () => {
+      throw new CurationError("STORAGE_BUSY");
+    });
+    const resp = await executeControlRead(
+      req([
+        { id: "state", op: "worker.status" },
+        { id: "queue", op: "queue.list" },
+        { id: "proposal", op: "console.bootstrap", args: { cwd: "/fixture" } },
+        { id: "busy", op: "lessons.store" },
+      ]),
+    );
+    expect(err(resp.results["state"])).toEqual({ code: "StateReadError", message: "worker state: EACCES", retryable: false });
+    expect(err(resp.results["queue"])).toEqual({ code: "QueueReadError", message: "queue pending: ENOTDIR", retryable: false });
+    expect(err(resp.results["proposal"])).toEqual({ code: "ProposalChanged", message: "proposal changed between pages", retryable: false });
+    expect(err(resp.results["busy"])).toEqual({ code: "STORAGE_BUSY", message: "curation storage busy", retryable: true });
+
+    stub("lessons.store", () => {
+      throw new CurationError("PURGED", ["key"]);
+    });
+    const purged = await executeControlRead(req([{ id: "p", op: "lessons.store" }]));
+    expect(err(purged.results["p"])).toEqual({ code: "PURGED", message: "lesson curation was purged: key", retryable: false });
+  });
+
+  test("console reads and curated lesson reads are registered and allowed", () => {
+    for (const name of ["console.bootstrap", "console.page", "console.proposalPage", "lessons.list", "lessons.browse", "lessons.receipt", "lessons.store"]) {
+      expect(CONTROL_READ_OPS).toContain(name);
+      expect(REGISTRY.get(name)?.tier).toBe("read");
+    }
+    // Curation mutations stay registered but never become control reads.
+    for (const name of ["lessons.capture", "lessons.edit", "lessons.setImportant", "lessons.acknowledgeSource", "lessons.purge"]) {
+      expect(REGISTRY.has(name)).toBe(true);
+      expect(CONTROL_READ_OPS).not.toContain(name);
+    }
   });
 
   test("a failed read is an error, never an empty list or zero", async () => {

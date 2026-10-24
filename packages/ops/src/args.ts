@@ -6,6 +6,16 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { ARTIFACT_REF_RE, LOG_NAMES, ROLES, SLUG_RE, slug, WORLD_NAME_RE } from "@sil/core";
+import { CURATION_MAX_SEARCH_CHARS } from "@sil/core/curation-read";
+import {
+  CURATION_REQUEST_ID_RE,
+  MAX_ENCODED_KEY_CHARS,
+  PROJECT_ID_RE,
+  decodeLessonKey,
+  type LessonKey,
+  type ProjectScope,
+  type StoreBinding,
+} from "@sil/core/lesson-curation";
 
 export const REVIEWED_STATE_RE = /^[0-9a-f]{64}$/;
 // The same regex the config schema uses. A second copy here once let a world
@@ -111,6 +121,72 @@ export const RefineArgs = PatternArgs.extend({
   reason: z.string().trim().min(1).max(4000).optional(),
 });
 export type RefineArgs = z.infer<typeof RefineArgs>;
+
+// Lesson curation reads. Flat string args, one schema for HTTP query strings
+// and control reads, so both transports decode the same way.
+const FLAT_BINDING_RE = /^(installation):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$|^(location):([0-9a-f]{64})$/;
+const FLAT_LIMIT_RE = /^[1-9][0-9]{0,2}$/;
+
+const flatBinding = z.string().regex(FLAT_BINDING_RE).transform((value): StoreBinding => {
+  const at = value.indexOf(":");
+  return { kind: value.slice(0, at) as StoreBinding["kind"], id: value.slice(at + 1) };
+});
+const flatProject = z
+  .union([z.literal("world"), z.literal("unresolved"), z.string().regex(PROJECT_ID_RE)])
+  .transform((value): ProjectScope => (value === "world" || value === "unresolved" ? { kind: value } : { kind: "project", id: value }));
+const flatKey = z
+  .string()
+  .min(1)
+  .max(MAX_ENCODED_KEY_CHARS)
+  .transform((value, ctx): LessonKey => {
+    try {
+      return decodeLessonKey(value);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "invalid lesson key" });
+      return z.NEVER;
+    }
+  });
+// Exactly "true" or "false". z.coerce.boolean would read "false" as true.
+const flatBoolean = z.enum(["true", "false"]).transform((value) => value === "true");
+const flatLimit = z.string().regex(FLAT_LIMIT_RE).transform(Number);
+const flatCursor = z.string().min(1).max(4096);
+
+export const LessonsProjectsArgs = z.strictObject({ world: z.string().regex(WORLD_RE).max(64), binding: flatBinding });
+export type LessonsProjectsArgs = z.infer<typeof LessonsProjectsArgs>;
+
+export const LessonsContextArgs = z.strictObject({ world: z.string().regex(WORLD_RE).max(64), cwd: z.string().min(1).max(4096) });
+export type LessonsContextArgs = z.infer<typeof LessonsContextArgs>;
+
+export const LessonsBrowseArgs = z.strictObject({
+  world: z.string().regex(WORLD_RE).max(64),
+  project: flatProject,
+  binding: flatBinding,
+  collection: z.enum(["saved", "inbox", "archived", "all"]),
+  important: flatBoolean.optional(),
+  search: z.string().max(CURATION_MAX_SEARCH_CHARS).optional(),
+  cursor: flatCursor.optional(),
+  limit: flatLimit.optional(),
+});
+export type LessonsBrowseArgs = z.infer<typeof LessonsBrowseArgs>;
+
+export const LessonsRecordArgs = z.strictObject({ key: flatKey, project: flatProject, binding: flatBinding });
+export type LessonsRecordArgs = z.infer<typeof LessonsRecordArgs>;
+
+export const LessonsLocateArgs = z.strictObject({ key: flatKey, binding: flatBinding });
+export type LessonsLocateArgs = z.infer<typeof LessonsLocateArgs>;
+
+export const LessonsHistoryArgs = LessonsRecordArgs.extend({ cursor: flatCursor.optional(), limit: flatLimit.optional() }).strict();
+export type LessonsHistoryArgs = z.infer<typeof LessonsHistoryArgs>;
+
+export const LessonsReceiptArgs = LessonsRecordArgs.extend({ requestId: z.string().regex(CURATION_REQUEST_ID_RE) }).strict();
+export type LessonsReceiptArgs = z.infer<typeof LessonsReceiptArgs>;
+
+export const LessonsStoreArgs = z.strictObject({});
+export type LessonsStoreArgs = z.infer<typeof LessonsStoreArgs>;
+
+// Curation mutations never parse through the registry: the mutation
+// dispatcher owns their validation, so this refuses any direct invoke.
+export const CurationMutationOpArgs = z.never();
 
 // native console: the session's cwd, resolved to a world. Absolute and
 // non-empty: an empty path would mean the CLI's own cwd.

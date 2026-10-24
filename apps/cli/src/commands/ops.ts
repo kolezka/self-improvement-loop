@@ -5,6 +5,28 @@
 import "@sil/ops";
 import { decodeControlRequestBytes, executeControlRead, redactMessage } from "@sil/ops/control";
 import { CONTROL_MAX_REQUEST_BYTES, ControlProtocolError, encodeControlResponse } from "@sil/core/control-protocol";
+// lesson capture: one entry for reads and curation mutations (local addition).
+import { OUTCOME_UNKNOWN_ERROR, controlEnvelopeKind, encodeCurationMutationResponse, type CurationMutationResponse } from "@sil/core/control-mutation";
+import { decodeMutationRequestBytes, dispatchMutation } from "@sil/ops/mutation";
+
+/** True only for a complete mutation envelope. Anything else takes the read
+ * path, which reports its own exact error for malformed or mixed input. */
+function isMutationEnvelope(bytes: Uint8Array): boolean {
+  try {
+    return controlEnvelopeKind(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))) === "mutation";
+  } catch {
+    return false;
+  }
+}
+
+/** Encode, or after dispatch fall back to a fixed unknown outcome: never exit as if refused. */
+function encodeMutationOutcome(response: CurationMutationResponse): string {
+  try {
+    return encodeCurationMutationResponse(response);
+  } catch {
+    return encodeCurationMutationResponse({ version: 1, requestId: response.requestId, error: { ...OUTCOME_UNKNOWN_ERROR }, conflict: null });
+  }
+}
 
 /** Read at most `limit + 1` bytes, so an oversize request is detected
  * without buffering all of it. Returns null when the input is over limit. */
@@ -40,8 +62,13 @@ export async function cmdOps(
   try {
     const bytes = await readBounded(input, CONTROL_MAX_REQUEST_BYTES);
     if (bytes === null) throw new ControlProtocolError(`request: too large (over ${CONTROL_MAX_REQUEST_BYTES} bytes)`);
-    const request = decodeControlRequestBytes(bytes);
-    text = encodeControlResponse(await executeControlRead(request));
+    if (isMutationEnvelope(bytes)) {
+      // Re-checks the stricter whole-envelope limit before any dispatch.
+      text = encodeMutationOutcome(await dispatchMutation(decodeMutationRequestBytes(bytes)));
+    } else {
+      const request = decodeControlRequestBytes(bytes);
+      text = encodeControlResponse(await executeControlRead(request));
+    }
   } catch (err) {
     if (err instanceof ControlProtocolError) {
       console.error(`sil ops: invalid request: ${err.message}`);

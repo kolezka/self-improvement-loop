@@ -13,6 +13,16 @@
 // session.start, drops the old instance's late replies.
 
 import type { EngineInterface, On } from "claude-code";
+import {
+  lessonsWorldChanging,
+  openLessonByKey,
+  openLessonCapture,
+  readCaptureSelection,
+  refreshLessons,
+  resetLessonsForTests,
+  resumeLessons,
+  type CaptureSelection,
+} from "./lessons.ts";
 import { registerConsoleViews } from "./render.tsx";
 import { readControl } from "./transport.ts";
 import {
@@ -72,6 +82,7 @@ export function resetUiForTests(): void {
   lifecycle = 0;
   active = false;
   againFor = null;
+  resetLessonsForTests();
 }
 
 function isCurrent(life: number): boolean {
@@ -219,6 +230,9 @@ async function refreshOnce($: EngineInterface, life: number): Promise<void> {
   }
   // The bootstrap chose a world: read that world now, not in ten seconds.
   if (isCurrent(life) && after.generation !== generation && after.world !== null && after.world !== before.world) againFor = life;
+  // Lessons ride the same tick, only while Activity is shown; it reads nothing
+  // unless the Lessons view is open.
+  if (isCurrent(life) && after.section === "activity") void refreshLessons($);
 }
 
 /** Starts a lifecycle now: the one timer, and a queued write that drops any
@@ -279,6 +293,8 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
       done = rescope((s) => selectConsoleSection(s, action.section));
       break;
     case "world":
+      // Unsent lesson wording decides first: the Lessons view asks Stay or Discard.
+      if (!lessonsWorldChanging($, action.world)) return;
       done = rescope((s) => chooseConsoleWorld(s, action.world));
       break;
     case "list":
@@ -356,22 +372,57 @@ export function registerUi(on: On): void {
     // A reload runs session.start again. With the pane still up, take over:
     // move the generation past the old instance's reads and keep refreshing.
     // With no pane, nothing is read.
+    let up = false;
     try {
-      if ((await paneVisibility($)) !== "closed") await restart($);
+      up = (await paneVisibility($)) !== "closed";
+      if (up) await restart($);
     } catch (err) {
       log($, `the console could not resume after a reload: ${errorText(err)}`);
     }
+    // The lesson editor comes back only through its own restore, then reads
+    // again. With no pane, nothing is read now; /sil resumes it.
+    if (up) await resumeLessonsLogged($);
     return next(e);
   });
 
   // Answers its own command: nothing beneath runs a command named sil. Also
   // how the console comes back after /clear, which raises no session.start.
-  on("command.run", { command: "sil" }, async ($) => {
+  on("command.run", { command: "sil" }, async ($, e) => {
+    const lesson = lessonCommand(e.args);
+    // A capture reads the selection first: opening or focusing the pane may clear it.
+    let selection: CaptureSelection | null = null;
+    if (lesson.kind === "capture") {
+      try {
+        selection = await readCaptureSelection($, null);
+      } catch {
+        selection = { source: null, note: "Selection unavailable. Paste the relevant passage or add a reference." };
+      }
+    }
+    await resumeLessonsLogged($);
     let placed: Awaited<ReturnType<EngineInterface["ui"]["open"]>>;
     try {
-      placed = await $.ui.open({ id: "sil-console", title: PANE_TITLE });
+      placed = await $.ui.open(lesson.kind === "none" ? { id: "sil-console", title: PANE_TITLE } : { id: "sil-console", title: PANE_TITLE, focus: true });
     } catch (err) {
       return { text: `Could not open the self-improvement loop console: ${errorText(err)}. ${FALLBACK}` };
+    }
+    if (lesson.kind !== "none") {
+      try {
+        // Activity first: a section change after the first read would drop it.
+        await writeConsole($, (s) => selectConsoleSection(s, "activity"));
+        await restart($);
+        await refresh($);
+        const world = (await readConsole($)).world;
+        const text =
+          lesson.kind === "capture"
+            ? ((await openLessonCapture($, selection ?? { source: null, note: null }, world)) ?? "Opened a lesson capture in the self-improvement loop console.")
+            : lesson.kind === "lesson"
+              ? await openLessonByKey($, lesson.key, world)
+              : "Usage: /sil, /sil capture, or /sil lesson <encoded key>.";
+        return { text: placed.isPlaced ? text : `${text} This surface cannot show the pane yet (${placed.reason}). ${FALLBACK}` };
+      } catch (err) {
+        log($, `the lesson view could not open: ${errorText(err)}`);
+        return { text: `The lesson view could not open. ${FALLBACK}` };
+      }
     }
     // The timer runs while the pane is open; each tick reads only when it is
     // shown, so a pane placed later is picked up without another /sil.
@@ -395,5 +446,24 @@ export function registerUi(on: On): void {
     return result;
   });
 
+  // Lessons add no hook of their own: /sil, session.start and the pane's
+  // render above delegate to ./lessons.ts, and render.tsx draws them in Activity.
   registerConsoleViews(on);
+}
+
+async function resumeLessonsLogged($: EngineInterface): Promise<void> {
+  try {
+    await resumeLessons($);
+  } catch (err) {
+    log($, `the lesson editor could not resume after a reload: ${errorText(err)}`);
+  }
+}
+
+/** What `/sil <args>` asks of the Lessons view. Anything it does not name is
+ * the plain console, as before. */
+export function lessonCommand(args: string): { kind: "none" } | { kind: "capture" } | { kind: "lesson"; key: string } | { kind: "usage" } {
+  const words = args.trim().split(/\s+/).filter((w) => w !== "");
+  if (words[0] === "capture" && words.length === 1) return { kind: "capture" };
+  if (words[0] === "lesson") return words.length === 2 ? { kind: "lesson", key: words[1]! } : { kind: "usage" };
+  return { kind: "none" };
 }

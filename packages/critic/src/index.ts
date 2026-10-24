@@ -20,6 +20,7 @@ import {
   type QueueEntry,
   type World,
 } from "@sil/core";
+import { gitRepositoryRoot } from "@sil/core/repo-root";
 import type { ChatFn, ChatMessage } from "@sil/providers";
 import { chat as defaultChat } from "@sil/providers";
 import { loadLedger, patternCounts, listReflections, putLesson, writeReflection } from "@sil/store";
@@ -377,7 +378,7 @@ export async function reflectSession(entry: QueueEntry, opts: ReflectOptions): P
       text: answer.lesson_short,
       created: ts,
       reflection_id: reflectionId,
-      repo: gitToplevel(entry.cwd),
+      repo: gitRepositoryRoot(entry.cwd),
       deliveries: 0,
     });
   }
@@ -434,25 +435,3 @@ function appendFeedbackEvents(
   const path = paths.criticFeedbackFile();
   for (const line of lines) fsx.appendJsonl(path, line);
 }
-
-/** The main checkout that owns `cwd`, also from inside a linked worktree.
- *
- * A session that entered a worktree ends with cwd under `.claude/worktrees/`.
- * Keying the lesson on that path made the next session in the main checkout
- * never receive it, so resolve through the common git dir instead. */
-function gitToplevel(cwd: string): string | null {
-  const run = (args: string[]): string | null => {
-    try {
-      const r = Bun.spawnSync(["git", ...args], { cwd, timeout: 5000, stdout: "pipe", stderr: "pipe" });
-      if (!r.success) return null;
-      const out = r.stdout.toString("utf8").trim();
-      return out || null;
-    } catch {
-      return null;
-    }
-  };
-  const common = run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  if (common && common.endsWith("/.git")) return common.slice(0, -"/.git".length);
-  return run(["rev-parse", "--show-toplevel"]);
-}
-

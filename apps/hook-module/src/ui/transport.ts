@@ -1,13 +1,14 @@
-// The native console's bridge to `sil ops`, the reviewed read-only control
-// host. One fixed argv launch of the loaded plugin's own launcher, one request
-// on stdin, one bounded envelope back.
+// The native console's bridge to `sil ops`, the reviewed control host. One
+// fixed argv launch of the loaded plugin's own launcher, one request on stdin,
+// one bounded envelope back. Reads and curation mutations share that launch.
 //
-// Unlike runCommand in ../io.ts, nothing here turns a failure into null: every
-// way the bridge can fail rejects with a ControlTransportError the console
-// shows. Its messages are fixed text plus at most an exit code, so no stdout,
-// stderr, stack or engine message reaches native state.
+// Unlike runCommand in ../io.ts, nothing here turns a failure into null. A read
+// rejects with a ControlTransportError the console shows on any bridge failure.
+// A mutation rejects only before launch; after it, a failure is the fixed
+// unknown-outcome envelope. Messages are fixed text plus at most an exit code,
+// so no stdout, stderr, stack or engine message reaches native state.
 //
-// Runs in the hooks-module sandbox: only the pure protocol subpath is imported,
+// Runs in the hooks-module sandbox: only the pure protocol subpaths are imported,
 // and the engine is reached as `$.noun.method` on the parameter, never kept.
 
 import {
@@ -19,6 +20,15 @@ import {
   type ControlRequest,
   type ControlResponse,
 } from "@sil/core/control-protocol";
+import {
+  MUTATION_MAX_REQUEST_BYTES,
+  OUTCOME_UNKNOWN_ERROR,
+  decodeCurationMutationResponse,
+  encodeMutationRequestEnvelope,
+  parseMutationRequestEnvelope,
+  type CurationMutationResponse,
+  type MutationRequestEnvelope,
+} from "@sil/core/control-mutation";
 import type { EngineInterface } from "claude-code";
 
 export const CONTROL_TIMEOUT_MS = 10000;
@@ -125,4 +135,37 @@ export async function readControl($: EngineInterface, request: ControlRequest): 
   const complete = ids.length === checked.reads.length && checked.reads.every((read) => Object.hasOwn(response.results, read.id));
   if (!complete) transportError("result_mismatch", "The control response does not answer exactly the reads that were asked.");
   return response;
+}
+
+/** Sends one curation mutation and returns the host's answer for it. Only a
+ * refusal before launch is known not sent, and that rejects. Once the process
+ * was called nothing here proves the mutation did not commit, so every later
+ * failure is the fixed unknown outcome for the id that was sent. */
+export async function mutateControl($: EngineInterface, envelope: MutationRequestEnvelope): Promise<CurationMutationResponse> {
+  // Same double check as reads: the caller's object is read once, and the wire
+  // text it encodes to is parsed again so the id bound below is the one sent.
+  let checked: MutationRequestEnvelope;
+  try {
+    checked = parseMutationRequestEnvelope(JSON.parse(JSON.stringify(parseMutationRequestEnvelope(envelope))));
+  } catch {
+    return transportError("invalid_request", "The control request is malformed and was not sent.");
+  }
+  // Measured first so an oversize envelope gets its own code, not the encoder's throw.
+  if (utf8ByteLength(JSON.stringify(checked)) > MUTATION_MAX_REQUEST_BYTES) {
+    transportError("request_too_large", `The control request is over ${MUTATION_MAX_REQUEST_BYTES} bytes and was not sent.`);
+  }
+  let requestJson: string;
+  try {
+    requestJson = encodeMutationRequestEnvelope(checked);
+  } catch {
+    return transportError("invalid_request", "The control request is malformed and was not sent.");
+  }
+  const requestId = checked.requestId;
+
+  try {
+    return decodeCurationMutationResponse(await runControlProcess($, requestJson), requestId);
+  } catch {
+    // A timeout, a cut write or an unreadable answer says nothing about the store.
+    return { version: 1, requestId, error: { ...OUTCOME_UNKNOWN_ERROR }, conflict: null };
+  }
 }

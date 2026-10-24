@@ -124,6 +124,9 @@ export interface FakeEngineOptions {
   openPlaced?: boolean;
 }
 
+/** What `$.ui.selection()` answers: the 2.1.308 UiSelection, nothing, or a rejection. */
+export type FakeSelection = { text: string; requestId?: string } | undefined | { reject: string };
+
 type Handler = ($: unknown, e: unknown, next: unknown) => unknown;
 
 /** One `on(...)` call as the module made it, matcher included. */
@@ -192,12 +195,22 @@ export class FakeEngine {
   /** Runs before each `$.state.set` lands, so a test can slip a competing
    * write in between a read and its compare-and-set. */
   beforeStateSet: ((id: string) => void) | null = null;
+  /** Decides one `$.state.set` by its `plugin/key`: "throw" rejects as a
+   * refused write does, "unset" answers `isSet: false`, null writes. */
+  stateSetOutcome: ((id: string) => "throw" | "unset" | null) | null = null;
   /** While set, every `$.state` call waits for it: a stalled state store. */
   stateGate: Promise<void> | null = null;
+  /** While true, each `$.clock.now()` waits in `heldClock` until a test calls it. */
+  holdClock = false;
+  readonly heldClock: Array<() => void> = [];
   /** Every `$.clock.every`/`after` the module asked for, cancelled or not. */
   readonly timers: FakeTimer[] = [];
   /** This plugin's open panes, as `$.ui.panes()` answers them. */
   panes: FakePane[] = [];
+  /** What the next `$.ui.selection()` answers. */
+  selection: FakeSelection = undefined;
+  /** Every `$.store.set` value, so a test can prove none was made. */
+  readonly storeWrites: Array<{ key: string; value: unknown }> = [];
   private readonly chains = new Map<string, Handler[]>();
   readonly $: unknown;
   readonly on: unknown;
@@ -303,6 +316,7 @@ export class FakeEngine {
       clock: {
         now: async (): Promise<number> => {
           this.calls.push("clock.now");
+          if (this.holdClock) await new Promise<void>((resolve) => this.heldClock.push(resolve));
           return Date.now();
         },
         every: (ms: number, fn: () => void): { cancel: () => void } => {
@@ -344,6 +358,12 @@ export class FakeEngine {
         log: (text: string): void => {
           this.calls.push(`ui.log ${text}`);
         },
+        selection: async (): Promise<{ text: string; requestId?: string } | undefined> => {
+          this.calls.push("ui.selection");
+          const s = this.selection;
+          if (s !== undefined && "reject" in s) this.reject("ui.selection", s.reject);
+          return s === undefined ? undefined : { ...(s as { text: string; requestId?: string }) };
+        },
         resolve: (e: { surface: string }): Record<string, (props: Record<string, unknown>) => FakeElement> => {
           this.calls.push(`ui.resolve ${e.surface}`);
           const element = (type: string) => (props: Record<string, unknown>) => ({ type, props: { ...props } });
@@ -355,7 +375,19 @@ export class FakeEngine {
           };
           // As the real tables: every surface but mobile has a Select.
           if (e.surface !== "mobile") table.Select = element("Select");
+          // Input likewise (terminal, desktop and VS Code in 2.1.308).
+          if (e.surface !== "mobile") table.Input = element("Input");
           return table;
+        },
+      },
+      store: {
+        get: async (key: string): Promise<unknown> => {
+          this.calls.push(`store.get ${key}`);
+          return undefined;
+        },
+        set: async (key: string, value: unknown): Promise<void> => {
+          this.calls.push(`store.set ${key}`);
+          this.storeWrites.push({ key, value: JSON.parse(JSON.stringify(value)) });
         },
       },
       state: {
@@ -376,6 +408,9 @@ export class FakeEngine {
           if (this.stateGate) await this.stateGate;
           if (this.options.fail?.state) this.reject(`state.set ${id}`, "fake state.set failure");
           this.beforeStateSet?.(id);
+          const outcome = this.stateSetOutcome?.(id) ?? null;
+          if (outcome === "throw") this.reject(`state.set ${id}`, "fake state.set refusal");
+          if (outcome === "unset") return { isSet: false, version: this.state.get(id)?.version ?? 0 };
           const current = this.state.get(id)?.version ?? 0;
           if (options?.ifVersion !== undefined && options.ifVersion !== current) return { isSet: false, version: current };
           // JSON data only, read back as the engine does.

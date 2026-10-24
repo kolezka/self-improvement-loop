@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./control": "./src/control.ts"
+    "./control": "./src/control.ts",
+    "./mutation": "./src/mutation.ts",
+    "./effects": "./src/effects.ts"
   },
   "dependencies": {
     "@sil/core": "workspace:*",

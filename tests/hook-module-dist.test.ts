@@ -142,15 +142,40 @@ describe("apps/hook-module sources", () => {
     expect(sourceFiles().filter((f) => f.endsWith(".native.tsx"))).toEqual([]);
   });
 
+  test("the import closure follows the mutation codec and its relative dependencies", () => {
+    const { files } = importClosure();
+    for (const name of ["control-mutation", "control-protocol", "lesson-curation", "consts"]) {
+      expect(files).toContain(join(ROOT, "packages/core/src", `${name}.ts`));
+    }
+  });
+
+  test("the import closure follows the Lessons view into the shared editor, codecs and secret screen", () => {
+    const { files } = importClosure();
+    for (const file of ["apps/hook-module/src/ui/lessons.ts", "apps/hook-module/src/ui/lessons-view.tsx"]) {
+      expect(files).toContain(join(ROOT, file));
+      expect(sourceFiles()).toContain(file);
+    }
+    // Each alias the Lessons view adds, and the relative files they pull in.
+    for (const name of ["curation-client", "curation-read", "lesson-curation-ui", "lesson-curation-wire", "sensitive-text", "samples"]) {
+      expect(files).toContain(join(ROOT, "packages/core/src", `${name}.ts`));
+    }
+  });
+
   test("the module imports only the @sil subpaths kept free of Node code", () => {
     const allowed = [
       "@sil/core/consts",
-      // The native console's wire contract: pure, no imports (Task 2).
+      "@sil/core/control-mutation",
       "@sil/core/control-protocol",
+      "@sil/core/curation-client",
+      "@sil/core/curation-read",
       "@sil/core/hook-snapshot",
       "@sil/core/layout",
+      "@sil/core/lesson-curation",
+      "@sil/core/lesson-curation-ui",
+      "@sil/core/lesson-curation-wire",
       "@sil/core/lessons",
       "@sil/core/samples",
+      "@sil/core/sensitive-text",
       "@sil/core/spool",
       "@sil/nudges/dispatch-core",
     ];

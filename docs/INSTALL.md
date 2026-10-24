@@ -288,6 +288,7 @@ env -i TERM="$TERM" HOME="$root/home" TMPDIR="$root/tmp" \
   SIL_CONFIG_DIR="$root/config" SIL_STATE_DIR="$root/state" SIL_DATA_DIR="$root/data" \
   CLAUDE_CONFIG_DIR="$root/claude" GIT_CONFIG_GLOBAL="$root/gitconfig" \
   GIT_CONFIG_SYSTEM="$root/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+  SIL_FIXTURE_CLAUDE_MARKER="$root/claude-calls.log" \
   BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 \
   "$real_claude" --plugin-dir "$checkout"
 ```

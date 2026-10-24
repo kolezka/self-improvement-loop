@@ -70,6 +70,9 @@
     "apps/web": {
       "name": "@sil/web",
       "version": "1.2.8",
+      "dependencies": {
+        "@sil/core": "workspace:*",
+      },
       "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.3.0",
         "svelte": "^5.57.0",

@@ -17,6 +17,7 @@ import {
   type ControlResponse,
   type ControlResult,
 } from "@sil/core/control-protocol";
+import { CurationError } from "@sil/core/lesson-curation";
 import { REGISTRY } from "./registry.ts";
 
 export const CONTROL_READ_OPS: readonly string[] = Object.freeze([
@@ -37,6 +38,15 @@ export const CONTROL_READ_OPS: readonly string[] = Object.freeze([
   "console.bootstrap",
   "console.page",
   "console.proposalPage",
+  // lesson capture: curated lesson reads
+  "lessons.projects",
+  "lessons.context",
+  "lessons.browse",
+  "lessons.get",
+  "lessons.history",
+  "lessons.receipt",
+  "lessons.store",
+  "lessons.locate",
 ]);
 const ALLOWED = new Set(CONTROL_READ_OPS);
 
@@ -123,6 +133,8 @@ function errorResult(err: unknown, op: string): { ok: false; error: ControlError
   const name = err instanceof Error ? err.name || err.constructor.name : "";
   const ctor = err instanceof Error ? err.constructor.name : "";
   const domain = DOMAIN_ERRORS.has(name) ? name : DOMAIN_ERRORS.has(ctor) ? ctor : null;
+  // A curation error carries its own safe code and fixed message.
+  if (err instanceof CurationError) return error(err.code, err.message, err.code === "STORAGE_BUSY");
   if (domain !== null) return error(domain, (err as Error).message, domain === "LockHeld");
   if (err instanceof ZodError) return error("ValidationError", zodSummary(err));
   console.error(`sil ops: ${op} failed: ${redactMessage(err instanceof Error ? `${err.name}: ${err.message}` : String(err))}`);

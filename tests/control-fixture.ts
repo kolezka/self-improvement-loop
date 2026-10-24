@@ -20,6 +20,14 @@ export const FIXTURE_LOG_LINE = "fixture worker log line 7f3a";
 // A fake `claude` on PATH appends here, so any model call through the
 // claude-cli provider leaves a trace.
 export const FIXTURE_CLAUDE_MARKER = "claude-calls.log";
+export const FIXTURE_CLAUDE_MARKER_ENV = "SIL_FIXTURE_CLAUDE_MARKER";
+const FAKE_CLAUDE_SCRIPT = [
+  "#!/bin/sh",
+  `marker="\${${FIXTURE_CLAUDE_MARKER_ENV}:-$(dirname "$0")/../${FIXTURE_CLAUDE_MARKER}}"`,
+  'printf \'%s\\n\' "$*" >> "$marker"',
+  "echo fixture",
+  "",
+].join("\n");
 
 function queueEntry(sessionId: string): Record<string, unknown> {
   return {
@@ -44,6 +52,8 @@ function writeText(path: string, text: string): void {
 }
 
 export interface ControlFixtureOptions {
+  /** mkdtemp prefix. Tests use it to put shell-hostile characters in the root. */
+  rootPrefix?: string;
   /** Seed this dir instead of a new tmp dir. It must be an existing, empty,
    * canonical directory: absolute, and no symlink at it or above it. Cleanup
    * then empties it and leaves the dir itself. */
@@ -66,8 +76,11 @@ export function assertEmptyCanonicalRoot(root: string): void {
 
 export function createControlFixture(options: ControlFixtureOptions = {}): ControlFixture {
   const owned = options.root === undefined;
+  if (!owned && options.rootPrefix !== undefined) throw new Error("fixture takes root or rootPrefix, not both");
   if (!owned) assertEmptyCanonicalRoot(options.root!);
-  const root = owned ? mkdtempSync(join(tmpdir(), "sil-control-")) : options.root!;
+  // Canonical root: on macOS the temp dir is a symlink, and curation code
+  // compares real paths.
+  const root = owned ? realpathSync(mkdtempSync(join(tmpdir(), options.rootPrefix ?? "sil-control-"))) : options.root!;
   const home = join(root, "home");
   const configDir = join(root, "config");
   const stateDir = join(root, "state");
@@ -127,10 +140,11 @@ export function createControlFixture(options: ControlFixtureOptions = {}): Contr
   writeText(join(stateDir, "logs", "worker.log"), `first line\n${FIXTURE_LOG_LINE}\n`);
 
   const marker = join(root, FIXTURE_CLAUDE_MARKER);
-  // Single-quoted for sh, so a root holding quotes, spaces or `$` still names
-  // the marker: a broken path here would make "no model call" pass vacuously.
-  const quotedMarker = `'${marker.replaceAll("'", `'\\''`)}'`;
-  writeText(join(binDir, "claude"), `#!/bin/sh\necho "$@" >> ${quotedMarker}\necho fixture\n`);
+  // Constant script text: no fixture path is ever interpolated into shell
+  // syntax, so a root containing a quote cannot break it. The marker path
+  // comes from the env; a provider that strips the env still lands in the
+  // same file, found from the script's own location.
+  writeText(join(binDir, "claude"), FAKE_CLAUDE_SCRIPT);
   chmodSync(join(binDir, "claude"), 0o755);
 
   const env: Record<string, string> = {
@@ -147,6 +161,7 @@ export function createControlFixture(options: ControlFixtureOptions = {}): Contr
     GIT_CONFIG_SYSTEM: gitConfig,
     GIT_CONFIG_NOSYSTEM: "1",
     TMPDIR: join(root, "tmp"),
+    [FIXTURE_CLAUDE_MARKER_ENV]: marker,
     NO_COLOR: "1",
     // Bun otherwise writes its transpiler cache under HOME, which would hide
     // a real write in a before/after inventory of the fixture root.

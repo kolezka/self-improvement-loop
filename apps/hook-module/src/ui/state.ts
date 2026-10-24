@@ -46,8 +46,10 @@ export interface ProposalView {
 export const PROPOSAL_BACK_MAX = 200;
 
 /** A slash command a button queued, and the host's refusal if it gave one.
- * `target` is the artifact a vote was for, null for an Actions button. */
+ * `target` is the artifact a vote was for, null for an Actions button. `id`
+ * names the press, so a late refusal lands only on its own note. */
 export interface CommandNote {
+  id: string;
   command: string;
   args: string;
   target: string | null;
@@ -429,8 +431,8 @@ function isV129Fields(value: Record<string, unknown>): boolean {
 }
 
 function isCommandNote(value: unknown): value is CommandNote {
-  if (!isPlainObject(value) || !hasExactKeys(value, ["command", "args", "target", "error"])) return false;
-  return typeof value.command === "string" && typeof value.args === "string" && isNullableString(value.target) && isNullableString(value.error);
+  if (!isPlainObject(value) || !hasExactKeys(value, ["id", "command", "args", "target", "error"])) return false;
+  return typeof value.id === "string" && typeof value.command === "string" && typeof value.args === "string" && isNullableString(value.target) && isNullableString(value.error);
 }
 
 function isConsoleState(value: unknown): value is ConsoleUiState {

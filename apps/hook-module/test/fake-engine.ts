@@ -213,6 +213,9 @@ export class FakeEngine {
   panes: FakePane[] = [];
   /** What the next `$.ui.selection()` answers. */
   selection: FakeSelection = undefined;
+  /** `$.command.run` calls held by `hold.commandRun`, oldest first; a test
+   * settles each one by hand. */
+  readonly heldCommandRuns: Array<{ command: string; args: string; resolve: () => void; reject: (message: string) => void }> = [];
   /** Every `$.store.set` value, so a test can prove none was made. */
   readonly storeWrites: Array<{ key: string; value: unknown }> = [];
   private readonly chains = new Map<string, Handler[]>();
@@ -347,7 +350,19 @@ export class FakeEngine {
           const call = `command.run ${input.command} ${input.args ?? ""}`;
           this.calls.push(call);
           if (options.fail?.commandRun) this.reject(call, "fake command.run refusal");
-          if (options.hold?.commandRun) return new Promise<never>(() => undefined);
+          if (options.hold?.commandRun) {
+            return new Promise<{ text?: string }>((resolve, reject) => {
+              this.heldCommandRuns.push({
+                command: input.command,
+                args: input.args ?? "",
+                resolve: () => resolve({}),
+                reject: (message) => {
+                  this.rejectedCalls.push(call);
+                  reject(new Error(message));
+                },
+              });
+            });
+          }
           return {};
         },
       },

@@ -272,8 +272,9 @@ export type ConsoleAction =
   | { kind: "part"; part: ProposalPart }
   | { kind: "page"; to: "next" | "prev" | "first" }
   | { kind: "reload-proposal" }
-  /** Queues one of the plugin's slash commands; `target` is a vote's artifact. */
-  | { kind: "command"; command: string; args: string; target: string | null };
+  /** Queues one of the plugin's slash commands; `target` is a vote's artifact,
+   * `world` the world a world-scoped button was drawn for (null otherwise). */
+  | { kind: "command"; command: string; args: string; target: string | null; world: string | null };
 
 export interface ConsoleControl {
   key: string;
@@ -485,9 +486,23 @@ const VOTE_ARGS = /^[a-z]{1,32}:[a-z0-9][a-z0-9-]{0,63} (?:good|bad)$/;
 
 /** Whether `action` is a command a button may queue: one of PANE_ACTIONS as
  * listed, or a vote built from checked parts. Checked again at the press. */
-export function isAllowedCommand(action: { command: string; args: string; target: string | null }): boolean {
-  if (action.target === null) return PANE_ACTIONS.some((a) => a.command === action.command && a.args === action.args);
-  return action.command === FEEDBACK && SLUG.test(action.target) && VOTE_ARGS.test(action.args) && action.args.split(" ")[0]!.endsWith(`:${action.target}`);
+export function isAllowedCommand(action: { command: string; args: string; target: string | null; world: string | null }): boolean {
+  if (action.target === null) {
+    return PANE_ACTIONS.some((a) => a.command === action.command && a.args === action.args && (a.scope === "world") === (action.world !== null));
+  }
+  return action.world !== null && action.command === FEEDBACK && SLUG.test(action.target) && VOTE_ARGS.test(action.args) && action.args.split(" ")[0]!.endsWith(`:${action.target}`);
+}
+
+/** Why a press may not queue now, or null when it may: a world-scoped one
+ * only while the pane still shows the world it was drawn for and that is
+ * still the session's world. Judged on the state read at the press. */
+export function commandRefusal(state: ConsoleUiState, action: { world: string | null }): string | null {
+  if (action.world === null) return null;
+  const own = sessionWorld(state);
+  if (!own.ok) return `this session's world is not resolved: ${own.reason}`;
+  if (own.world !== action.world) return `it was drawn for world ${action.world}, and this session's world is now ${own.world}`;
+  if (state.world !== action.world) return `it was drawn for world ${action.world}, and the pane now shows ${state.world === null ? "no world" : `world ${state.world}`}`;
+  return null;
 }
 
 /** Whether world-scoped controls (votes, Preview promotion) are drawn, and
@@ -542,7 +557,7 @@ function artifactRows(state: ConsoleUiState, page: ListPage, votes: boolean): Co
     }
     const vote = (verdict: "good" | "bad"): ConsoleControl =>
       // A dot is never in a SLUG, so no button key equals another row's block key.
-      control(`vote-${pattern}.${verdict}`, verdict, { kind: "command", command: FEEDBACK, args: `${type}:${pattern} ${verdict}`, target: pattern });
+      control(`vote-${pattern}.${verdict}`, verdict, { kind: "command", command: FEEDBACK, args: `${type}:${pattern} ${verdict}`, target: pattern, world: state.world });
     return [{ kind: "row", key: `artifact-${pattern}`, blocks: [text, controls(`vote-${pattern}`, [vote("good"), vote("bad")])] }];
   });
 }
@@ -710,7 +725,7 @@ function overviewSection(state: ConsoleUiState, now: Date): ConsoleBlock[] {
 function actionsCard(state: ConsoleUiState): ConsoleBlock {
   const scope = worldScope(state);
   const shown = PANE_ACTIONS.filter((a) => a.scope === "session" || scope.ok);
-  const buttons = shown.map((a) => control(`action-${a.key}`, a.label, { kind: "command", command: a.command, args: a.args, target: null }));
+  const buttons = shown.map((a) => control(`action-${a.key}`, a.label, { kind: "command", command: a.command, args: a.args, target: null, world: a.scope === "world" ? state.world : null }));
   const blocks: ConsoleBlock[] = [controls("pane-actions", buttons, "column")];
   const note = state.commandNote;
   if (note !== null && note.target === null) blocks.push(noteLine(note));

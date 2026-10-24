@@ -208,8 +208,9 @@ SubagentStop and SessionEnd are unaffected either way.
 their full diff, artifacts, activity and settings, per world. It
 lives in the hooks module, so it needs what the module needs: a built `dist/`
 and function hooks enabled as above. Without the module there is no `/sil`, and
-nothing pretends otherwise. The CLI and the web UI cover the same reads and the
-writes the pane does not have yet: `sil status`, `sil review list`,
+nothing pretends otherwise. The CLI and the web UI cover the same reads, plus
+the proposal and settings writes the pane does not have yet (accept, reject,
+revise, worlds, models, schedule): `sil status`, `sil review list`,
 `sil review show <pattern>`, `sil web`. See `docs/OPERATIONS.md`.
 
 The pane reads through `sil ops`, the plugin's own `scripts/sil` with the

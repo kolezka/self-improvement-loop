@@ -48,7 +48,7 @@ import {
   type CommandNote,
   type ConsoleUiState,
 } from "./state.ts";
-import { boundedErrorText, CONSOLE_REFRESH_MS, consoleReads, isAllowedCommand, type ConsoleAction } from "./views.ts";
+import { boundedErrorText, commandRefusal, CONSOLE_REFRESH_MS, consoleReads, isAllowedCommand, type ConsoleAction } from "./views.ts";
 
 // The command name, pane id and state key are written as literals at each
 // use: `claude plugin validate` reads them off the source, and a constant
@@ -68,6 +68,8 @@ let timer: { cancel: () => void } | null = null;
 let inFlight: Promise<void> | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let requestSeq = 0;
+/** Numbers command presses; with the generation it names one press. */
+let commandSeq = 0;
 /** Moves on every start and every stop of the console. Work carries the
  * lifecycle it began in and does nothing once that one is over, so a stop
  * also cancels what was queued, and a reopen cannot inherit it. */
@@ -84,6 +86,7 @@ export function resetUiForTests(): void {
   inFlight = null;
   writes = Promise.resolve();
   requestSeq = 0;
+  commandSeq = 0;
   lifecycle = 0;
   active = false;
   againFor = null;
@@ -342,32 +345,55 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
   void done.catch((err) => log($, `the console control failed: ${errorText(err)}`));
 }
 
-/** Notes the command as queued and hands it to the host, which runs it once
- * the session is idle. The press never waits for that; a refusal replaces the
- * note, if it is still this command's. No read follows. */
+/** Notes the press, then hands the command to the host, which runs it once
+ * the session is idle. The press never waits for that. The command goes to
+ * the host only after its queued note was written in this lifecycle, and only
+ * if its world still holds at the state read then; otherwise the note says
+ * why, or the log does when nothing could be written. A refusal from the host
+ * lands only on this press's own note. No read follows. */
 function queueCommand($: EngineInterface, action: Extract<ConsoleAction, { kind: "command" }>): Promise<unknown> {
   const { command, args, target } = action;
   if (!isAllowedCommand(action)) {
     log($, `the console refused to queue an unexpected command: ${boundedErrorText(command)}`);
     return Promise.resolve();
   }
-  const note: CommandNote = { command, args, target, error: null };
-  const write = (change: (s: ConsoleUiState) => ConsoleUiState) => (active ? writeIfCurrent($, lifecycle, change) : writeConsole($, change));
-  const noted = write((s) => noteCommand(s, note));
-  const same = (n: CommandNote | null) => n !== null && n.command === command && n.args === args && n.target === target;
-  let run: Promise<unknown>;
-  try {
-    run = $.command.run({ command, args });
-  } catch (err) {
-    run = Promise.reject(err);
-  }
-  run.then(undefined, (err) => {
-    const error = boundedErrorText(errorText(err));
-    void writeConsole($, (s) => (same(s.commandNote) ? noteCommand(s, { ...note, error }) : s)).catch((e) =>
-      log($, `the console could not record a refused command: ${errorText(e)}`),
-    );
-  });
-  return noted;
+  // As any press: one on a pane left up after the session ended starts it again.
+  const life = active ? lifecycle : begin($).life;
+  commandSeq += 1;
+  const seq = commandSeq;
+  // The generation moves on every scope change and every start, so with the
+  // press number it never repeats, across a reload too.
+  const idOf = (s: ConsoleUiState) => `${s.generation}.${seq}`;
+  const label = `/${command}${args === "" ? "" : ` ${args}`}`;
+  return writeIfCurrent($, life, (s) => {
+    const refusal = commandRefusal(s, action);
+    return noteCommand(s, { id: idOf(s), command, args, target, error: refusal });
+  }).then(
+    (s) => {
+      const note = s.commandNote;
+      if (!isCurrent(life) || note === null || note.id !== idOf(s)) {
+        log($, `${label} was not queued: the console stopped before the press was recorded.`);
+        return;
+      }
+      if (note.error !== null) {
+        log($, `${label} was not queued: ${note.error}`);
+        return;
+      }
+      let run: Promise<unknown>;
+      try {
+        run = $.command.run({ command, args });
+      } catch (err) {
+        run = Promise.reject(err);
+      }
+      run.then(undefined, (err) => {
+        const error = boundedErrorText(errorText(err));
+        void writeConsole($, (t) => (t.commandNote?.id === note.id ? noteCommand(t, { ...note, error }) : t)).catch((e) =>
+          log($, `the console could not record a refused command: ${errorText(e)}`),
+        );
+      });
+    },
+    (err) => log($, `${label} was not queued: the press could not be recorded: ${errorText(err)}`),
+  );
 }
 
 /** A close that went through: stop and drop everything. Idempotent, so the

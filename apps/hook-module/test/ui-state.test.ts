@@ -350,8 +350,8 @@ describe("parseConsoleState", () => {
   test("a saved commandNote round-trips; a malformed one resets as corrupt", () => {
     const saved = (note: unknown) => ({ ...JSON.parse(JSON.stringify(worldA())), commandNote: note });
     for (const note of [
-      { command: "self-improvement-loop:loop", args: "run", target: null, error: null },
-      { command: "self-improvement-loop:feedback", args: "skill:verify-callsites good", target: "verify-callsites", error: "refused" },
+      { id: "4.1", command: "self-improvement-loop:loop", args: "run", target: null, error: null },
+      { id: "9.2", command: "self-improvement-loop:feedback", args: "skill:verify-callsites good", target: "verify-callsites", error: "refused" },
     ]) {
       const parsed = parseConsoleState(saved(note));
       expect(parsed.reset).toBe("none");
@@ -360,12 +360,14 @@ describe("parseConsoleState", () => {
     for (const note of [
       "queued",
       1,
-      { command: "x", args: "" },
-      { command: "x", args: "", target: null, error: null, extra: 1 },
-      { command: 1, args: "", target: null, error: null },
-      { command: "x", args: null, target: null, error: null },
-      { command: "x", args: "", target: 2, error: null },
-      { command: "x", args: "", target: null, error: false },
+      { id: "1.1", command: "x", args: "" },
+      { command: "x", args: "", target: null, error: null },
+      { id: 1, command: "x", args: "", target: null, error: null },
+      { id: "1.1", command: "x", args: "", target: null, error: null, extra: 1 },
+      { id: "1.1", command: 1, args: "", target: null, error: null },
+      { id: "1.1", command: "x", args: null, target: null, error: null },
+      { id: "1.1", command: "x", args: "", target: 2, error: null },
+      { id: "1.1", command: "x", args: "", target: null, error: false },
     ]) {
       const parsed = parseConsoleState(saved(note));
       expect(parsed.reset).toBe("corrupt");

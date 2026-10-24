@@ -39,7 +39,7 @@ export type SilConsoleState = {
   activityTab: "queue" | "reflections" | "lessons" | "log";
   /** The last slash command a button queued, and the host's refusal if any;
    * cleared on a section or world change. */
-  commandNote: { command: string; args: string; target: string | null; error: string | null } | null;
+  commandNote: { id: string; command: string; args: string; target: string | null; error: string | null } | null;
 };
 
 /** Which part and page of the open proposal is shown, the pages before it,

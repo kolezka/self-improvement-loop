@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ControlRequest, ControlResponse, ControlResult } from "@sil/core/control-protocol";
-import { registerUi, resetUiForTests } from "../src/ui/register.ts";
+import { endConsoleSession, registerUi, resetUiForTests } from "../src/ui/register.ts";
 import type { ConsoleUiState } from "../src/ui/state.ts";
 import { isAllowedCommand, PANE_ACTIONS } from "../src/ui/views.ts";
 import { FakeEngine, type FakeElement, type FakeEngineOptions, type FakeRunResult } from "./fake-engine.ts";
@@ -30,7 +30,7 @@ afterEach(() => {
 function controller(over: { boot?: Boot; artifacts?: unknown[]; fail?: FakeEngineOptions["fail"]; hold?: FakeEngineOptions["hold"] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sil-ui-actions-"));
   roots.push(root);
-  const boot = over.boot ?? SESSION_DEFAULT;
+  let boot = over.boot ?? SESSION_DEFAULT;
   const artifacts = over.artifacts ?? [{ pattern: "verify-callsites", artifact_type: "skill", status: "active", reflections: 3, served_by: null }];
   const requests: ControlRequest[] = [];
   const answer = (request: ControlRequest): ControlResponse["results"] => {
@@ -64,7 +64,10 @@ function controller(over: { boot?: Boot; artifacts?: unknown[]; fail?: FakeEngin
   const render = (bodyColumns = 80) =>
     engine.answer<FakeElement>("ui.render", { surface: "terminal", component: "Pane", requestId: "sil-console", props: { bodyColumns } });
   const runs = () => engine.calls.filter((c) => c.startsWith("command.run "));
-  return { engine, requests, state, render, runs };
+  const setBoot = (b: Boot) => {
+    boot = b;
+  };
+  return { engine, requests, state, render, runs, setBoot };
 }
 
 type Ctl = ReturnType<typeof controller>;
@@ -291,7 +294,7 @@ describe("console actions", () => {
     const c = controller();
     await open(c);
     await press(c, "action-run");
-    expect(c.state().commandNote).toEqual({ command: "self-improvement-loop:loop", args: "run", target: null, error: null });
+    expect(c.state().commandNote).toMatchObject({ command: "self-improvement-loop:loop", args: "run", target: null, error: null });
     await press(c, "section-review");
     expect(c.state().commandNote).toBeNull();
     await press(c, "section-overview");
@@ -321,10 +324,14 @@ describe("drawn keys", () => {
 
 describe("the press-time command check", () => {
   test("only listed actions and well formed votes pass", () => {
-    for (const a of PANE_ACTIONS) expect(isAllowedCommand({ command: a.command, args: a.args, target: null })).toBe(true);
+    for (const a of PANE_ACTIONS) expect(isAllowedCommand({ command: a.command, args: a.args, target: null, world: a.scope === "world" ? "default" : null })).toBe(true);
     const feedback = "self-improvement-loop:feedback";
-    expect(isAllowedCommand({ command: feedback, args: "skill:verify-callsites good", target: "verify-callsites" })).toBe(true);
-    expect(isAllowedCommand({ command: feedback, args: "rule:a-b bad", target: "a-b" })).toBe(true);
+    expect(isAllowedCommand({ command: feedback, args: "skill:verify-callsites good", target: "verify-callsites", world: "default" })).toBe(true);
+    expect(isAllowedCommand({ command: feedback, args: "rule:a-b bad", target: "a-b", world: "default" })).toBe(true);
+    // A world-scoped command must name its world; a session one must not.
+    expect(isAllowedCommand({ command: "self-improvement-loop:curriculum", args: "", target: null, world: null })).toBe(false);
+    expect(isAllowedCommand({ command: feedback, args: "skill:verify-callsites good", target: "verify-callsites", world: null })).toBe(false);
+    expect(isAllowedCommand({ command: "self-improvement-loop:learn", args: "", target: null, world: "default" })).toBe(false);
     for (const bad of [
       { command: "self-improvement-loop:loop", args: "run --force", target: null },
       { command: "self-improvement-loop:loop", args: "", target: null },
@@ -338,7 +345,103 @@ describe("the press-time command check", () => {
       { command: feedback, args: "skill:Bad good", target: "Bad" },
       { command: "self-improvement-loop:learn", args: "skill:x good", target: "x" },
     ]) {
-      expect(isAllowedCommand(bad)).toBe(false);
+      expect(isAllowedCommand({ ...bad, world: bad.target === null ? null : "default" })).toBe(false);
     }
+  });
+});
+
+/** A control's press handler as drawn now, to be called later. */
+async function handler(c: Ctl, key: string): Promise<() => void> {
+  const button = findKey(await c.render(), key);
+  if (!button) throw new Error(`no control ${key}`);
+  return () => (button.props.onPress as (e: unknown) => void)({ surface: "terminal" });
+}
+
+describe("fix round 1: checks made at the press", () => {
+  test("a world-scoped press drawn for one world queues nothing once the pane shows another", async () => {
+    const c = controller();
+    await open(c);
+    const curriculum = await handler(c, "action-curriculum");
+    await press(c, "section-artifacts");
+    const vote = await handler(c, "vote-verify-callsites.good");
+    await press(c, "world-inkitt");
+    expect(c.state().world).toBe("inkitt");
+    vote();
+    await settle();
+    curriculum();
+    await settle();
+    expect(c.runs()).toEqual([]);
+    // Refused visibly: the note says why, and a session action still works.
+    expect(c.state().commandNote?.error).toMatch(/world/);
+    await press(c, "section-overview");
+    await press(c, "action-reflect");
+    expect(c.runs()).toEqual(["command.run self-improvement-loop:reflect "]);
+  });
+
+  test("a world-scoped press queues nothing once the session world changed under it", async () => {
+    const c = controller();
+    await open(c);
+    const curriculum = await handler(c, "action-curriculum");
+    // The bootstrap now says the session belongs to inkitt; the pane still shows default.
+    c.setBoot({ ...SESSION_DEFAULT, selectedWorld: "inkitt" });
+    await press(c, "refresh");
+    expect(c.state().world).toBe("default");
+    curriculum();
+    await settle();
+    expect(c.runs()).toEqual([]);
+    expect(c.state().commandNote?.error).toMatch(/inkitt/);
+  });
+
+  test("a press whose note cannot be written runs nothing and says so", async () => {
+    const c = controller();
+    await open(c);
+    const learn = await handler(c, "action-learn");
+    c.engine.stateSetOutcome = () => "throw";
+    learn();
+    await settle();
+    expect(c.runs()).toEqual([]);
+    expect(c.engine.calls.some((l) => l.startsWith("ui.log ") && l.includes("not queued"))).toBe(true);
+    // Positive control: with the store back, the same press queues.
+    c.engine.stateSetOutcome = null;
+    learn();
+    await settle();
+    expect(c.runs()).toEqual(["command.run self-improvement-loop:learn "]);
+  });
+
+  test("a press whose note write lands after the session ended runs nothing", async () => {
+    const c = controller();
+    await open(c);
+    const learn = await handler(c, "action-learn");
+    let release = () => undefined as void;
+    c.engine.stateGate = new Promise<void>((r) => {
+      release = r;
+    });
+    learn();
+    // The session ends (Stop, /clear) while the note write waits on the store.
+    void endConsoleSession(c.engine.$ as never);
+    await settle();
+    c.engine.stateGate = null;
+    release();
+    await settle();
+    expect(c.runs()).toEqual([]);
+    expect(c.state().commandNote).toBeNull();
+  });
+
+  test("a late refusal of an earlier press never lands on a later identical one", async () => {
+    const c = controller({ hold: { commandRun: true } });
+    await open(c);
+    await press(c, "action-learn");
+    await press(c, "section-review");
+    await press(c, "section-overview");
+    await press(c, "action-learn");
+    expect(c.engine.heldCommandRuns).toHaveLength(2);
+    c.engine.heldCommandRuns[0]!.reject("refused late");
+    await settle();
+    expect(c.state().commandNote?.error).toBeNull();
+    expect(allText(cardOf(await c.render(), "Actions"))).toContain(queued("self-improvement-loop:learn", ""));
+    // Positive control: the refusal of the press shown does land.
+    c.engine.heldCommandRuns[1]!.reject("refused now");
+    await settle();
+    expect(c.state().commandNote?.error).toBe("refused now");
   });
 });

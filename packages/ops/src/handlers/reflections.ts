@@ -1,12 +1,12 @@
 import { join } from "node:path";
 import { paths, ValidationError } from "@sil/core";
-import { listReflections, parseReflection } from "@sil/store";
+import { listReflectionsStrict, parseReflectionStrict } from "@sil/store";
 import type { ReflectionArgs, ReflectionListArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 
 export function reflectionsList(args: ReflectionListArgs) {
   const [, world] = cfgWorld(args.world);
-  let refs = listReflections(world.name);
+  let refs = listReflectionsStrict(world.name);
   if (args.pattern) refs = refs.filter((r) => r.pattern === args.pattern);
   if (args.limit) refs = refs.slice(0, args.limit);
   return refs.map((r) => ({
@@ -24,13 +24,13 @@ export function reflectionsList(args: ReflectionListArgs) {
 /** Total reflections in a world, unbounded by any list window. */
 export function reflectionsCount(args: WorldArgs): { total: number } {
   const [, world] = cfgWorld(args.world);
-  return { total: listReflections(world.name).length };
+  return { total: listReflectionsStrict(world.name).length };
 }
 
 export function reflectionsGet(args: ReflectionArgs) {
   const [, world] = cfgWorld(args.world);
   const path = join(paths.reflectionsDir(world.name), `${args.id}.md`);
-  const r = parseReflection(path, world.name);
+  const r = parseReflectionStrict(path, world.name);
   if (r === null) throw new ValidationError(`no reflection ${JSON.stringify(args.id)} in world ${JSON.stringify(args.world)}`);
   return r;
 }

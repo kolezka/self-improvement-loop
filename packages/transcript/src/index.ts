@@ -43,6 +43,12 @@ export function* iterRecords(path: string, maxBytes = 50_000_000): Generator<Rec
   } catch {
     return;
   }
+  yield* recordsFromText(text, maxBytes, () => undefined);
+}
+
+/** The JSON object lines of `text` within maxBytes. A line that is not a JSON
+ * object is reported to `onBad` and skipped. */
+function* recordsFromText(text: string, maxBytes: number, onBad: () => void): Generator<Record<string, unknown>> {
   let readBytes = 0;
   for (const rawLine of text.split("\n")) {
     readBytes += Buffer.byteLength(rawLine, "utf8") + 1;
@@ -53,11 +59,39 @@ export function* iterRecords(path: string, maxBytes = 50_000_000): Generator<Rec
     try {
       rec = JSON.parse(line);
     } catch {
+      onBad();
       continue;
     }
     const obj = asRecord(rec);
     if (obj) yield obj;
+    else onBad();
   }
+}
+
+/** What a strict transcript read found: the records, or why there are none. */
+export type TranscriptRead = { ok: true; records: Record<string, unknown>[] } | { ok: false; reason: string };
+
+/** The transcript at `path` read once, strictly, for a value shown to someone
+ * (the queue's transcript preview). The reason comes from that same read:
+ * missing is "transcript not persisted"; a read that fails names its error
+ * code; lines that are not JSON records make it "malformed", never a shorter
+ * transcript. Records are returned in Claude Code shape, bounded by maxBytes
+ * like iterRecords. Never the path or any line's content in a reason. The
+ * critic keeps the tolerant iterEvidenceRecords. */
+export function readEvidenceRecordsStrict(path: string, maxBytes = 50_000_000): TranscriptRead {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    const code = err && typeof err === "object" ? (err as NodeJS.ErrnoException).code : undefined;
+    if (code === "ENOENT") return { ok: false, reason: "transcript not persisted" };
+    return { ok: false, reason: `transcript unreadable: ${typeof code === "string" ? code : "unknown error"}` };
+  }
+  let bad = 0;
+  const records = [...recordsFromText(text, maxBytes, () => (bad += 1))];
+  if (bad > 0) return { ok: false, reason: `transcript malformed: ${bad} ${bad === 1 ? "line is" : "lines are"} not a JSON record` };
+  const first = records[0];
+  return { ok: true, records: first !== undefined && isOpenclawRecord(first) ? [...adaptOpenclawRecords(records)] : records };
 }
 
 /** Records in Claude Code shape, whatever the host wrote. An OpenClaw

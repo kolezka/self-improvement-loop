@@ -2,9 +2,9 @@
 // one temp dir, the child env is built from an allowlist (never a spread of
 // process.env), and the config disables auto_kick so nothing starts a worker.
 
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface ControlFixture {
   root: string;
@@ -54,12 +54,33 @@ function writeText(path: string, text: string): void {
 export interface ControlFixtureOptions {
   /** mkdtemp prefix. Tests use it to put shell-hostile characters in the root. */
   rootPrefix?: string;
+  /** Seed this dir instead of a new tmp dir. It must be an existing, empty,
+   * canonical directory: absolute, and no symlink at it or above it. Cleanup
+   * then empties it and leaves the dir itself. */
+  root?: string;
+}
+
+/** Throws unless `root` is an existing, empty directory named by its canonical
+ * path. Checked before anything is written, so a refused root is untouched. */
+export function assertEmptyCanonicalRoot(root: string): void {
+  if (!isAbsolute(root)) throw new Error(`fixture root must be an absolute path: ${root}`);
+  const info = lstatSync(root);
+  if (info.isSymbolicLink()) throw new Error(`fixture root must be a canonical path, not a symlink: ${root}`);
+  if (!info.isDirectory()) throw new Error(`fixture root must be a directory: ${root}`);
+  const canonical = realpathSync(root);
+  if (canonical !== resolve(root)) {
+    throw new Error(`fixture root must be a canonical path (no symlink above it): ${root} resolves to ${canonical}`);
+  }
+  if (readdirSync(root).length > 0) throw new Error(`fixture root is not empty: ${root}`);
 }
 
 export function createControlFixture(options: ControlFixtureOptions = {}): ControlFixture {
+  const owned = options.root === undefined;
+  if (!owned && options.rootPrefix !== undefined) throw new Error("fixture takes root or rootPrefix, not both");
+  if (!owned) assertEmptyCanonicalRoot(options.root!);
   // Canonical root: on macOS the temp dir is a symlink, and curation code
   // compares real paths.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), options.rootPrefix ?? "sil-control-")));
+  const root = owned ? realpathSync(mkdtempSync(join(tmpdir(), options.rootPrefix ?? "sil-control-"))) : options.root!;
   const home = join(root, "home");
   const configDir = join(root, "config");
   const stateDir = join(root, "state");
@@ -151,6 +172,12 @@ export function createControlFixture(options: ControlFixtureOptions = {}): Contr
   return {
     root,
     env,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () => {
+      if (owned) {
+        rmSync(root, { recursive: true, force: true });
+        return;
+      }
+      for (const name of readdirSync(root)) rmSync(join(root, name), { recursive: true, force: true });
+    },
   };
 }

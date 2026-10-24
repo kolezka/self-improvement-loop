@@ -5,6 +5,7 @@
 import * as Args from "./args.ts";
 import * as aliases from "./handlers/aliases.ts";
 import * as artifacts from "./handlers/artifacts.ts";
+import * as consoleOps from "./handlers/console.ts";
 import * as curriculum from "./handlers/curriculum.ts";
 import * as health from "./handlers/health.ts";
 import * as history from "./handlers/history.ts";
@@ -90,6 +91,11 @@ register({ name: "lessons.edit", tier: "local", gate: "none", args: Args.Curatio
 register({ name: "lessons.setImportant", tier: "local", gate: "none", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Set or clear the Important bookmark. Mutation dispatcher only." });
 register({ name: "lessons.acknowledgeSource", tier: "local", gate: "none", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Accept a changed inbox source as the new baseline. Mutation dispatcher only." });
 register({ name: "lessons.purge", tier: "local", gate: "confirm", args: Args.CurationMutationOpArgs, fn: refuseDirect, doc: "Clear a lesson's curated content and history; requires explicit confirmation. Mutation dispatcher only." });
+
+// native console
+register({ name: "console.bootstrap", tier: "read", gate: "none", args: Args.ConsoleBootstrapArgs, fn: consoleOps.consoleBootstrap, doc: "Configured worlds and the one that owns a cwd; reports a missing config without creating it." });
+register({ name: "console.page", tier: "read", gate: "none", args: Args.ConsolePageArgs, fn: consoleOps.consolePage, doc: "One page of a world's proposals, artifacts, reflections or lessons; total counted before the slice." });
+register({ name: "console.proposalPage", tier: "read", gate: "none", args: Args.ConsoleProposalPageArgs, fn: consoleOps.consoleProposalPage, doc: "Whole lines of a staged proposal's body or diff under 65536 bytes, bound to its reviewed_state." });
 
 export * from "./registry.ts";
 export * as opsArgs from "./args.ts";

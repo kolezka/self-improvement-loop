@@ -35,7 +35,10 @@ export const CONTROL_READ_OPS: readonly string[] = Object.freeze([
   "queue.detail",
   "logs.tail",
   "health.build",
-  // lesson capture: curated lesson reads (local addition, keep for the parent merge)
+  "console.bootstrap",
+  "console.page",
+  "console.proposalPage",
+  // lesson capture: curated lesson reads
   "lessons.projects",
   "lessons.context",
   "lessons.browse",
@@ -49,7 +52,7 @@ const ALLOWED = new Set(CONTROL_READ_OPS);
 
 // Domain errors whose message is meant for the operator. Anything else is a
 // bug and gets a generic message; its detail goes to stderr only.
-const DOMAIN_ERRORS = new Set(["ConfigError", "ValidationError", "ReviewError", "GitError", "LockHeld", "ProviderError"]);
+const DOMAIN_ERRORS = new Set(["ConfigError", "ValidationError", "ReviewError", "GitError", "LockHeld", "ProviderError", "ProposalChanged", "QueueReadError", "StateReadError"]);
 const MAX_MESSAGE_CHARS = 500;
 
 // A key that names a secret, bare or quoted (also with JSON-escaped quotes),
@@ -130,7 +133,7 @@ function errorResult(err: unknown, op: string): { ok: false; error: ControlError
   const name = err instanceof Error ? err.name || err.constructor.name : "";
   const ctor = err instanceof Error ? err.constructor.name : "";
   const domain = DOMAIN_ERRORS.has(name) ? name : DOMAIN_ERRORS.has(ctor) ? ctor : null;
-  // lesson capture: a curation error carries its own safe code and fixed message.
+  // A curation error carries its own safe code and fixed message.
   if (err instanceof CurationError) return error(err.code, err.message, err.code === "STORAGE_BUSY");
   if (domain !== null) return error(domain, (err as Error).message, domain === "LockHeld");
   if (err instanceof ZodError) return error("ValidationError", zodSummary(err));

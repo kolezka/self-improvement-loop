@@ -29,6 +29,7 @@ import { gitHead, pathExists, runCommand, writeText } from "./io.ts";
 import { maybeKickWorker } from "./kick.ts";
 import { deliverLessons, recordRuleUses, rulesBlock, sessionStartMtime } from "./lessons.ts";
 import { dispatchNudges } from "./nudges.ts";
+import { endConsoleSession, registerUi, resetUiForTests } from "./ui/register.ts";
 import {
   dropState,
   ensureState,
@@ -47,6 +48,7 @@ import type { SessionState, SpoolFlight } from "./state.ts";
  * process starts with. */
 export function resetForTests(): void {
   resetSessions();
+  resetUiForTests();
   guardPid = null;
   guardPidResolved = false;
 }
@@ -169,8 +171,12 @@ async function writeStartJson($: EngineInterface, state: SessionState, head: str
  * that rejects with nothing left inside to catch it, e.g. an unhandled
  * `next(e)` rejection from another plugin's own chain. Swallowed rather than
  * acted on: rule 1 is hooks never block, and this module keeps no error
- * channel that is safe to write to from outside a handler's own session state. */
-function onRegistrationError(): void {}
+ * channel that is safe to write to from outside a handler's own session state.
+ * It always returned undefined; the type now says so, because the engine's
+ * catch handler contract admits undefined and refuses a `void` function. */
+function onRegistrationError(): undefined {
+  return undefined;
+}
 
 // A top level function declaration, not a const: `claude plugin validate`
 // refuses a module whose `register` export is anything else.
@@ -434,6 +440,9 @@ export function register(on: On): void {
   // The engine's own end event, which is confirmed to fire. Best effort: if
   // classic.SessionEnd already flushed, there is nothing left to write.
   on("session.end", async ($, e, next) => {
+    // The console's timer and queued reads stop now; its state write is not
+    // waited for, so it can neither hold up nor drop the spool below.
+    void endConsoleSession($);
     let state: SessionState | null = null;
     try {
       state = await stateToFlush($, e.sessionId);
@@ -448,6 +457,10 @@ export function register(on: On): void {
     if (state) dropState(state.sessionId);
     return r;
   });
+
+  // The native /sil console. Composed here so one module, one entry, carries
+  // both: the plugin stays a single install.
+  registerUi(on);
 }
 
 /** Usage events for the two tools worth counting. Neither carries the free text

@@ -15,13 +15,21 @@ import {
   type UsageEvent,
   type World,
 } from "@sil/core";
-import { listReflections, loadAliases, loadLedger } from "@sil/store";
+import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger } from "@sil/store";
 import { installedArtifacts } from "@sil/critic";
 import { patternRates, type SessionDayRow } from "./rates.ts";
 
 export { patternRates, type RateWindows, type SessionDayRow } from "./rates.ts";
 
-export interface ScorecardOptions { now?: Date; windowDays?: number }
+export interface ScorecardOptions {
+  now?: Date;
+  windowDays?: number;
+  /** For scorecards shown as complete (the consoles' artifact list): an input
+   * log, the ledger, reflections, aliases or installed artifacts that exist
+   * but cannot be read raise StateReadError instead of counting as empty.
+   * Off for the worker's rebuild and the planner, which stay best-effort. */
+  strict?: boolean;
+}
 
 /** Diagnostics alongside a scorecard build: signal that would otherwise be
  * silently dropped. Not part of `Scorecard[]` itself, so every existing
@@ -117,12 +125,17 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   const windowStart = new Date(now.getTime() - windowDays * 86_400_000);
   const retireCutoff = new Date(now.getTime() - cfg.promotion.retire_after_days * 86_400_000);
 
-  const ledger = loadLedgerSafe(world);
+  const strict = opts.strict === true;
+  // One reader per input, chosen once: strict for the consoles, tolerant for
+  // the worker's rebuild and the planner.
+  const readLog = (path: string, label: string): Record<string, unknown>[] =>
+    strict ? fsx.readJsonlStrict<Record<string, unknown>>(path, label) : fsx.readJsonl<Record<string, unknown>>(path);
+  const ledger = strict ? loadLedger(ledgerPath(world)) : loadLedgerSafe(world);
   // Frozen before usage, fires or human feedback add anything: a bare critic
   // ref may only resolve against this world's own installed artifacts, never
   // against a ref merely seen in an event log. Nudge fires carry no world at
   // all, so that set can leak a name from a different world's hook.
-  const installedRefs = new Set<string>(installedArtifacts(world, cfg));
+  const installedRefs = new Set<string>(installedArtifacts(world, cfg, { strict }));
   const refs = new Set<string>(installedRefs);
   const installedByName = refsByName(installedRefs);
 
@@ -144,7 +157,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     if (cur === undefined || str > cur) lastTsByRef.set(ref, str);
   };
 
-  for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.usageEventsFile())) {
+  for (const ev of readLog(paths.usageEventsFile(), "the usage log")) {
     if (ev["world"] !== world.name) continue;
     const kind = ev["kind"];
     // agent_stop repeats an agent event already counted, hook_run counts
@@ -158,7 +171,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     if (within(ev["ts"], windowStart, now)) bump(usesByRef, r);
   }
 
-  for (const line of fsx.readJsonl<Record<string, unknown>>(paths.nudgeFiresFile())) {
+  for (const line of readLog(paths.nudgeFiresFile(), "the nudge fires log")) {
     const pattern = line["pattern"];
     if (!pattern) continue;
     const ref = `hook:${String(pattern)}`;
@@ -176,7 +189,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   // World filter first, name resolution after (design rule 6): a bare ref is
   // only ever matched against this world's own refs, never across worlds.
   let unresolvedCriticRefs = 0;
-  for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
+  for (const ev of readLog(paths.criticFeedbackFile(), "the critic feedback log")) {
     if (ev["world"] !== world.name) continue;
     if (ev["ref_unresolved"]) {
       unresolvedCriticRefs += 1;
@@ -196,7 +209,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     else if (ev["verdict"] === "misfired") bump(misfiredByRef, r);
   }
 
-  for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.humanFeedbackFile())) {
+  for (const ev of readLog(paths.humanFeedbackFile(), "the human feedback log")) {
     if (ev["world"] !== world.name) continue;
     const ref = ev["ref"];
     if (!ref) continue;
@@ -214,9 +227,11 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   // whole life since promotion, not a rolling window.
   const allSessionRows: SessionDayRow[] = [];
   const hitsByPattern = new Map<string, SessionDayRow[]>();
-  const aliases = loadAliases(world.name);
-  for (const r of listReflections(world.name)) {
-    const pattern = aliases[r.pattern] ?? r.pattern;
+  const aliases = strict ? loadAliasesStrict(world.name) : loadAliases(world.name);
+  for (const r of strict ? listReflectionsStrict(world.name) : listReflections(world.name)) {
+    // Own keys only: a pattern named like a prototype member ("constructor")
+    // is an ordinary pattern, not an alias of an inherited function.
+    const pattern = Object.hasOwn(aliases, r.pattern) ? aliases[r.pattern]! : r.pattern;
     if (within(r.created, windowStart, now)) {
       const bucket = createdByPattern.get(pattern);
       if (bucket) bucket.push(r.created);
@@ -232,7 +247,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   }
   // Source 2: the critic ran on this session but did not always record. The
   // queue's `done` bucket is pruned to 500 and cannot serve as history.
-  for (const rec of fsx.readJsonl<Record<string, unknown>>(paths.reflectRunsFile())) {
+  for (const rec of readLog(paths.reflectRunsFile(), "the reflect runs log")) {
     if (rec["world"] !== world.name) continue;
     const sid = rec["session_id"];
     const ts = rec["ts"];

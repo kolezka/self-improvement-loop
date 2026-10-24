@@ -145,6 +145,101 @@ sets with the hook shell's parent pid, so a nested `claude` run from a Bash tool
 call keeps its own command hooks instead of silently losing them. Stop,
 SubagentStop and SessionEnd are unaffected either way.
 
+## Native console (`/sil`)
+
+`/sil` opens a read-only console pane beside the chat: overview, staged
+proposals with their full diff, artifacts, activity and settings, per world. It
+lives in the hooks module, so it needs what the module needs: a built `dist/`
+and function hooks enabled as above. Without the module there is no `/sil`, and
+nothing pretends otherwise. The CLI and the web UI cover the same reads and the
+writes the pane does not have yet: `sil status`, `sil review list`,
+`sil review show <pattern>`, `sil web`. See `docs/OPERATIONS.md`.
+
+The pane reads through `sil ops`, the plugin's own `scripts/sil` with the
+plugin root pinned, one bounded request per read. It never starts the worker and
+never calls a model.
+
+What has been checked, and how:
+
+- Measured by tests: the bridge against a real staged proposal (all diff and
+  body pages at one digest, a refused stale digest, no write to loop state, no
+  provider call), in `tests/native-console.test.ts` over the built `dist/`.
+- Measured by `bun run scripts/test-native.ts`: `claude plugin validate` and the
+  module's engine tests, on a mounted tree, against the installed `claude`.
+- Not verified yet: the pane in an attended terminal (typing `/sil`, resizing,
+  keyboard focus, close and reopen), reload across instances, and which Claude
+  Code builds load the module without `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.
+  Treat the flag as required until that is measured.
+
+### An isolated fixture for trying the console
+
+`scripts/native-console-fixture.ts` seeds synthetic loop state for trying `/sil`
+away from a real install and loop state. Run it with an isolated HOME, Bun cache,
+`TMPDIR` and XDG dirs of its own, since a plain `bun run` writes Bun's
+transpiler cache under your real HOME:
+
+```sh
+checkout=/path/to/self-improvement-loop
+scratch="$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/sil-setup.XXXXXX")")"
+root="$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/sil-native.XXXXXX")")"
+mkdir -p "$scratch/home" "$scratch/tmp"
+env -i HOME="$scratch/home" TMPDIR="$scratch/tmp" \
+  XDG_CONFIG_HOME="$scratch/home/.config" XDG_CACHE_HOME="$scratch/home/.cache" \
+  XDG_DATA_HOME="$scratch/home/.local/share" XDG_STATE_HOME="$scratch/home/.local/state" \
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 \
+  PATH="$(dirname "$(command -v bun)"):/usr/bin:/bin" \
+  bun run "$checkout/scripts/native-console-fixture.ts" "$root"
+```
+
+`$scratch` is the setup run's own home; `$root` is the fixture and stays
+empty until the script fills it. `tests/native-console.test.ts` runs this exact
+block with a stand-in HOME and checks nothing lands there.
+
+The root must exist, be empty and be given by its canonical path: on macOS
+`/var` and `/tmp` are symlinks, so pass the `realpath` of the dir. The script
+refuses anything else and leaves it untouched. It prints one JSON line,
+`{ root, pluginRoot, configDir }`: `pluginRoot` is this checkout and
+`configDir` is the `SIL_CONFIG_DIR`. The rest of the layout is fixed under
+root:
+
+| Path under root | What it is |
+| --- | --- |
+| `config`, `state`, `data` | `SIL_CONFIG_DIR`, `SIL_STATE_DIR`, `SIL_DATA_DIR` |
+| `home`, `claude`, `gitconfig`, `tmp` | `HOME`, `CLAUDE_CONFIG_DIR`, git global config, `TMPDIR` |
+| `bin/claude` | a stand-in `claude` that only records calls in `claude-calls.log` |
+| `workspace`, `workspace-two` | the dirs worlds `fixture` and `fixture-two` own |
+| `target`, `target-two` | each world's git target, one staged proposal each |
+
+The script also writes the hook snapshot (`state/hook-config.json`) through
+`scripts/sil hook-snapshot`, so the session's hooks and the console pick the
+same world.
+
+`worker.auto_kick` is off and the only configured endpoint is the stand-in
+`claude`, so the loop's own worker has no real model to call through this
+config. The Claude Code session you open is still a normal session: what you
+type to it goes to a model. A session started in `workspace` resolves to world
+`fixture`. To open it, run the real `claude` by its absolute path with only the
+fixture's environment, the same paths the fixture's own processes use:
+
+```sh
+real_claude="$(command -v claude)"
+cd "$root/workspace"
+env -i TERM="$TERM" HOME="$root/home" TMPDIR="$root/tmp" \
+  PATH="$root/bin:$(dirname "$(command -v bun)"):/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$root/home/.config" XDG_STATE_HOME="$root/home/.local/state" \
+  XDG_DATA_HOME="$root/home/.local/share" XDG_CACHE_HOME="$root/home/.cache" \
+  SIL_CONFIG_DIR="$root/config" SIL_STATE_DIR="$root/state" SIL_DATA_DIR="$root/data" \
+  CLAUDE_CONFIG_DIR="$root/claude" GIT_CONFIG_GLOBAL="$root/gitconfig" \
+  GIT_CONFIG_SYSTEM="$root/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+  SIL_FIXTURE_CLAUDE_MARKER="$root/claude-calls.log" \
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 \
+  "$real_claude" --plugin-dir "$checkout"
+```
+
+The empty `CLAUDE_CONFIG_DIR` has no login, so the session asks for one. The
+test checks that this block names the same paths as the fixture; the launch
+itself has not been run attended yet. Remove `$root` and `$scratch` when done.
+
 ## Reaching the UI from another machine
 
 `sil web` binds `127.0.0.1` by default and runs tokenless there, so the printed

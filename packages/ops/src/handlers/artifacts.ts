@@ -1,5 +1,5 @@
 import { fsx, HumanFeedback } from "@sil/core";
-import { listLessons } from "@sil/store";
+import { listLessonsStrict } from "@sil/store";
 import type { FeedbackArgs, PatternArgs, RefineArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
@@ -30,7 +30,7 @@ export function feedbackAdd(args: FeedbackArgs) {
 
 export function lessonsList(args: WorldArgs) {
   const [, world] = cfgWorld(args.world);
-  return listLessons(world.name);
+  return listLessonsStrict(world.name);
 }
 
 // web console: preview and verify

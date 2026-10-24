@@ -4,7 +4,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { CONTROL_MAX_REQUEST_BYTES, decodeControlResponse } from "@sil/core/control-protocol";
 import {
@@ -16,6 +16,8 @@ import {
   type ControlFixture,
 } from "../../../tests/control-fixture.ts";
 
+import { applyConsoleRead, initialConsoleState, switchConsoleWorld } from "../../hook-module/src/ui/state.ts";
+import { consoleLines } from "../../hook-module/src/ui/views.ts";
 import { cmdOps } from "../src/commands/ops.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
@@ -248,6 +250,84 @@ describe("sil ops", () => {
     expect(over.code).toBe(2);
     expect(over.stdout).toBe("");
     expect(over.stderr).toContain("too large");
+  });
+});
+
+// A queue that exists but cannot be read must reach the pane as a failed read,
+// never as a drained, healthy queue. Seeded records first prove the reader
+// decodes real entries, so a failure afterwards is the queue's, not the probe's.
+describe("sil ops queue reads", () => {
+  const QUEUE_READS = request([
+    { id: "worker", op: "worker.status" },
+    { id: "queue", op: "queue.list" },
+    { id: "worlds", op: "worlds.list" },
+  ]);
+
+  async function queueReads() {
+    const { code, stdout, stderr } = await runOps(QUEUE_READS);
+    expect(code).toBe(0);
+    return { resp: decodeControlResponse(stdout.trimEnd(), "req-1"), stderr };
+  }
+
+  function rendered(resp: ReturnType<typeof decodeControlResponse>): string {
+    const state = switchConsoleWorld(initialConsoleState(), "fixture");
+    return consoleLines(applyConsoleRead(state, state.generation, resp, "2026-10-22T12:00:00Z"))
+      .map((l) => l.text)
+      .join("\n");
+  }
+
+  test("positive control: the seeded queue decodes", async () => {
+    const { resp } = await queueReads();
+    const worker = resp.results["worker"]!;
+    const queue = resp.results["queue"]!;
+    if (!worker.ok || !queue.ok) throw new Error(JSON.stringify(resp.results));
+    expect((worker.value as { pending: number }).pending).toBe(FIXTURE_QUEUE.pending);
+    expect((queue.value as { pending: { session_id: string }[] }).pending.map((e) => e.session_id).sort()).toEqual(["fixture-pending-1", "fixture-pending-2"]);
+  });
+
+  test("a pending bucket that cannot be listed fails both queue reads, and the pane says so", async () => {
+    const pending = join(fx.env["SIL_STATE_DIR"]!, "queue", "pending");
+    // Moved aside, not deleted: the records stay intact for inspection.
+    renameSync(pending, join(fx.root, "saved-pending"));
+    writeFileSync(pending, "not a directory\n");
+    const { resp } = await queueReads();
+    for (const id of ["worker", "queue"]) {
+      const r = resp.results[id]!;
+      expect(r.ok).toBe(false);
+      expect(r.ok ? null : r.error.code).toBe("QueueReadError");
+      expect(r.ok ? "" : r.error.message).toContain("pending");
+      expect(r.ok ? "" : r.error.message).toContain("ENOTDIR");
+    }
+    // A read that does not touch the queue is unaffected.
+    expect(resp.results["worlds"]!.ok).toBe(true);
+    const text = rendered(resp);
+    expect(text).not.toContain("Last complete refresh");
+    expect(text).not.toMatch(/Pending: 0/);
+    expect(text).toContain("QueueReadError");
+    expect(readdirSync(join(fx.root, "saved-pending")).sort()).toEqual(["fixture-pending-1.json", "fixture-pending-2.json"]);
+  });
+
+  test("an entry that cannot be parsed fails the count instead of shrinking it", async () => {
+    writeFileSync(join(fx.env["SIL_STATE_DIR"]!, "queue", "done", "corrupt.json"), "{");
+    const { resp } = await queueReads();
+    for (const id of ["worker", "queue"]) {
+      const r = resp.results[id]!;
+      expect(r.ok).toBe(false);
+      expect(r.ok ? null : r.error.code).toBe("QueueReadError");
+      expect(r.ok ? "" : r.error.message).toContain("corrupt.json");
+    }
+  });
+
+  test("a bucket that does not exist yet still reads as empty", async () => {
+    const pending = join(fx.env["SIL_STATE_DIR"]!, "queue", "pending");
+    renameSync(pending, join(fx.root, "saved-pending"));
+    const { resp } = await queueReads();
+    const worker = resp.results["worker"]!;
+    if (!worker.ok) throw new Error(JSON.stringify(worker.error));
+    expect((worker.value as { pending: number; done: number }).pending).toBe(0);
+    expect((worker.value as { pending: number; done: number }).done).toBe(FIXTURE_QUEUE.done);
+    expect(resp.results["queue"]!.ok).toBe(true);
+    mkdirSync(pending);
   });
 });
 

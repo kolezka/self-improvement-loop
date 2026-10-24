@@ -574,12 +574,16 @@ describe("accept", () => {
       }) + "\n",
       "chore: a ledger this code cannot read",
     );
-    const detail = review.detail(world, cfg(), PATTERN);
+    // The review itself no longer renders over an unreadable live ledger (it
+    // would show a made-up live flag); the digest comes from the snapshot, so
+    // accept's own refusal is what this test checks.
+    expect(() => review.detail(world, cfg(), PATTERN)).toThrow(/the ledger promotions\.json is not a valid ledger/);
     const before = git.head(repo);
     const ledgerText = readFileSync(join(repo, "promotions.json"), "utf8");
-    const baseSha = review.snapshot(world, repo, "main", PATTERN).base_sha;
+    const snap = review.snapshot(world, repo, "main", PATTERN);
+    const baseSha = snap.base_sha;
 
-    expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).toThrow(
+    expect(() => review.accept(world, cfg(), PATTERN, snap.reviewed_state)).toThrow(
       new RegExp(`ledger at ${baseSha}:promotions\\.json is unreadable`),
     );
 
@@ -1076,6 +1080,36 @@ describe("a recurrence refine end to end", () => {
 });
 
 // --- rehome and retire --------------------------------------------------------
+
+// D5: a ledger that exists but cannot be reached is never read as empty. A
+// writer that went on from an empty ledger would stage a retirement over a
+// ledger it never saw.
+describe("an unreachable ledger stops writers before any write", () => {
+  test("retire refuses, and the repo, its branches and the ledger stay as they were", async () => {
+    const world = makeWorld({ layout: V1_LAYOUT });
+    const repo = await accepted(world);
+    const ledgerDir = join(repo, "claude", "skills");
+    const ledgerBefore = readFileSync(join(repo, V1_LAYOUT.ledger), "utf8");
+    // Positive control: the live ledger is read with the accepted row.
+    expect(loadLedger(join(repo, V1_LAYOUT.ledger)).entries[PATTERN]?.status).toBe("promoted");
+    const refsBefore = git.git(repo, ["for-each-ref", "--format=%(refname) %(objectname)"]);
+    chmodSync(ledgerDir, 0o000);
+    let thrown: unknown;
+    try {
+      review.retire(world, cfg(), PATTERN);
+    } catch (err) {
+      thrown = err;
+    } finally {
+      chmodSync(ledgerDir, 0o755);
+    }
+    expect((thrown as Error | undefined)?.name).toBe("StateReadError");
+    expect((thrown as Error).message).toContain("promotions.json");
+    expect((thrown as Error).message).toContain("EACCES");
+    expect(git.git(repo, ["for-each-ref", "--format=%(refname) %(objectname)"])).toBe(refsBefore);
+    expect(readFileSync(join(repo, V1_LAYOUT.ledger), "utf8")).toBe(ledgerBefore);
+    expect(git.git(repo, ["status", "--porcelain"])).toBe("");
+  });
+});
 
 describe("rehome and retire", () => {
   test("rehome stages a stub that accept refuses", async () => {

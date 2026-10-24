@@ -30,7 +30,7 @@ import {
   type World,
 } from "@sil/core";
 import * as feedback from "@sil/feedback";
-import { listReflections, loadAliases, loadLedger as loadLedgerFile, parseLedger } from "@sil/store";
+import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger as loadLedgerFile, parseLedger } from "@sil/store";
 import * as artifacts from "./artifacts.ts";
 import * as git from "./git.ts";
 
@@ -60,6 +60,17 @@ export interface Cluster {
  *
  * World filtering happened in the store; alias resolution happens here, because
  * the alias map is a property of the world's own knowledge and one hop only. */
+/** As reflections(), for a value shown as complete (review sources, artifact
+ * counts): an unreadable reflection or aliases file raises StateReadError.
+ * The world filter runs before the alias map, as in reflections(). */
+export function reflectionsStrict(world: World, extraDirs: string[] = []): Reflection[] {
+  const aliases = loadAliasesStrict(world.name);
+  return listReflectionsStrict(world.name, extraDirs).map((r) => {
+    const canonical = Object.hasOwn(aliases, r.pattern) ? aliases[r.pattern]! : r.pattern;
+    return canonical === r.pattern ? r : { ...r, pattern: canonical };
+  });
+}
+
 export function reflections(world: World, extraDirs: string[] = []): Reflection[] {
   const aliases = loadAliases(world.name);
   return listReflections(world.name, extraDirs).map((r) => {

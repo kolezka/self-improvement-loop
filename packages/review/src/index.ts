@@ -11,7 +11,7 @@
 //   skill's pull request because the guard judged commit counts rather than
 //   paths.
 
-import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -28,12 +28,13 @@ import {
   ReviewError,
   type RouterRow,
   ruleTag,
+  StateReadError,
   targetRoot,
   type World,
   worldClaudeConfigDir,
 } from "@sil/core";
 import { isWithin } from "@sil/core/layout";
-import { artifacts, branchName, git, loadLedger, reflections, scorecardByPattern, scorecards } from "@sil/curriculum";
+import { artifacts, branchName, git, loadLedger, reflections, reflectionsStrict, scorecardByPattern } from "@sil/curriculum";
 import { loadLedger as loadLedgerFile, parseLedger, recordProposalEvent, saveLedger } from "@sil/store";
 import * as feedback from "@sil/feedback";
 import * as worker from "@sil/worker";
@@ -206,23 +207,50 @@ export type RemoveResult = {
 
 // --- read side ---------------------------------------------------------------
 
+/** git for a review read shown as complete: stdout, or StateReadError naming
+ * only the world and the git subcommand. Never "" for a failure. */
+function readGit(world: World, repo: string, args: string[]): string {
+  try {
+    return git.git(repo, args);
+  } catch (err) {
+    if (err instanceof GitError) throw new StateReadError(`git ${args[0]} failed in the target of world ${JSON.stringify(world.name)}`);
+    throw err;
+  }
+}
+
+/** The world's target as a git repository to read reviews from, or null when
+ * it has not been created yet (the one legitimate absence). A target that is
+ * there but cannot be reached, is not a directory, or is not a readable git
+ * repository raises StateReadError. */
+function reviewRepo(world: World): string | null {
+  const repo = targetRoot(world);
+  const label = `the target of world ${JSON.stringify(world.name)}`;
+  let isDirectory: boolean;
+  try {
+    isDirectory = statSync(repo).isDirectory();
+  } catch (err) {
+    if (fsx.errnoCode(err) === "ENOENT") return null;
+    throw new StateReadError(`${label} cannot be read (${fsx.errnoCode(err)})`);
+  }
+  if (!isDirectory) throw new StateReadError(`${label} is not a directory`);
+  if (git.gitRaw(repo, ["rev-parse", "--git-dir"]).code !== 0) throw new StateReadError(`${label} is not a readable git repository`);
+  return repo;
+}
+
 /** Every pattern staged for this world and not yet merged, sorted by pattern. */
 export function queue(world: World, _cfg: Config): ReviewItem[] {
-  const repo = targetRoot(world);
-  if (!git.isRepo(repo)) return [];
+  const repo = reviewRepo(world);
+  if (repo === null) return [];
   const defaultRef = git.defaultBranch(repo);
   const prefix = `curriculum/${world.name.toLowerCase()}/`;
-  const listing = git.git(
-    repo,
-    ["branch", "--list", `${prefix}*`, "--no-merged", defaultRef, "--format=%(refname:short)"],
-    { check: false },
-  );
+  const listing = readGit(world, repo, ["branch", "--list", `${prefix}*`, "--no-merged", defaultRef, "--format=%(refname:short)"]);
   const rows: ReviewItem[] = [];
   for (const line of listing.split("\n")) {
     const branch = line.trim();
     if (!branch.startsWith(prefix)) continue;
     const pattern = branch.slice(prefix.length);
-    const entry = branchEntry(world, repo, branch, pattern);
+    const sha = readGit(world, repo, ["rev-parse", "--verify", `${branch}^{commit}`]);
+    const entry = branchEntry(world, repo, sha, pattern, { strict: true });
     const atype = entryType(entry);
     rows.push({
       world: world.name,
@@ -233,7 +261,7 @@ export function queue(world: World, _cfg: Config): ReviewItem[] {
       artifact_path: artifacts.artifactRel(world, atype, pattern) || null,
       count: entry ? entry.promoted_at_count : 0,
       staged_at: entry ? entry.last_updated : null,
-      commit: git.git(repo, ["rev-parse", "--short", branch], { check: false }) || null,
+      commit: readGit(world, repo, ["rev-parse", "--short", sha]),
     });
   }
   rows.sort((a, b) => (a.pattern < b.pattern ? -1 : a.pattern > b.pattern ? 1 : 0));
@@ -292,9 +320,10 @@ export function detail(world: World, _cfg: Config, pattern: string, opts: Review
   const snap = snapshot(world, repo, defaultRef, pattern);
   if (!snap.branch_sha) throw new ReviewError(`${snap.branch} has no resolvable commit; nothing to review`);
 
-  const entry = branchEntry(world, repo, snap.branch_sha, pattern);
+  // Strict: what the review shows is what the person accepts.
+  const entry = branchEntry(world, repo, snap.branch_sha, pattern, { strict: true });
   const atype = entryType(entry);
-  const { found, body } = artifactBody(world, repo, snap.branch_sha, atype, pattern);
+  const { found, body } = artifactBody(world, repo, snap.branch_sha, atype, pattern, { strict: true });
 
   let blocked: string | null = alreadyMergedProblem(repo, snap);
   if (!blocked && artifacts.isPlaceholderBody(atype, body)) {
@@ -305,7 +334,7 @@ export function detail(world: World, _cfg: Config, pattern: string, opts: Review
     blocked = foreignProblem(world, repo, snap, pattern, atype);
   }
 
-  const sources = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).map((r) => r.id);
+  const sources = reflectionsStrict(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).map((r) => r.id);
   return {
     world: world.name,
     pattern,
@@ -324,14 +353,23 @@ export function detail(world: World, _cfg: Config, pattern: string, opts: Review
   };
 }
 
-/** `detail.live`, false on an unreadable ledger. The proposal must still
- * render so accept can refuse it, and delete reads the same ledger and fails loudly. */
+/** `detail.live`, read strictly like the rest of the review. No ledger is not
+ * live. A ledger that is there but cannot be read or parsed raises
+ * StateReadError naming only the file: a false flag would tell the person the
+ * artifact is not served when nobody knows. The review cannot be read until
+ * the ledger is repaired; accept and delete read the same ledger and refuse
+ * on their own. */
 function liveOnDefault(world: World, pattern: string): boolean {
+  let ledger: Ledger;
   try {
-    return isLiveLoop(loadLedger(world).entries[pattern]);
-  } catch {
-    return false;
+    ledger = loadLedger(world);
+  } catch (err) {
+    // loadLedger's own read errors are already safe; its parse error quotes
+    // the path and the parser, so it is replaced, not passed on.
+    if (err instanceof StateReadError) throw err;
+    throw new StateReadError(`the ledger ${ledgerRel(world)} is not a valid ledger`);
   }
+  return isLiveLoop(ledger.entries[pattern]);
 }
 
 /** What accepting this exact commit would change on the default branch. */
@@ -340,7 +378,7 @@ export function diff(world: World, _cfg: Config, pattern: string): ReviewDiff {
   const defaultRef = git.defaultBranch(repo);
   const snap = snapshot(world, repo, defaultRef, pattern);
   if (!snap.branch_sha || !snap.base_sha) throw new ReviewError(`${snap.branch} has no resolvable commit; no diff`);
-  const text = git.git(repo, ["diff", `${snap.base_sha}...${snap.branch_sha}`], { check: false });
+  const text = readGit(world, repo, ["diff", `${snap.base_sha}...${snap.branch_sha}`]);
   return { world: world.name, pattern, diff: text, reviewed_state: snap.reviewed_state };
 }
 
@@ -348,10 +386,12 @@ export function diff(world: World, _cfg: Config, pattern: string): ReviewDiff {
 export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): RouterRow[] {
   const ledger = loadLedger(world);
   const counts = new Map<string, number>();
-  for (const reflection of reflections(world, opts.extraDirs ?? [])) {
+  for (const reflection of reflectionsStrict(world, opts.extraDirs ?? [])) {
     counts.set(reflection.pattern, (counts.get(reflection.pattern) ?? 0) + 1);
   }
-  const cards = scorecardByPattern(scorecards(world, cfg), ledger.entries);
+  // feedback.scorecards in strict mode, not the planner's catch-all wrapper:
+  // a card shown here must not vanish because one of its inputs was unreadable.
+  const cards = scorecardByPattern(feedback.scorecards(world, cfg, { strict: true }), ledger.entries);
   const rows: RouterRow[] = [];
   for (const pattern of Object.keys(ledger.entries).sort()) {
     const entry = ledger.entries[pattern]!;

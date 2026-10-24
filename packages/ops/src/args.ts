@@ -3,6 +3,7 @@
 // in the engine; validated here too, at the boundary, rather than trusted
 // from callers.
 
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { ARTIFACT_REF_RE, LOG_NAMES, ROLES, SLUG_RE, slug, WORLD_NAME_RE } from "@sil/core";
 
@@ -110,3 +111,32 @@ export const RefineArgs = PatternArgs.extend({
   reason: z.string().trim().min(1).max(4000).optional(),
 });
 export type RefineArgs = z.infer<typeof RefineArgs>;
+
+// native console: the session's cwd, resolved to a world. Absolute and
+// non-empty: an empty path would mean the CLI's own cwd.
+export const ConsoleBootstrapArgs = z.object({
+  cwd: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((p) => isAbsolute(p) && !p.includes("\0"), { message: "cwd must be an absolute path" }),
+});
+export type ConsoleBootstrapArgs = z.infer<typeof ConsoleBootstrapArgs>;
+
+// native console: bounded pages. A list page is counted before it is sliced; a
+// proposal page is whole lines bound to one reviewed_state.
+export const ConsolePageArgs = WorldArgs.extend({
+  kind: z.enum(["review", "artifacts", "reflections", "lessons"]),
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+  limit: z.number().int().min(1).max(100).default(25),
+  pattern: slug.optional(),
+});
+export type ConsolePageArgs = z.infer<typeof ConsolePageArgs>;
+
+export const ConsoleProposalPageArgs = PatternArgs.extend({
+  part: z.enum(["body", "diff"]),
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+  limit: z.number().int().min(1).max(200).default(200),
+  expectedState: z.string().regex(REVIEWED_STATE_RE).optional(),
+});
+export type ConsoleProposalPageArgs = z.infer<typeof ConsoleProposalPageArgs>;

@@ -1,5 +1,5 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
-import { paths } from "@sil/core";
+import { fsx, paths, StateReadError } from "@sil/core";
 import type { LogArgs } from "../args.ts";
 
 const TAIL_BLOCK_SIZE = 64 * 1024;
@@ -52,12 +52,20 @@ export function logsTail(args: LogArgs) {
   // One statSync instead of existsSync-then-statSync: the two-call form can
   // race a log rotation (existsSync true, then statSync throws ENOENT) and
   // 500 the op instead of reporting a missing file.
-  let size = 0;
-  let exists = true;
+  // Only a log that is not there (ENOENT) reads as absent. One that cannot be
+  // reached or read is an error, not "no log yet".
+  let size: number;
   try {
     size = statSync(path).size;
-  } catch {
-    exists = false;
+  } catch (err) {
+    if (fsx.errnoCode(err) === "ENOENT") return { name: args.name, path, exists: false, size: 0, lines: [] };
+    throw new StateReadError(`the ${args.name} log cannot be read (${fsx.errnoCode(err)})`);
   }
-  return { name: args.name, path, exists, size, lines: exists ? tailLines(path, args.lines, REAL_TAIL_IO, size) : [] };
+  let lines: string[];
+  try {
+    lines = tailLines(path, args.lines, REAL_TAIL_IO, size);
+  } catch (err) {
+    throw new StateReadError(`the ${args.name} log cannot be read (${fsx.errnoCode(err)})`);
+  }
+  return { name: args.name, path, exists: true, size, lines };
 }

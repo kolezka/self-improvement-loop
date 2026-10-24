@@ -110,6 +110,41 @@ The Review pane has **Discard** next to Reject. It calls `router.delete` on the
 selected proposal and is disabled when the pattern is live on the default
 branch (`detail.live`), where Reject is the way to drop the branch.
 
+## The native console (`/sil`)
+
+`/sil` opens the loop console in a pane beside the chat. It reads only: accept,
+reject, rehome, retire, rate and settings changes stay with the CLI and
+`sil web`. It needs the hooks module (`docs/INSTALL.md`, "Native console").
+Without it, use `sil status`, `sil review list --world <world>`,
+`sil review show <pattern>` and `sil web`.
+
+The pane has five sections: Overview, Review, Artifacts, Activity and Settings,
+for one world at a time. A row of buttons picks the section, another the world
+(the current one is marked), and Refresh and Close sit at the bottom. The world
+the pane opens on is the one that owns the session's working directory. Below 44
+columns the pane stacks its controls, and where the surface has a selector the
+section and world rows become two selectors. The console defines no key
+bindings of its own: moving between controls and pressing them is the host
+pane's keyboard behaviour. That behaviour has not been checked in an attended
+terminal yet.
+
+Review shows one staged proposal's body and diff a page at a time, up to 200
+lines and 64 KiB per page. Every page is tied to the proposal's
+`reviewed_state` digest. If the branch changes while you read, the next page
+says the proposal changed instead of mixing two revisions; read it again from
+the start. A line too long for one page is reported, not cut short. A clipped
+or partial view is never a complete review: accept through
+`sil review accept`, which checks the digest of what you saw.
+
+A failed read shows as an error in the pane, never as an empty result. Values
+kept from an earlier read are marked as possibly stale. Loop state that exists
+but cannot be read (an unreadable file, a broken directory, malformed content,
+a failed git call) fails the read with a short reason; only state that is not
+there yet reads as empty. `sil review list` and `sil review show` follow the
+same rule. `sil status`, `sil lessons` and `sil reflections` are summaries that
+still skip what they cannot read, so a zero there is not proof of an empty
+queue or inbox. `sil logs worker` shows the worker side.
+
 ## Capturing a lesson now (`/learn`)
 
 `/learn [note]` turns a mistake caught in the current session into a rule, skill,

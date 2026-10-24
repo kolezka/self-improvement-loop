@@ -39,3 +39,12 @@ export class LockHeld extends Error {
 export class ValidationError extends Error {
   override name = "ValidationError";
 }
+
+/** Loop state that exists but cannot be read: a file or directory the read
+ * cannot open or list, or content that does not parse. Reads that present a
+ * value as complete raise this instead of answering empty. The message names
+ * the input by a short label and the error code, never an absolute path or
+ * the content. */
+export class StateReadError extends Error {
+  override name = "StateReadError";
+}

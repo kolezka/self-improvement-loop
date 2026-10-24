@@ -6,7 +6,7 @@
 
 import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { GitError } from "@sil/core";
 
 // A local git command that has not answered in a minute is stuck, not slow.
@@ -267,6 +267,37 @@ export function show(repo: string, ref: string, rel: string): ShowResult {
   const res = gitRaw(repo, ["show", `${ref}:${rel}`]);
   if (res.code !== 0) return { found: false, text: "" };
   return { found: true, text: res.stdout };
+}
+
+/** A layout path as the commit's tree spells it: `./skills/x` and
+ * `skills/x` are one path. Null when it leaves the repository (`..`, an
+ * absolute path) or names the root itself. */
+export function treePath(rel: string): string | null {
+  if (rel.startsWith("/")) return null;
+  const norm = posix.normalize(rel).replace(/\/+$/, "");
+  if (norm === "" || norm === "." || norm === ".." || norm.startsWith("../")) return null;
+  return norm;
+}
+
+/** `rel` at commit `sha`, for a read shown as complete. The commit's tree says
+ * whether the path is there (found false); any git failure raises GitError
+ * with a fixed message and no stderr in it, so "not there" and "could not
+ * read" are never confused. Both git calls take the same normalized path,
+ * literally (no pathspec magic), on one immutable commit: not a race. The
+ * blob's bytes come back as git wrote them. */
+export function showAtCommit(repo: string, sha: string, rel: string): ShowResult {
+  const fail = (what: string, res: GitResult): never => {
+    const how = res.signal !== null ? `signal ${res.signal}` : `exit ${res.code}`;
+    throw new GitError(`git ${what} failed (${how})`, res.stderr);
+  };
+  const path = treePath(rel);
+  if (path === null) throw new GitError("the path is outside the repository");
+  const listed = gitRaw(repo, ["--literal-pathspecs", "ls-tree", "-z", "--name-only", sha, "--", path]);
+  if (listed.signal !== null || listed.code !== 0) return fail("ls-tree", listed);
+  if (!listed.stdout.split("\0").includes(path)) return { found: false, text: "" };
+  const shown = gitRaw(repo, ["cat-file", "blob", `${sha}:${path}`]);
+  if (shown.signal !== null || shown.code !== 0) return fail("cat-file", shown);
+  return { found: true, text: shown.stdout };
 }
 
 export function isAncestor(repo: string, ancestor: string, descendant: string): boolean {

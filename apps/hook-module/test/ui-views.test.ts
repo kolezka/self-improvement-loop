@@ -522,7 +522,7 @@ const T1_SHORT = shortTime(T1, NOW);
 /** The states the old view drew, and every line it drew for each (taken
  * from consoleView at 915b5a5), less the World, Section and Last complete
  * refresh lines the header and footer replace. Times the view formats are
- * written as T1_SHORT; times inside a stored error stay whole. Activity is
+ * written as T1_SHORT, the failed-read status's time too. Activity is
  * left to its sub-tab task. */
 const NO_LOSS: Array<[string, () => ConsoleUiState, string[]]> = [
   [
@@ -580,7 +580,7 @@ const NO_LOSS: Array<[string, () => ConsoleUiState, string[]]> = [
     () => readAt("overview", { worker: fail("StateReadError", "worker state unreadable"), review: fail("ConfigError", "bad config") }),
     [
       "Self-improvement loop",
-      "2 of 2 reads failed at 2026-10-22T12:00:00.000Z (worker: StateReadError, review: ConfigError).",
+      `2 of 2 reads failed at ${T1_SHORT} (worker: StateReadError, review: ConfigError).`,
       `Values below may be stale (last complete refresh ${T1_SHORT}).`,
       "Worker status (global) unavailable: StateReadError: worker state unreadable",
       "Review queue unavailable: ConfigError: bad config",
@@ -606,7 +606,7 @@ const NO_LOSS: Array<[string, () => ConsoleUiState, string[]]> = [
     },
     [
       "Self-improvement loop",
-      "1 of 2 reads failed at 2026-10-22T12:00:00.000Z (bootstrap: ConfigError).",
+      `1 of 2 reads failed at ${T1_SHORT} (bootstrap: ConfigError).`,
       "Values below may be stale (no refresh has fully worked yet).",
       "World list unavailable: ConfigError: config unreadable",
       `Worker (global, all worlds): idle, last run ${T1_SHORT}. Pending: 4, done: 9, failed: 0.`,
@@ -634,7 +634,7 @@ const NO_LOSS: Array<[string, () => ConsoleUiState, string[]]> = [
     },
     [
       "Self-improvement loop",
-      "1 of 1 reads failed at 2026-10-22T12:00:00.000Z (proposal: ProposalChanged).",
+      `1 of 1 reads failed at ${T1_SHORT} (proposal: ProposalChanged).`,
       `Values below may be stale (last complete refresh ${T1_SHORT}).`,
       "Read only: accepting, rejecting and revising proposals are not available in this console yet. Use `sil web` or the CLI.",
       "Proposals 1-2 of 2 in world-a:",
@@ -733,7 +733,13 @@ describe("header, footer and section cards", () => {
       T1,
     );
     const stale = { ...base(), error: "Refresh failed: The control bridge exited with 1." };
-    for (const state of [base(), activity, stale, selectConsoleSection(base(), "settings")]) {
+    // Failed reads: state.ts writes their status with the whole ISO time, and
+    // these states come from its real applyConsoleRead, so a change to that
+    // text shows up here.
+    const failed = NO_LOSS.filter(([name]) => ["failed overview reads", "world list failed", "changed proposal"].includes(name)).map(([, state]) => state());
+    expect(failed).toHaveLength(3);
+    for (const state of failed) expect(state.error).toMatch(iso);
+    for (const state of [base(), activity, stale, selectConsoleSection(base(), "settings"), ...failed]) {
       const lines = lineTexts(consoleView(state, WIDE));
       expect(lines.length).toBeGreaterThan(2);
       expect(lines.filter((t) => iso.test(t))).toEqual([]);

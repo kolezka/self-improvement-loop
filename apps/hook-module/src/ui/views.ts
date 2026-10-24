@@ -189,13 +189,23 @@ function reviewLine(state: ConsoleUiState): ConsoleLine | null {
   return { text: `${n} staged ${n === 1 ? "proposal" : "proposals"} waiting for review in ${state.world}.`, tone: "plain" };
 }
 
+/** The failed-read status state.ts writes: "N of M reads failed at <ISO>
+ * (ids)." Matched whole, so a change to that text draws it as stored. */
+const FAILED_READS = /^(\d{1,6} of \d{1,6} reads failed at )(\S{1,64})( \(.*\)\.)$/;
+
+/** The stored error with its read time drawn short; any other error as is. */
+function errorText(error: string, now: Date): string {
+  const m = FAILED_READS.exec(error);
+  return m === null ? error : `${m[1]}${shortTime(m[2]!, now)}${m[3]}`;
+}
+
 /** The status every section opens with, right under the header. A value is
  * only ever shown from a result that holds it: no read, no number. */
 function statusLines(state: ConsoleUiState, now: Date): ConsoleLine[] {
   const lines: ConsoleLine[] = [];
   if (state.loading) lines.push({ text: "Refreshing...", tone: "dim" });
   if (state.error !== null) {
-    lines.push({ text: state.error, tone: "error" });
+    lines.push({ text: errorText(state.error, now), tone: "error" });
     const shown = Object.values(state.results).some((r) => r.ok);
     if (shown) {
       const since = state.lastSuccessAt === null ? "no refresh has fully worked yet" : `last complete refresh ${shortTime(state.lastSuccessAt, now)}`;

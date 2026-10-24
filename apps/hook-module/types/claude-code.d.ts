@@ -26,8 +26,8 @@
 //
 // Verified against the contract written by Claude Code 2.1.278. The native
 // console subset (session.start, session.end, command.run, ui.render,
-// ui.close, $.command, $.ui, $.clock, $.state) was checked against the one
-// 2.1.308 writes:
+// ui.close, $.command, $.ui, $.clock, $.state, and the Lessons view's Input
+// and $.ui.selection) was checked against the one 2.1.308 writes:
 // `bun run scripts/test-native.ts --types <generated claude-code.d.ts>` runs
 // that second typecheck through apps/hook-module/tsconfig.native.json.
 
@@ -139,6 +139,10 @@ declare module "claude-code" {
       resolve: (e: { surface: RenderSurface }) => Elements;
       /** One dim transcript line, not sent to the model. */
       log: (text: string, options?: { to?: "transcript" | "debug" }) => void;
+      /** What the person last selected with the mouse; `undefined` with nothing
+       * selected, or where none is seen (fullscreen off, -p, a surface that
+       * answers none). Checked against the 2.1.308 contract. */
+      selection: () => Promise<UiSelection | undefined>;
     };
     state: {
       /** A value never written reads `undefined` at version 0. `plugin` and
@@ -188,6 +192,19 @@ declare module "claude-code" {
     isPlaced: boolean;
   };
 
+  /** `$.ui.selection()`'s answer: the selected text as a copy would take it,
+   * and the transcript row it lies in. `requestId` is absent when the
+   * selection spans rows, lies outside the transcript (the prompt, a pane), or
+   * has scrolled out of the rows the transcript keeps drawn. */
+  export type UiSelection = {
+    text: string;
+    requestId?: string;
+  };
+
+  /** What `ui.input` hands an Input's handlers. The real argument carries the
+   * plugin, element, component, request id and surface; the console reads none. */
+  export type UiInputArgument = { readonly surface?: RenderSurface };
+
   /** A `$.clock` timer; a cancelled one never fires again. */
   export type Timer = { cancel: () => void };
 
@@ -222,6 +239,20 @@ declare module "claude-code" {
     /** Source text the engine's highlighter draws; `format: "diff"` reads it
      * as unified-diff hunks. Tab and newline its only control characters. */
     Code: (props: { source: string; format?: "source" | "diff" }) => RenderElement;
+    /** A text field, one line or `rows` lines. Terminal, desktop and VS Code
+     * have it; mobile does not. Enter raises `onSubmit` with the whole text;
+     * every change raises `onInput`. While focused it takes printable keys. */
+    Input?: (props: {
+      key: string;
+      label?: string;
+      placeholder?: string;
+      value?: string;
+      submitLabel?: string;
+      rows?: number;
+      autoFocus?: true;
+      onInput?: (value: string, e: UiInputArgument) => void;
+      onSubmit: (value: string, e: UiInputArgument) => void;
+    }) => RenderElement;
     /** A one-of-several picker. Every surface but mobile has it. */
     Select?: (props: {
       key: string;

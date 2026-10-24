@@ -49,11 +49,13 @@ export function checkForbiddenModuleImports(code: string, label: string): void {
   if (NODE_POLYFILL_HEADER_RE.test(code)) throw new Error(`${label} contains a node: builtin polyfill`);
 }
 
-// dist/hook-module.js was 49KB with no node: builtins pulled in. A node:
-// polyfill adds tens to hundreds of KB (node:crypto alone bundles to ~900KB
-// on its own), so a jump past this is a proxy for one having snuck in past
-// checkForbiddenModuleImports, or for the entrypoint's own code bloating.
-export const MAX_HOOK_MODULE_BYTES = 200 * 1024;
+// Our own bundle-growth budget for dist/hook-module.js, not a measured engine
+// limit. It was 49KB at first; with the native Lessons view and the shared
+// lesson editor it measured 257881 bytes (2026-10-24, unminified). A jump past
+// this budget means something grew a lot (a stray node: polyfill, or the
+// entrypoint's own code) and wants a look; checkForbiddenModuleImports and the
+// source import-closure test are the actual guards against node: code.
+export const MAX_HOOK_MODULE_BYTES = 320 * 1024;
 
 /** Throws when `bytes` exceeds `MAX_HOOK_MODULE_BYTES`. */
 export function checkBundleSize(bytes: number, label: string): void {

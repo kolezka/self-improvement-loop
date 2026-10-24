@@ -1300,4 +1300,189 @@ describe("fix round 2: accepted detail only", () => {
   });
 });
 
+describe("save confirmation survives a superseding refresh", () => {
+  /** A fresh record and a fetch wrapper that reports when the next detail GET has been answered by the host. */
+  async function savingFixture() {
+    const host = new FakeHost();
+    host.addStore(I);
+    host.current = I;
+    const key = { world: WORLD, kind: "capture" as const, id: crypto.randomUUID() };
+    host.seed(I, { key, text: `wording r1 ${key.id}` });
+    let armed: (() => void) | null = null;
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), "http://host").pathname;
+      const reply = host.fetch(input, init);
+      if (armed !== null && (init?.method ?? "GET") === "GET" && path === "/api/lessons/get") {
+        const notify = armed;
+        armed = null;
+        notify();
+      }
+      return reply;
+    }) as typeof fetch;
+    const h = harness(host, new MemoryStorage(), "#/artifacts", undefined, fetcher);
+    await h.s.mount();
+    h.s.chooseProject(WORLD_SCOPE.project);
+    await settle();
+    h.s.openLesson({ key, scope: WORLD_SCOPE });
+    await settle();
+    expect(h.s.view.editor.loaded?.revision).toBe(1);
+    h.s.editText(`wording r2 ${key.id}`);
+    /** Start a save whose own readback GET is answered at r2 but delivered only on release. */
+    const startHeldSave = async () => {
+      const release = host.hold((m, path) => m === "GET" && path === "/api/lessons/get", { respondFirst: true });
+      const answered = new Promise<void>((resolve) => (armed = resolve));
+      const save = h.s.submit({ kind: "save" });
+      await answered;
+      const receipt = host.stores.get(I)!.receipts;
+      expect([...receipt.values()].map((r) => r.revision)).toEqual([2]);
+      expect(h.s.view.sending).toBe(false);
+      return { save, release };
+    };
+    return { host, h, key, startHeldSave };
+  }
+  const okToasts = (h: Harness) => h.toasts.filter((t) => t.kind === "ok");
+
+  test("control: an unraced save confirms once from its own readback", async () => {
+    const { h } = await savingFixture();
+    await h.s.submit({ kind: "save" });
+    await settle();
+    expect(h.s.view.editor.loaded?.revision).toBe(2);
+    expect(h.s.view.confirmed).toBe("Saved.");
+    expect(okToasts(h)).toEqual([{ message: "Saved.", kind: "ok" }]);
+  });
+
+  test("a focus refresh that reads the committed revision first still confirms the save once", async () => {
+    const { h, startHeldSave } = await savingFixture();
+    const { save, release } = await startHeldSave();
+    h.clock.now = 2_000;
+    await h.s.refresh();
+    expect(h.s.view.editor.loaded?.revision).toBe(2);
+    expect(h.s.view.confirmed).toBeNull();
+    release();
+    await save;
+    await settle();
+    expect(h.s.view.editor.loaded?.revision).toBe(2);
+    expect(h.s.view.confirmed).toBe("Saved.");
+    expect(okToasts(h)).toEqual([{ message: "Saved.", kind: "ok" }]);
+  });
+
+  test("a superseding refresh still in flight when the save readback lands confirms after it is accepted", async () => {
+    const { host, h, startHeldSave } = await savingFixture();
+    const { save, release } = await startHeldSave();
+    const releaseRefreshGet = host.hold((m, path) => m === "GET" && path === "/api/lessons/get");
+    const refresh = h.s.refresh();
+    await settle();
+    release();
+    await settle();
+    expect(h.s.view.confirmed).toBeNull();
+    expect(okToasts(h)).toHaveLength(0);
+    releaseRefreshGet();
+    await Promise.all([save, refresh]);
+    await settle();
+    expect(h.s.view.confirmed).toBe("Saved.");
+    expect(okToasts(h)).toHaveLength(1);
+  });
+
+  test("two overlapping refreshes produce one confirmation", async () => {
+    const { h, startHeldSave } = await savingFixture();
+    const { save, release } = await startHeldSave();
+    await h.s.refresh();
+    await h.s.refresh();
+    release();
+    await save;
+    await settle();
+    expect(h.s.view.confirmed).toBe("Saved.");
+    expect(okToasts(h)).toHaveLength(1);
+  });
+
+  test("a failed superseding read leaves the outcome unconfirmed", async () => {
+    const { host, h, startHeldSave } = await savingFixture();
+    const { save, release } = await startHeldSave();
+    host.failPath = "/api/lessons/get";
+    await h.s.refresh();
+    expect(h.s.view.detailError).not.toBeNull();
+    release();
+    await save;
+    await settle();
+    expect(h.s.view.confirmed).toBeNull();
+    expect(okToasts(h)).toHaveLength(0);
+  });
+
+  test("a superseding read that answers for another key does not confirm", async () => {
+    const { host, h, startHeldSave } = await savingFixture();
+    host.seed(I, { key: B, text: "B words" });
+    const { save, release } = await startHeldSave();
+    host.wrongKeyOnce = B;
+    await h.s.refresh();
+    release();
+    await save;
+    await settle();
+    expect(h.s.view.confirmed).toBeNull();
+    expect(okToasts(h)).toHaveLength(0);
+  });
+
+  test("opening another record while the readback is held does not confirm for either record", async () => {
+    const { host, h, startHeldSave } = await savingFixture();
+    const other = { world: WORLD, kind: "capture" as const, id: crypto.randomUUID() };
+    host.seed(I, { key: other, text: `other ${other.id}` });
+    const { save, release } = await startHeldSave();
+    h.s.openLesson({ key: other, scope: WORLD_SCOPE });
+    if (h.s.view.leavePrompt !== null) h.s.discardAndGo();
+    await settle();
+    expect(h.s.view.extras?.key).toEqual(other);
+    release();
+    await save;
+    await settle();
+    expect(h.s.view.extras?.key).toEqual(other);
+    expect(h.s.view.confirmed).toBeNull();
+    expect(okToasts(h)).toHaveLength(0);
+  });
+
+  test("reopening the same record in a new editor context does not adopt the old save's confirmation", async () => {
+    const { host, h, key, startHeldSave } = await savingFixture();
+    const other = { world: WORLD, kind: "capture" as const, id: crypto.randomUUID() };
+    host.seed(I, { key: other, text: `other ${other.id}` });
+    const { save, release } = await startHeldSave();
+    h.s.openLesson({ key: other, scope: WORLD_SCOPE });
+    if (h.s.view.leavePrompt !== null) h.s.discardAndGo();
+    await settle();
+    h.s.openLesson({ key, scope: WORLD_SCOPE });
+    await settle();
+    expect(h.s.view.extras?.key).toEqual(key);
+    expect(h.s.view.editor.loaded?.revision).toBe(2);
+    release();
+    await save;
+    await settle();
+    expect(h.s.view.confirmed).toBeNull();
+    expect(okToasts(h)).toHaveLength(0);
+  });
+
+  test("a refresh that finds another installation does not confirm from the held readback", async () => {
+    const { host, h, startHeldSave } = await savingFixture();
+    const { save, release } = await startHeldSave();
+    host.addStore(J);
+    host.current = J;
+    await h.s.refresh();
+    expect(h.s.view.block?.reason).toBe("mismatch");
+    release();
+    await save;
+    await settle();
+    expect(h.s.view.confirmed).toBeNull();
+    expect(okToasts(h)).toHaveLength(0);
+  });
+
+  test("a hung save readback does not block a refresh from showing the committed revision", async () => {
+    const { host, h, key } = await savingFixture();
+    host.hold((m, path) => m === "GET" && path === "/api/lessons/get");
+    void h.s.submit({ kind: "save" });
+    await settle();
+    expect(host.stores.get(I)!.records.get(`capture:${key.id}`)!.revision).toBe(2);
+    h.clock.now = 7_000;
+    await h.s.refresh();
+    expect(h.s.view.editor.loaded?.revision).toBe(2);
+    expect(h.s.view.detailReadAt).toBe(7_000);
+    h.s.dispose();
+  });
+});
+
 void LOCATION;

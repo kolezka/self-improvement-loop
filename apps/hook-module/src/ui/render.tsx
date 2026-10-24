@@ -11,6 +11,7 @@
 // is between function declarations only, so either side may load first.
 
 import type { On, RenderElement } from "claude-code";
+import { drawLessons } from "./lessons-view.tsx";
 import { consoleAct, readConsole } from "./register.ts";
 import type { ConsoleUiState } from "./state.ts";
 import { boundedErrorText, consoleView, CURRENT_MARK, selectAction, type ConsoleBlock, type ConsoleControl, type ConsoleLine } from "./views.ts";
@@ -81,6 +82,15 @@ export function registerConsoleViews(on: On): void {
     };
 
     const blocks = consoleView(state, { columns: bodyColumns(e.props), canSelect: Select !== undefined });
-    return <Box flexDirection="column">{blocks.map(blockOf)}</Box>;
+    const drawn = blocks.map(blockOf);
+    // Lessons live inside Activity, below its inbox, queue and log.
+    if (state.section === "activity") {
+      try {
+        drawn.push(await drawLessons($, ui, e, state.world, bodyColumns(e.props)));
+      } catch (err) {
+        drawn.push(<Text color="error">{`Error: the lessons view could not be drawn: ${boundedErrorText(errorText(err))}`}</Text>);
+      }
+    }
+    return <Box flexDirection="column">{drawn}</Box>;
   });
 }

@@ -47,8 +47,30 @@ export type SilProposalView = {
   reviewedState: string | null;
 };
 
+/** The Lessons view inside Activity, under the key `lessons`. View settings,
+ * the editor's opaque snapshot, and its trimmed restore export only when its
+ * text passed the secret screen and the save limits. Never authority: a reload
+ * imports it through the editor's own restore and reads the store again. */
+export type SilLessonsState = {
+  version: 1;
+  /** Moves on every write, so a drawn pane redraws. */
+  rev: number;
+  open: boolean;
+  world: string | null;
+  filter: "saved" | "inbox" | "archived" | "important";
+  /** Flat project value (`world`, `unresolved` or a `p1_` id), or null. */
+  project: string | null;
+  search: string;
+  /** Opaque to every reader but the editor's own restore. */
+  restore: { [key: string]: unknown } | null;
+  /** Why `restore` is null although a draft exists. */
+  withheld: "sensitive" | "size" | null;
+  /** Opaque ids only, for the editor's own hydrate. */
+  snapshot: { [key: string]: unknown } | null;
+};
+
 declare module "claude-code" {
   interface PluginState {
-    "self-improvement-loop": { console: SilConsoleState };
+    "self-improvement-loop": { console: SilConsoleState; lessons: SilLessonsState };
   }
 }

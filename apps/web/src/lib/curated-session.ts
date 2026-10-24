@@ -115,6 +115,8 @@ export class CuratedSession {
   #listeners = new Set<() => void>();
   #listSeq = 0;
   #detailSeq = 0;
+  /** The newest detail read issued, so a superseded save readback can wait for it. */
+  #latestDetail: { seq: number; done: Promise<LessonView | null> } | null = null;
   #historySeq = 0;
   #receiptSeq = 0;
   #purgeSeq = 0;
@@ -502,7 +504,15 @@ export class CuratedSession {
 
   // --- detail -----------------------------------------------------------------
 
-  async loadDetail(): Promise<LessonView | null> {
+  /** Resolves to what the controller accepted from that read, or null. */
+  loadDetail(): Promise<LessonView | null> {
+    const before = this.#detailSeq;
+    const done = this.#loadDetail();
+    if (this.#detailSeq !== before) this.#latestDetail = { seq: this.#detailSeq, done };
+    return done;
+  }
+
+  async #loadDetail(): Promise<LessonView | null> {
     if (this.view.block !== null) return null;
     const c = this.#controller;
     const state = c.state;
@@ -929,8 +939,39 @@ export class CuratedSession {
     void this.reloadList();
   }
 
+  /**
+   * The readback's own accepted view, or that of a newer detail read issued
+   * before it landed, if the store, record and context are all unchanged.
+   */
+  async #readbackView(): Promise<LessonView | null> {
+    const controller = this.#controller;
+    const { target, generation } = controller.state;
+    const epoch = this.#epoch;
+    const context = this.#contextSeq;
+    const pinned = this.#pinned;
+    const unchanged = () => {
+      const now = controller.state;
+      return this.#alive && controller === this.#controller && epoch === this.#epoch && context === this.#contextSeq &&
+        pinned === this.#pinned && this.view.block === null && now.generation === generation &&
+        target !== null && now.target !== null && sameKey(now.target.key, target.key) && sameProject(now.target.scope.project, target.scope.project);
+    };
+    const before = this.#detailSeq;
+    let pending = this.loadDetail();
+    let seq = this.#detailSeq;
+    if (seq === before) return pending;
+    for (;;) {
+      const view = await pending;
+      if (view !== null) return unchanged() ? view : null;
+      // Only a read that was superseded, not one that failed while current, defers to a newer one.
+      const newer = this.#latestDetail;
+      if (newer === null || newer.seq <= seq || !unchanged()) return null;
+      seq = newer.seq;
+      pending = newer.done;
+    }
+  }
+
   async #confirmReadback(key: LessonKey, revision: number, readback: Readback | null): Promise<void> {
-    const view = await this.loadDetail();
+    const view = await this.#readbackView();
     if (view === null || !cl.readbackConfirms(revision, key, view)) {
       this.#set({ confirmed: null });
       return;

@@ -20,6 +20,7 @@
     "./lesson-curation-schema": "./src/lesson-curation-schema.ts",
     "./lesson-curation-ui": "./src/lesson-curation-ui.ts",
     "./curation-read": "./src/curation-read.ts",
+    "./curation-client": "./src/curation-client.ts",
     "./repo-root": "./src/repo-root.ts",
     "./sensitive-text": "./src/sensitive-text.ts",
     "./control-protocol": "./src/control-protocol.ts",

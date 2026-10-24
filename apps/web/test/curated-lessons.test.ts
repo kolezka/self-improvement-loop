@@ -336,3 +336,21 @@ describe("leave guards", () => {
     expect(ran).toEqual(["go"]);
   });
 });
+
+describe("shared decoders", () => {
+  test("the web adapter re-exports the core decoders, so CurationReadError is one class", async () => {
+    const core = await import("@sil/core/curation-client");
+    const web = await import("../src/lib/curated-lessons.ts");
+    expect(web.CurationReadError).toBe(core.CurationReadError);
+    for (const name of ["browseQuery", "decodeView", "decodeLessonDetail", "decodeReadResult", "decodeReceiptRead", "decodeHistory", "readbackConfirms"] as const) {
+      expect(web[name]).toBe(core[name]);
+    }
+    let caught: unknown;
+    try {
+      core.decodeView({});
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(web.CurationReadError);
+  });
+});

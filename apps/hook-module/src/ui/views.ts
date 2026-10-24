@@ -705,34 +705,24 @@ export function enforceDisplayBudget(blocks: ConsoleBlock[], budget: number): Co
   const notice = (n: number): ConsoleBlock => line(`${n} more items are not shown: the pane's display budget is full.`, "error");
   const reserve = blockChars(notice(items(out)));
   let used = 0;
-  let isFull = false;
-  // Keeps blocks in order until one does not fit; nothing after it is kept.
+  let left = 0;
+  // Keeps blocks in order until one does not fit; nothing after it is kept,
+  // and `left` counts what was dropped, inside cards too.
   const fit = (list: ConsoleBlock[]): ConsoleBlock[] => {
     const kept: ConsoleBlock[] = [];
-    for (const b of list) {
-      if (b.kind === "card") {
-        const head = b.title.length + (b.meta?.length ?? 0);
-        if (used + head + reserve > budget) {
-          isFull = true;
-          break;
-        }
-        used += head;
-        kept.push({ ...b, blocks: fit(b.blocks) });
-      } else {
-        const size = blockChars(b);
-        if (used + size + reserve > budget) {
-          isFull = true;
-          break;
-        }
-        kept.push(b);
-        used += size;
+    for (const [i, b] of list.entries()) {
+      const size = b.kind === "card" ? b.title.length + (b.meta?.length ?? 0) : blockChars(b);
+      if (left > 0 || used + size + reserve > budget) {
+        left += items(list.slice(i));
+        break;
       }
-      if (isFull) break;
+      used += size;
+      kept.push(b.kind === "card" ? { ...b, blocks: fit(b.blocks) } : b);
     }
     return kept;
   };
   const kept = fit(out);
-  return [...kept, notice(items(out) - items(kept))];
+  return [...kept, notice(left)];
 }
 
 /** Proposal pages, wherever they sit, swapped for words saying they are left

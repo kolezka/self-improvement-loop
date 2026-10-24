@@ -480,6 +480,13 @@ describe("cards", () => {
     expect(total(out)).toBeLessThanOrEqual(30000);
   });
 
+  test("a child cut from a kept card is counted as left out", () => {
+    const out = enforceDisplayBudget([card("one", "List", [plain("x".repeat(1000))])], 100);
+    expect(out[0]?.kind === "card" && out[0].blocks).toEqual([]);
+    const last = flattenBlocks(out).at(-1);
+    expect(last?.kind === "line" && last.line.text).toBe("1 more items are not shown: the pane's display budget is full.");
+  });
+
   test("a cut card keeps its title", () => {
     const first = enforceDisplayBudget([bigCard()], 30000)[0];
     expect(first?.kind === "card" && first.title).toBe("List");

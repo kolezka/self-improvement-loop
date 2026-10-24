@@ -119,7 +119,7 @@ change.
 Votes run `/self-improvement-loop:feedback <type>:<pattern> good|bad`, built from
 the row's `artifact_type` and `pattern`. A row whose type or pattern fails the
 existing slug check gets no vote buttons. After a click the row shows "vote queued"
-instead of the buttons until the next refresh.
+instead of the buttons until the next action, tab change or world change.
 
 #### Which world an action affects
 

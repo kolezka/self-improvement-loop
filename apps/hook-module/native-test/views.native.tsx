@@ -463,7 +463,9 @@ test('cards: a round frame at 80 columns, none at 40; header above them, footer 
   const wide = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'terminal' })
   const all = elements(await wide.drawn())
   const framed = all.filter((el) => el.type === 'Box' && el.props?.borderStyle === 'round')
-  expect(framed).toHaveLength(2)
+  // Worker, Review and Actions.
+  expect(framed).toHaveLength(3)
+  expect(framed.some((box) => elements(box.children ?? []).some((el) => el.type === 'Text' && ownText(el) === 'Actions'))).toBe(true)
   const worker = framed.find((box) => elements(box.children ?? []).some((el) => el.type === 'Text' && ownText(el) === 'Worker'))
   expect(worker).toBeDefined()
   expect(elements(worker!.children ?? []).some((el) => el.type === 'Text' && ownText(el) === 'global, all worlds')).toBe(true)

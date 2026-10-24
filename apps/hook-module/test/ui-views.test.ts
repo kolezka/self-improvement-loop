@@ -700,9 +700,9 @@ describe("header, footer and section cards", () => {
   });
 
   test("each section's content is in cards", () => {
-    expect(cardTitles(consoleView(base(), WIDE))).toEqual(["Worker", "Review"]);
+    expect(cardTitles(consoleView(base(), WIDE))).toEqual(["Worker", "Review", "Actions"]);
     const overview = consoleView(base(), WIDE).filter((b) => b.kind === "card");
-    expect(overview.map((b) => (b.kind === "card" ? b.meta : null))).toEqual(["global, all worlds", "world-a"]);
+    expect(overview.map((b) => (b.kind === "card" ? b.meta : null))).toEqual(["global, all worlds", "world-a", "runs when the session is idle"]);
     expect(cardTitles(consoleView(readAt("review", { list: ok(listPage()) }), WIDE))).toEqual(["Staged proposals"]);
     expect(cardTitles(consoleView(reviewing(page()), WIDE))).toEqual(["Staged proposals", "p-one"]);
     expect(cardTitles(consoleView(readAt("artifacts", { list: ok(listPage()) }), WIDE))).toEqual(["Artifacts"]);
@@ -1058,12 +1058,13 @@ describe("fix round 1", () => {
     delete task5.lessonsOffset;
     delete task5.worldOffset;
     delete task5.activityTab;
+    delete task5.commandNote;
     const parsed = parseConsoleState(task5);
     expect(parsed.reset).toBe("migrated");
-    expect(parsed.state).toMatchObject({ world: "world-a", section: "activity", listOffset: 10, lessonsOffset: 0, worldOffset: 0, activityTab: "queue", generation: 5 });
+    expect(parsed.state).toMatchObject({ world: "world-a", section: "activity", listOffset: 10, lessonsOffset: 0, worldOffset: 0, activityTab: "queue", commandNote: null, generation: 5 });
     expect(Object.keys(parsed.state.results).sort()).toEqual(["bootstrap", "list", "worker"]);
     const task4 = parseConsoleState({ world: "world-a", section: "overview", generation: 1, selectedPattern: null, loading: false, lastSuccessAt: null, results: {}, error: null });
-    expect(task4.state).toMatchObject({ lessonsOffset: 0, worldOffset: 0, listOffset: 0, activityTab: "queue" });
+    expect(task4.state).toMatchObject({ lessonsOffset: 0, worldOffset: 0, listOffset: 0, activityTab: "queue", commandNote: null });
     for (const bad of [{ lessonsOffset: -1 }, { worldOffset: 1.5 }]) {
       expect(parseConsoleState({ ...initialConsoleState(), ...bad }).reset).toBe("corrupt");
     }

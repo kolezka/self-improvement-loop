@@ -79,6 +79,8 @@ export interface FakeFailures {
   env?: boolean;
   /** `$.command.register` rejects, as a refused registration does. */
   commandRegister?: boolean;
+  /** `$.command.run` rejects, as the host does for an unknown name or past a Stop. */
+  commandRun?: boolean;
   /** `$.ui.open` rejects. */
   uiOpen?: boolean;
   /** `$.session.cwd` rejects. */
@@ -120,6 +122,8 @@ export interface FakeEngineOptions {
    * not consulted. */
   realRun?: FakeRealRun;
   fail?: FakeFailures;
+  /** Calls that never settle. `commandRun`: a command queued that never runs. */
+  hold?: { commandRun?: boolean };
   /** What `$.ui.open` answers: placed (default) or open but undrawn. */
   openPlaced?: boolean;
 }
@@ -338,6 +342,13 @@ export class FakeEngine {
           this.calls.push(call);
           if (options.fail?.commandRegister) this.reject(call, "fake command.register refusal");
           return { command: spec.name };
+        },
+        run: async (input: { command: string; args?: string }): Promise<{ text?: string }> => {
+          const call = `command.run ${input.command} ${input.args ?? ""}`;
+          this.calls.push(call);
+          if (options.fail?.commandRun) this.reject(call, "fake command.run refusal");
+          if (options.hold?.commandRun) return new Promise<never>(() => undefined);
+          return {};
         },
       },
       ui: {

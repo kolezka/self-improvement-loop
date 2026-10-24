@@ -3,8 +3,9 @@
 // the actions.
 //
 // Only cheap reads run on the timer. Provider probes (health.report,
-// llm.status) are never asked for, and nothing here can change loop state:
-// there is no accept, reject, revise or settings control in this console.
+// llm.status) are never asked for. The pane changes loop state only through
+// the plugin's own slash commands, pressed by the person and shown in the
+// chat; there is no accept, reject, revise or settings control here.
 
 import type { ControlRead } from "@sil/core/control-protocol";
 import {
@@ -25,6 +26,7 @@ import {
   LIST_READ,
   PROPOSAL_READ,
   REVIEW_READ,
+  sessionWorld,
   WORKER_READ,
   type ActivityTab,
   type ConsoleSection,
@@ -58,6 +60,20 @@ export const QUEUE_READ = "queue";
 export const LOGS_READ = "logs";
 
 export type ListKind = "review" | "artifacts" | "reflections";
+
+/** The plugin's name, which namespaces its slash commands. */
+export const PLUGIN = "self-improvement-loop";
+
+/** The Actions card's buttons, in drawing order. A `world` action works on the
+ * session's world, so it is drawn only while the pane shows that world. */
+export const PANE_ACTIONS: readonly { key: string; label: string; command: string; args: string; scope: "session" | "world" }[] = [
+  { key: "learn", label: "Lesson from a mistake", command: `${PLUGIN}:learn`, args: "", scope: "session" },
+  { key: "toolify", label: "Skill from last answer", command: `${PLUGIN}:toolify`, args: "", scope: "session" },
+  { key: "reflect", label: "Reflect on this session", command: `${PLUGIN}:reflect`, args: "", scope: "session" },
+  { key: "curriculum", label: "Preview promotion", command: `${PLUGIN}:curriculum`, args: "", scope: "world" },
+  { key: "run", label: "Run worker now", command: `${PLUGIN}:loop`, args: "run", scope: "session" },
+  { key: "web", label: "Open web console", command: `${PLUGIN}:loop`, args: "web", scope: "session" },
+];
 
 /** The list a section pages through, if it has one. */
 function sectionList(section: ConsoleSection): ListKind | null {
@@ -255,7 +271,9 @@ export type ConsoleAction =
   | { kind: "select"; pattern: string | null }
   | { kind: "part"; part: ProposalPart }
   | { kind: "page"; to: "next" | "prev" | "first" }
-  | { kind: "reload-proposal" };
+  | { kind: "reload-proposal" }
+  /** Queues one of the plugin's slash commands; `target` is a vote's artifact. */
+  | { kind: "command"; command: string; args: string; target: string | null };
 
 export interface ConsoleControl {
   key: string;
@@ -460,6 +478,36 @@ function listBlocks(
 }
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const ARTIFACT_TYPE = /^[a-z]{1,32}$/;
+const FEEDBACK = `${PLUGIN}:feedback`;
+/** A vote's whole argument string: SLUG and ARTIFACT_TYPE joined, one verdict. */
+const VOTE_ARGS = /^[a-z]{1,32}:[a-z0-9][a-z0-9-]{0,63} (?:good|bad)$/;
+
+/** Whether `action` is a command a button may queue: one of PANE_ACTIONS as
+ * listed, or a vote built from checked parts. Checked again at the press. */
+export function isAllowedCommand(action: { command: string; args: string; target: string | null }): boolean {
+  if (action.target === null) return PANE_ACTIONS.some((a) => a.command === action.command && a.args === action.args);
+  return action.command === FEEDBACK && SLUG.test(action.target) && VOTE_ARGS.test(action.args) && action.args.split(" ")[0]!.endsWith(`:${action.target}`);
+}
+
+/** Whether world-scoped controls (votes, Preview promotion) are drawn, and
+ * the dim line said in their place when not. */
+function worldScope(state: ConsoleUiState): { ok: true } | { ok: false; why: string } {
+  const own = sessionWorld(state);
+  if (!own.ok) return { ok: false, why: `Votes and promotion apply to this session's world, which is not resolved: ${own.reason}` };
+  if (state.world === own.world) return { ok: true };
+  return { ok: false, why: `Votes and promotion apply to this session's world (${own.world}). Switch to it to use them.` };
+}
+
+function commandLabel(command: string, args: string): string {
+  return `/${command}${args === "" ? "" : ` ${args}`}`;
+}
+
+/** What the note says: queued, never ran, or the host's refusal. */
+function noteLine(note: { command: string; args: string; error: string | null }): ConsoleBlock {
+  if (note.error !== null) return line(`${commandLabel(note.command, note.args)} could not be queued: ${note.error}`, "error");
+  return line(`Queued ${commandLabel(note.command, note.args)}. It runs in the chat once Claude is idle.`, "plain");
+}
 
 function reviewRows(state: ConsoleUiState, page: ListPage): ConsoleBlock[] {
   const items: ConsoleControl[] = [];
@@ -477,12 +525,25 @@ function reviewRows(state: ConsoleUiState, page: ListPage): ConsoleBlock[] {
   return [controls("proposals", items, "column"), ...odd];
 }
 
-function artifactRows(page: ListPage): ConsoleBlock[] {
-  return page.items.map((item) => {
-    if (!isRecord(item) || str(item.pattern) === null) return line("An artifact came back in an unexpected shape and is not shown.", "error");
+/** Each artifact's line, with good and bad votes beside it when votes are
+ * on and its type and pattern pass the checks; "vote queued" once pressed. */
+function artifactRows(state: ConsoleUiState, page: ListPage, votes: boolean): ConsoleBlock[] {
+  return page.items.flatMap((item): ConsoleBlock[] => {
+    if (!isRecord(item) || str(item.pattern) === null) return [line("An artifact came back in an unexpected shape and is not shown.", "error")];
+    const pattern = item.pattern as string;
+    const type = str(item.artifact_type);
     const served = str(item.served_by);
     const reflections = isCount(item.reflections) ? `${item.reflections} reflections` : "reflections unknown";
-    return line(row(`${item.pattern}: ${str(item.artifact_type) ?? "?"}, ${str(item.status) ?? "?"}, ${reflections}${served ? `, served by ${served}` : ""}`));
+    const text = line(row(`${pattern}: ${type ?? "?"}, ${str(item.status) ?? "?"}, ${reflections}${served ? `, served by ${served}` : ""}`));
+    if (!votes || type === null || !ARTIFACT_TYPE.test(type) || !SLUG.test(pattern)) return [text];
+    const note = state.commandNote;
+    if (note !== null && note.target === pattern) {
+      return note.error === null ? [{ kind: "row", key: `artifact-${pattern}`, blocks: [text, line("vote queued", "dim")] }] : [text, noteLine(note)];
+    }
+    const vote = (verdict: "good" | "bad"): ConsoleControl =>
+      // A dot is never in a SLUG, so no button key equals another row's block key.
+      control(`vote-${pattern}.${verdict}`, verdict, { kind: "command", command: FEEDBACK, args: `${type}:${pattern} ${verdict}`, target: pattern });
+    return [{ kind: "row", key: `artifact-${pattern}`, blocks: [text, controls(`vote-${pattern}`, [vote("good"), vote("bad")])] }];
   });
 }
 
@@ -564,7 +625,7 @@ function proposalBlocks(state: ConsoleUiState, narrow: boolean): ConsoleBlock[] 
       "The proposal changed while you were reading it. Pages of two revisions are never joined: read it again from the start.",
       "error",
     ),
-    controls("proposal-reload", [control("proposal-reload", "Read again from the start", { kind: "reload-proposal" })]),
+    controls("proposal-reload-controls", [control("proposal-reload", "Read again from the start", { kind: "reload-proposal" })]),
   ];
 
   const r = resultOf(state, PROPOSAL_READ);
@@ -627,7 +688,9 @@ function reviewSection(state: ConsoleUiState, narrow: boolean): ConsoleBlock[] {
 
 function artifactsSection(state: ConsoleUiState): ConsoleBlock[] {
   if (state.world === null) return [card("artifacts", "Artifacts", [line("Choose a world to see its artifacts.", "dim")])];
-  return [card("artifacts", "Artifacts", listBlocks(state, LIST_READ, "artifacts", artifactRows, LIST_PAGING))];
+  const scope = worldScope(state);
+  const blocks = listBlocks(state, LIST_READ, "artifacts", (page) => artifactRows(state, page, scope.ok), LIST_PAGING);
+  return [card("artifacts", "Artifacts", scope.ok ? blocks : [line(scope.why, "dim"), ...blocks])];
 }
 
 /** The worker card (global) and, with a world, its review queue card. */
@@ -638,7 +701,21 @@ function overviewSection(state: ConsoleUiState, now: Date): ConsoleBlock[] {
   ];
   const review = reviewLine(state);
   if (review !== null && state.world !== null) blocks.push(card("review", "Review", [{ kind: "line", line: review }], state.world));
+  blocks.push(actionsCard(state));
   return blocks;
+}
+
+/** The plugin's commands as buttons, Preview promotion only on the session's
+ * world, and what the last press queued. */
+function actionsCard(state: ConsoleUiState): ConsoleBlock {
+  const scope = worldScope(state);
+  const shown = PANE_ACTIONS.filter((a) => a.scope === "session" || scope.ok);
+  const buttons = shown.map((a) => control(`action-${a.key}`, a.label, { kind: "command", command: a.command, args: a.args, target: null }));
+  const blocks: ConsoleBlock[] = [controls("pane-actions", buttons, "column")];
+  const note = state.commandNote;
+  if (note !== null && note.target === null) blocks.push(noteLine(note));
+  if (!scope.ok) blocks.push(line(scope.why, "dim"));
+  return card("actions", "Actions", blocks, "runs when the session is idle");
 }
 
 function queueBlocks(state: ConsoleUiState, now: Date): ConsoleBlock[] {

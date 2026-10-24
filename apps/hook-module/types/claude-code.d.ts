@@ -117,6 +117,10 @@ declare module "claude-code" {
     command: {
       /** Adds `/<name>` for the session; answered by a `command.run` hook. */
       register: (command: CommandSpec) => Promise<unknown>;
+      /** Runs `/command args` as if typed, queued until the session is idle.
+       * Rejects an unknown name, inside a hook the turn waits on, past a Stop
+       * or a host limit. */
+      run: (input: CommandRunArgs) => Promise<CommandRunResult>;
     };
     /** Time and timers through the host. The console's refresh is the only
      * user: a timer's callback runs in the module, and a hot reload of the
@@ -284,6 +288,12 @@ declare module "claude-code" {
   export type CommandRunInput = {
     command: string;
     args: string;
+  };
+
+  /** `$.command.run`'s argument; the engine sets `origin` and `presentation`. */
+  export type CommandRunArgs = {
+    command: string;
+    args?: string;
   };
 
   export type CommandRunResult = {

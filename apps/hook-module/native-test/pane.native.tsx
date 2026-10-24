@@ -703,3 +703,23 @@ test('Activity sub-tabs: the Lessons view is drawn under Lessons only, and a tab
   await ui.unmount()
   expect(seen.forbidden).toEqual([])
 })
+
+test('an Actions button queues its plugin command through $.command.run and reads nothing', async ($, on) => {
+  const seen = engine(on)
+  await start($)
+  await $.command.run({ command: 'sil', ...TYPED })
+  await seen.clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const before = seen.requests.length
+  expect((await ui.find({ key: 'action-reflect' }))?.props.label).toBe('Reflect on this session')
+  await ui.press({ key: 'action-reflect' })
+  await seen.clock.settle()
+  // The engine beneath ran the plugin's own command once, as if typed.
+  expect(seen.coreCommands).toEqual(['self-improvement-loop:reflect'])
+  expect(seen.state?.commandNote).toEqual({ command: 'self-improvement-loop:reflect', args: '', target: null, error: null })
+  expect((await ui.find({ type: 'Text', text: /Queued \/self-improvement-loop:reflect\. It runs in the chat once Claude is idle\./ }))).toBeDefined()
+  expect(seen.logs).toEqual([])
+  expect(seen.requests.length).toBe(before)
+  await ui.unmount()
+  expect(seen.forbidden).toEqual([])
+})

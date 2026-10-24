@@ -105,9 +105,9 @@ export function registerConsoleViews(on: On): void {
         );
       }
       const buttons = b.controls.map(buttonOf);
-      if (b.label === undefined) return <Box flexDirection={b.direction} gap={1}>{buttons}</Box>;
+      if (b.label === undefined) return <Box key={b.key} flexDirection={b.direction} gap={1}>{buttons}</Box>;
       return (
-        <Box flexDirection={b.direction} gap={1}>
+        <Box key={b.key} flexDirection={b.direction} gap={1}>
           <Text dimColor>{b.label}</Text>
           {buttons}
         </Box>

@@ -88,6 +88,7 @@ describe("pure console state", () => {
       lessonsOffset: 0,
       worldOffset: 0,
       activityTab: "queue",
+      commandNote: null,
     });
   });
 
@@ -321,6 +322,7 @@ describe("parseConsoleState", () => {
   test("the v1.2.9 saved shape migrates with Queue chosen", () => {
     const a = { ...worldA(), section: "activity", listOffset: 10, lessonsOffset: 5, worldOffset: 25 } as Record<string, unknown>;
     delete a.activityTab;
+    delete a.commandNote;
     // Exactly the v1.2.9 keys, nothing more.
     expect(Object.keys(a).sort()).toEqual(
       ["world", "section", "generation", "selectedPattern", "loading", "lastSuccessAt", "results", "error", "listOffset", "proposal", "lessonsOffset", "worldOffset"].sort(),
@@ -337,11 +339,38 @@ describe("parseConsoleState", () => {
       lessonsOffset: 5,
       worldOffset: 25,
       activityTab: "queue",
+      commandNote: null,
       loading: false,
     });
     expect(parsed.state.results).toEqual(saved.results);
     expect(parsed.state.generation).toBeGreaterThan(saved.generation);
     expect(parsed.state.error).toBeNull();
+  });
+
+  test("a saved commandNote round-trips; a malformed one resets as corrupt", () => {
+    const saved = (note: unknown) => ({ ...JSON.parse(JSON.stringify(worldA())), commandNote: note });
+    for (const note of [
+      { command: "self-improvement-loop:loop", args: "run", target: null, error: null },
+      { command: "self-improvement-loop:feedback", args: "skill:verify-callsites good", target: "verify-callsites", error: "refused" },
+    ]) {
+      const parsed = parseConsoleState(saved(note));
+      expect(parsed.reset).toBe("none");
+      expect(parsed.state.commandNote).toEqual(note);
+    }
+    for (const note of [
+      "queued",
+      1,
+      { command: "x", args: "" },
+      { command: "x", args: "", target: null, error: null, extra: 1 },
+      { command: 1, args: "", target: null, error: null },
+      { command: "x", args: null, target: null, error: null },
+      { command: "x", args: "", target: 2, error: null },
+      { command: "x", args: "", target: null, error: false },
+    ]) {
+      const parsed = parseConsoleState(saved(note));
+      expect(parsed.reset).toBe("corrupt");
+      expect(parsed.state.commandNote).toBeNull();
+    }
   });
 
   test("a saved activityTab outside ACTIVITY_TABS resets as corrupt", () => {

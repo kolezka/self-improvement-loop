@@ -2,8 +2,10 @@
 // and the controller that keeps it filled from `sil ops` while it is shown.
 //
 // Same rules as the classic hooks: nothing here blocks, calls a model or
-// starts a turn, and nothing runs from the tool hooks. The pane opens only
-// when the person runs /sil. Reads go through ./transport.ts alone.
+// starts a turn on its own, and nothing runs from the tool hooks. The pane
+// opens only when the person runs /sil. Reads go through ./transport.ts alone.
+// The one way it changes loop state is a button the person presses, which
+// queues one of the plugin's own slash commands to run in the chat.
 //
 // What the pane shows lives in `$.state` (types/index.d.ts declares it), so
 // it survives a hot reload; render reads it and never writes it. What is
@@ -31,6 +33,7 @@ import {
   chooseConsoleWorld,
   failConsoleRead,
   invalidateConsole,
+  noteCommand,
   parseConsoleState,
   reconcileConsoleWorld,
   reloadProposal,
@@ -42,9 +45,10 @@ import {
   setProposalPart,
   setWorldOffset,
   turnProposalPage,
+  type CommandNote,
   type ConsoleUiState,
 } from "./state.ts";
-import { CONSOLE_REFRESH_MS, consoleReads, type ConsoleAction } from "./views.ts";
+import { boundedErrorText, CONSOLE_REFRESH_MS, consoleReads, isAllowedCommand, type ConsoleAction } from "./views.ts";
 
 // The command name, pane id and state key are written as literals at each
 // use: `claude plugin validate` reads them off the source, and a constant
@@ -331,8 +335,39 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
     case "reload-proposal":
       done = rescope(reloadProposal);
       break;
+    case "command":
+      done = queueCommand($, action);
+      break;
   }
   void done.catch((err) => log($, `the console control failed: ${errorText(err)}`));
+}
+
+/** Notes the command as queued and hands it to the host, which runs it once
+ * the session is idle. The press never waits for that; a refusal replaces the
+ * note, if it is still this command's. No read follows. */
+function queueCommand($: EngineInterface, action: Extract<ConsoleAction, { kind: "command" }>): Promise<unknown> {
+  const { command, args, target } = action;
+  if (!isAllowedCommand(action)) {
+    log($, `the console refused to queue an unexpected command: ${boundedErrorText(command)}`);
+    return Promise.resolve();
+  }
+  const note: CommandNote = { command, args, target, error: null };
+  const write = (change: (s: ConsoleUiState) => ConsoleUiState) => (active ? writeIfCurrent($, lifecycle, change) : writeConsole($, change));
+  const noted = write((s) => noteCommand(s, note));
+  const same = (n: CommandNote | null) => n !== null && n.command === command && n.args === args && n.target === target;
+  let run: Promise<unknown>;
+  try {
+    run = $.command.run({ command, args });
+  } catch (err) {
+    run = Promise.reject(err);
+  }
+  run.then(undefined, (err) => {
+    const error = boundedErrorText(errorText(err));
+    void writeConsole($, (s) => (same(s.commandNote) ? noteCommand(s, { ...note, error }) : s)).catch((e) =>
+      log($, `the console could not record a refused command: ${errorText(e)}`),
+    );
+  });
+  return noted;
 }
 
 /** A close that went through: stop and drop everything. Idempotent, so the

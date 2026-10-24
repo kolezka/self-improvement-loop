@@ -21,11 +21,13 @@ import {
   parseConsoleState,
   reconcileConsoleWorld,
   selectConsoleSection,
+  setActivityTab,
   switchConsoleWorld,
+  ACTIVITY_TABS,
   type ConsoleBootstrap,
   type ConsoleUiState,
 } from "../src/ui/state.ts";
-import { consoleLines, consoleReads, CONSOLE_REFRESH_MS, type ConsoleAction } from "../src/ui/views.ts";
+import { consoleLines, consoleReads, CONSOLE_REFRESH_MS, shortTime, type ConsoleAction } from "../src/ui/views.ts";
 import { FakeEngine, type FakeElement, type FakeRunResult } from "./fake-engine.ts";
 
 // The sandbox copy of the bootstrap shape and the host's must stay one shape,
@@ -85,6 +87,8 @@ describe("pure console state", () => {
       proposal: null,
       lessonsOffset: 0,
       worldOffset: 0,
+      activityTab: "queue",
+      commandNote: null,
     });
   });
 
@@ -159,10 +163,11 @@ describe("pure console state", () => {
     expect(failed.lastSuccessAt).toBe(T1);
     expect(failed.loading).toBe(false);
     expect(failed.error).toContain("exited with 1");
-    const shown = text(consoleLines(failed));
+    const now = new Date(2026, 9, 24, 17, 0);
+    const shown = text(consoleLines(failed, now));
     expect(shown).toContain("exited with 1");
     expect(shown).toMatch(/stale/i);
-    expect(shown).toContain(T1);
+    expect(shown).toContain(`last complete refresh ${shortTime(T1, now)}`);
     // The real values are still there, and labelled as old.
     expect(shown).toContain("Pending: 2");
   });
@@ -312,6 +317,97 @@ describe("parseConsoleState", () => {
     expect(parsed.state.world).toBeNull();
     expect(parsed.state.results).toEqual({});
     expect(parsed.state.error).toMatch(/reset/i);
+  });
+
+  test("the v1.2.9 saved shape migrates with Queue chosen", () => {
+    const a = { ...worldA(), section: "activity", listOffset: 10, lessonsOffset: 5, worldOffset: 25 } as Record<string, unknown>;
+    delete a.activityTab;
+    delete a.commandNote;
+    // Exactly the v1.2.9 keys, nothing more.
+    expect(Object.keys(a).sort()).toEqual(
+      ["world", "section", "generation", "selectedPattern", "loading", "lastSuccessAt", "results", "error", "listOffset", "proposal", "lessonsOffset", "worldOffset"].sort(),
+    );
+    const saved = JSON.parse(JSON.stringify(a));
+    const parsed = parseConsoleState(saved);
+    expect(parsed.reset).toBe("migrated");
+    expect(parsed.state).toMatchObject({
+      world: "world-a",
+      section: "activity",
+      selectedPattern: "some-pattern",
+      proposal: saved.proposal,
+      listOffset: 10,
+      lessonsOffset: 5,
+      worldOffset: 25,
+      activityTab: "queue",
+      commandNote: null,
+      loading: false,
+    });
+    expect(parsed.state.results).toEqual(saved.results);
+    expect(parsed.state.generation).toBeGreaterThan(saved.generation);
+    expect(parsed.state.error).toBeNull();
+  });
+
+  test("a saved commandNote round-trips; a malformed one resets as corrupt", () => {
+    const saved = (note: unknown) => ({ ...JSON.parse(JSON.stringify(worldA())), commandNote: note });
+    const U = "0f1e2d3c-4b5a-4968-8778-a9b8c7d6e5f4";
+    for (const note of [
+      { id: `${U}.1`, command: "self-improvement-loop:loop", args: "run", target: null, error: null },
+      { id: `${U}.12`, command: "self-improvement-loop:feedback", args: "skill:verify-callsites good", target: "verify-callsites", error: "refused" },
+    ]) {
+      const parsed = parseConsoleState(saved(note));
+      expect(parsed.reset).toBe("none");
+      expect(parsed.state.commandNote).toEqual(note);
+    }
+    for (const note of [
+      "queued",
+      1,
+      { id: "1.1", command: "x", args: "" },
+      { command: "x", args: "", target: null, error: null },
+      { id: 1, command: "x", args: "", target: null, error: null },
+      { id: "1.1", command: "x", args: "", target: null, error: null, extra: 1 },
+      { id: "1.1", command: 1, args: "", target: null, error: null },
+      { id: "1.1", command: "x", args: null, target: null, error: null },
+      { id: "1.1", command: "x", args: "", target: 2, error: null },
+      { id: "1.1", command: "x", args: "", target: null, error: false },
+      // The id names a module instance and a press number, nothing looser.
+      { id: "4.1", command: "x", args: "", target: null, error: null },
+      { id: U, command: "x", args: "", target: null, error: null },
+      { id: `${U}.0`, command: "x", args: "", target: null, error: null },
+      { id: `${U}.1 `, command: "x", args: "", target: null, error: null },
+      { id: `${U.toUpperCase()}.1`, command: "x", args: "", target: null, error: null },
+      { id: `x${U}.1`, command: "x", args: "", target: null, error: null },
+    ]) {
+      const parsed = parseConsoleState(saved(note));
+      expect(parsed.reset).toBe("corrupt");
+      expect(parsed.state.commandNote).toBeNull();
+    }
+  });
+
+  test("a saved activityTab outside ACTIVITY_TABS resets as corrupt", () => {
+    expect(ACTIVITY_TABS).toEqual(["queue", "reflections", "lessons", "log"]);
+    for (const tab of ["lesson", "Queue", "", null, 1, "toString"]) {
+      const parsed = parseConsoleState({ ...JSON.parse(JSON.stringify(worldA())), activityTab: tab });
+      expect(parsed.reset).toBe("corrupt");
+      expect(parsed.state.error).toMatch(/reset/i);
+    }
+    // Positive control: each listed tab reads back as itself.
+    for (const tab of ACTIVITY_TABS) {
+      expect(parseConsoleState({ ...JSON.parse(JSON.stringify(worldA())), activityTab: tab }).reset).toBe("none");
+    }
+  });
+
+  test("setActivityTab keeps generation and results", () => {
+    const a = selectConsoleSection(worldA(), "activity");
+    const b = setActivityTab(a, "lessons");
+    expect(b.activityTab).toBe("lessons");
+    expect(b.generation).toBe(a.generation);
+    expect(b.results).toBe(a.results);
+    expect(b.loading).toBe(a.loading);
+    expect({ ...b, activityTab: a.activityTab }).toEqual(a);
+    expect(setActivityTab(b, "lessons")).toBe(b);
+    // The tab outlives a section or world change.
+    expect(selectConsoleSection(selectConsoleSection(b, "overview"), "activity").activityTab).toBe("lessons");
+    expect(chooseConsoleWorld(b, "world-b").activityTab).toBe("lessons");
   });
 
   test("a corrupt state with a readable generation resets past it", () => {

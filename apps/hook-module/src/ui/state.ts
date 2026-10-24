@@ -17,6 +17,10 @@ import { hasExactKeys, isCount, isPlainObject, parseProposalPage, REVIEWED_STATE
 export const CONSOLE_SECTIONS = ["overview", "review", "artifacts", "activity", "settings"] as const;
 export type ConsoleSection = (typeof CONSOLE_SECTIONS)[number];
 
+/** The Activity section's parts, one shown at a time. */
+export const ACTIVITY_TABS = ["queue", "reflections", "lessons", "log"] as const;
+export type ActivityTab = (typeof ACTIVITY_TABS)[number];
+
 /** What `console.bootstrap` answers. The host type lives in
  * packages/ops/src/handlers/console.ts, out of the sandbox's reach; a test
  * holds the two to one shape. */
@@ -41,6 +45,18 @@ export interface ProposalView {
 
 export const PROPOSAL_BACK_MAX = 200;
 
+/** A slash command a button queued, and the host's refusal if it gave one.
+ * `target` is the artifact a vote was for, null for an Actions button. `id`
+ * names the press (`<module instance UUID>.<press number>`), so a late
+ * refusal lands only on its own note. */
+export interface CommandNote {
+  id: string;
+  command: string;
+  args: string;
+  target: string | null;
+  error: string | null;
+}
+
 export interface ConsoleUiState {
   world: string | null;
   section: ConsoleSection;
@@ -63,6 +79,10 @@ export interface ConsoleUiState {
   /** First world of the world switcher's window. Moving it reads nothing
    * and changes no selection. */
   worldOffset: number;
+  /** The Activity part shown. Activity reads all of them, so this reads nothing. */
+  activityTab: ActivityTab;
+  /** The last command a button queued, until a section or world change. */
+  commandNote: CommandNote | null;
 }
 
 /** The read ids results are kept under. bootstrap and worker do not depend
@@ -89,6 +109,8 @@ export function initialConsoleState(): ConsoleUiState {
     proposal: null,
     lessonsOffset: 0,
     worldOffset: 0,
+    activityTab: "queue",
+    commandNote: null,
   };
 }
 
@@ -108,6 +130,7 @@ export function switchConsoleWorld(state: ConsoleUiState, world: string): Consol
     listOffset: 0,
     proposal: null,
     lessonsOffset: 0,
+    commandNote: null,
   };
 }
 
@@ -136,7 +159,25 @@ function rescope(state: ConsoleUiState, change: Partial<ConsoleUiState>, keep: (
  * Only the world list and the worker status are carried over. */
 export function selectConsoleSection(state: ConsoleUiState, section: ConsoleSection): ConsoleUiState {
   if (state.section === section) return state;
-  return rescope(state, { section, listOffset: 0, lessonsOffset: 0, selectedPattern: null, proposal: null }, (id) => GLOBAL_READS.includes(id));
+  return rescope(state, { section, listOffset: 0, lessonsOffset: 0, selectedPattern: null, proposal: null, commandNote: null }, (id) => GLOBAL_READS.includes(id));
+}
+
+/** Records what a button queued, or clears it. Presentation only: no read. */
+export function noteCommand(state: ConsoleUiState, note: CommandNote | null): ConsoleUiState {
+  if (note === null && state.commandNote === null) return state;
+  return { ...state, commandNote: note === null ? null : { ...note } };
+}
+
+/** The session's own world, or why there is none. Comes from the bootstrap
+ * read the pane already makes, never from a read of its own. */
+export function sessionWorld(state: ConsoleUiState): { ok: true; world: string } | { ok: false; reason: string } {
+  const boot = bootstrapOf(state);
+  if (boot === null) return { ok: false, reason: "the world list is not read yet" };
+  if (!boot.ok) return { ok: false, reason: boot.message };
+  const { selectedWorld, resolutionError } = boot.value;
+  if (resolutionError !== null) return { ok: false, reason: resolutionError };
+  if (selectedWorld === null) return { ok: false, reason: "no world owns this session's directory" };
+  return { ok: true, world: selectedWorld };
 }
 
 /** Another page of the Activity section's lessons. */
@@ -152,6 +193,14 @@ export function setWorldOffset(state: ConsoleUiState, offset: number): ConsoleUi
   if (!isCount(offset)) throw new Error(`world offset ${offset} is not a whole number from 0`);
   if (state.worldOffset === offset) return state;
   return { ...state, worldOffset: offset };
+}
+
+/** Another Activity part. Presentation only, like setWorldOffset: every
+ * part's read runs whichever is shown. */
+export function setActivityTab(state: ConsoleUiState, tab: ActivityTab): ConsoleUiState {
+  if (!(ACTIVITY_TABS as readonly string[]).includes(tab)) throw new Error(`activity tab ${JSON.stringify(tab)} is not one of ${ACTIVITY_TABS.join(", ")}`);
+  if (state.activityTab === tab) return state;
+  return { ...state, activityTab: tab };
 }
 
 /** Another page of the section's list. */
@@ -322,6 +371,7 @@ export function reconcileConsoleWorld(state: ConsoleUiState): ConsoleUiState {
     listOffset: 0,
     proposal: null,
     lessonsOffset: 0,
+    commandNote: null,
   };
 }
 
@@ -329,7 +379,9 @@ export function reconcileConsoleWorld(state: ConsoleUiState): ConsoleUiState {
 const TASK4_KEYS = ["world", "section", "generation", "selectedPattern", "loading", "lastSuccessAt", "results", "error"] as const;
 /** The first Task 5 shape: paging before lessons and world windows. */
 const TASK5_KEYS = [...TASK4_KEYS, "listOffset", "proposal"] as const;
-const STATE_KEYS = [...TASK5_KEYS, "lessonsOffset", "worldOffset"] as const;
+/** The shape v1.2.9 shipped: before the Activity sub-tabs. */
+const V1_2_9_KEYS = [...TASK5_KEYS, "lessonsOffset", "worldOffset"] as const;
+const STATE_KEYS = [...V1_2_9_KEYS, "activityTab", "commandNote"] as const;
 
 function isControlResult(value: unknown): value is ControlResult {
   if (!isPlainObject(value)) return false;
@@ -374,9 +426,23 @@ function isTask5Fields(value: Record<string, unknown>): boolean {
   return (value.selectedPattern === null) === (value.proposal === null);
 }
 
+/** The fields v1.2.9 saved. */
+function isV129Fields(value: Record<string, unknown>): boolean {
+  return isTask5Fields(value) && isCount(value.lessonsOffset) && isCount(value.worldOffset);
+}
+
+/** A press id: the module instance's UUID, then the press number from 1. */
+const PRESS_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[1-9][0-9]{0,15}$/;
+
+function isCommandNote(value: unknown): value is CommandNote {
+  if (!isPlainObject(value) || !hasExactKeys(value, ["id", "command", "args", "target", "error"])) return false;
+  return typeof value.id === "string" && PRESS_ID.test(value.id) && typeof value.command === "string" && typeof value.args === "string" && isNullableString(value.target) && isNullableString(value.error);
+}
+
 function isConsoleState(value: unknown): value is ConsoleUiState {
-  if (!isPlainObject(value) || !hasExactKeys(value, STATE_KEYS) || !isTask5Fields(value)) return false;
-  return isCount(value.lessonsOffset) && isCount(value.worldOffset);
+  if (!isPlainObject(value) || !hasExactKeys(value, STATE_KEYS) || !isV129Fields(value)) return false;
+  if (value.commandNote !== null && !isCommandNote(value.commandNote)) return false;
+  return typeof value.activityTab === "string" && (ACTIVITY_TABS as readonly string[]).includes(value.activityTab);
 }
 
 export type ConsoleReset = "none" | "legacy" | "migrated" | "corrupt";
@@ -394,7 +460,7 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
     // Task 4's shape: keep where the person was (world, section, proposal),
     // drop every cached read but the world list and worker status, and move
     // the generation past any reply still on its way.
-    const old = value as unknown as Omit<ConsoleUiState, "listOffset" | "proposal">;
+    const old = value as unknown as Omit<ConsoleUiState, "listOffset" | "proposal" | "lessonsOffset" | "worldOffset" | "activityTab" | "commandNote">;
     return {
       state: {
         ...old,
@@ -405,6 +471,8 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
         proposal: old.selectedPattern === null ? null : freshProposal(),
         lessonsOffset: 0,
         worldOffset: 0,
+        activityTab: "queue",
+        commandNote: null,
       },
       reset: "migrated",
     };
@@ -412,7 +480,7 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
   if (isPlainObject(value) && hasExactKeys(value, TASK5_KEYS) && isTask5Fields(value)) {
     // The first Task 5 shape: everything kept but the Overview's review
     // result, which was a whole review.queue array and is now a bounded page.
-    const old = value as unknown as Omit<ConsoleUiState, "lessonsOffset" | "worldOffset">;
+    const old = value as unknown as Omit<ConsoleUiState, "lessonsOffset" | "worldOffset" | "activityTab" | "commandNote">;
     const proposal = old.proposal === null ? null : { ...old.proposal, back: [...old.proposal.back] };
     return {
       state: {
@@ -423,14 +491,26 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
         proposal,
         lessonsOffset: 0,
         worldOffset: 0,
+        activityTab: "queue",
+        commandNote: null,
       },
+      reset: "migrated",
+    };
+  }
+  if (isPlainObject(value) && hasExactKeys(value, V1_2_9_KEYS) && isV129Fields(value)) {
+    // v1.2.9: everything kept, results too; Activity opens on Queue, no note.
+    const old = value as unknown as Omit<ConsoleUiState, "activityTab" | "commandNote">;
+    const proposal = old.proposal === null ? null : { ...old.proposal, back: [...old.proposal.back] };
+    return {
+      state: { ...old, generation: old.generation + 1, loading: false, results: { ...old.results }, proposal, activityTab: "queue", commandNote: null },
       reset: "migrated",
     };
   }
   if (isConsoleState(value)) {
     // A copy, so a later transition never shares structure with the engine's.
     const proposal = value.proposal === null ? null : { ...value.proposal, back: [...value.proposal.back] };
-    return { state: { ...value, results: { ...value.results }, proposal }, reset: "none" };
+    const commandNote = value.commandNote === null ? null : { ...value.commandNote };
+    return { state: { ...value, results: { ...value.results }, proposal, commandNote }, reset: "none" };
   }
   const held = isPlainObject(value) && isGeneration(value.generation) ? value.generation : 0;
   return {

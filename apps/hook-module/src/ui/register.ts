@@ -2,8 +2,11 @@
 // and the controller that keeps it filled from `sil ops` while it is shown.
 //
 // Same rules as the classic hooks: nothing here blocks, calls a model or
-// starts a turn, and nothing runs from the tool hooks. The pane opens only
-// when the person runs /sil. Reads go through ./transport.ts alone.
+// starts a turn on its own, and nothing runs from the tool hooks. The pane
+// opens only when the person runs /sil. Reads and curated-lesson edits go
+// through `sil ops` in ./transport.ts. The Actions card and artifact votes
+// queue the plugin's own slash commands, pressed by the person, to run in the
+// chat; /learn, /toolify and /curriculum run a model turn there.
 //
 // What the pane shows lives in `$.state` (types/index.d.ts declares it), so
 // it survives a hot reload; render reads it and never writes it. What is
@@ -31,19 +34,22 @@ import {
   chooseConsoleWorld,
   failConsoleRead,
   invalidateConsole,
+  noteCommand,
   parseConsoleState,
   reconcileConsoleWorld,
   reloadProposal,
   selectConsolePattern,
   selectConsoleSection,
+  setActivityTab,
   setConsoleListOffset,
   setLessonsOffset,
   setProposalPart,
   setWorldOffset,
   turnProposalPage,
+  type CommandNote,
   type ConsoleUiState,
 } from "./state.ts";
-import { CONSOLE_REFRESH_MS, consoleReads, type ConsoleAction } from "./views.ts";
+import { boundedErrorText, commandRefusal, CONSOLE_REFRESH_MS, consoleReads, isAllowedCommand, type ConsoleAction } from "./views.ts";
 
 // The command name, pane id and state key are written as literals at each
 // use: `claude plugin validate` reads them off the source, and a constant
@@ -63,6 +69,11 @@ let timer: { cancel: () => void } | null = null;
 let inFlight: Promise<void> | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let requestSeq = 0;
+/** Names this module instance's presses with commandSeq. Random, so a press
+ * id never repeats across a reload, even one whose first write failed. */
+let pressNonce = crypto.randomUUID();
+/** Numbers command presses. */
+let commandSeq = 0;
 /** Moves on every start and every stop of the console. Work carries the
  * lifecycle it began in and does nothing once that one is over, so a stop
  * also cancels what was queued, and a reopen cannot inherit it. */
@@ -79,6 +90,8 @@ export function resetUiForTests(): void {
   inFlight = null;
   writes = Promise.resolve();
   requestSeq = 0;
+  pressNonce = crypto.randomUUID();
+  commandSeq = 0;
   lifecycle = 0;
   active = false;
   againFor = null;
@@ -273,6 +286,17 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
     const { life } = bind();
     return writeIfCurrent($, life, change).then(() => readFor(life));
   };
+  // Activity's Lessons tab; a read follows only when the section moved.
+  const showLessons = (): Promise<unknown> => {
+    const { life } = bind();
+    let moved = false;
+    const change = (s: ConsoleUiState): ConsoleUiState => {
+      const next = selectConsoleSection(s, "activity");
+      moved = next !== s;
+      return setActivityTab(next, "lessons");
+    };
+    return writeIfCurrent($, life, change).then(() => (moved ? readFor(life) : undefined));
+  };
   let done: Promise<unknown>;
   switch (action.kind) {
     case "refresh": {
@@ -293,8 +317,12 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
       done = rescope((s) => selectConsoleSection(s, action.section));
       break;
     case "world":
-      // Unsent lesson wording decides first: the Lessons view asks Stay or Discard.
-      if (!lessonsWorldChanging($, action.world)) return;
+      // Unsent lesson wording decides first: the Lessons view asks Stay or
+      // Discard, so Activity's Lessons tab is brought up to show the question.
+      if (!lessonsWorldChanging($, action.world)) {
+        done = showLessons();
+        break;
+      }
       done = rescope((s) => chooseConsoleWorld(s, action.world));
       break;
     case "list":
@@ -311,6 +339,13 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
         ? writeIfCurrent($, lifecycle, (s) => setWorldOffset(s, action.offset))
         : writeConsole($, (s) => setWorldOffset(s, action.offset));
       break;
+    case "activity-tab":
+      // Activity reads every part whichever is shown, so like worlds: a
+      // write and nothing to read.
+      done = active
+        ? writeIfCurrent($, lifecycle, (s) => setActivityTab(s, action.tab))
+        : writeConsole($, (s) => setActivityTab(s, action.tab));
+      break;
     case "select":
       done = rescope((s) => selectConsolePattern(s, action.pattern));
       break;
@@ -323,8 +358,59 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
     case "reload-proposal":
       done = rescope(reloadProposal);
       break;
+    case "command":
+      done = queueCommand($, action);
+      break;
   }
   void done.catch((err) => log($, `the console control failed: ${errorText(err)}`));
+}
+
+/** Notes the press, then hands the command to the host, which runs it once
+ * the session is idle. The press never waits for that. The command goes to
+ * the host only after its queued note was written in this lifecycle, and only
+ * if its world still holds at the state read then; otherwise the note says
+ * why, or the log does when nothing could be written. A refusal from the host
+ * lands only on this press's own note. No read follows. */
+function queueCommand($: EngineInterface, action: Extract<ConsoleAction, { kind: "command" }>): Promise<unknown> {
+  const { command, args, target } = action;
+  if (!isAllowedCommand(action)) {
+    log($, `the console refused to queue an unexpected command: ${boundedErrorText(command)}`);
+    return Promise.resolve();
+  }
+  // As any press: one on a pane left up after the session ended starts it again.
+  const life = active ? lifecycle : begin($).life;
+  commandSeq += 1;
+  const id = `${pressNonce}.${commandSeq}`;
+  const label = `/${command}${args === "" ? "" : ` ${args}`}`;
+  return writeIfCurrent($, life, (s) => {
+    const refusal = commandRefusal(s, action);
+    return noteCommand(s, { id, command, args, target, error: refusal });
+  }).then(
+    (s) => {
+      const note = s.commandNote;
+      if (!isCurrent(life) || note === null || note.id !== id) {
+        log($, `${label} was not queued: the console stopped before the press was recorded.`);
+        return;
+      }
+      if (note.error !== null) {
+        log($, `${label} was not queued: ${note.error}`);
+        return;
+      }
+      let run: Promise<unknown>;
+      try {
+        run = $.command.run({ command, args });
+      } catch (err) {
+        run = Promise.reject(err);
+      }
+      run.then(undefined, (err) => {
+        const error = boundedErrorText(errorText(err));
+        void writeConsole($, (t) => (t.commandNote?.id === note.id ? noteCommand(t, { ...note, error }) : t)).catch((e) =>
+          log($, `the console could not record a refused command: ${errorText(e)}`),
+        );
+      });
+    },
+    (err) => log($, `${label} was not queued: the press could not be recorded: ${errorText(err)}`),
+  );
 }
 
 /** A close that went through: stop and drop everything. Idempotent, so the
@@ -407,8 +493,8 @@ export function registerUi(on: On): void {
     }
     if (lesson.kind !== "none") {
       try {
-        // Activity first: a section change after the first read would drop it.
-        await writeConsole($, (s) => selectConsoleSection(s, "activity"));
+        // Activity's Lessons first: a section change after the first read would drop it.
+        await writeConsole($, (s) => setActivityTab(selectConsoleSection(s, "activity"), "lessons"));
         await restart($);
         await refresh($);
         const world = (await readConsole($)).world;

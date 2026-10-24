@@ -204,17 +204,27 @@ SubagentStop and SessionEnd are unaffected either way.
 
 ## Native console (`/sil`)
 
-`/sil` opens a read-only console pane beside the chat: overview, staged
-proposals with their full diff, artifacts, activity and settings, per world. It
+`/sil` opens a console pane beside the chat: overview, staged proposals with
+their full diff, artifacts, activity and settings, per world. It
 lives in the hooks module, so it needs what the module needs: a built `dist/`
 and function hooks enabled as above. Without the module there is no `/sil`, and
-nothing pretends otherwise. The CLI and the web UI cover the same reads and the
-writes the pane does not have yet: `sil status`, `sil review list`,
+nothing pretends otherwise. The CLI and the web UI cover the same reads, plus
+the proposal and settings writes the pane does not have yet (accept, reject,
+revise, worlds, models, schedule): `sil status`, `sil review list`,
 `sil review show <pattern>`, `sil web`. See `docs/OPERATIONS.md`.
 
-The pane reads through `sil ops`, the plugin's own `scripts/sil` with the
-plugin root pinned, one bounded request per read. It never starts the worker and
-never calls a model.
+The pane talks to the loop two ways. Reads and curated-lesson edits (Capture
+and Save, Important, acknowledging a changed source, Purge) go through
+`sil ops`, the plugin's own `scripts/sil` with the plugin root pinned, one
+bounded request each. The Actions card (`/learn`, `/toolify`, `/reflect`,
+`/curriculum`, `/loop run`, `/loop web`) and the good and bad votes on
+artifacts (`/feedback`) queue the plugin's own slash commands instead, pressed
+by the person and shown in the chat. Each is queued and runs once Claude is
+idle, exactly as if typed, so `/learn`, `/toolify` and `/curriculum` run a
+model turn in the session. Votes and `/curriculum` act on the session's own
+world, so the pane draws them only while it shows that world. Proposal accept,
+reject and revise and settings writes are not in the pane. Nothing else in the
+pane starts the worker or calls a model.
 
 What has been checked, and how:
 

@@ -185,6 +185,8 @@ async function openLessons($: Engine, seen: { clock: { settle: () => Promise<voi
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'section-activity' })
   await seen.clock.settle()
+  await ui.press({ key: 'activity-tab-lessons' })
+  await seen.clock.settle()
   await ui.press({ key: 'lessons-open' })
   await seen.clock.settle()
   return ui

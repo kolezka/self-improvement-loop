@@ -264,7 +264,7 @@ test('/sil reads the bootstrap, then the owning world, and draws it on every sur
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /World: world-a/ }))?.text).toContain('world-a')
+    expect((await ui.find({ key: 'world-world-a' }))?.props.label).toBe('world-a (current)')
     expect((await ui.find({ type: 'Text', text: /1 staged proposal/ }))?.text).toContain('waiting for review')
     expect((await ui.find({ type: 'Text', text: /Pending: 4/ }))?.text).toContain('done: 9')
     await ui.unmount()
@@ -299,7 +299,7 @@ test('a slow world-a reply is dropped after switching to world-b', async ($, on)
   expect(seen.requests[2]!.reads).toContainEqual({ id: 'review', op: 'console.page', args: { world: 'world-b', kind: 'review', offset: 0, limit: 1 } })
   await release(seen)
   expect(JSON.stringify(seen.state?.results)).toContain('queued-in-world-b')
-  expect((await ui.find({ type: 'Text', text: /World: world-b/ }))?.text).toContain('world-b')
+  expect((await ui.find({ key: 'world-world-b' }))?.props.label).toBe('world-b (current)')
   await ui.unmount()
   expect(seen.forbidden).toEqual([])
 })
@@ -364,7 +364,10 @@ test('a failed bridge is shown as an error and old values are labelled stale', a
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /exited with 1/ }))?.text).toContain('Error')
-  expect((await ui.find({ type: 'Text', text: /stale/ }))?.text).toContain('2026-10-22T12:00:00.000Z')
+  // The refresh time is drawn short (12:00, or Oct 22 12:00 on another day), never as ISO.
+  const stale = (await ui.find({ type: 'Text', text: /stale/ }))?.text
+  expect(stale).toMatch(/last complete refresh (Oct 22 )?\d{2}:\d{2}\)/)
+  expect(stale).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
   expect((await ui.find({ type: 'Text', text: /Pending: 4/ }))).toBeDefined()
   await ui.unmount()
 })
@@ -671,5 +674,53 @@ test('an unrelated command continues down the chain', async ($, on) => {
 
   expect(seen.coreCommands).toEqual(['compact'])
   expect(ran.text).toBe('core ran compact')
+  expect(seen.forbidden).toEqual([])
+})
+
+test('Activity sub-tabs: the Lessons view is drawn under Lessons only, and a tab press reads nothing', async ($, on) => {
+  const seen = engine(on)
+  await start($)
+  await $.command.run({ command: 'sil', ...TYPED })
+  await seen.clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'section-activity' })
+  await seen.clock.settle()
+  expect(seen.state?.activityTab).toBe('queue')
+  expect(await ui.find({ key: 'activity-tab-queue' })).toBeDefined()
+  expect(await ui.find({ key: 'lesson-capture' })).toBeUndefined()
+  const before = seen.requests.length
+  await ui.press({ key: 'activity-tab-lessons' })
+  await seen.clock.settle()
+  expect(seen.state?.activityTab).toBe('lessons')
+  expect((await ui.find({ key: 'lesson-capture' }))?.props.label).toBe('Capture selection')
+  expect(await ui.find({ type: 'Text', text: 'Curated lessons' })).toBeDefined()
+  await ui.press({ key: 'activity-tab-log' })
+  await seen.clock.settle()
+  expect(seen.state?.activityTab).toBe('log')
+  expect(await ui.find({ key: 'lesson-capture' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Worker log \(global\)/ })).toBeDefined()
+  expect(seen.requests.length).toBe(before)
+  await ui.unmount()
+  expect(seen.forbidden).toEqual([])
+})
+
+test('an Actions button queues its plugin command through $.command.run and reads nothing', async ($, on) => {
+  const seen = engine(on)
+  await start($)
+  await $.command.run({ command: 'sil', ...TYPED })
+  await seen.clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const before = seen.requests.length
+  expect((await ui.find({ key: 'action-reflect' }))?.props.label).toBe('Reflect on this session')
+  await ui.press({ key: 'action-reflect' })
+  await seen.clock.settle()
+  // The engine beneath ran the plugin's own command once, as if typed.
+  expect(seen.coreCommands).toEqual(['self-improvement-loop:reflect'])
+  expect(seen.state?.commandNote).toMatchObject({ command: 'self-improvement-loop:reflect', args: '', target: null, error: null })
+  expect(seen.state?.commandNote?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.1$/)
+  expect((await ui.find({ type: 'Text', text: /Queued \/self-improvement-loop:reflect\. It runs in the chat once Claude is idle\./ }))).toBeDefined()
+  expect(seen.logs).toEqual([])
+  expect(seen.requests.length).toBe(before)
+  await ui.unmount()
   expect(seen.forbidden).toEqual([])
 })

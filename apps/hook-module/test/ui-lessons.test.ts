@@ -12,6 +12,7 @@ import type { ControlRequest } from "@sil/core/control-protocol";
 import { encodeLessonKey, type LessonKey } from "@sil/core/lesson-curation";
 import { screenRestore } from "../src/ui/lessons.ts";
 import { lessonCommand, registerUi, resetUiForTests } from "../src/ui/register.ts";
+import { shortTime } from "../src/ui/views.ts";
 import { FakeEngine, type FakeElement, type FakeRunResult } from "./fake-engine.ts";
 
 const W = "world-a";
@@ -277,6 +278,7 @@ async function openActivity(t: H): Promise<void> {
   await t.engine.answer("command.run", { command: "sil", args: "" });
   await settle();
   await press(t, "section-activity");
+  await press(t, "activity-tab-lessons");
 }
 
 async function openLessons(t: H): Promise<void> {
@@ -310,6 +312,40 @@ describe("one pane, one command, Lessons inside Activity", () => {
     // Closed, nothing curated is read.
     expect(lessonOps(t)).toEqual([]);
     expect(t.engine.panes.map((p) => p.id)).toEqual(["sil-console"]);
+  });
+
+  test("the Lessons view is drawn only under Activity's Lessons tab, framed as Curated lessons", async () => {
+    const t = harness();
+    await t.engine.answer("command.run", { command: "sil", args: "" });
+    await settle();
+    await press(t, "section-activity");
+    // Queue first: no Lessons view.
+    expect(findKey(await t.render(), "lesson-capture")).toBeUndefined();
+    await press(t, "activity-tab-lessons");
+    let tree = await t.render();
+    expect(findKey(tree, "lesson-capture")).toBeDefined();
+    expect(allText(tree)).toContain("Curated lessons");
+    await press(t, "lessons-open");
+    tree = await t.render();
+    expect(findKey(tree, "lessons-close")).toBeDefined();
+    // The card's title, not a second title line inside it.
+    expect(allText(tree).split("\n").filter((l) => l.trim() === "Curated lessons")).toHaveLength(1);
+    for (const tab of ["queue", "reflections", "log"]) {
+      await press(t, `activity-tab-${tab}`);
+      tree = await t.render();
+      expect(findKey(tree, "lesson-capture")).toBeUndefined();
+      expect(findKey(tree, "lessons-close")).toBeUndefined();
+    }
+  });
+
+  test("/sil capture opens Activity on its Lessons tab", async () => {
+    const t = harness();
+    t.engine.selection = { text: "Selected passage", requestId: "toolu_tab" };
+    await t.engine.answer("command.run", { command: "sil", args: "capture" });
+    await settle();
+    const saved = t.engine.state.get("self-improvement-loop/console")?.value as Rec;
+    expect(saved).toMatchObject({ section: "activity", activityTab: "lessons" });
+    expect(findKey(await t.render(), "lesson-text")?.props.value).toBe("Selected passage");
   });
 
   test("other /sil arguments keep the plain console; capture and lesson are the only new ones", () => {
@@ -415,11 +451,15 @@ describe("display bounds", () => {
     await type(t, "lesson-text", "x".repeat(8192));
     const existingTree = await t.render();
     const existing = treeChars(existingTree);
-    // Positive controls: the parent's full Activity and the record's detail are really drawn.
+    // Positive controls: the Lessons tab's full inbox and the record's detail
+    // are really drawn. The other Activity parts sit under their own tabs.
     const drawn = allText(existingTree);
-    expect(drawn).toContain("log19 www");
-    expect(drawn).toContain("Pending: 5 newest drawn of 50 returned.");
-    expect(drawn).toContain("Reflections 1-10 of 999");
+    expect(drawn).toContain("Lessons 1-5 of 999");
+    // Its first and last rows, not just its heading.
+    expect(drawn).toContain("p-0: t www");
+    expect(drawn).toContain("p-4: t www");
+    expect(drawn).not.toContain("log19 www");
+    expect(drawn).not.toContain("Reflections 1-10 of 999");
     expect(drawn).toContain("Revision 10.");
     expect(drawn).toContain(`Quote: ${"q".repeat(100)}`);
     expect(drawn).toContain("History, newest first (10 of 10)");
@@ -1378,5 +1418,83 @@ describe("review fix round 3", () => {
     await release(t, 0);
     await release(t, 0);
     await shows(t, 2, 10);
+  });
+});
+
+describe("a refused world switch is asked where it can be seen", () => {
+  const consoleState = (t: H) => t.engine.state.get("self-improvement-loop/console")?.value as Rec;
+
+  for (const away of ["queue", "log", "overview", "closed"] as const) {
+    test(`unsent wording, away on ${away}: the switch waits, Stay and Discard are drawn, Discard then switches`, async () => {
+      const t = harness();
+      await capturedLesson(t);
+      await type(t, "lesson-text", "edited but unsent");
+      if (away === "overview") await press(t, "section-overview");
+      else if (away === "closed") await press(t, "lessons-close");
+      else await press(t, `activity-tab-${away}`);
+      // The control: the editor is out of sight before the switch.
+      expect(findKey(await t.render(), "lesson-text")).toBeUndefined();
+      await press(t, "world-world-b");
+      expect(consoleState(t).world).toBe(W);
+      let tree = await t.render();
+      expect(findKey(tree, "lesson-stay")).toBeDefined();
+      expect(findKey(tree, "lesson-discard")).toBeDefined();
+      expect(findKey(tree, "lesson-text")?.props.value).toBe("edited but unsent");
+      await press(t, "lesson-stay");
+      expect(findKey(await t.render(), "lesson-text")?.props.value).toBe("edited but unsent");
+      expect(consoleState(t).world).toBe(W);
+      // Away again, and this time Discard.
+      if (away === "overview") await press(t, "section-overview");
+      else if (away === "closed") await press(t, "lessons-close");
+      else await press(t, `activity-tab-${away}`);
+      await press(t, "world-world-b");
+      tree = await t.render();
+      expect(findKey(tree, "lesson-discard")).toBeDefined();
+      await press(t, "lesson-discard");
+      expect(consoleState(t).world).toBe("world-b");
+      expect(t.host.mutations).toHaveLength(1);
+    });
+  }
+
+  test("a save in flight, away on Queue: the switch waits and the in-flight notice is drawn", async () => {
+    const t = harness({ holdMutations: true });
+    await openLessons(t);
+    await press(t, "lesson-capture");
+    await type(t, "lesson-quote", "q");
+    await type(t, "lesson-text", "in flight");
+    await press(t, "lesson-save");
+    expect(t.host.held).toHaveLength(1);
+    await press(t, "activity-tab-queue");
+    expect(allText(await t.render())).not.toContain("A save is in flight");
+    await press(t, "world-world-b");
+    expect(consoleState(t).world).toBe(W);
+    expect(consoleState(t).activityTab).toBe("lessons");
+    expect(allText(await t.render())).toContain("A save is in flight: wait for it to finish");
+    for (const release of t.host.held.splice(0)) release();
+    await settle();
+  });
+});
+
+describe("curated-lesson metadata times", () => {
+  test("the open editor draws read, created and history times short, and keeps wording verbatim", async () => {
+    const t = harness();
+    const wording = "Rerun at 2026-01-02T03:04:05Z before merging.";
+    const key: LessonKey = { world: W, kind: "inbox", id: "inbox-times" };
+    t.host.records.set(encodeLessonKey(key), {
+      key, scope: { world: W, project: { kind: "project", id: P } }, revision: 1, important: false, text: wording, source: null, status: "queued", digest: DIGEST, related: null,
+      history: [{ revision: 1, kind: "edit", at: STAMP, text: wording, important: null, oldSourceDigest: null, newSourceDigest: null }],
+    });
+    await openLessons(t);
+    await press(t, "lessons-filter-inbox");
+    await press(t, "lesson-row-0");
+    const now = new Date();
+    const drawn = allText(await t.render());
+    expect(drawn).toContain(`created ${shortTime(STAMP, now)}.`);
+    expect(drawn).toContain(`r1 edit ${shortTime(STAMP, now)}: ${wording}`);
+    expect(drawn).toMatch(/1 shown of 1, read (\w{3} \d{1,2} )?\d\d:\d\d\./);
+    expect(drawn).toMatch(/\nRead (\w{3} \d{1,2} )?\d\d:\d\d\.\n/);
+    // Only the person's wording still holds a full ISO time.
+    expect(drawn.split(wording).join("")).not.toMatch(/\d{4}-\d\d-\d\dT\d\d:\d\d/);
+    expect(drawn).toContain(wording);
   });
 });

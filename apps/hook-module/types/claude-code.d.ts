@@ -117,6 +117,10 @@ declare module "claude-code" {
     command: {
       /** Adds `/<name>` for the session; answered by a `command.run` hook. */
       register: (command: CommandSpec) => Promise<unknown>;
+      /** Runs `/command args` as if typed, queued until the session is idle.
+       * Rejects an unknown name, inside a hook the turn waits on, past a Stop
+       * or a host limit. */
+      run: (input: CommandRunArgs) => Promise<CommandRunResult>;
     };
     /** Time and timers through the host. The console's refresh is the only
      * user: a timer's callback runs in the module, and a hot reload of the
@@ -233,9 +237,16 @@ declare module "claude-code" {
   /** The elements the console draws with, and only the props it sets.
    * `color` is a theme key (`"error"`) or a color string in the real type. */
   export type Elements = {
-    Box: (props: { flexDirection?: "row" | "column"; gap?: number; children?: RenderChildren }) => RenderElement;
+    Box: (props: {
+      flexDirection?: "row" | "column";
+      gap?: number;
+      justifyContent?: "flex-start" | "center" | "flex-end" | "space-between" | "space-around" | "space-evenly";
+      paddingX?: number;
+      borderStyle?: string;
+      children?: RenderChildren;
+    }) => RenderElement;
     Text: (props: { bold?: boolean; dimColor?: boolean; color?: string; children?: RenderChildren }) => RenderElement;
-    Button: (props: { key?: string; label?: string; onPress: (e: UiPressArgument) => void }) => RenderElement;
+    Button: (props: { key?: string; label?: string; variant?: "primary" | "secondary"; dimColor?: boolean; onPress: (e: UiPressArgument) => void }) => RenderElement;
     /** Source text the engine's highlighter draws; `format: "diff"` reads it
      * as unified-diff hunks. Tab and newline its only control characters. */
     Code: (props: { source: string; format?: "source" | "diff" }) => RenderElement;
@@ -277,6 +288,12 @@ declare module "claude-code" {
   export type CommandRunInput = {
     command: string;
     args: string;
+  };
+
+  /** `$.command.run`'s argument; the engine sets `origin` and `presentation`. */
+  export type CommandRunArgs = {
+    command: string;
+    args?: string;
   };
 
   export type CommandRunResult = {

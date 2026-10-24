@@ -19,6 +19,7 @@ import {
   initialConsoleState,
   selectConsolePattern,
   selectConsoleSection,
+  setActivityTab,
   setProposalPart,
   switchConsoleWorld,
   type ConsoleUiState,
@@ -633,9 +634,11 @@ describe("the native console shows strict read failures", () => {
       if (b.kind === "line") return b.line.text;
       if (b.kind === "code") return b.source;
       if (b.kind === "select") return b.label;
+      if (b.kind === "card") return [b.title, ...b.blocks.map(text)].join("\n");
+      if (b.kind === "row") return b.blocks.map(text).join("\n");
       return b.controls.map((c) => c.label).join(" ");
     };
-    return consoleView(state, { columns: 80, canSelect: true }).map(text).join("\n");
+    return consoleView(state, { columns: 80, canSelect: true, now: new Date() }).map(text).join("\n");
   }
 
   /** Runs the reads the console would send for `state`, as one batch. */
@@ -649,11 +652,12 @@ describe("the native console shows strict read failures", () => {
     return applyConsoleRead(state, state.generation, response, "2026-10-23T12:00:00Z");
   }
 
-  test("a lessons inbox that cannot be listed: the Activity section says so", () => {
+  test("a lessons inbox that cannot be listed: Activity's Lessons tab says so", () => {
     const inbox = join(state(), "inbox", W);
     mkdirSync(inbox, { recursive: true });
     writeFileSync(join(inbox, "l1.json"), JSON.stringify({ id: "l1", world: W, pattern: "probe-skill", text: "seeded lesson text", created: "2026-10-22T10:00:00Z" }));
-    const activity = selectConsoleSection(switchConsoleWorld(initialConsoleState(), W), "activity");
+    // The inbox is drawn under Activity's Lessons tab, not the default Queue.
+    const activity = setActivityTab(selectConsoleSection(switchConsoleWorld(initialConsoleState(), W), "activity"), "lessons");
     expect(draw(refresh(activity))).toContain("seeded lesson text");
     renameSync(inbox, join(base, "saved-inbox"));
     writeFileSync(inbox, "not a directory\n");

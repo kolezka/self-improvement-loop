@@ -220,8 +220,12 @@ test('every section is drawn with its label and keyed controls, and no mutating 
   for (const [key, label] of [['section-overview', 'Overview'], ['section-review', 'Review'], ['section-artifacts', 'Artifacts'], ['section-activity', 'Activity'], ['section-settings', 'Settings']] as const) {
     await ui.press({ key })
     await seen.clock.settle()
-    expect((await ui.find({ type: 'Text', text: `Section: ${label}` }))?.text).toBe(`Section: ${label}`)
-    expect((await ui.find({ key }))?.props.label).toBe(`${label} (current)`)
+    // The current tab is shown by color, not by a "(current)" suffix.
+    const tabs = (await ui.findAll({ type: 'Button' })).filter((t) => t.key?.startsWith('section-'))
+    expect(tabs.map((t) => [t.key, t.props.label, t.props.variant ?? null, t.props.dimColor ?? null])).toEqual(
+      tabs.map((t) => (t.key === key ? [key, label, 'primary', null] : [t.key, t.props.label, null, true])),
+    )
+    expect(tabs).toHaveLength(5)
     expect(await ui.findAll({ type: 'Input' })).toEqual([])
     const buttons = await ui.findAll({ type: 'Button' })
     expect(buttons.filter((b) => /accept|reject|revise|save/i.test(`${b.key} ${b.text}`))).toEqual([])
@@ -245,8 +249,14 @@ test('synthetic records are drawn: artifacts, and activity with global scope in 
   expect(await ui.find({ type: 'Text', text: /Queue \(global, all worlds\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Pending: 1 newest drawn of 1 returned.' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /native-s1 \(world-b\)/ })).toBeDefined()
+  await ui.press({ key: 'activity-tab-reflections' })
+  await seen.clock.settle()
   expect(await ui.find({ type: 'Text', text: /Reflection from the native fixture/ })).toBeDefined()
+  await ui.press({ key: 'activity-tab-lessons' })
+  await seen.clock.settle()
   expect(await ui.find({ type: 'Text', text: /Lesson from the native fixture/ })).toBeDefined()
+  await ui.press({ key: 'activity-tab-log' })
+  await seen.clock.settle()
   expect((await ui.find({ type: 'Text', text: /Worker log \(global/ }))).toBeDefined()
   expect((await ui.find({ type: 'Text', text: /worker pass done/ }))).toBeDefined()
   await ui.unmount()
@@ -427,6 +437,66 @@ test('narrow: one section Select and list or detail; mobile, with no Select, get
   expect(seen.forbidden).toEqual([])
 })
 
+type Drawn = { type?: string; key?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+/** Every element of a drawn tree, outermost first, in document order. */
+function elements(node: unknown, out: Drawn[] = []): Drawn[] {
+  if (Array.isArray(node)) {
+    for (const child of node) elements(child, out)
+    return out
+  }
+  if (typeof node !== 'object' || node === null) return out
+  const el = node as Drawn
+  out.push(el)
+  elements(el.children ?? [], out)
+  return out
+}
+
+/** The element's own string children. */
+function ownText(el: Drawn): string {
+  return (el.children ?? []).filter((c): c is string => typeof c === 'string').join('')
+}
+
+test('cards: a round frame at 80 columns, none at 40; header above them, footer below', async ($, on) => {
+  const seen = engine(on)
+  await openConsole($, seen)
+  const wide = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'terminal' })
+  const all = elements(await wide.drawn())
+  const framed = all.filter((el) => el.type === 'Box' && el.props?.borderStyle === 'round')
+  // Worker, Review and Actions.
+  expect(framed).toHaveLength(3)
+  expect(framed.some((box) => elements(box.children ?? []).some((el) => el.type === 'Text' && ownText(el) === 'Actions'))).toBe(true)
+  const worker = framed.find((box) => elements(box.children ?? []).some((el) => el.type === 'Text' && ownText(el) === 'Worker'))
+  expect(worker).toBeDefined()
+  expect(elements(worker!.children ?? []).some((el) => el.type === 'Text' && ownText(el) === 'global, all worlds')).toBe(true)
+  // The title row holds the title and the worlds, not the tabs; the tabs come
+  // before the first card and Refresh after the last.
+  const at = (pred: (el: Drawn) => boolean) => all.findIndex(pred)
+  const titleRow = all.find((el) => el.type === 'Box' && (el.children ?? []).some((c) => typeof c === 'object' && c !== null && ownText(c as Drawn) === 'Self-improvement loop'))
+  expect(titleRow).toBeDefined()
+  const inTitle = elements(titleRow!.children ?? [])
+  expect(inTitle.some((el) => el.props?.key === 'world-world-a')).toBe(true)
+  expect(inTitle.some((el) => el.props?.key === 'section-overview')).toBe(false)
+  const overviewTab = at((el) => el.props?.key === 'section-overview')
+  const firstCard = all.indexOf(framed[0]!)
+  const lastCardEnd = all.indexOf(framed.at(-1)!) + elements(framed.at(-1)!.children ?? []).length
+  const refresh = at((el) => el.props?.key === 'refresh')
+  expect(at((el) => ownText(el) === 'Self-improvement loop')).toBeLessThan(overviewTab)
+  expect(overviewTab).toBeLessThan(firstCard)
+  expect(refresh).toBeGreaterThan(lastCardEnd)
+  expect(at((el) => /^refreshed .* every 10 s$/.test(ownText(el)))).toBeGreaterThan(lastCardEnd)
+  await wide.unmount()
+
+  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'terminal' })
+  const small = elements(await narrow.drawn())
+  expect(small.some((el) => el.type === 'Text' && ownText(el) === 'Worker')).toBe(true)
+  expect(small.filter((el) => el.type === 'Box' && el.props?.borderStyle !== undefined)).toEqual([])
+  expect((await narrow.find({ key: 'section-select' }))?.type).toBe('Select')
+  expect((await narrow.find({ key: 'world-select' }))?.type).toBe('Select')
+  await narrow.unmount()
+  expect(seen.forbidden).toEqual([])
+})
+
 // --- fix round 1 ----------------------------------------------------------------
 
 const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
@@ -520,6 +590,8 @@ test('every lesson is reachable by its own pages', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'section-activity' })
   await seen.clock.settle()
+  await ui.press({ key: 'activity-tab-lessons' })
+  await seen.clock.settle()
   expect(await ui.find({ type: 'Text', text: /Lessons 1-5 of 12/ })).toBeDefined()
   await ui.press({ key: 'lessons-next' })
   await seen.clock.settle()
@@ -558,6 +630,9 @@ test('control characters from the bridge reach native Text only as symbols, with
   await openConsole($, seen)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'section-activity' })
+  await seen.clock.settle()
+  // The list error is drawn in the Reflections part.
+  await ui.press({ key: 'activity-tab-reflections' })
   await seen.clock.settle()
   const texts = (await ui.findAll({ type: 'Text' })).map((t) => t.text)
   expect(texts.some((t) => t.includes('last run \u241b[31mred\ufffd'))).toBe(true)

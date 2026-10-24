@@ -63,6 +63,9 @@ change in one go. The user chose this over a staged rollout.
 - Mobile surface has no `Select`; existing fallbacks stay.
 - The display budget (`DISPLAY_BUDGET`, 90000 characters) and `finishView`
   remain the single boundary for drawn text. Card titles count toward it.
+  The one exception is the Curated lessons subtree: `lessons-view.tsx` draws it
+  with its own bounds, outside `DISPLAY_BUDGET`, as it already was on `main`.
+  A shared end-to-end budget is a follow-up.
 - Bundle stays under `MAX_HOOK_MODULE_BYTES` (320 KiB).
 - No em or en dashes in code, copy or docs (`lint:dashes`).
 
@@ -94,7 +97,8 @@ My calls, open to correction:
 
 `consoleView` returns header blocks, then cards, then footer blocks. `finishView`
 and `enforceDisplayBudget` recurse into cards, so the safety boundary still covers
-every drawn string. When the budget cuts, it cuts inside the last cards and keeps
+every string `consoleView` draws (the Curated lessons card is drawn apart, see
+Constraints). When the budget cuts, it cuts inside the last cards and keeps
 the notice. `render.tsx` draws a card as
 `<Box borderStyle="round" paddingX={1} flexDirection="column">` with a bold title
 line and a dim meta on the same row. The outer Box gets `paddingX={1}` and `gap={1}`.

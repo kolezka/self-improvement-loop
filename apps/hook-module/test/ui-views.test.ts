@@ -17,12 +17,15 @@ import {
   reloadProposal,
   selectConsolePattern,
   selectConsoleSection,
+  setActivityTab,
   setConsoleListOffset,
   setLessonsOffset,
   setWorldOffset,
   setProposalPart,
   switchConsoleWorld,
   turnProposalPage,
+  ACTIVITY_TABS,
+  type ActivityTab,
   type ConsoleUiState,
 } from "../src/ui/state.ts";
 import {
@@ -423,7 +426,7 @@ describe("the view model", () => {
       }),
       T1,
     );
-    const shown = texts(consoleView(r, WIDE));
+    const shown = ACTIVITY_TABS.map((tab) => texts(consoleView(setActivityTab(r, tab), WIDE))).join("\n");
     expect(shown).toMatch(/Worker \(global/);
     expect(shown).toMatch(/Queue \(global, all worlds\)/);
     expect(shown).toMatch(/log \(global/i);
@@ -739,14 +742,215 @@ describe("header, footer and section cards", () => {
     const failed = NO_LOSS.filter(([name]) => ["failed overview reads", "world list failed", "changed proposal"].includes(name)).map(([, state]) => state());
     expect(failed).toHaveLength(3);
     for (const state of failed) expect(state.error).toMatch(iso);
-    for (const state of [base(), activity, stale, selectConsoleSection(base(), "settings"), ...failed]) {
+    const tabs = ACTIVITY_TABS.map((tab) => setActivityTab(activity, tab));
+    for (const state of [base(), ...tabs, stale, selectConsoleSection(base(), "settings"), ...failed]) {
       const lines = lineTexts(consoleView(state, WIDE));
       expect(lines.length).toBeGreaterThan(2);
       expect(lines.filter((t) => iso.test(t))).toEqual([]);
     }
     // Positive control: the same check sees T1 whole.
     expect(iso.test(T1)).toBe(true);
-    expect(lineTexts(consoleView(activity, WIDE))).toEqual(expect.arrayContaining([`pending: s-1 (world-a) last stop ${T1_SHORT}`, `${T1_SHORT} p-one: keep tests honest`]));
+    expect(lineTexts(consoleView(activity, WIDE))).toContain(`pending: s-1 (world-a) last stop ${T1_SHORT}`);
+    expect(lineTexts(consoleView(setActivityTab(activity, "reflections"), WIDE))).toContain(`${T1_SHORT} p-one: keep tests honest`);
+  });
+});
+
+// --- Activity sub-tabs ---------------------------------------------------------
+
+const qEntry = (id: string, result: string | null = null) => ({ session_id: id, world: "world-a", last_stop: T1, result });
+
+/** Activity with `results` read on top of base(). */
+function activityRead(results: ControlResponse["results"], state = base()): ConsoleUiState {
+  const s = selectConsoleSection(state, "activity");
+  return applyConsoleRead(s, s.generation, reply(results), T1);
+}
+
+const NO_WORLD_BOOT = { worlds: ["world-a"], selectedWorld: null, resolutionError: "no world owns /x", initialized: true };
+const WORKER_LINE = `Worker (global, all worlds): idle, last run ${T1_SHORT}. Pending: 4, done: 9, failed: 0.`;
+
+/** Every line the old flat Activity drew for each state (consoleView at
+ * cfa1dd1, captured in .superpowers/sdd/2026-10-24-sil-console-layout/t3),
+ * less the footer's refresh line, split by the part that now draws it.
+ * `all` is drawn above the sub-tabs, so under every one. */
+const ACTIVITY_NO_LOSS: Array<[string, () => ConsoleUiState, { all: string[] } & Record<ActivityTab, string[]>]> = [
+  [
+    "unread",
+    () => selectConsoleSection(base(), "activity"),
+    {
+      all: ["Self-improvement loop", WORKER_LINE],
+      queue: ["Queue (global, all worlds): not read yet."],
+      reflections: ["Reflections: not read yet."],
+      lessons: ["Lessons: not read yet."],
+      log: ["Worker log (global): not read yet."],
+    },
+  ],
+  [
+    "read",
+    () => {
+      const s = setLessonsOffset(selectConsoleSection(base(), "activity"), 5);
+      return applyConsoleRead(
+        s,
+        s.generation,
+        reply({
+          worker: ok(WORKER),
+          queue: ok({ pending: [qEntry("s-1"), 7], done: Array.from({ length: 200 }, (_, i) => qEntry(`d-${i}`)), failed: [qEntry("s-2", "boom")], hidden: { done: 3, failed: 1 }, cleared: {} }),
+          list: ok({ world: "world-a", total: 13, offset: 0, limit: 3, items: [{ id: "r1", pattern: "p-one", created: T1, lesson: "keep tests honest" }, { pattern: "p-two" }, 5] }),
+          lessons: ok({ world: "world-a", total: 12, offset: 5, limit: 3, items: [{ pattern: "p-one", text: "lesson six" }, { pattern: "p-two" }, "x"] }),
+          logs: ok({ name: "worker", path: "/x/worker.log", exists: true, size: 10, lines: ["started", "done"] }),
+        }),
+        T1,
+      );
+    },
+    {
+      all: ["Self-improvement loop", WORKER_LINE],
+      queue: [
+        "Queue (global, all worlds), newest first:",
+        "Pending: 2 newest drawn of 2 returned.",
+        `pending: s-1 (world-a) last stop ${T1_SHORT}`,
+        "A queue entry came back in an unexpected shape and is not drawn.",
+        "Failed: 1 newest drawn of 1 returned.",
+        `failed: s-2 (world-a) last stop ${T1_SHORT}: boom`,
+        "Done: 200 returned, none drawn here.",
+        "The bridge returns at most 200 entries per list, so full counts may be higher; the worker line has the totals.",
+        "3 done entries are hidden by a clear.",
+        "1 failed entries are hidden by a clear.",
+      ],
+      reflections: ["Reflections 1-3 of 13 in world-a:", `${T1_SHORT} p-one: keep tests honest`, "? p-two: (no lesson)", "A reflection came back in an unexpected shape and is not shown."],
+      lessons: ["Lessons 6-8 of 12 in world-a:", "p-one: lesson six", "p-two: ?", "A lesson came back in an unexpected shape and is not shown."],
+      log: ["Worker log (global, all worlds), last 2 lines:", "started", "done"],
+    },
+  ],
+  [
+    "failed",
+    () =>
+      activityRead({
+        worker: fail("StateReadError", "worker unreadable"),
+        queue: fail("QueueReadError", "queue unreadable"),
+        list: fail("ConfigError", "bad config"),
+        lessons: fail("LessonsError", "lessons unreadable"),
+        logs: fail("LogReadError", "log unreadable"),
+      }),
+    {
+      all: [
+        "Self-improvement loop",
+        `5 of 5 reads failed at ${T1_SHORT} (worker: StateReadError, queue: QueueReadError, list: ConfigError, lessons: LessonsError, logs: LogReadError).`,
+        `Values below may be stale (last complete refresh ${T1_SHORT}).`,
+        "Worker status (global) unavailable: StateReadError: worker unreadable",
+      ],
+      queue: ["Queue (global, all worlds) unavailable: QueueReadError: queue unreadable"],
+      reflections: ["Reflections unavailable: ConfigError: bad config"],
+      lessons: ["Lessons unavailable: LessonsError: lessons unreadable"],
+      log: ["Worker log (global) unavailable: LogReadError: log unreadable"],
+    },
+  ],
+  [
+    "odd",
+    () => activityRead({ worker: ok({ pending: "x" }), queue: ok({ pending: 1 }), list: ok([1]), lessons: ok("x"), logs: ok({ exists: "yes" }) }),
+    {
+      all: ["Self-improvement loop", "Worker status came back in an unexpected shape and is not shown."],
+      queue: ["Queue came back in an unexpected shape and is not shown."],
+      reflections: ["Reflections came back in an unexpected shape and are not shown."],
+      lessons: ["Lessons came back in an unexpected shape and are not shown."],
+      log: ["Worker log came back in an unexpected shape and is not shown."],
+    },
+  ],
+  [
+    "empty",
+    () =>
+      activityRead({
+        queue: ok({ pending: [], done: [], failed: [], hidden: { done: 0, failed: 0 }, cleared: {} }),
+        list: ok({ world: "world-a", total: 0, offset: 0, limit: 10, items: [] }),
+        lessons: ok({ world: "world-a", total: 0, offset: 0, limit: 5, items: [] }),
+        logs: ok({ name: "worker", path: "/x", exists: false, size: 0, lines: [] }),
+      }),
+    {
+      all: ["Self-improvement loop", WORKER_LINE],
+      queue: ["Queue (global, all worlds), newest first:", "Pending: 0 returned.", "Failed: 0 returned.", "Done: 0 returned."],
+      reflections: ["No reflections in world-a."],
+      lessons: ["No lessons in the inbox in world-a."],
+      log: ["Worker log (global): no log written yet."],
+    },
+  ],
+  [
+    "past the end",
+    () => activityRead({ list: ok({ world: "world-a", total: 3, offset: 10, limit: 10, items: [] }), lessons: ok({ world: "world-a", total: 3, offset: 5, limit: 5, items: [] }) }),
+    {
+      all: ["Self-improvement loop", WORKER_LINE],
+      queue: ["Queue (global, all worlds): not read yet."],
+      reflections: ["No reflections on this page: the list has 3."],
+      lessons: ["No lessons on this page: the list has 3."],
+      log: ["Worker log (global): not read yet."],
+    },
+  ],
+  [
+    "no world",
+    () => {
+      const s = selectConsoleSection(initialConsoleState(), "activity");
+      return applyConsoleRead(s, s.generation, reply({ bootstrap: ok(NO_WORLD_BOOT), worker: ok(WORKER) }), T1);
+    },
+    {
+      all: ["Self-improvement loop", "No world chosen for this directory: no world owns /x. Pick one below.", WORKER_LINE],
+      queue: ["Queue (global, all worlds): not read yet."],
+      reflections: ["Choose a world to see its reflections and lessons."],
+      lessons: ["Choose a world to see its reflections and lessons."],
+      log: ["Worker log (global): not read yet."],
+    },
+  ],
+];
+
+const PART_CARDS: Record<ActivityTab, string> = { queue: "Queue", reflections: "Reflections", lessons: "Lesson inbox", log: "Worker log" };
+
+describe("Activity sub-tabs", () => {
+  test("Worker card, then the sub-tabs, then only the chosen part's card", () => {
+    for (const tab of ACTIVITY_TABS) {
+      const view = consoleView(setActivityTab(selectConsoleSection(base(), "activity"), tab), WIDE);
+      expect(cardTitles(view)).toEqual(["Worker", PART_CARDS[tab]]);
+      const worker = view.findIndex((b) => b.kind === "card" && b.title === "Worker");
+      const tabs = view[worker + 1];
+      expect(tabs?.kind === "controls" && tabs.key).toBe("activity-tabs");
+      const list = tabs?.kind === "controls" ? tabs.controls : [];
+      expect(list.map((c) => c.label)).toEqual(["Queue", "Reflections", "Lessons", "Log"]);
+      expect(list.map((c) => c.action)).toEqual(ACTIVITY_TABS.map((t) => ({ kind: "activity-tab", tab: t })));
+      expect(list.filter((c) => c.tone === "primary").map((c) => c.label)).toEqual([list[ACTIVITY_TABS.indexOf(tab)]!.label]);
+      expect(list.filter((c) => c.tone !== "primary").every((c) => c.tone === "dim")).toBe(true);
+      const part = view[worker + 2];
+      expect(part?.kind === "card" && part.title).toBe(PART_CARDS[tab]);
+    }
+  });
+
+  test("Queue is the first tab drawn", () => {
+    expect(cardTitles(consoleView(selectConsoleSection(base(), "activity"), WIDE))).toEqual(["Worker", "Queue"]);
+  });
+
+  test("the paging controls of a list are drawn only under its own tab", () => {
+    const [, state] = ACTIVITY_NO_LOSS.find(([name]) => name === "read")!;
+    const at = (tab: ActivityTab) => keys(consoleView(setActivityTab(state(), tab), WIDE));
+    expect(at("reflections")).toContain("list-next");
+    expect(at("reflections")).not.toContain("lessons-next");
+    expect(at("lessons")).toEqual(expect.arrayContaining(["lessons-prev", "lessons-next"]));
+    expect(at("lessons")).not.toContain("list-next");
+    for (const tab of ["queue", "log"] as const) expect(at(tab).filter((k) => k.startsWith("list-") || k.startsWith("lessons-"))).toEqual([]);
+  });
+
+  test("narrow stacks the sub-tabs", () => {
+    const view = consoleView(selectConsoleSection(base(), "activity"), NARROW);
+    const tabs = flattenBlocks(view).find((b) => b.kind === "controls" && b.key === "activity-tabs");
+    expect(tabs?.kind === "controls" && tabs.direction).toBe("column");
+  });
+
+  for (const [name, state, expected] of ACTIVITY_NO_LOSS) {
+    test.each(ACTIVITY_TABS.map((tab) => [tab]))(`no message is lost: Activity ${name}, %s tab`, (tab) => {
+      const shown = new Set(lineTexts(consoleView(setActivityTab(state(), tab as ActivityTab), WIDE)));
+      expect([...expected.all, ...expected[tab as ActivityTab]].filter((t) => !shown.has(t))).toEqual([]);
+    });
+  }
+
+  test("every old line has a tab (positive control for the table)", () => {
+    // Each part's lines are absent under the other tabs, so the table above
+    // could not pass by drawing everything everywhere.
+    const [, state, expected] = ACTIVITY_NO_LOSS.find(([name]) => name === "read")!;
+    const queueOnly = new Set(lineTexts(consoleView(setActivityTab(state(), "log"), WIDE)));
+    expect(expected.queue.filter((t) => queueOnly.has(t))).toEqual([]);
   });
 });
 
@@ -822,7 +1026,7 @@ describe("fix round 1", () => {
   });
 
   test("lessons page on their own, independent of the reflections list", () => {
-    let s = selectConsoleSection(base(), "activity");
+    let s = setActivityTab(selectConsoleSection(base(), "activity"), "lessons");
     s = applyConsoleRead(s, s.generation, reply({ list: ok({ world: "world-a", total: 3, offset: 0, limit: 10, items: [{ pattern: "a" }, { pattern: "b" }, { pattern: "c" }] }), lessons: ok({ world: "world-a", total: 12, offset: 0, limit: 5, items: [1, 2, 3, 4, 5].map((i) => ({ pattern: "p", text: `lesson ${i}` })) }) }), T1);
     const view = consoleView(s, WIDE);
     expect(texts(view)).toContain("Lessons 1-5 of 12 in world-a");
@@ -853,12 +1057,13 @@ describe("fix round 1", () => {
     } as Record<string, unknown>;
     delete task5.lessonsOffset;
     delete task5.worldOffset;
+    delete task5.activityTab;
     const parsed = parseConsoleState(task5);
     expect(parsed.reset).toBe("migrated");
-    expect(parsed.state).toMatchObject({ world: "world-a", section: "activity", listOffset: 10, lessonsOffset: 0, worldOffset: 0, generation: 5 });
+    expect(parsed.state).toMatchObject({ world: "world-a", section: "activity", listOffset: 10, lessonsOffset: 0, worldOffset: 0, activityTab: "queue", generation: 5 });
     expect(Object.keys(parsed.state.results).sort()).toEqual(["bootstrap", "list", "worker"]);
     const task4 = parseConsoleState({ world: "world-a", section: "overview", generation: 1, selectedPattern: null, loading: false, lastSuccessAt: null, results: {}, error: null });
-    expect(task4.state).toMatchObject({ lessonsOffset: 0, worldOffset: 0, listOffset: 0 });
+    expect(task4.state).toMatchObject({ lessonsOffset: 0, worldOffset: 0, listOffset: 0, activityTab: "queue" });
     for (const bad of [{ lessonsOffset: -1 }, { worldOffset: 1.5 }]) {
       expect(parseConsoleState({ ...initialConsoleState(), ...bad }).reset).toBe("corrupt");
     }
@@ -1129,11 +1334,26 @@ describe("console controller: scope changes", () => {
     const c = controller();
     await open(c);
     await press(c, "section-activity");
+    await press(c, "activity-tab-lessons");
     const before = c.requests.length;
     await press(c, "lessons-next");
     expect(c.state().lessonsOffset).toBe(5);
     expect(c.requests.length).toBe(before + 1);
     expect(c.requests.at(-1)!.reads.find((r) => r.id === "lessons")!.args).toMatchObject({ offset: 5 });
+  });
+
+  test("an Activity sub-tab press writes the tab and reads nothing", async () => {
+    const c = controller();
+    await open(c);
+    await press(c, "section-activity");
+    const before = c.requests.length;
+    const generation = c.state().generation;
+    expect(allText(await c.render())).not.toContain("Worker log (global");
+    await press(c, "activity-tab-log");
+    expect(c.state().activityTab).toBe("log");
+    expect(c.state().generation).toBe(generation);
+    expect(c.requests.length).toBe(before);
+    expect(allText(await c.render())).toContain("Worker log (global");
   });
 
   test("rapid proposal switches: only the last one's page is shown", async () => {

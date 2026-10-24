@@ -21,7 +21,9 @@ import {
   parseConsoleState,
   reconcileConsoleWorld,
   selectConsoleSection,
+  setActivityTab,
   switchConsoleWorld,
+  ACTIVITY_TABS,
   type ConsoleBootstrap,
   type ConsoleUiState,
 } from "../src/ui/state.ts";
@@ -85,6 +87,7 @@ describe("pure console state", () => {
       proposal: null,
       lessonsOffset: 0,
       worldOffset: 0,
+      activityTab: "queue",
     });
   });
 
@@ -313,6 +316,59 @@ describe("parseConsoleState", () => {
     expect(parsed.state.world).toBeNull();
     expect(parsed.state.results).toEqual({});
     expect(parsed.state.error).toMatch(/reset/i);
+  });
+
+  test("the v1.2.9 saved shape migrates with Queue chosen", () => {
+    const a = { ...worldA(), section: "activity", listOffset: 10, lessonsOffset: 5, worldOffset: 25 } as Record<string, unknown>;
+    delete a.activityTab;
+    // Exactly the v1.2.9 keys, nothing more.
+    expect(Object.keys(a).sort()).toEqual(
+      ["world", "section", "generation", "selectedPattern", "loading", "lastSuccessAt", "results", "error", "listOffset", "proposal", "lessonsOffset", "worldOffset"].sort(),
+    );
+    const saved = JSON.parse(JSON.stringify(a));
+    const parsed = parseConsoleState(saved);
+    expect(parsed.reset).toBe("migrated");
+    expect(parsed.state).toMatchObject({
+      world: "world-a",
+      section: "activity",
+      selectedPattern: "some-pattern",
+      proposal: saved.proposal,
+      listOffset: 10,
+      lessonsOffset: 5,
+      worldOffset: 25,
+      activityTab: "queue",
+      loading: false,
+    });
+    expect(parsed.state.results).toEqual(saved.results);
+    expect(parsed.state.generation).toBeGreaterThan(saved.generation);
+    expect(parsed.state.error).toBeNull();
+  });
+
+  test("a saved activityTab outside ACTIVITY_TABS resets as corrupt", () => {
+    expect(ACTIVITY_TABS).toEqual(["queue", "reflections", "lessons", "log"]);
+    for (const tab of ["lesson", "Queue", "", null, 1, "toString"]) {
+      const parsed = parseConsoleState({ ...JSON.parse(JSON.stringify(worldA())), activityTab: tab });
+      expect(parsed.reset).toBe("corrupt");
+      expect(parsed.state.error).toMatch(/reset/i);
+    }
+    // Positive control: each listed tab reads back as itself.
+    for (const tab of ACTIVITY_TABS) {
+      expect(parseConsoleState({ ...JSON.parse(JSON.stringify(worldA())), activityTab: tab }).reset).toBe("none");
+    }
+  });
+
+  test("setActivityTab keeps generation and results", () => {
+    const a = selectConsoleSection(worldA(), "activity");
+    const b = setActivityTab(a, "lessons");
+    expect(b.activityTab).toBe("lessons");
+    expect(b.generation).toBe(a.generation);
+    expect(b.results).toBe(a.results);
+    expect(b.loading).toBe(a.loading);
+    expect({ ...b, activityTab: a.activityTab }).toEqual(a);
+    expect(setActivityTab(b, "lessons")).toBe(b);
+    // The tab outlives a section or world change.
+    expect(selectConsoleSection(selectConsoleSection(b, "overview"), "activity").activityTab).toBe("lessons");
+    expect(chooseConsoleWorld(b, "world-b").activityTab).toBe("lessons");
   });
 
   test("a corrupt state with a readable generation resets past it", () => {

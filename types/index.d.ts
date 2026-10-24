@@ -35,6 +35,8 @@ export type SilConsoleState = {
   lessonsOffset: number;
   /** First world the world switcher offers; moving it reads nothing. */
   worldOffset: number;
+  /** The Activity part shown; switching it reads nothing. */
+  activityTab: "queue" | "reflections" | "lessons" | "log";
 };
 
 /** Which part and page of the open proposal is shown, the pages before it,

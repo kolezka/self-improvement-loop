@@ -36,6 +36,7 @@ import {
   reloadProposal,
   selectConsolePattern,
   selectConsoleSection,
+  setActivityTab,
   setConsoleListOffset,
   setLessonsOffset,
   setProposalPart,
@@ -311,6 +312,13 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
         ? writeIfCurrent($, lifecycle, (s) => setWorldOffset(s, action.offset))
         : writeConsole($, (s) => setWorldOffset(s, action.offset));
       break;
+    case "activity-tab":
+      // Activity reads every part whichever is shown, so like worlds: a
+      // write and nothing to read.
+      done = active
+        ? writeIfCurrent($, lifecycle, (s) => setActivityTab(s, action.tab))
+        : writeConsole($, (s) => setActivityTab(s, action.tab));
+      break;
     case "select":
       done = rescope((s) => selectConsolePattern(s, action.pattern));
       break;
@@ -407,8 +415,8 @@ export function registerUi(on: On): void {
     }
     if (lesson.kind !== "none") {
       try {
-        // Activity first: a section change after the first read would drop it.
-        await writeConsole($, (s) => selectConsoleSection(s, "activity"));
+        // Activity's Lessons first: a section change after the first read would drop it.
+        await writeConsole($, (s) => setActivityTab(selectConsoleSection(s, "activity"), "lessons"));
         await restart($);
         await refresh($);
         const world = (await readConsole($)).world;

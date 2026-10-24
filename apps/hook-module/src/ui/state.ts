@@ -17,6 +17,10 @@ import { hasExactKeys, isCount, isPlainObject, parseProposalPage, REVIEWED_STATE
 export const CONSOLE_SECTIONS = ["overview", "review", "artifacts", "activity", "settings"] as const;
 export type ConsoleSection = (typeof CONSOLE_SECTIONS)[number];
 
+/** The Activity section's parts, one shown at a time. */
+export const ACTIVITY_TABS = ["queue", "reflections", "lessons", "log"] as const;
+export type ActivityTab = (typeof ACTIVITY_TABS)[number];
+
 /** What `console.bootstrap` answers. The host type lives in
  * packages/ops/src/handlers/console.ts, out of the sandbox's reach; a test
  * holds the two to one shape. */
@@ -63,6 +67,8 @@ export interface ConsoleUiState {
   /** First world of the world switcher's window. Moving it reads nothing
    * and changes no selection. */
   worldOffset: number;
+  /** The Activity part shown. Activity reads all of them, so this reads nothing. */
+  activityTab: ActivityTab;
 }
 
 /** The read ids results are kept under. bootstrap and worker do not depend
@@ -89,6 +95,7 @@ export function initialConsoleState(): ConsoleUiState {
     proposal: null,
     lessonsOffset: 0,
     worldOffset: 0,
+    activityTab: "queue",
   };
 }
 
@@ -152,6 +159,14 @@ export function setWorldOffset(state: ConsoleUiState, offset: number): ConsoleUi
   if (!isCount(offset)) throw new Error(`world offset ${offset} is not a whole number from 0`);
   if (state.worldOffset === offset) return state;
   return { ...state, worldOffset: offset };
+}
+
+/** Another Activity part. Presentation only, like setWorldOffset: every
+ * part's read runs whichever is shown. */
+export function setActivityTab(state: ConsoleUiState, tab: ActivityTab): ConsoleUiState {
+  if (!(ACTIVITY_TABS as readonly string[]).includes(tab)) throw new Error(`activity tab ${JSON.stringify(tab)} is not one of ${ACTIVITY_TABS.join(", ")}`);
+  if (state.activityTab === tab) return state;
+  return { ...state, activityTab: tab };
 }
 
 /** Another page of the section's list. */
@@ -329,7 +344,9 @@ export function reconcileConsoleWorld(state: ConsoleUiState): ConsoleUiState {
 const TASK4_KEYS = ["world", "section", "generation", "selectedPattern", "loading", "lastSuccessAt", "results", "error"] as const;
 /** The first Task 5 shape: paging before lessons and world windows. */
 const TASK5_KEYS = [...TASK4_KEYS, "listOffset", "proposal"] as const;
-const STATE_KEYS = [...TASK5_KEYS, "lessonsOffset", "worldOffset"] as const;
+/** The shape v1.2.9 shipped: before the Activity sub-tabs. */
+const V1_2_9_KEYS = [...TASK5_KEYS, "lessonsOffset", "worldOffset"] as const;
+const STATE_KEYS = [...V1_2_9_KEYS, "activityTab"] as const;
 
 function isControlResult(value: unknown): value is ControlResult {
   if (!isPlainObject(value)) return false;
@@ -374,9 +391,14 @@ function isTask5Fields(value: Record<string, unknown>): boolean {
   return (value.selectedPattern === null) === (value.proposal === null);
 }
 
+/** The fields v1.2.9 saved. */
+function isV129Fields(value: Record<string, unknown>): boolean {
+  return isTask5Fields(value) && isCount(value.lessonsOffset) && isCount(value.worldOffset);
+}
+
 function isConsoleState(value: unknown): value is ConsoleUiState {
-  if (!isPlainObject(value) || !hasExactKeys(value, STATE_KEYS) || !isTask5Fields(value)) return false;
-  return isCount(value.lessonsOffset) && isCount(value.worldOffset);
+  if (!isPlainObject(value) || !hasExactKeys(value, STATE_KEYS) || !isV129Fields(value)) return false;
+  return typeof value.activityTab === "string" && (ACTIVITY_TABS as readonly string[]).includes(value.activityTab);
 }
 
 export type ConsoleReset = "none" | "legacy" | "migrated" | "corrupt";
@@ -394,7 +416,7 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
     // Task 4's shape: keep where the person was (world, section, proposal),
     // drop every cached read but the world list and worker status, and move
     // the generation past any reply still on its way.
-    const old = value as unknown as Omit<ConsoleUiState, "listOffset" | "proposal">;
+    const old = value as unknown as Omit<ConsoleUiState, "listOffset" | "proposal" | "lessonsOffset" | "worldOffset" | "activityTab">;
     return {
       state: {
         ...old,
@@ -405,6 +427,7 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
         proposal: old.selectedPattern === null ? null : freshProposal(),
         lessonsOffset: 0,
         worldOffset: 0,
+        activityTab: "queue",
       },
       reset: "migrated",
     };
@@ -412,7 +435,7 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
   if (isPlainObject(value) && hasExactKeys(value, TASK5_KEYS) && isTask5Fields(value)) {
     // The first Task 5 shape: everything kept but the Overview's review
     // result, which was a whole review.queue array and is now a bounded page.
-    const old = value as unknown as Omit<ConsoleUiState, "lessonsOffset" | "worldOffset">;
+    const old = value as unknown as Omit<ConsoleUiState, "lessonsOffset" | "worldOffset" | "activityTab">;
     const proposal = old.proposal === null ? null : { ...old.proposal, back: [...old.proposal.back] };
     return {
       state: {
@@ -423,7 +446,17 @@ export function parseConsoleState(value: unknown): { state: ConsoleUiState; rese
         proposal,
         lessonsOffset: 0,
         worldOffset: 0,
+        activityTab: "queue",
       },
+      reset: "migrated",
+    };
+  }
+  if (isPlainObject(value) && hasExactKeys(value, V1_2_9_KEYS) && isV129Fields(value)) {
+    // v1.2.9: everything kept, results too; Activity opens on Queue.
+    const old = value as unknown as Omit<ConsoleUiState, "activityTab">;
+    const proposal = old.proposal === null ? null : { ...old.proposal, back: [...old.proposal.back] };
+    return {
+      state: { ...old, generation: old.generation + 1, loading: false, results: { ...old.results }, proposal, activityTab: "queue" },
       reset: "migrated",
     };
   }

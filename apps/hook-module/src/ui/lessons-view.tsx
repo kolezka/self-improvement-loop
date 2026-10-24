@@ -97,7 +97,8 @@ export async function drawLessons(
     );
   }
 
-  const out: RenderElement[] = [line("Curated lessons", "title")];
+  // The title is the card's, drawn by render.tsx.
+  const out: RenderElement[] = [];
   out.push(row([button("lessons-close", "Close lessons", { kind: "close" }), button("lessons-refresh", "Refresh lessons", { kind: "refresh" })]));
   if (vm.restoreNote !== null) out.push(line(vm.restoreNote, "error"));
   if (vm.persistWarning !== null) out.push(line(vm.persistWarning, "error"));

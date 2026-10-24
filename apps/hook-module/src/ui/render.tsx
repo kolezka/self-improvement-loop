@@ -114,15 +114,20 @@ export function registerConsoleViews(on: On): void {
       );
     };
 
-    const blocks = consoleView(state, { columns: bodyColumns(e.props), canSelect: Select !== undefined, now: new Date() });
+    const columns = bodyColumns(e.props);
+    const blocks = consoleView(state, { columns, canSelect: Select !== undefined, now: new Date() });
     const drawn = blocks.map(blockOf);
-    // Lessons live inside Activity, below its inbox, queue and log.
-    if (state.section === "activity") {
+    // Curated lessons live under Activity's Lessons tab, in a card right after
+    // the inbox (before the footer), or last if the budget cut the inbox.
+    if (state.section === "activity" && state.activityTab === "lessons") {
+      let lessons: RenderElement;
       try {
-        drawn.push(await drawLessons($, ui, e, state.world, bodyColumns(e.props)));
+        lessons = drawCard(ui, columns, "Curated lessons", undefined, [await drawLessons($, ui, e, state.world, columns)]);
       } catch (err) {
-        drawn.push(<Text color="error">{`Error: the lessons view could not be drawn: ${boundedErrorText(errorText(err))}`}</Text>);
+        lessons = <Text color="error">{`Error: the lessons view could not be drawn: ${boundedErrorText(errorText(err))}`}</Text>;
       }
+      const inbox = blocks.findIndex((b) => b.kind === "card" && b.key === "lessons");
+      drawn.splice(inbox === -1 ? drawn.length : inbox + 1, 0, lessons);
     }
     return (
       <Box flexDirection="column" paddingX={1} gap={1}>

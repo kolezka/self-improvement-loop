@@ -277,6 +277,7 @@ async function openActivity(t: H): Promise<void> {
   await t.engine.answer("command.run", { command: "sil", args: "" });
   await settle();
   await press(t, "section-activity");
+  await press(t, "activity-tab-lessons");
 }
 
 async function openLessons(t: H): Promise<void> {
@@ -310,6 +311,40 @@ describe("one pane, one command, Lessons inside Activity", () => {
     // Closed, nothing curated is read.
     expect(lessonOps(t)).toEqual([]);
     expect(t.engine.panes.map((p) => p.id)).toEqual(["sil-console"]);
+  });
+
+  test("the Lessons view is drawn only under Activity's Lessons tab, framed as Curated lessons", async () => {
+    const t = harness();
+    await t.engine.answer("command.run", { command: "sil", args: "" });
+    await settle();
+    await press(t, "section-activity");
+    // Queue first: no Lessons view.
+    expect(findKey(await t.render(), "lesson-capture")).toBeUndefined();
+    await press(t, "activity-tab-lessons");
+    let tree = await t.render();
+    expect(findKey(tree, "lesson-capture")).toBeDefined();
+    expect(allText(tree)).toContain("Curated lessons");
+    await press(t, "lessons-open");
+    tree = await t.render();
+    expect(findKey(tree, "lessons-close")).toBeDefined();
+    // The card's title, not a second title line inside it.
+    expect(allText(tree).split("\n").filter((l) => l.trim() === "Curated lessons")).toHaveLength(1);
+    for (const tab of ["queue", "reflections", "log"]) {
+      await press(t, `activity-tab-${tab}`);
+      tree = await t.render();
+      expect(findKey(tree, "lesson-capture")).toBeUndefined();
+      expect(findKey(tree, "lessons-close")).toBeUndefined();
+    }
+  });
+
+  test("/sil capture opens Activity on its Lessons tab", async () => {
+    const t = harness();
+    t.engine.selection = { text: "Selected passage", requestId: "toolu_tab" };
+    await t.engine.answer("command.run", { command: "sil", args: "capture" });
+    await settle();
+    const saved = t.engine.state.get("self-improvement-loop/console")?.value as Rec;
+    expect(saved).toMatchObject({ section: "activity", activityTab: "lessons" });
+    expect(findKey(await t.render(), "lesson-text")?.props.value).toBe("Selected passage");
   });
 
   test("other /sil arguments keep the plain console; capture and lesson are the only new ones", () => {
@@ -415,11 +450,12 @@ describe("display bounds", () => {
     await type(t, "lesson-text", "x".repeat(8192));
     const existingTree = await t.render();
     const existing = treeChars(existingTree);
-    // Positive controls: the parent's full Activity and the record's detail are really drawn.
+    // Positive controls: the Lessons tab's full inbox and the record's detail
+    // are really drawn. The other Activity parts sit under their own tabs.
     const drawn = allText(existingTree);
-    expect(drawn).toContain("log19 www");
-    expect(drawn).toContain("Pending: 5 newest drawn of 50 returned.");
-    expect(drawn).toContain("Reflections 1-10 of 999");
+    expect(drawn).toContain("Lessons 1-5 of 999");
+    expect(drawn).not.toContain("log19 www");
+    expect(drawn).not.toContain("Reflections 1-10 of 999");
     expect(drawn).toContain("Revision 10.");
     expect(drawn).toContain(`Quote: ${"q".repeat(100)}`);
     expect(drawn).toContain("History, newest first (10 of 10)");

@@ -16,6 +16,7 @@ import {
   type ProposalPart,
 } from "./pages.ts";
 import {
+  ACTIVITY_TABS,
   bootstrapOf,
   BOOTSTRAP_READ,
   CONSOLE_SECTIONS,
@@ -25,6 +26,7 @@ import {
   PROPOSAL_READ,
   REVIEW_READ,
   WORKER_READ,
+  type ActivityTab,
   type ConsoleSection,
   type ConsoleUiState,
 } from "./state.ts";
@@ -249,6 +251,7 @@ export type ConsoleAction =
   | { kind: "list"; offset: number }
   | { kind: "lessons"; offset: number }
   | { kind: "worlds"; offset: number }
+  | { kind: "activity-tab"; tab: ActivityTab }
   | { kind: "select"; pattern: string | null }
   | { kind: "part"; part: ProposalPart }
   | { kind: "page"; to: "next" | "prev" | "first" }
@@ -688,17 +691,46 @@ function logBlocks(state: ConsoleUiState): ConsoleBlock[] {
   return blocks;
 }
 
-function activitySection(state: ConsoleUiState, now: Date): ConsoleBlock[] {
-  const blocks: ConsoleBlock[] = [];
+const ACTIVITY_TAB_LABELS: Record<ActivityTab, string> = { queue: "Queue", reflections: "Reflections", lessons: "Lessons", log: "Log" };
+const NO_WORLD_ACTIVITY = "Choose a world to see its reflections and lessons.";
+
+/** The worker card, the sub-tabs, then the chosen part's card. */
+function activitySection(state: ConsoleUiState, now: Date, narrow: boolean): ConsoleBlock[] {
   const worker = workerLine(state, now);
-  if (worker) blocks.push({ kind: "line", line: worker });
-  blocks.push(...queueBlocks(state, now));
-  if (state.world === null) blocks.push(line("Choose a world to see its reflections and lessons.", "dim"));
-  else {
-    blocks.push(...listBlocks(state, LIST_READ, "reflections", (page) => reflectionRows(page, now), LIST_PAGING));
-    blocks.push(...listBlocks(state, LESSONS_READ, "lessons", lessonRows, LESSONS_PAGING));
+  const tabs = ACTIVITY_TABS.map((tab): ConsoleControl => ({
+    key: `activity-tab-${tab}`,
+    label: ACTIVITY_TAB_LABELS[tab],
+    action: { kind: "activity-tab", tab },
+    isCurrent: state.activityTab === tab,
+    tone: state.activityTab === tab ? "primary" : "dim",
+  }));
+  const blocks: ConsoleBlock[] = [
+    card("worker", "Worker", [worker === null ? line("Worker status: not read yet.", "dim") : { kind: "line", line: worker }], "global, all worlds"),
+    controls("activity-tabs", tabs, narrow ? "column" : "row"),
+  ];
+  const world = state.world;
+  switch (state.activityTab) {
+    case "queue":
+      blocks.push(card("queue", "Queue", queueBlocks(state, now), "global, all worlds"));
+      break;
+    case "reflections":
+      blocks.push(
+        world === null
+          ? card("reflections", "Reflections", [line(NO_WORLD_ACTIVITY, "dim")])
+          : card("reflections", "Reflections", listBlocks(state, LIST_READ, "reflections", (page) => reflectionRows(page, now), LIST_PAGING), world),
+      );
+      break;
+    case "lessons":
+      blocks.push(
+        world === null
+          ? card("lessons", "Lesson inbox", [line(NO_WORLD_ACTIVITY, "dim")])
+          : card("lessons", "Lesson inbox", listBlocks(state, LESSONS_READ, "lessons", lessonRows, LESSONS_PAGING), world),
+      );
+      break;
+    case "log":
+      blocks.push(card("log", "Worker log", logBlocks(state), "global, all worlds"));
+      break;
   }
-  blocks.push(...logBlocks(state));
   return blocks;
 }
 
@@ -723,7 +755,7 @@ export function consoleView(state: ConsoleUiState, layout: ConsoleLayout): Conso
   if (state.section === "overview") blocks.push(...overviewSection(state, layout.now));
   else if (state.section === "review") blocks.push(...reviewSection(state, narrow));
   else if (state.section === "artifacts") blocks.push(...artifactsSection(state));
-  else if (state.section === "activity") blocks.push(...activitySection(state, layout.now));
+  else if (state.section === "activity") blocks.push(...activitySection(state, layout.now, narrow));
   else if (state.section === "settings") blocks.push(...settingsSection());
   blocks.push(...footer(state, layout.now));
   return finishView(blocks);

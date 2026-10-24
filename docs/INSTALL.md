@@ -41,6 +41,63 @@ run moves to the newest release commit. Only those commits carry the prebuilt
 zip attached to the release with an `archive` source; the release notes carry the
 URL and its `sha256`. See `docs/RELEASE.md`.
 
+## Standalone install from a checkout
+
+To use the loop without installing a Claude Code plugin:
+
+```sh
+bun install
+make install-local
+# Equivalent: bun run install:local
+```
+
+Both commands build the checkout, then install symlinks into
+`$CLAUDE_CONFIG_DIR`. If that variable is unset or empty, they use `~/.claude`.
+A nonempty variable always selects that directory, creating it if needed:
+
+```sh
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" make install-local
+```
+
+The installer creates:
+
+- `self-improvement-loop` pointing to this checkout.
+- `commands/*.md` pointing to this repo's slash commands.
+- `skills/self-improvement-loop` pointing to the shared skill directory.
+- Command hook entries in `settings.json`, merged with existing settings and hooks.
+
+It does not register a plugin or modify `CLAUDE.md`, model settings, or the
+loop's own config. Running it again keeps the same links and hook entries.
+Conflicting files or links are refused before installation; move them aside
+and rerun. A malformed or symlinked `settings.json` is also refused rather than
+overwritten. Do not run standalone and plugin hooks together. If this config
+has the plugin enabled, disable it with `/plugin` before installing; also check
+project settings and do not start Claude with `--plugin-dir` for this repo.
+
+Restart Claude Code. On a fresh setup, run `scripts/sil init` from the checkout;
+this also installs the normal `~/.local/bin/sil` shim. If already initialized,
+use status instead. The CLI is available directly even before the shim exists:
+
+```sh
+"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop/scripts/sil" status
+```
+
+Slash commands are installed without a plugin namespace. If another command or
+a built-in skill owns a name such as `/loop`, use the CLI instead.
+
+Keep the checkout in place. After pulling updates, rerun `make install-local`
+to rebuild and pick up new commands. Use the same `CLAUDE_CONFIG_DIR` in the
+terminal or service that runs `sil`; an explicit `SIL_PLUGIN_ROOT` still wins.
+To move the checkout, remove only this install's symlinks, then reinstall from
+the new location. To uninstall, remove those symlinks and the hook entries whose
+commands point to `self-improvement-loop` from `settings.json`; keep unrelated
+hooks and settings. Links for commands removed from the repo are not pruned
+automatically; remove those dangling links manually.
+
+Standalone mode uses the command hooks, not the function hooks module. The
+native `/sil` console requires the plugin; `/loop`, the CLI and `sil web` work
+without it.
+
 ## Local dev install
 
 From a checkout of this repo:

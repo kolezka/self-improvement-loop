@@ -1,7 +1,10 @@
-.PHONY: install build test typecheck lint-dashes dev-install web worker
+.PHONY: install install-local build test typecheck lint-dashes dev-install web worker
 
 install:
 	bun install
+
+install-local:
+	bun run install:local
 
 build:
 	bun run build

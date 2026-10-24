@@ -9,7 +9,8 @@ wait for it to finish.
    on the Bash tool if available, otherwise `nohup ... &`):
 
    ```sh
-   nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" reflect \
+   sil_root="${CLAUDE_PLUGIN_ROOT}"
+   nohup "${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" reflect \
      --session "$CLAUDE_SESSION_ID" --now > /dev/null 2>&1 &
    ```
 
@@ -18,7 +19,8 @@ wait for it to finish.
    this cwd as ended and kicks the worker:
 
    ```sh
-   nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" reflect \
+   sil_root="${CLAUDE_PLUGIN_ROOT}"
+   nohup "${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" reflect \
      --cwd "$PWD" --now > /dev/null 2>&1 &
    ```
 

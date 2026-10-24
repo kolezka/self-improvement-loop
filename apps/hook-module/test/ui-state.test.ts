@@ -25,7 +25,7 @@ import {
   type ConsoleBootstrap,
   type ConsoleUiState,
 } from "../src/ui/state.ts";
-import { consoleLines, consoleReads, CONSOLE_REFRESH_MS, type ConsoleAction } from "../src/ui/views.ts";
+import { consoleLines, consoleReads, CONSOLE_REFRESH_MS, shortTime, type ConsoleAction } from "../src/ui/views.ts";
 import { FakeEngine, type FakeElement, type FakeRunResult } from "./fake-engine.ts";
 
 // The sandbox copy of the bootstrap shape and the host's must stay one shape,
@@ -159,10 +159,11 @@ describe("pure console state", () => {
     expect(failed.lastSuccessAt).toBe(T1);
     expect(failed.loading).toBe(false);
     expect(failed.error).toContain("exited with 1");
-    const shown = text(consoleLines(failed));
+    const now = new Date(2026, 9, 24, 17, 0);
+    const shown = text(consoleLines(failed, now));
     expect(shown).toContain("exited with 1");
     expect(shown).toMatch(/stale/i);
-    expect(shown).toContain(T1);
+    expect(shown).toContain(`last complete refresh ${shortTime(T1, now)}`);
     // The real values are still there, and labelled as old.
     expect(shown).toContain("Pending: 2");
   });

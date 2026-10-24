@@ -634,9 +634,10 @@ describe("the native console shows strict read failures", () => {
       if (b.kind === "code") return b.source;
       if (b.kind === "select") return b.label;
       if (b.kind === "card") return [b.title, ...b.blocks.map(text)].join("\n");
+      if (b.kind === "row") return b.blocks.map(text).join("\n");
       return b.controls.map((c) => c.label).join(" ");
     };
-    return consoleView(state, { columns: 80, canSelect: true }).map(text).join("\n");
+    return consoleView(state, { columns: 80, canSelect: true, now: new Date() }).map(text).join("\n");
   }
 
   /** Runs the reads the console would send for `state`, as one batch. */

@@ -140,6 +140,20 @@ export function sectionLabel(section: ConsoleSection): string {
   return SECTION_LABELS[section];
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "15:33" when `iso` is on `now`'s local day, "Oct 22 15:33" otherwise,
+ * `iso` unchanged when unparseable or when it has no time of day. */
+export function shortTime(iso: string, now: Date): string {
+  if (!/\d:\d\d/.test(iso)) return iso;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return iso;
+  const d = new Date(ms);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today ? hm : `${MONTHS[d.getMonth()]} ${d.getDate()} ${hm}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -148,7 +162,7 @@ function str(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function workerLine(state: ConsoleUiState): ConsoleLine | null {
+function workerLine(state: ConsoleUiState, now: Date): ConsoleLine | null {
   if (!Object.hasOwn(state.results, WORKER_READ)) return null;
   const result = state.results[WORKER_READ]!;
   if (!result.ok) return { text: `Worker status (global) unavailable: ${result.error.code}: ${result.error.message}`, tone: "error" };
@@ -157,7 +171,7 @@ function workerLine(state: ConsoleUiState): ConsoleLine | null {
     return { text: "Worker status came back in an unexpected shape and is not shown.", tone: "error" };
   }
   const running = v.lock_held === true ? "running" : "idle";
-  const lastRun = typeof v.last_run === "string" ? `last run ${v.last_run}` : "no run recorded";
+  const lastRun = typeof v.last_run === "string" ? `last run ${shortTime(v.last_run, now)}` : "no run recorded";
   return {
     text: `Worker (global, all worlds): ${running}, ${lastRun}. Pending: ${v.pending}, done: ${v.done}, failed: ${v.failed}.`,
     tone: "plain",
@@ -175,24 +189,19 @@ function reviewLine(state: ConsoleUiState): ConsoleLine | null {
   return { text: `${n} staged ${n === 1 ? "proposal" : "proposals"} waiting for review in ${state.world}.`, tone: "plain" };
 }
 
-/** The status every section opens with, then the overview's own lines. A
- * value is only ever shown from a result that holds it: no read, no number. */
-export function consoleLines(state: ConsoleUiState): ConsoleLine[] {
+/** The status every section opens with, right under the header. A value is
+ * only ever shown from a result that holds it: no read, no number. */
+function statusLines(state: ConsoleUiState, now: Date): ConsoleLine[] {
   const lines: ConsoleLine[] = [];
-  lines.push({ text: state.world === null ? "World: none selected." : `World: ${state.world}`, tone: "title" });
-  lines.push({ text: `Section: ${sectionLabel(state.section)}`, tone: "dim" });
-
   if (state.loading) lines.push({ text: "Refreshing...", tone: "dim" });
   if (state.error !== null) {
     lines.push({ text: state.error, tone: "error" });
     const shown = Object.values(state.results).some((r) => r.ok);
     if (shown) {
-      const since = state.lastSuccessAt === null ? "no refresh has fully worked yet" : `last complete refresh ${state.lastSuccessAt}`;
+      const since = state.lastSuccessAt === null ? "no refresh has fully worked yet" : `last complete refresh ${shortTime(state.lastSuccessAt, now)}`;
       lines.push({ text: `Values below may be stale (${since}).`, tone: "error" });
     }
-  } else if (state.lastSuccessAt !== null) {
-    lines.push({ text: `Last complete refresh: ${state.lastSuccessAt}`, tone: "dim" });
-  } else if (!state.loading) {
+  } else if (state.lastSuccessAt === null && !state.loading) {
     lines.push({ text: "Not read yet.", tone: "dim" });
   }
 
@@ -205,9 +214,14 @@ export function consoleLines(state: ConsoleUiState): ConsoleLine[] {
       lines.push({ text: `No world chosen for this directory: ${resolutionError}. Pick one below.`, tone: "error" });
     }
   }
+  return lines;
+}
 
+/** The status lines, then the overview's own lines when it is shown. */
+export function consoleLines(state: ConsoleUiState, now: Date = new Date()): ConsoleLine[] {
+  const lines = statusLines(state, now);
   if (state.section === "overview") {
-    const worker = workerLine(state);
+    const worker = workerLine(state, now);
     if (worker) lines.push(worker);
     const review = reviewLine(state);
     if (review) lines.push(review);
@@ -235,6 +249,8 @@ export interface ConsoleControl {
   label: string;
   action: ConsoleAction;
   isCurrent: boolean;
+  /** How the button is drawn; a control with a tone gets no CURRENT_MARK. */
+  tone?: "primary" | "dim";
 }
 
 const SAFE_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -255,6 +271,7 @@ export function consoleControls(state: ConsoleUiState): { sections: ConsoleContr
     label: sectionLabel(section),
     action: { kind: "section", section },
     isCurrent: state.section === section,
+    tone: state.section === section ? "primary" : "dim",
   }));
   const boot = bootstrapOf(state);
   const worlds: ConsoleControl[] =
@@ -291,13 +308,17 @@ export type ConsoleBlock =
   | { kind: "select"; key: string; label: string; value: string | null; options: { value: string; label: string }[] }
   | { kind: "code"; source: string; diff: boolean }
   /** A framed group: `title` (and `meta`, drawn dim beside it) on its first row. */
-  | { kind: "card"; key: string; title: string; meta?: string; blocks: ConsoleBlock[] };
+  | { kind: "card"; key: string; title: string; meta?: string; blocks: ConsoleBlock[] }
+  /** Blocks side by side, stacked on a narrow pane. */
+  | { kind: "row"; key: string; blocks: ConsoleBlock[] };
 
 export interface ConsoleLayout {
   /** The pane's `bodyColumns`. */
   columns: number;
   /** Whether the surface draws a Select (mobile does not). */
   canSelect: boolean;
+  /** The clock times are drawn against. */
+  now: Date;
 }
 
 function line(text: string, tone: ConsoleTone = "plain"): ConsoleBlock {
@@ -312,30 +333,22 @@ export function card(key: string, title: string, blocks: ConsoleBlock[], meta?: 
   return meta === undefined ? { kind: "card", key, title, blocks } : { kind: "card", key, title, meta, blocks };
 }
 
-/** Every block of the tree, cards opened, in drawing order. */
+/** Every block of the tree, cards and rows opened, in drawing order. */
 export function flattenBlocks(blocks: ConsoleBlock[]): ConsoleBlock[] {
-  return blocks.flatMap((b) => (b.kind === "card" ? [b, ...flattenBlocks(b.blocks)] : [b]));
+  return blocks.flatMap((b) => (b.kind === "card" || b.kind === "row" ? [b, ...flattenBlocks(b.blocks)] : [b]));
 }
 
 function control(key: string, label: string, action: ConsoleAction, isCurrent = false): ConsoleControl {
   return { key, label, action, isCurrent };
 }
 
-function navigation(state: ConsoleUiState, layout: ConsoleLayout): ConsoleBlock[] {
+/** Two rows: the title with the world control, then the tabs. Narrow, where
+ * the surface has one, both controls are Selects. */
+function header(state: ConsoleUiState, layout: ConsoleLayout): ConsoleBlock[] {
   const narrow = layout.columns < NARROW_COLUMNS;
   const c = consoleControls(state);
-  const blocks: ConsoleBlock[] = [];
-  if (narrow && layout.canSelect) {
-    blocks.push({
-      kind: "select",
-      key: "section-select",
-      label: "Section",
-      value: state.section,
-      options: CONSOLE_SECTIONS.map((s) => ({ value: s, label: sectionLabel(s) })),
-    });
-  } else {
-    blocks.push(controls("sections", c.sections, narrow ? "column" : "row"));
-  }
+  const world: ConsoleBlock[] = [];
+  const paging: ConsoleControl[] = [];
   if (c.worlds.length > 0) {
     const all = c.worlds;
     const last = Math.max(0, Math.floor((all.length - 1) / WORLD_WINDOW) * WORLD_WINDOW);
@@ -347,17 +360,39 @@ function navigation(state: ConsoleUiState, layout: ConsoleLayout): ConsoleBlock[
     const label = all.length > WORLD_WINDOW ? `Worlds ${from + 1}-${Math.min(from + WORLD_WINDOW, all.length)} of ${all.length}:` : "Worlds:";
     if (narrow && layout.canSelect) {
       const options = window.map((w) => ({ value: w.action.kind === "world" ? w.action.world : w.label, label: w.label }));
-      blocks.push({ kind: "select", key: "world-select", label: all.length > WORLD_WINDOW ? label.slice(0, -1) : "World", value: state.world, options });
+      world.push({ kind: "select", key: "world-select", label: all.length > WORLD_WINDOW ? label.slice(0, -1) : "World", value: state.world, options });
     } else {
-      blocks.push(controls("worlds", window, narrow ? "column" : "row", label));
+      world.push(controls("worlds", window, narrow ? "column" : "row", label));
     }
-    const paging: ConsoleControl[] = [];
     if (from > 0) paging.push(control("worlds-prev", "Previous worlds", { kind: "worlds", offset: Math.max(0, from - WORLD_WINDOW) }));
     if (from + WORLD_WINDOW < all.length) paging.push(control("worlds-next", "More worlds", { kind: "worlds", offset: from + WORLD_WINDOW }));
-    if (paging.length > 0) blocks.push(controls("worlds-paging", paging));
+  } else {
+    // No world list to pick from: still say which world the pane shows.
+    world.push(line(state.world ?? "No world selected.", "dim"));
   }
-  blocks.push(controls("actions", [c.refresh, control("close", "Close", { kind: "close" })]));
+  const blocks: ConsoleBlock[] = [{ kind: "row", key: "title", blocks: [line("Self-improvement loop", "title"), ...world] }];
+  if (paging.length > 0) blocks.push(controls("worlds-paging", paging));
+  if (narrow && layout.canSelect) {
+    blocks.push({
+      kind: "select",
+      key: "section-select",
+      label: "Section",
+      value: state.section,
+      options: CONSOLE_SECTIONS.map((s) => ({ value: s, label: sectionLabel(s) })),
+    });
+  } else {
+    blocks.push(controls("sections", c.sections, narrow ? "column" : "row"));
+  }
   return blocks;
+}
+
+/** When the pane last read everything, then Refresh and Close. */
+function footer(state: ConsoleUiState, now: Date): ConsoleBlock[] {
+  const when = state.lastSuccessAt === null ? "not refreshed yet" : `refreshed ${shortTime(state.lastSuccessAt, now)}`;
+  return [
+    line(`${when} · every ${CONSOLE_REFRESH_MS / 1000} s`, "dim"),
+    controls("actions", [consoleControls(state).refresh, control("close", "Close", { kind: "close" })]),
+  ];
 }
 
 /** The result kept under `id`, as the view needs it: absent, failed, or ok. */
@@ -438,10 +473,11 @@ function artifactRows(page: ListPage): ConsoleBlock[] {
   });
 }
 
-function reflectionRows(page: ListPage): ConsoleBlock[] {
+function reflectionRows(page: ListPage, now: Date): ConsoleBlock[] {
   return page.items.map((item) => {
     if (!isRecord(item) || str(item.pattern) === null) return line("A reflection came back in an unexpected shape and is not shown.", "error");
-    return line(row(`${str(item.created) ?? "?"} ${item.pattern}: ${str(item.lesson) ?? "(no lesson)"}`));
+    const created = str(item.created);
+    return line(row(`${created === null ? "?" : shortTime(created, now)} ${item.pattern}: ${str(item.lesson) ?? "(no lesson)"}`));
   });
 }
 
@@ -564,21 +600,35 @@ function proposalBlocks(state: ConsoleUiState, narrow: boolean): ConsoleBlock[] 
 
 const READ_ONLY_NOTE = "Read only: accepting, rejecting and revising proposals are not available in this console yet. Use `sil web` or the CLI.";
 
+/** The list card, and the open proposal in a card of its own. Narrow shows
+ * only the proposal, the read-only note moved into its card. */
 function reviewSection(state: ConsoleUiState, narrow: boolean): ConsoleBlock[] {
-  if (state.world === null) return [line("Choose a world to see its staged proposals.", "dim")];
-  const blocks: ConsoleBlock[] = [line(READ_ONLY_NOTE, "dim")];
+  const note = line(READ_ONLY_NOTE, "dim");
+  if (state.world === null) return [card("proposals", "Staged proposals", [line("Choose a world to see its staged proposals.", "dim")])];
   const open = state.selectedPattern !== null && state.proposal !== null;
-  if (!(narrow && open)) blocks.push(...listBlocks(state, LIST_READ, "review", (page) => reviewRows(state, page), LIST_PAGING));
-  if (open) blocks.push(...proposalBlocks(state, narrow));
+  const blocks: ConsoleBlock[] = [];
+  if (!(narrow && open)) blocks.push(card("proposals", "Staged proposals", [note, ...listBlocks(state, LIST_READ, "review", (page) => reviewRows(state, page), LIST_PAGING)]));
+  if (open) blocks.push(card("proposal", state.selectedPattern!, [...(narrow ? [note] : []), ...proposalBlocks(state, narrow)]));
   return blocks;
 }
 
 function artifactsSection(state: ConsoleUiState): ConsoleBlock[] {
-  if (state.world === null) return [line("Choose a world to see its artifacts.", "dim")];
-  return listBlocks(state, LIST_READ, "artifacts", artifactRows, LIST_PAGING);
+  if (state.world === null) return [card("artifacts", "Artifacts", [line("Choose a world to see its artifacts.", "dim")])];
+  return [card("artifacts", "Artifacts", listBlocks(state, LIST_READ, "artifacts", artifactRows, LIST_PAGING))];
 }
 
-function queueBlocks(state: ConsoleUiState): ConsoleBlock[] {
+/** The worker card (global) and, with a world, its review queue card. */
+function overviewSection(state: ConsoleUiState, now: Date): ConsoleBlock[] {
+  const worker = workerLine(state, now);
+  const blocks: ConsoleBlock[] = [
+    card("worker", "Worker", [worker === null ? line("Worker status: not read yet.", "dim") : { kind: "line", line: worker }], "global, all worlds"),
+  ];
+  const review = reviewLine(state);
+  if (review !== null && state.world !== null) blocks.push(card("review", "Review", [{ kind: "line", line: review }], state.world));
+  return blocks;
+}
+
+function queueBlocks(state: ConsoleUiState, now: Date): ConsoleBlock[] {
   const r = resultOf(state, QUEUE_READ);
   if (r.kind === "absent") return [line("Queue (global, all worlds): not read yet.", "dim")];
   if (r.kind === "error") return [line(`Queue (global, all worlds) unavailable: ${r.code}: ${r.message}`, "error")];
@@ -589,7 +639,8 @@ function queueBlocks(state: ConsoleUiState): ConsoleBlock[] {
   const entry = (bucket: string, e: unknown): ConsoleBlock => {
     if (!isRecord(e) || str(e.session_id) === null) return line("A queue entry came back in an unexpected shape and is not drawn.", "error");
     const result = str(e.result);
-    return line(row(`${bucket}: ${e.session_id} (${str(e.world) ?? "?"}) last stop ${str(e.last_stop) ?? "?"}${result ? `: ${result}` : ""}`));
+    const stop = str(e.last_stop);
+    return line(row(`${bucket}: ${e.session_id} (${str(e.world) ?? "?"}) last stop ${stop === null ? "?" : shortTime(stop, now)}${result ? `: ${result}` : ""}`));
   };
   // Three numbers kept apart: what the bridge returned (each list capped),
   // what is drawn here, and the full totals (the worker line has those).
@@ -627,14 +678,14 @@ function logBlocks(state: ConsoleUiState): ConsoleBlock[] {
   return blocks;
 }
 
-function activitySection(state: ConsoleUiState): ConsoleBlock[] {
+function activitySection(state: ConsoleUiState, now: Date): ConsoleBlock[] {
   const blocks: ConsoleBlock[] = [];
-  const worker = workerLine(state);
+  const worker = workerLine(state, now);
   if (worker) blocks.push({ kind: "line", line: worker });
-  blocks.push(...queueBlocks(state));
+  blocks.push(...queueBlocks(state, now));
   if (state.world === null) blocks.push(line("Choose a world to see its reflections and lessons.", "dim"));
   else {
-    blocks.push(...listBlocks(state, LIST_READ, "reflections", reflectionRows, LIST_PAGING));
+    blocks.push(...listBlocks(state, LIST_READ, "reflections", (page) => reflectionRows(page, now), LIST_PAGING));
     blocks.push(...listBlocks(state, LESSONS_READ, "lessons", lessonRows, LESSONS_PAGING));
   }
   blocks.push(...logBlocks(state));
@@ -643,24 +694,28 @@ function activitySection(state: ConsoleUiState): ConsoleBlock[] {
 
 function settingsSection(): ConsoleBlock[] {
   return [
-    line("Settings (read only).", "title"),
-    line("This console does not change settings yet: loop, promotion, model, world and schedule settings stay as they are.", "plain"),
-    line("To change them, use the CLI (`sil worlds`, `sil llm`, `sil schedule`) or `sil web`.", "dim"),
+    card("settings", "Settings", [
+      line("Settings (read only).", "title"),
+      line("This console does not change settings yet: loop, promotion, model, world and schedule settings stay as they are.", "plain"),
+      line("To change them, use the CLI (`sil worlds`, `sil llm`, `sil schedule`) or `sil web`.", "dim"),
+    ]),
   ];
 }
 
-/** Everything the pane draws, in order: navigation, status, then the
- * section. Narrow (under NARROW_COLUMNS body columns) swaps the section and
- * world buttons for Selects where the surface has one, and shows a proposal
- * in place of the list with a way back. */
+/** Everything the pane draws, in order: header, status, the section's
+ * cards, then the footer. Narrow (under NARROW_COLUMNS body columns) swaps
+ * the section and world buttons for Selects where the surface has one, and
+ * shows a proposal in place of the list with a way back. */
 export function consoleView(state: ConsoleUiState, layout: ConsoleLayout): ConsoleBlock[] {
   const narrow = layout.columns < NARROW_COLUMNS;
-  const blocks: ConsoleBlock[] = [line("Self-improvement loop", "title"), ...navigation(state, layout)];
-  for (const l of consoleLines(state)) blocks.push({ kind: "line", line: l });
-  if (state.section === "review") blocks.push(...reviewSection(state, narrow));
+  const blocks: ConsoleBlock[] = header(state, layout);
+  for (const l of statusLines(state, layout.now)) blocks.push({ kind: "line", line: l });
+  if (state.section === "overview") blocks.push(...overviewSection(state, layout.now));
+  else if (state.section === "review") blocks.push(...reviewSection(state, narrow));
   else if (state.section === "artifacts") blocks.push(...artifactsSection(state));
-  else if (state.section === "activity") blocks.push(...activitySection(state));
+  else if (state.section === "activity") blocks.push(...activitySection(state, layout.now));
   else if (state.section === "settings") blocks.push(...settingsSection());
+  blocks.push(...footer(state, layout.now));
   return finishView(blocks);
 }
 
@@ -672,6 +727,8 @@ export function blockChars(block: ConsoleBlock): number {
   switch (block.kind) {
     case "card":
       return block.title.length + (block.meta?.length ?? 0) + sum(block.blocks);
+    case "row":
+      return sum(block.blocks);
     case "line":
       return block.line.text.length;
     case "code":
@@ -679,11 +736,11 @@ export function blockChars(block: ConsoleBlock): number {
     case "select":
       return block.label.length + block.options.reduce((n, o) => n + o.value.length + o.label.length, 0);
     case "controls":
-      return (block.label?.length ?? 0) + block.controls.reduce((n, c) => n + c.label.length + (c.isCurrent ? CURRENT_MARK.length : 0), 0);
+      return (block.label?.length ?? 0) + block.controls.reduce((n, c) => n + c.label.length + (c.isCurrent && c.tone === undefined ? CURRENT_MARK.length : 0), 0);
   }
 }
 
-/** What render.tsx appends to the current control's label. */
+/** What render.tsx appends to the current control's label, when it has no tone. */
 export const CURRENT_MARK = " (current)";
 
 function sum(blocks: ConsoleBlock[]): number {
@@ -711,13 +768,13 @@ export function enforceDisplayBudget(blocks: ConsoleBlock[], budget: number): Co
   const fit = (list: ConsoleBlock[]): ConsoleBlock[] => {
     const kept: ConsoleBlock[] = [];
     for (const [i, b] of list.entries()) {
-      const size = b.kind === "card" ? b.title.length + (b.meta?.length ?? 0) : blockChars(b);
+      const size = b.kind === "card" ? b.title.length + (b.meta?.length ?? 0) : b.kind === "row" ? 0 : blockChars(b);
       if (left > 0 || used + size + reserve > budget) {
         left += items(list.slice(i));
         break;
       }
       used += size;
-      kept.push(b.kind === "card" ? { ...b, blocks: fit(b.blocks) } : b);
+      kept.push(b.kind === "card" || b.kind === "row" ? { ...b, blocks: fit(b.blocks) } : b);
     }
     return kept;
   };
@@ -732,15 +789,15 @@ function withoutPages(blocks: ConsoleBlock[]): ConsoleBlock[] {
     if (b.kind === "code") {
       return [line(`This page is too large to show with the rest of the pane (${b.source.length} characters); it is left out, not cut. Read it with the CLI or \`sil web\`.`, "error")];
     }
-    if (b.kind === "card") return [{ ...b, blocks: withoutPages(b.blocks) }];
+    if (b.kind === "card" || b.kind === "row") return [{ ...b, blocks: withoutPages(b.blocks) }];
     return b.kind === "line" && b.pageStatus ? [] : [b];
   });
 }
 
-/** What the budget notice counts: every block but a card, and a card with
- * nothing in it as one. */
+/** What the budget notice counts: every block but a card or row, and one
+ * with nothing in it as one. */
 function items(blocks: ConsoleBlock[]): number {
-  return blocks.reduce((n, b) => n + (b.kind === "card" ? Math.max(1, items(b.blocks)) : 1), 0);
+  return blocks.reduce((n, b) => n + (b.kind === "card" || b.kind === "row" ? Math.max(1, items(b.blocks)) : 1), 0);
 }
 
 /** Every drawn string, made safe here and nowhere else: control characters
@@ -766,6 +823,8 @@ export function finishView(blocks: ConsoleBlock[]): ConsoleBlock[] {
         const controls = b.controls.map((c) => ({ ...c, label: row(safe(c.label), ROW_CHARS) }));
         return b.label === undefined ? { ...b, controls } : { ...b, label: safe(b.label), controls };
       }
+      case "row":
+        return { ...b, blocks: b.blocks.map(finish) };
       case "card": {
         const title = row(safe(b.title), ROW_CHARS);
         const inner = b.blocks.map(finish);

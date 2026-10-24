@@ -71,13 +71,25 @@ export function registerConsoleViews(on: On): void {
       return <Text>{l.text}</Text>;
     };
 
-    const buttonOf = (c: ConsoleControl): RenderElement => (
-      <Button key={c.key} label={c.isCurrent ? `${c.label}${CURRENT_MARK}` : c.label} onPress={() => consoleAct($, c.action)} />
-    );
+    // A tone shows the current tab by color, so its label gets no mark.
+    const buttonOf = (c: ConsoleControl): RenderElement => {
+      const onPress = () => consoleAct($, c.action);
+      if (c.tone === "primary") return <Button key={c.key} label={c.label} variant="primary" onPress={onPress} />;
+      if (c.tone === "dim") return <Button key={c.key} label={c.label} dimColor onPress={onPress} />;
+      return <Button key={c.key} label={c.isCurrent ? `${c.label}${CURRENT_MARK}` : c.label} onPress={onPress} />;
+    };
 
     const blockOf = (b: ConsoleBlock): RenderElement => {
       if (b.kind === "line") return lineOf(b.line);
       if (b.kind === "card") return drawCard(ui, bodyColumns(e.props), b.title, b.meta, b.blocks.map(blockOf));
+      if (b.kind === "row") {
+        if (bodyColumns(e.props) < NARROW_COLUMNS) return <Box flexDirection="column">{b.blocks.map(blockOf)}</Box>;
+        return (
+          <Box flexDirection="row" justifyContent="space-between" gap={2}>
+            {b.blocks.map(blockOf)}
+          </Box>
+        );
+      }
       if (b.kind === "code") return b.diff ? <Code source={b.source} format="diff" /> : <Code source={b.source} />;
       if (b.kind === "select") {
         const key = b.key;
@@ -102,7 +114,7 @@ export function registerConsoleViews(on: On): void {
       );
     };
 
-    const blocks = consoleView(state, { columns: bodyColumns(e.props), canSelect: Select !== undefined });
+    const blocks = consoleView(state, { columns: bodyColumns(e.props), canSelect: Select !== undefined, now: new Date() });
     const drawn = blocks.map(blockOf);
     // Lessons live inside Activity, below its inbox, queue and log.
     if (state.section === "activity") {

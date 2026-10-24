@@ -242,7 +242,7 @@ declare module "claude-code" {
       children?: RenderChildren;
     }) => RenderElement;
     Text: (props: { bold?: boolean; dimColor?: boolean; color?: string; children?: RenderChildren }) => RenderElement;
-    Button: (props: { key?: string; label?: string; onPress: (e: UiPressArgument) => void }) => RenderElement;
+    Button: (props: { key?: string; label?: string; variant?: "primary" | "secondary"; dimColor?: boolean; onPress: (e: UiPressArgument) => void }) => RenderElement;
     /** Source text the engine's highlighter draws; `format: "diff"` reads it
      * as unified-diff hunks. Tab and newline its only control characters. */
     Code: (props: { source: string; format?: "source" | "diff" }) => RenderElement;

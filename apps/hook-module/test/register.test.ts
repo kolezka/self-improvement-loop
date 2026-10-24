@@ -1169,7 +1169,8 @@ describe("native /sil console", () => {
       requestId: "sil-console",
       props: {},
     });
-    expect(findText(tree, /World: alpha/)).toBeDefined();
+    // No world list was read: the header still names the world shown.
+    expect(findText(tree, /^alpha$/)).toBeDefined();
     expect(findText(tree, /exited with 1/)).toBeDefined();
     expect(findText(tree, /Sample status/)).toBeUndefined();
     expect(f.engine.calls.filter((c) => /^(fs|process|env|state\.set)/.test(c))).toEqual([]);

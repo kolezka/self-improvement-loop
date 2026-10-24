@@ -264,7 +264,7 @@ test('/sil reads the bootstrap, then the owning world, and draws it on every sur
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /World: world-a/ }))?.text).toContain('world-a')
+    expect((await ui.find({ key: 'world-world-a' }))?.props.label).toBe('world-a (current)')
     expect((await ui.find({ type: 'Text', text: /1 staged proposal/ }))?.text).toContain('waiting for review')
     expect((await ui.find({ type: 'Text', text: /Pending: 4/ }))?.text).toContain('done: 9')
     await ui.unmount()
@@ -299,7 +299,7 @@ test('a slow world-a reply is dropped after switching to world-b', async ($, on)
   expect(seen.requests[2]!.reads).toContainEqual({ id: 'review', op: 'console.page', args: { world: 'world-b', kind: 'review', offset: 0, limit: 1 } })
   await release(seen)
   expect(JSON.stringify(seen.state?.results)).toContain('queued-in-world-b')
-  expect((await ui.find({ type: 'Text', text: /World: world-b/ }))?.text).toContain('world-b')
+  expect((await ui.find({ key: 'world-world-b' }))?.props.label).toBe('world-b (current)')
   await ui.unmount()
   expect(seen.forbidden).toEqual([])
 })
@@ -364,7 +364,10 @@ test('a failed bridge is shown as an error and old values are labelled stale', a
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /exited with 1/ }))?.text).toContain('Error')
-  expect((await ui.find({ type: 'Text', text: /stale/ }))?.text).toContain('2026-10-22T12:00:00.000Z')
+  // The refresh time is drawn short (12:00, or Oct 22 12:00 on another day), never as ISO.
+  const stale = (await ui.find({ type: 'Text', text: /stale/ }))?.text
+  expect(stale).toMatch(/last complete refresh (Oct 22 )?\d{2}:\d{2}\)/)
+  expect(stale).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
   expect((await ui.find({ type: 'Text', text: /Pending: 4/ }))).toBeDefined()
   await ui.unmount()
 })

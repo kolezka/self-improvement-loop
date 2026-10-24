@@ -29,6 +29,7 @@ import {
   blockChars,
   card,
   consoleControls,
+  CURRENT_MARK,
   consoleReads,
   consoleView,
   DISPLAY_BUDGET,
@@ -37,6 +38,7 @@ import {
   flattenBlocks,
   isWholeHunks,
   NARROW_COLUMNS,
+  shortTime,
   WORLD_WINDOW,
   type ConsoleBlock,
 } from "../src/ui/views.ts";
@@ -103,6 +105,7 @@ function texts(blocks: ConsoleBlock[]): string {
       if (b.kind === "code") return b.source;
       if (b.kind === "select") return `${b.label} ${b.options.map((o) => o.label).join(" ")}`;
       if (b.kind === "card") return [b.title, ...(b.meta === undefined ? [] : [b.meta])].join(" ");
+      if (b.kind === "row") return "";
       return [...(b.label === undefined ? [] : [b.label]), ...b.controls.map((c) => c.label)].join(" ");
     })
     .join("\n");
@@ -112,8 +115,10 @@ function keys(blocks: ConsoleBlock[]): string[] {
   return flattenBlocks(blocks).flatMap((b) => (b.kind === "controls" ? b.controls.map((c) => c.key) : b.kind === "select" ? [b.key] : []));
 }
 
-const WIDE = { columns: 60, canSelect: true };
-const NARROW = { columns: 30, canSelect: true };
+/** The pane's clock in these tests: local 17:00 on Oct 24, two days after T1. */
+const NOW = new Date(2026, 9, 24, 17, 0);
+const WIDE = { columns: 60, canSelect: true, now: NOW };
+const NARROW = { columns: 30, canSelect: true, now: NOW };
 
 describe("paging and selection state", () => {
   test("the initial state has no page and no proposal open", () => {
@@ -296,14 +301,14 @@ describe("the view model", () => {
     const wide = consoleView(s, WIDE);
     expect(keys(wide)).toEqual(expect.arrayContaining(["section-overview", "section-review", "section-artifacts", "section-activity", "section-settings", "world-world-a", "refresh", "close"]));
     expect(keys(wide)).not.toContain("section-select");
-    expect(keys(consoleView(s, { columns: 44, canSelect: true }))).toContain("section-review");
-    const narrow = consoleView(s, { columns: 43, canSelect: true });
+    expect(keys(consoleView(s, { columns: 44, canSelect: true, now: NOW }))).toContain("section-review");
+    const narrow = consoleView(s, { columns: 43, canSelect: true, now: NOW });
     expect(keys(narrow)).toContain("section-select");
     expect(keys(narrow)).toContain("world-select");
     expect(keys(narrow)).not.toContain("section-review");
-    const select = narrow.find((b) => b.kind === "select" && b.key === "section-select");
+    const select = flattenBlocks(narrow).find((b) => b.kind === "select" && b.key === "section-select");
     expect(select).toMatchObject({ value: "overview", options: expect.arrayContaining([{ value: "review", label: "Review" }]) });
-    const mobile = consoleView(s, { columns: 30, canSelect: false });
+    const mobile = consoleView(s, { columns: 30, canSelect: false, now: NOW });
     expect(keys(mobile)).toContain("section-review");
     expect(keys(mobile)).not.toContain("section-select");
   });
@@ -326,7 +331,7 @@ describe("the view model", () => {
     expect(shown).toContain(DIGEST);
     expect(shown).toContain("End of the diff");
     expect(shown).toMatch(/read only/i);
-    const code = view.filter((b) => b.kind === "code");
+    const code = flattenBlocks(view).filter((b) => b.kind === "code");
     expect(code).toEqual([{ kind: "code", source: "@@ -1,1 +1,2 @@\n line\n+added\n", diff: true }]);
     expect(keys(view).filter((k) => /accept|reject|revise/.test(k))).toEqual([]);
   });
@@ -338,7 +343,7 @@ describe("the view model", () => {
     expect(texts(view)).toContain("lines 1-2 of 9");
     expect(keys(view)).toContain("page-next");
     // A page cut mid-hunk is plain text, not a diff the engine would refuse.
-    expect(view.filter((b) => b.kind === "code")).toEqual([{ kind: "code", source: "+a\n+b\n", diff: false }]);
+    expect(flattenBlocks(view).filter((b) => b.kind === "code")).toEqual([{ kind: "code", source: "+a\n+b\n", diff: false }]);
   });
 
   test("an oversized line is reported, not drawn, and never called the end", () => {
@@ -346,7 +351,7 @@ describe("the view model", () => {
     const shown = texts(view);
     expect(shown).toContain("Line 1 of 5 is 90000 bytes");
     expect(shown).not.toContain("End of the diff");
-    expect(view.filter((b) => b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(view).filter((b) => b.kind === "code")).toEqual([]);
     expect(keys(view)).toContain("page-next");
   });
 
@@ -356,24 +361,24 @@ describe("the view model", () => {
     const view = consoleView(next, WIDE);
     expect(texts(view)).toMatch(/changed while you were reading/);
     expect(keys(view)).toContain("proposal-reload");
-    expect(view.filter((b) => b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(view).filter((b) => b.kind === "code")).toEqual([]);
     // A page of another revision is refused the same way, even with no error.
     const other = applyConsoleRead(s, s.generation, reply({ proposal: ok(page({ reviewedState: OTHER })) }), T1);
     expect(texts(consoleView(other, WIDE))).toMatch(/changed while you were reading/);
-    expect(consoleView(other, WIDE).filter((b) => b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(consoleView(other, WIDE)).filter((b) => b.kind === "code")).toEqual([]);
   });
 
   test("a page over the byte cap or for another scope is refused visibly", () => {
     const big = consoleView(reviewing(page({ text: `${"x".repeat(65536)}\n`, lineCount: 1, totalLines: 1 })), WIDE);
-    expect(big.filter((b) => b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(big).filter((b) => b.kind === "code")).toEqual([]);
     expect(texts(big)).toMatch(/unexpected shape|not shown/i);
     const elsewhere = consoleView(reviewing(page({ pattern: "p-two" })), WIDE);
-    expect(elsewhere.filter((b) => b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(elsewhere).filter((b) => b.kind === "code")).toEqual([]);
   });
 
   test("control characters are shown as symbols, never passed to the engine", () => {
     const view = consoleView(reviewing(page({ text: "+\u001b[31mred\u0007\r\n", totalLines: 1 })), WIDE);
-    const code = view.find((b) => b.kind === "code");
+    const code = flattenBlocks(view).find((b) => b.kind === "code");
     expect(code?.kind === "code" && code.source).toBe("+␛[31mred␇␍\n");
     expect(texts(view)).toMatch(/control characters/);
   });
@@ -433,7 +438,7 @@ describe("the view model", () => {
     expect(texts(view)).toMatch(/read only/i);
     expect(texts(view)).toMatch(/sil web/);
     expect(keys(view).filter((k) => !k.startsWith("section-") && /save|input|setting/.test(k))).toEqual([]);
-    expect(view.filter((b) => b.kind === "select" || b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(view).filter((b) => b.kind === "select" || b.kind === "code")).toEqual([]);
   });
 
   test("everything drawn with a full page stays under the engine's 100000 characters", () => {
@@ -493,6 +498,252 @@ describe("cards", () => {
   });
 });
 
+function fail(code: string, message: string): ControlResult {
+  return { ok: false, error: { code, message, retryable: false } };
+}
+
+function lineTexts(blocks: ConsoleBlock[]): string[] {
+  return flattenBlocks(blocks).flatMap((b) => (b.kind === "line" ? [b.line.text] : []));
+}
+
+function cardTitles(blocks: ConsoleBlock[]): string[] {
+  return flattenBlocks(blocks).flatMap((b) => (b.kind === "card" ? [b.title] : []));
+}
+
+/** `section` with `results` read on top of base(). */
+function readAt(section: Parameters<typeof selectConsoleSection>[1], results: ControlResponse["results"]): ConsoleUiState {
+  const s = selectConsoleSection(base(), section);
+  return applyConsoleRead(s, s.generation, reply(results), T1);
+}
+
+/** T1 as the pane draws it on NOW's clock. */
+const T1_SHORT = shortTime(T1, NOW);
+
+/** The states the old view drew, and every line it drew for each (taken
+ * from consoleView at 915b5a5), less the World, Section and Last complete
+ * refresh lines the header and footer replace. Times the view formats are
+ * written as T1_SHORT; times inside a stored error stay whole. Activity is
+ * left to its sub-tab task. */
+const NO_LOSS: Array<[string, () => ConsoleUiState, string[]]> = [
+  [
+    "stale error",
+    () => ({ ...base(), error: "Refresh failed: The control bridge exited with 1." }),
+    [
+      "Self-improvement loop",
+      "Refresh failed: The control bridge exited with 1.",
+      `Values below may be stale (last complete refresh ${T1_SHORT}).`,
+      `Worker (global, all worlds): idle, last run ${T1_SHORT}. Pending: 4, done: 9, failed: 0.`,
+      "1 staged proposal waiting for review in world-a.",
+    ],
+  ],
+  [
+    "unread overview",
+    () => {
+      const s = switchConsoleWorld(initialConsoleState(), "world-a");
+      return applyConsoleRead(s, s.generation, reply({ bootstrap: ok(BOOT) }), T1);
+    },
+    ["Self-improvement loop", "Review queue: not read yet."],
+  ],
+  [
+    "unread review",
+    () => selectConsoleSection(base(), "review"),
+    ["Self-improvement loop", "Read only: accepting, rejecting and revising proposals are not available in this console yet. Use `sil web` or the CLI.", "Proposals: not read yet."],
+  ],
+  ["unread artifacts", () => selectConsoleSection(base(), "artifacts"), ["Self-improvement loop", "Artifacts: not read yet."]],
+  [
+    "odd overview",
+    () => readAt("overview", { worker: ok({ pending: "x" }), review: ok([reviewItem("p-one")]) }),
+    ["Self-improvement loop", "Worker status came back in an unexpected shape and is not shown.", "Review queue came back in an unexpected shape and is not shown."],
+  ],
+  [
+    "odd review",
+    () => readAt("review", { list: ok(listPage({ items: [reviewItem("p-one"), { pattern: "Bad Pattern" }] })) }),
+    [
+      "Self-improvement loop",
+      "Read only: accepting, rejecting and revising proposals are not available in this console yet. Use `sil web` or the CLI.",
+      "Proposals 1-2 of 2 in world-a:",
+      "A proposal came back in an unexpected shape and is not shown.",
+    ],
+  ],
+  [
+    "odd artifacts",
+    () => readAt("artifacts", { list: ok(listPage({ items: [{ pattern: "served", artifact_type: "skill", status: "active", reflections: 7, served_by: "skills/served/SKILL.md" }, 42] })) }),
+    [
+      "Self-improvement loop",
+      "Artifacts 1-2 of 2 in world-a:",
+      "served: skill, active, 7 reflections, served by skills/served/SKILL.md",
+      "An artifact came back in an unexpected shape and is not shown.",
+    ],
+  ],
+  [
+    "failed overview reads",
+    () => readAt("overview", { worker: fail("StateReadError", "worker state unreadable"), review: fail("ConfigError", "bad config") }),
+    [
+      "Self-improvement loop",
+      "2 of 2 reads failed at 2026-10-22T12:00:00.000Z (worker: StateReadError, review: ConfigError).",
+      `Values below may be stale (last complete refresh ${T1_SHORT}).`,
+      "Worker status (global) unavailable: StateReadError: worker state unreadable",
+      "Review queue unavailable: ConfigError: bad config",
+    ],
+  ],
+  [
+    "no world",
+    () => {
+      const s = initialConsoleState();
+      return applyConsoleRead(s, s.generation, reply({ bootstrap: ok({ worlds: ["world-a"], selectedWorld: null, resolutionError: "no world owns /x", initialized: true }), worker: ok(WORKER) }), T1);
+    },
+    [
+      "Self-improvement loop",
+      "No world chosen for this directory: no world owns /x. Pick one below.",
+      `Worker (global, all worlds): idle, last run ${T1_SHORT}. Pending: 4, done: 9, failed: 0.`,
+    ],
+  ],
+  [
+    "world list failed",
+    () => {
+      const s = switchConsoleWorld(initialConsoleState(), "world-a");
+      return applyConsoleRead(s, s.generation, reply({ bootstrap: fail("ConfigError", "config unreadable"), worker: ok(WORKER) }), T1);
+    },
+    [
+      "Self-improvement loop",
+      "1 of 2 reads failed at 2026-10-22T12:00:00.000Z (bootstrap: ConfigError).",
+      "Values below may be stale (no refresh has fully worked yet).",
+      "World list unavailable: ConfigError: config unreadable",
+      `Worker (global, all worlds): idle, last run ${T1_SHORT}. Pending: 4, done: 9, failed: 0.`,
+      "Review queue: not read yet.",
+    ],
+  ],
+  [
+    "oversized line",
+    () => reviewing(page({ text: "", lineCount: 0, totalLines: 5, nextOffset: 3, complete: false, offset: 0, oversizedLine: { line: 1, bytes: 90000 } })),
+    [
+      "Self-improvement loop",
+      "Read only: accepting, rejecting and revising proposals are not available in this console yet. Use `sil web` or the CLI.",
+      "Proposals 1-2 of 2 in world-a:",
+      "Proposal: p-one",
+      `Reviewed state: ${DIGEST}`,
+      "Line 1 of 5 is 90000 bytes, more than one page holds (65536). It is left out here, not cut: read the full diff with the CLI or `sil web`.",
+      "More of the diff follows: this page is not the whole diff.",
+    ],
+  ],
+  [
+    "changed proposal",
+    () => {
+      const s = reviewing(page());
+      return applyConsoleRead(s, s.generation, reply({ proposal: fail("ProposalChanged", "changed since its first page") }), T1);
+    },
+    [
+      "Self-improvement loop",
+      "1 of 1 reads failed at 2026-10-22T12:00:00.000Z (proposal: ProposalChanged).",
+      `Values below may be stale (last complete refresh ${T1_SHORT}).`,
+      "Read only: accepting, rejecting and revising proposals are not available in this console yet. Use `sil web` or the CLI.",
+      "Proposals 1-2 of 2 in world-a:",
+      "Proposal: p-one",
+      `Reviewed state: ${DIGEST}`,
+      "The proposal changed while you were reading it. Pages of two revisions are never joined: read it again from the start.",
+    ],
+  ],
+  [
+    "settings",
+    () => selectConsoleSection(base(), "settings"),
+    [
+      "Self-improvement loop",
+      "Settings (read only).",
+      "This console does not change settings yet: loop, promotion, model, world and schedule settings stay as they are.",
+      "To change them, use the CLI (`sil worlds`, `sil llm`, `sil schedule`) or `sil web`.",
+    ],
+  ],
+];
+
+describe("header, footer and section cards", () => {
+  test("shortTime", () => {
+    const now = new Date(2026, 9, 24, 17, 0);
+    expect(shortTime(new Date(2026, 9, 24, 15, 33).toISOString(), now)).toBe("15:33");
+    expect(shortTime(new Date(2026, 9, 22, 15, 33).toISOString(), now)).toBe("Oct 22 15:33");
+    expect(shortTime("not a date", now)).toBe("not a date");
+    // A date with no time of day gains none.
+    expect(shortTime("2026-10-21", now)).toBe("2026-10-21");
+  });
+
+  test("the header is title and world, then tabs; no World or Section lines", () => {
+    const view = consoleView(base(), WIDE);
+    const lines = lineTexts(view);
+    expect(lines.filter((t) => t.startsWith("World: ") || t.startsWith("Section: "))).toEqual([]);
+    // First row: the title and the world buttons; then the tab row.
+    const [title, tabs] = view;
+    expect(title?.kind === "row" && title.blocks.map((b) => (b.kind === "line" ? b.line.text : b.kind === "controls" ? b.key : b.kind))).toEqual(["Self-improvement loop", "worlds"]);
+    expect(tabs?.kind === "controls" && tabs.key).toBe("sections");
+    const sections = tabs?.kind === "controls" ? tabs.controls : [];
+    expect(sections.map((c) => [c.key, c.tone])).toEqual([
+      ["section-overview", "primary"],
+      ["section-review", "dim"],
+      ["section-artifacts", "dim"],
+      ["section-activity", "dim"],
+      ["section-settings", "dim"],
+    ]);
+    expect(sections.filter((c) => c.label.endsWith(CURRENT_MARK))).toEqual([]);
+  });
+
+  test("Refresh and Close are the last controls, after a line with the refresh time", () => {
+    const at = new Date(2026, 9, 24, 15, 36).toISOString();
+    const s = switchConsoleWorld(initialConsoleState(), "world-a");
+    const r = applyConsoleRead(s, s.generation, reply({ bootstrap: ok(BOOT), worker: ok(WORKER) }), at);
+    const view = consoleView(r, WIDE);
+    const last = view.at(-1);
+    expect(last?.kind === "controls" && last.controls.map((c) => c.key)).toEqual(["refresh", "close"]);
+    const before = view.at(-2);
+    expect(before?.kind === "line" && before.line.text).toBe("refreshed 15:36 · every 10 s");
+    expect(lineTexts(view).filter((t) => t.startsWith("Last complete refresh"))).toEqual([]);
+  });
+
+  test("each section's content is in cards", () => {
+    expect(cardTitles(consoleView(base(), WIDE))).toEqual(["Worker", "Review"]);
+    const overview = consoleView(base(), WIDE).filter((b) => b.kind === "card");
+    expect(overview.map((b) => (b.kind === "card" ? b.meta : null))).toEqual(["global, all worlds", "world-a"]);
+    expect(cardTitles(consoleView(readAt("review", { list: ok(listPage()) }), WIDE))).toEqual(["Staged proposals"]);
+    expect(cardTitles(consoleView(reviewing(page()), WIDE))).toEqual(["Staged proposals", "p-one"]);
+    expect(cardTitles(consoleView(readAt("artifacts", { list: ok(listPage()) }), WIDE))).toEqual(["Artifacts"]);
+    expect(cardTitles(consoleView(selectConsoleSection(base(), "settings"), WIDE))).toEqual(["Settings"]);
+  });
+
+  test.each(NO_LOSS)("no message is lost: %s", (_name, state, expected) => {
+    const shown = new Set(lineTexts(consoleView(state(), WIDE)));
+    expect(expected.filter((t) => !shown.has(t))).toEqual([]);
+  });
+
+  test("narrow keeps the Selects", () => {
+    const view = consoleView(base(), { columns: 40, canSelect: true, now: NOW });
+    expect(keys(view)).toEqual(expect.arrayContaining(["section-select", "world-select", "refresh", "close"]));
+    expect(keys(view)).not.toContain("section-review");
+  });
+
+  test("timestamps are short everywhere", () => {
+    const iso = /\d{4}-\d{2}-\d{2}T/;
+    const s = selectConsoleSection(base(), "activity");
+    const activity = applyConsoleRead(
+      s,
+      s.generation,
+      reply({
+        worker: ok(WORKER),
+        queue: ok({ pending: [{ session_id: "s-1", world: "world-a", last_stop: T1, result: null }], done: [], failed: [{ session_id: "s-2", world: "world-a", last_stop: T1, result: "boom" }], hidden: { done: 0, failed: 0 }, cleared: {} }),
+        logs: ok({ name: "worker", path: "/x/worker.log", exists: true, size: 10, lines: ["started"] }),
+        list: ok({ world: "world-a", total: 1, offset: 0, limit: 10, items: [{ id: "r1", pattern: "p-one", created: T1, lesson: "keep tests honest" }] }),
+        lessons: ok({ world: "world-a", total: 0, offset: 0, limit: 5, items: [] }),
+      }),
+      T1,
+    );
+    const stale = { ...base(), error: "Refresh failed: The control bridge exited with 1." };
+    for (const state of [base(), activity, stale, selectConsoleSection(base(), "settings")]) {
+      const lines = lineTexts(consoleView(state, WIDE));
+      expect(lines.length).toBeGreaterThan(2);
+      expect(lines.filter((t) => iso.test(t))).toEqual([]);
+    }
+    // Positive control: the same check sees T1 whole.
+    expect(iso.test(T1)).toBe(true);
+    expect(lineTexts(consoleView(activity, WIDE))).toEqual(expect.arrayContaining([`pending: s-1 (world-a) last stop ${T1_SHORT}`, `${T1_SHORT} p-one: keep tests honest`]));
+  });
+});
+
 describe("fix round 1", () => {
   test("Overview counts staged proposals from the bounded page total", () => {
     const s = base();
@@ -517,7 +768,7 @@ describe("fix round 1", () => {
       const view = consoleView(s, layout);
       expect(total(view)).toBeLessThanOrEqual(DISPLAY_BUDGET);
       // The page is drawn whole, not cut, and the end is claimed.
-      expect(view.filter((b) => b.kind === "code")).toEqual([{ kind: "code", source: text, diff: false }]);
+      expect(flattenBlocks(view).filter((b) => b.kind === "code")).toEqual([{ kind: "code", source: text, diff: false }]);
       expect(texts(view)).toContain("End of the body");
     }
     // Window: 25 worlds plus the current one, and paging reaches all 800
@@ -528,8 +779,8 @@ describe("fix round 1", () => {
       const view = consoleView(at, WIDE);
       const worldKeys = keys(view).filter((k) => k.startsWith("world-"));
       expect(worldKeys.length).toBeLessThanOrEqual(WORLD_WINDOW + 1);
-      for (const b of view) if (b.kind === "controls") for (const c of b.controls) if (c.action.kind === "world") seen.add(c.action.world);
-      const narrowSelect = consoleView(at, NARROW).find((b) => b.kind === "select" && b.key === "world-select");
+      for (const b of flattenBlocks(view)) if (b.kind === "controls") for (const c of b.controls) if (c.action.kind === "world") seen.add(c.action.world);
+      const narrowSelect = flattenBlocks(consoleView(at, NARROW)).find((b) => b.kind === "select" && b.key === "world-select");
       expect(narrowSelect?.kind === "select" && narrowSelect.options.length).toBeLessThanOrEqual(WORLD_WINDOW + 1);
       const next = setWorldOffset(at, at.worldOffset + WORLD_WINDOW);
       expect(next.world).toBe(chosen);
@@ -546,7 +797,7 @@ describe("fix round 1", () => {
     const text = `${"c".repeat(60000)}\n`;
     const s = reviewing(page({ part: "diff", text, lineCount: 1, totalLines: 1 }));
     const view = enforceDisplayBudget(consoleView(s, WIDE), 20000);
-    expect(view.filter((b) => b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(view).filter((b) => b.kind === "code")).toEqual([]);
     expect(texts(view)).toMatch(/too large to show/);
     expect(texts(view)).not.toContain("End of the diff");
     expect(total(view)).toBeLessThanOrEqual(20000);
@@ -554,7 +805,7 @@ describe("fix round 1", () => {
     const tiny = enforceDisplayBudget(consoleView(s, WIDE), 600);
     expect(total(tiny)).toBeLessThanOrEqual(600);
     expect(texts(tiny)).toMatch(/not shown: the pane's display budget is full/);
-    expect(tiny.filter((b) => b.kind === "code")).toEqual([]);
+    expect(flattenBlocks(tiny).filter((b) => b.kind === "code")).toEqual([]);
   });
 
   test("every label, option and line counts toward the budget", () => {
@@ -653,9 +904,9 @@ describe("fix round 1", () => {
     expect(all).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     expect(all).toContain("\u241b[31mred\ufffd");
     expect(all).toContain("bad\u2407bell");
-    expect(all).toContain("World: w\u241bx");
+    expect(all).toContain("w\u241bx");
     expect(all).toMatch(/control characters are shown as symbols/);
-    const control = view.flatMap((b) => (b.kind === "controls" ? b.controls : [])).find((c) => c.action.kind === "world" && c.label.startsWith("w"));
+    const control = flattenBlocks(view).flatMap((b) => (b.kind === "controls" ? b.controls : [])).find((c) => c.action.kind === "world" && c.label.startsWith("w"));
     expect(control?.label).toBe("w\u241bx (current)".replace(" (current)", ""));
     expect(control?.action).toEqual({ kind: "world", world: "w\u001bx" });
     expect(control?.key).toMatch(/^[A-Za-z0-9_.-]+$/);

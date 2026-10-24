@@ -17,7 +17,8 @@ anything.
 Resolve the world from the current working directory, then record the vote:
 
 ```sh
-"${CLAUDE_PLUGIN_ROOT}/scripts/sil" feedback add "$1" "$2" --note "<note>"
+sil_root="${CLAUDE_PLUGIN_ROOT}"
+"${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" feedback add "$1" "$2" --note "<note>"
 ```
 
 `sil feedback add` resolves `--world` from `$PWD` when not given explicitly.

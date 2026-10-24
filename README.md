@@ -105,6 +105,20 @@ claude plugin install self-improvement-loop@kolezka
 In any Claude Code session, `/loop` then prints status and confirms the plugin
 is wired up.
 
+Or install directly from a checkout, without a plugin:
+
+```sh
+bun install
+make install-local  # or: bun run install:local
+```
+
+This builds the repo, links commands and skills into `$CLAUDE_CONFIG_DIR`
+(default `~/.claude`), and merges command hooks into `settings.json`. Keep the
+checkout in place and restart Claude Code. For a fresh setup run `scripts/sil init`;
+otherwise run `scripts/sil status`. Disable any existing plugin install first.
+The native `/sil` pane still requires the plugin.
+See [standalone installation](docs/INSTALL.md#standalone-install-from-a-checkout).
+
 To operate the loop from Codex as well, run the plugin's own copy of the CLI
 once (no `sil` shim exists yet):
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendLine, claimMarker, readFires, withDirLock, writeBreadcrumb } from "../src/firelog.ts";
@@ -125,6 +125,31 @@ describe("withDirLock reclaim", () => {
     const started = Date.now();
     expect(withDirLock(lockDir, () => "acquired")).toBe("acquired");
     expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  test.each([null, ""])("an initializing lock with pid %j is not reclaimed", (pid) => {
+    const lockDir = join(dir, "initializing.lockdir");
+    mkdirSync(lockDir);
+    if (pid !== null) writeFileSync(join(lockDir, "pid"), pid);
+    // Keep the orphan grace period open for the whole bounded wait.
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(lockDir, future, future);
+    let entered = false;
+
+    expect(() => withDirLock(lockDir, () => { entered = true; }, 50)).toThrow(/timed out/);
+    expect(entered).toBe(false);
+    expect(existsSync(lockDir)).toBe(true);
+    if (pid !== null) expect(readFileSync(join(lockDir, "pid"), "utf8")).toBe(pid);
+  });
+
+  test("an abandoned empty pid is reclaimed after the grace period", () => {
+    const lockDir = join(dir, "empty-orphan.lockdir");
+    mkdirSync(lockDir);
+    writeFileSync(join(lockDir, "pid"), "");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lockDir, old, old);
+
+    expect(withDirLock(lockDir, () => "acquired", 50)).toBe("acquired");
   });
 
   test("a live holder is not evicted before the deadline", () => {

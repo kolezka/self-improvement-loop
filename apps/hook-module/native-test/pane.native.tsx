@@ -717,7 +717,7 @@ test('an Actions button queues its plugin command through $.command.run and read
   // The engine beneath ran the plugin's own command once, as if typed.
   expect(seen.coreCommands).toEqual(['self-improvement-loop:reflect'])
   expect(seen.state?.commandNote).toMatchObject({ command: 'self-improvement-loop:reflect', args: '', target: null, error: null })
-  expect(seen.state?.commandNote?.id).toMatch(/^\d+\.\d+$/)
+  expect(seen.state?.commandNote?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.1$/)
   expect((await ui.find({ type: 'Text', text: /Queued \/self-improvement-loop:reflect\. It runs in the chat once Claude is idle\./ }))).toBeDefined()
   expect(seen.logs).toEqual([])
   expect(seen.requests.length).toBe(before)

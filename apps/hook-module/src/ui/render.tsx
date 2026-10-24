@@ -115,14 +115,15 @@ export function registerConsoleViews(on: On): void {
     };
 
     const columns = bodyColumns(e.props);
-    const blocks = consoleView(state, { columns, canSelect: Select !== undefined, now: new Date() });
+    const now = new Date();
+    const blocks = consoleView(state, { columns, canSelect: Select !== undefined, now });
     const drawn = blocks.map(blockOf);
     // Curated lessons live under Activity's Lessons tab, in a card right after
     // the inbox (before the footer), or last if the budget cut the inbox.
     if (state.section === "activity" && state.activityTab === "lessons") {
       let lessons: RenderElement;
       try {
-        lessons = drawCard(ui, columns, "Curated lessons", undefined, [await drawLessons($, ui, e, state.world, columns)]);
+        lessons = drawCard(ui, columns, "Curated lessons", undefined, [await drawLessons($, ui, e, state.world, columns, now)]);
       } catch (err) {
         lessons = <Text color="error">{`Error: the lessons view could not be drawn: ${boundedErrorText(errorText(err))}`}</Text>;
       }

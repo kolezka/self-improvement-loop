@@ -1223,15 +1223,17 @@ function noteRefusal(field: "text" | "quote" | "reference", value: string, refus
 }
 
 /** The console's world moved. A dirty editor decides first: false means the
- * switch waits for Stay or Discard. */
+ * switch waits for Stay or Discard, and the view is opened so it can ask. */
 export function lessonsWorldChanging($: EngineInterface, world: string): boolean {
   if (data.world === null || data.world === world) return true;
   if (data.controller.sending) {
     data.notice = { tone: "error", text: SENDING_NOTICE };
+    data.open = true;
     void publish($);
     return false;
   }
   const bound = rebindWorld(world);
+  if (!bound) data.open = true;
   void publish($);
   return bound;
 }

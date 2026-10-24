@@ -22,7 +22,7 @@ import {
   type LessonFilter,
   type LessonsViewModel,
 } from "./lessons.ts";
-import { NARROW_COLUMNS, printable } from "./views.ts";
+import { NARROW_COLUMNS, printable, shortTime } from "./views.ts";
 
 const FILTER_LABELS: Record<LessonFilter, string> = { saved: "Saved", inbox: "Delivery inbox", archived: "Archived", important: "Important" };
 const ROW_CHARS = 200;
@@ -61,6 +61,7 @@ export async function drawLessons(
   e: { surface: RenderSurface; props: unknown },
   world: string | null,
   columns: number,
+  now: Date,
 ): Promise<RenderElement> {
   const { Box, Text, Button } = ui;
   // By the surface, as render.tsx picks Select: mobile has no Input.
@@ -173,7 +174,7 @@ export async function drawLessons(
   if (vm.listError !== null) out.push(line(`Lessons unavailable: ${vm.listError}`, "error"));
   if (vm.list !== null) {
     const l = vm.list;
-    out.push(line(l.total === 0 ? `No ${FILTER_LABELS[vm.filter].toLowerCase()} lessons here.` : `${FILTER_LABELS[vm.filter]}, page ${vm.page}: ${l.items.length} shown of ${l.total}, read ${l.readAt}.`, "dim"));
+    out.push(line(l.total === 0 ? `No ${FILTER_LABELS[vm.filter].toLowerCase()} lessons here.` : `${FILTER_LABELS[vm.filter]}, page ${vm.page}: ${l.items.length} shown of ${l.total}, read ${shortTime(l.readAt, now)}.`, "dim"));
     // One page at a time. While a save is in flight rows are shown, not opened.
     const label = (item: (typeof l.items)[number]) => shown(`${item.important ? "[important] " : ""}${item.effectiveText ?? item.originalText ?? "(no text)"} (${item.sourceStatus})`);
     const rows = l.items.map((item, i) => (vm.sending ? line(label(item), "dim") : button(`lesson-row-${i}`, label(item), { kind: "record", index: i })));
@@ -199,7 +200,7 @@ export async function drawLessons(
       }}
     />
   );
-  out.push(...editorBlocks(vm, { Input, line, row, button, field, related }));
+  out.push(...editorBlocks(vm, { Input, line, row, button, field, related, now }));
   return <Box flexDirection="column">{out}</Box>;
 }
 
@@ -210,10 +211,12 @@ type Parts = {
   button: (key: string, label: string, action: LessonAction) => RenderElement;
   field: (name: "text" | "quote" | "reference") => { change: (v: string) => void; submit: (v: string) => void };
   related: (pattern: string) => RenderElement;
+  /** The render's clock, for short metadata times. */
+  now: Date;
 };
 
 function editorBlocks(vm: LessonsViewModel, p: Parts): RenderElement[] {
-  const { Input, line, row, button, field } = p;
+  const { Input, line, row, button, field, now } = p;
   const ed = vm.editor;
   const target = ed.target;
   if (target === null) return [];
@@ -303,16 +306,16 @@ function editorBlocks(vm: LessonsViewModel, p: Parts): RenderElement[] {
     if (loaded.source !== null) out.push(line(`Quote: ${loaded.source.quote ?? "(none kept)"}${loaded.source.reference ? `. Reference: ${loaded.source.reference}` : ""}`, "dim", TEXT_CHARS));
     const d = vm.detail;
     if (d !== null) {
-      if (d.provenance.kind === "existing_lesson" && d.provenance.state === "available") out.push(line(`From inbox lesson ${d.provenance.pattern} (${d.provenance.location}), created ${d.provenance.created}.`, "dim"));
+      if (d.provenance.kind === "existing_lesson" && d.provenance.state === "available") out.push(line(`From inbox lesson ${d.provenance.pattern} (${d.provenance.location}), created ${shortTime(d.provenance.created, now)}.`, "dim"));
       if (d.provenance.kind === "existing_lesson" && d.provenance.state === "unavailable") out.push(line(`Source unavailable (${d.provenance.problem}). The curated wording is kept.`, "error"));
       if (d.provenance.kind === "existing_lesson" && d.provenance.state === "conflict") out.push(line(`Source conflict: ${d.provenance.copies.length} copies disagree. Nothing can be acknowledged until they are reconciled.`, "error"));
       for (const diag of d.diagnostics.slice(0, 5)) out.push(line(`Diagnostic: ${diag.code}`, "dim"));
       if (d.historyError) out.push(line("History unavailable.", "error"));
       if (d.history !== null) {
         out.push(line(`History, newest first (${d.history.length} of ${d.historyTotal ?? d.history.length}):`, "dim"));
-        for (const h of d.history) out.push(line(`r${h.revision} ${h.kind} ${h.at}${h.text !== null ? `: ${h.text}` : ""}${h.important !== null ? ` important=${h.important}` : ""}`, "dim"));
+        for (const h of d.history) out.push(line(`r${h.revision} ${h.kind} ${shortTime(h.at, now)}${h.text !== null ? `: ${h.text}` : ""}${h.important !== null ? ` important=${h.important}` : ""}`, "dim"));
       }
-      out.push(line(`Read ${d.readAt}.`, "dim"));
+      out.push(line(`Read ${shortTime(d.readAt, now)}.`, "dim"));
     }
   }
 

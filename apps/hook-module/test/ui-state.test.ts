@@ -349,9 +349,10 @@ describe("parseConsoleState", () => {
 
   test("a saved commandNote round-trips; a malformed one resets as corrupt", () => {
     const saved = (note: unknown) => ({ ...JSON.parse(JSON.stringify(worldA())), commandNote: note });
+    const U = "0f1e2d3c-4b5a-4968-8778-a9b8c7d6e5f4";
     for (const note of [
-      { id: "4.1", command: "self-improvement-loop:loop", args: "run", target: null, error: null },
-      { id: "9.2", command: "self-improvement-loop:feedback", args: "skill:verify-callsites good", target: "verify-callsites", error: "refused" },
+      { id: `${U}.1`, command: "self-improvement-loop:loop", args: "run", target: null, error: null },
+      { id: `${U}.12`, command: "self-improvement-loop:feedback", args: "skill:verify-callsites good", target: "verify-callsites", error: "refused" },
     ]) {
       const parsed = parseConsoleState(saved(note));
       expect(parsed.reset).toBe("none");
@@ -368,6 +369,13 @@ describe("parseConsoleState", () => {
       { id: "1.1", command: "x", args: null, target: null, error: null },
       { id: "1.1", command: "x", args: "", target: 2, error: null },
       { id: "1.1", command: "x", args: "", target: null, error: false },
+      // The id names a module instance and a press number, nothing looser.
+      { id: "4.1", command: "x", args: "", target: null, error: null },
+      { id: U, command: "x", args: "", target: null, error: null },
+      { id: `${U}.0`, command: "x", args: "", target: null, error: null },
+      { id: `${U}.1 `, command: "x", args: "", target: null, error: null },
+      { id: `${U.toUpperCase()}.1`, command: "x", args: "", target: null, error: null },
+      { id: `x${U}.1`, command: "x", args: "", target: null, error: null },
     ]) {
       const parsed = parseConsoleState(saved(note));
       expect(parsed.reset).toBe("corrupt");

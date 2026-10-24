@@ -47,7 +47,8 @@ export const PROPOSAL_BACK_MAX = 200;
 
 /** A slash command a button queued, and the host's refusal if it gave one.
  * `target` is the artifact a vote was for, null for an Actions button. `id`
- * names the press, so a late refusal lands only on its own note. */
+ * names the press (`<module instance UUID>.<press number>`), so a late
+ * refusal lands only on its own note. */
 export interface CommandNote {
   id: string;
   command: string;
@@ -430,9 +431,12 @@ function isV129Fields(value: Record<string, unknown>): boolean {
   return isTask5Fields(value) && isCount(value.lessonsOffset) && isCount(value.worldOffset);
 }
 
+/** A press id: the module instance's UUID, then the press number from 1. */
+const PRESS_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[1-9][0-9]{0,15}$/;
+
 function isCommandNote(value: unknown): value is CommandNote {
   if (!isPlainObject(value) || !hasExactKeys(value, ["id", "command", "args", "target", "error"])) return false;
-  return typeof value.id === "string" && typeof value.command === "string" && typeof value.args === "string" && isNullableString(value.target) && isNullableString(value.error);
+  return typeof value.id === "string" && PRESS_ID.test(value.id) && typeof value.command === "string" && typeof value.args === "string" && isNullableString(value.target) && isNullableString(value.error);
 }
 
 function isConsoleState(value: unknown): value is ConsoleUiState {

@@ -3,9 +3,10 @@
 //
 // Same rules as the classic hooks: nothing here blocks, calls a model or
 // starts a turn on its own, and nothing runs from the tool hooks. The pane
-// opens only when the person runs /sil. Reads go through ./transport.ts alone.
-// The one way it changes loop state is a button the person presses, which
-// queues one of the plugin's own slash commands to run in the chat.
+// opens only when the person runs /sil. Reads and curated-lesson edits go
+// through `sil ops` in ./transport.ts. The Actions card and artifact votes
+// queue the plugin's own slash commands, pressed by the person, to run in the
+// chat; /learn, /toolify and /curriculum run a model turn there.
 //
 // What the pane shows lives in `$.state` (types/index.d.ts declares it), so
 // it survives a hot reload; render reads it and never writes it. What is
@@ -68,7 +69,10 @@ let timer: { cancel: () => void } | null = null;
 let inFlight: Promise<void> | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let requestSeq = 0;
-/** Numbers command presses; with the generation it names one press. */
+/** Names this module instance's presses with commandSeq. Random, so a press
+ * id never repeats across a reload, even one whose first write failed. */
+let pressNonce = crypto.randomUUID();
+/** Numbers command presses. */
 let commandSeq = 0;
 /** Moves on every start and every stop of the console. Work carries the
  * lifecycle it began in and does nothing once that one is over, so a stop
@@ -86,6 +90,7 @@ export function resetUiForTests(): void {
   inFlight = null;
   writes = Promise.resolve();
   requestSeq = 0;
+  pressNonce = crypto.randomUUID();
   commandSeq = 0;
   lifecycle = 0;
   active = false;
@@ -281,6 +286,17 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
     const { life } = bind();
     return writeIfCurrent($, life, change).then(() => readFor(life));
   };
+  // Activity's Lessons tab; a read follows only when the section moved.
+  const showLessons = (): Promise<unknown> => {
+    const { life } = bind();
+    let moved = false;
+    const change = (s: ConsoleUiState): ConsoleUiState => {
+      const next = selectConsoleSection(s, "activity");
+      moved = next !== s;
+      return setActivityTab(next, "lessons");
+    };
+    return writeIfCurrent($, life, change).then(() => (moved ? readFor(life) : undefined));
+  };
   let done: Promise<unknown>;
   switch (action.kind) {
     case "refresh": {
@@ -301,8 +317,12 @@ export function consoleAct($: EngineInterface, action: ConsoleAction): void {
       done = rescope((s) => selectConsoleSection(s, action.section));
       break;
     case "world":
-      // Unsent lesson wording decides first: the Lessons view asks Stay or Discard.
-      if (!lessonsWorldChanging($, action.world)) return;
+      // Unsent lesson wording decides first: the Lessons view asks Stay or
+      // Discard, so Activity's Lessons tab is brought up to show the question.
+      if (!lessonsWorldChanging($, action.world)) {
+        done = showLessons();
+        break;
+      }
       done = rescope((s) => chooseConsoleWorld(s, action.world));
       break;
     case "list":
@@ -360,18 +380,15 @@ function queueCommand($: EngineInterface, action: Extract<ConsoleAction, { kind:
   // As any press: one on a pane left up after the session ended starts it again.
   const life = active ? lifecycle : begin($).life;
   commandSeq += 1;
-  const seq = commandSeq;
-  // The generation moves on every scope change and every start, so with the
-  // press number it never repeats, across a reload too.
-  const idOf = (s: ConsoleUiState) => `${s.generation}.${seq}`;
+  const id = `${pressNonce}.${commandSeq}`;
   const label = `/${command}${args === "" ? "" : ` ${args}`}`;
   return writeIfCurrent($, life, (s) => {
     const refusal = commandRefusal(s, action);
-    return noteCommand(s, { id: idOf(s), command, args, target, error: refusal });
+    return noteCommand(s, { id, command, args, target, error: refusal });
   }).then(
     (s) => {
       const note = s.commandNote;
-      if (!isCurrent(life) || note === null || note.id !== idOf(s)) {
+      if (!isCurrent(life) || note === null || note.id !== id) {
         log($, `${label} was not queued: the console stopped before the press was recorded.`);
         return;
       }

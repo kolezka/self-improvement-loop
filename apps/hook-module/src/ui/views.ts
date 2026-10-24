@@ -3,9 +3,10 @@
 // the actions.
 //
 // Only cheap reads run on the timer. Provider probes (health.report,
-// llm.status) are never asked for. The pane changes loop state only through
-// the plugin's own slash commands, pressed by the person and shown in the
-// chat; there is no accept, reject, revise or settings control here.
+// llm.status) are never asked for. Reads and curated-lesson edits go through
+// `sil ops`; the Actions card and artifact votes queue the plugin's own slash
+// commands, pressed by the person. There is no accept, reject, revise or
+// settings control here.
 
 import type { ControlRead } from "@sil/core/control-protocol";
 import {

@@ -445,3 +445,38 @@ describe("fix round 1: checks made at the press", () => {
     expect(c.state().commandNote?.error).toBe("refused now");
   });
 });
+
+describe("press ids across a reload", () => {
+  for (const invalidation of ["lands", "fails"] as const) {
+    test(`reload whose invalidation write ${invalidation}: the old instance's late refusal never lands on the new note`, async () => {
+      const c = controller({ hold: { commandRun: true } });
+      await open(c);
+      await press(c, "action-learn");
+      expect(c.engine.heldCommandRuns).toHaveLength(1);
+      const oldNote = c.state().commandNote!;
+      const generation = c.state().generation;
+
+      // Reload with the pane up: timers dropped, the module starts over.
+      for (const t of c.engine.timers) t.cancelled = true;
+      resetUiForTests();
+      if (invalidation === "fails") c.engine.stateSetOutcome = (id) => (id === STATE_ID ? "throw" : null);
+      await c.engine.fire("session.start", { cwd: "/", surface: "terminal", isInteractive: true }, { cwd: "/" });
+      await settle();
+      c.engine.stateSetOutcome = null;
+      // The control: a failed invalidation really left the generation where it was.
+      if (invalidation === "fails") expect(c.state().generation).toBe(generation);
+      else expect(c.state().generation).toBeGreaterThan(generation);
+
+      await press(c, "action-learn");
+      expect(c.engine.heldCommandRuns).toHaveLength(2);
+      c.engine.heldCommandRuns[0]!.reject("refused by the old instance");
+      await settle();
+      expect(c.state().commandNote?.error).toBeNull();
+      expect(c.state().commandNote?.id).not.toBe(oldNote.id);
+      // Positive control: the new press's own refusal lands.
+      c.engine.heldCommandRuns[1]!.reject("refused now");
+      await settle();
+      expect(c.state().commandNote?.error).toBe("refused now");
+    });
+  }
+});

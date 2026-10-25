@@ -593,11 +593,11 @@ Builds before 1.2.12 read only the legacy files. The recipe below returns to
 those builds after the export succeeds.
 
 Version 1.2.12 uses this same database at schema 1 and refuses a schema 2 file.
-To return to 1.2.12, after step 3's export succeeds and any refusals are
-resolved, rename `loop-state.sqlite`, `loop-state.sqlite-wal` and
-`loop-state.sqlite-shm` aside (never delete them) so it creates a fresh schema
-1 database and imports the exported logs. Never restore the moved-aside schema
-2 database over data the older build then writes.
+There is no supported way back to 1.2.12: the loop state moves forward only,
+and a problem found after this release is fixed in a newer release, not by
+downgrading. If you must run 1.2.12 anyway, stop here and ask for help; the
+schema 2 database must not be deleted, and restoring it over data a 1.2.12
+build has written would lose that data.
 
 To downgrade:
 

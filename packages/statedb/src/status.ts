@@ -103,6 +103,23 @@ function docRefsOn(db: Database): StoreRef[] {
   return refs;
 }
 
+/** Refs with a legacy file at the old path: a global document whose file or
+ * claim exists, and every legacyWorlds() world. Throws StateReadError when a
+ * path cannot be checked or the worlds cannot be listed. */
+function legacyDocRefs(): StoreRef[] {
+  const refs: StoreRef[] = [];
+  for (const store of GLOBAL_DOC_STORES) if (pendingAt({ store, world: null })) refs.push({ store, world: null });
+  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsOrThrow(store)) refs.push({ store, world });
+  return refs;
+}
+
+/** Every document and aliases ref the loop state or the legacy paths know,
+ * unique and sorted. Status and export both enumerate through this, so a
+ * file with no loop-state trace is never left out of either. */
+function allDocRefs(db: Database): StoreRef[] {
+  return uniqueSorted([...docRefsOn(db), ...legacyDocRefs()]);
+}
+
 /** Unique refs, sorted by store then world. */
 function uniqueSorted(refs: StoreRef[]): StoreRef[] {
   const byKey = new Map<string, StoreRef>();
@@ -209,7 +226,7 @@ export function stateStatus(): StateStatus {
           .get(stream) as { rows: number; quarantined: number };
         counts.set(stream, { rows, quarantined });
       }
-      const docs = docRefsOn(db).map((ref) => {
+      const docs = allDocRefs(db).map((ref) => {
         const rowWorld = ref.world ?? "";
         const { n } = (
           ref.store === "aliases"
@@ -232,6 +249,8 @@ export function stateStatus(): StateStatus {
       return { version, fsClass: fs?.value ?? null, suspended: importSuspendedAt(db), counts, docs, rows };
     });
   } catch (error) {
+    // A legacy path that cannot be checked already names its store.
+    if (error instanceof StateReadError) throw error;
     throw new StateReadError(`loop state cannot be read (${reasonOf(error)})`);
   }
 
@@ -240,16 +259,9 @@ export function stateStatus(): StateStatus {
     streams[stream] = { ...read.counts.get(stream)!, pending: pendingAt({ store: stream, world: null }) };
   }
 
-  // A legacy file the snapshot has no row for yet (imports suspended, or a
-  // file that came after the open) is still a store to show.
-  const counted = new Map(read.docs.map((d) => [refKey(d), d]));
-  const waiting: StoreRef[] = [];
-  for (const store of GLOBAL_DOC_STORES) if (pendingAt({ store, world: null })) waiting.push({ store, world: null });
-  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsOrThrow(store)) waiting.push({ store, world });
-  const docs = uniqueSorted([...read.docs, ...waiting]).map((ref): StatusDoc => {
-    const seen = counted.get(refKey(ref));
-    return { store: ref.store as DocStore, world: ref.world, rows: seen?.rows ?? 0, quarantined: seen?.quarantined ?? 0, pending: pendingAt(ref) };
-  });
+  const docs = read.docs.map(
+    (d): StatusDoc => ({ store: d.store as DocStore, world: d.world, rows: d.rows, quarantined: d.quarantined, pending: pendingAt(d) }),
+  );
 
   const imports = read.rows.map((row): StatusImport => {
     const verified = row.state === "verified";
@@ -388,17 +400,8 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   };
   for (const stream of STREAM_NAMES) if (importFirst({ store: stream, world: null })) ready.push(stream);
   for (const store of GLOBAL_DOC_STORES) importFirst({ store, world: null });
-  for (const store of PER_WORLD_DOC_STORES) {
-    let worlds: string[];
-    try {
-      worlds = legacyWorlds(store);
-    } catch (error) {
-      // A file that was not imported is still at its path, where the export refuses to replace it.
-      fail({ store, world: null }, `the legacy ${store} files cannot be listed (${fsx.errnoCode(error) || reasonOf(error)})`);
-      continue;
-    }
-    for (const world of worlds) importFirst({ store, world });
-  }
+  // A world dir that cannot be listed fails the whole export as StateReadError.
+  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsOrThrow(store)) importFirst({ store, world });
 
   const db = openState();
   const io = legacyIo();
@@ -453,7 +456,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       stage(ref, target, bodies.length === 0 ? "" : `${bodies.join("\n")}\n`, bodies.length, refusal?.supersedes ?? null);
     }
 
-    for (const ref of uniqueSorted(docRefsOn(db))) {
+    for (const ref of allDocRefs(db)) {
       if (notImported.has(refKey(ref))) continue;
       const label = labelOf(ref.store, ref.world);
       let content: { text: string; lines: number } | null;
@@ -495,6 +498,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   } catch (error) {
     if (db.inTransaction) db.run("ROLLBACK");
     for (const s of staged) rmSync(s.temp, { force: true });
+    if (error instanceof StateReadError) throw error;
     throw new StateWriteError(`loop state export cannot be recorded (${fsx.errnoCode(error) || reasonOf(error)})`);
   }
   for (const s of staged) {

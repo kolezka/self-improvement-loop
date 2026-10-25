@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { paths } from "@sil/core";
+import { paths, StateReadError } from "@sil/core";
 import { closeState, dropQuarantine, exportLegacy, listQuarantine, openState, replaceAliases, saveDoc, stateStatus } from "../src/index.ts";
 
 let tmp: string;
@@ -173,5 +174,34 @@ describe("documents and aliases in status and quarantine", () => {
       { path: paths.queueClearedFile(), message: `${paths.queueClearedFile()} holds the queue cutoffs, which no longer exists in the loop state` },
     ]);
     expect(readFileSync(paths.queueClearedFile(), "utf8")).toBe(`${JSON.stringify({ default: "t" }, null, 2)}\n`);
+  });
+
+  test("a forced export refuses an unrecorded aliases file of a world with no loop-state trace", () => {
+    // The doc export suspends legacy imports, so the aliases file below stays where it is.
+    saveDoc("queue_cleared", null, { default: "t" });
+    expect(exportLegacy(false).written).toEqual([paths.queueClearedFile()]);
+    const target = paths.aliasesFile("default");
+    mkdirSync(dirname(target), { recursive: true });
+    const bytes = `${JSON.stringify({ x: "y" }, null, 2)}\n`;
+    writeFileSync(target, bytes);
+    const result = exportLegacy(true);
+    expect(result.refused).toContainEqual({ path: target, message: `${target} has lines that are not in the loop state; run sil state migrate first` });
+    expect(readFileSync(target, "utf8")).toBe(bytes);
+  });
+
+  test("an export with a world dir that cannot be listed throws StateReadError", () => {
+    const worldDir = dirname(paths.aliasesFile("default"));
+    mkdirSync(worldDir, { recursive: true });
+    chmodSync(worldDir, 0o000);
+    let error: unknown = null;
+    try {
+      exportLegacy(false);
+    } catch (caughtError) {
+      error = caughtError;
+    } finally {
+      chmodSync(worldDir, 0o755);
+    }
+    expect(error).toBeInstanceOf(StateReadError);
+    expect((error as Error).message).toContain("the legacy aliases files cannot be listed (");
   });
 });

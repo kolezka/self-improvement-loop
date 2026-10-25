@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSyn
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths } from "@sil/core";
-import { closeState, type ImportIo, openState, setImportIoForTest, stateStatus } from "@sil/statedb";
+import { closeState, type ImportIo, migrateLegacy, openState, setImportIoForTest, stateStatus } from "@sil/statedb";
 import { run } from "../src/main.ts";
 
 let tmp: string;
@@ -196,5 +196,53 @@ describe("sil state failure paths", () => {
     expect(readFileSync(row!.backup_path!)).toEqual(original.bytes);
     const entry = stateStatus().imports.find((i) => i.backupPath === row!.backup_path);
     expect(entry?.backupCheck).toBe("ok");
+  });
+
+  test("a migrate that claims the original between a forced export's commit and its rename keeps the claimed row", async () => {
+    seed();
+    expect((await sil("state", "migrate")).code).toBe(0);
+    expect((await sil("state", "export", "--legacy-paths")).code).toBe(0);
+    const critic = paths.criticFeedbackFile();
+    const claim = `${critic}.importing`;
+    const original = { bytes: readFileSync(critic), ino: statSync(critic).ino };
+
+    // Right before the export renames its critic temp into place, a migrate
+    // claims the original and commits the claim, then stops before finalize
+    // (its stat of the claim fails, as a crash there would leave it).
+    let claimRead = false;
+    let interleaved = false;
+    const io: ImportIo = {
+      stat: (path) => {
+        if (path === claim && claimRead) throw Object.assign(new Error("stopped before finalize"), { code: "EIO" });
+        return REAL.stat(path);
+      },
+      readFile: (path) => {
+        if (path === claim) claimRead = true;
+        return REAL.readFile(path);
+      },
+      rename: (from, to) => {
+        if (to === critic && from.includes(".export-") && !interleaved) {
+          interleaved = true;
+          const claimed = migrateLegacy();
+          expect(claimed.failures.map((f) => f.stream)).toEqual(["critic"]);
+          expect(existsSync(claim)).toBe(true);
+        }
+        REAL.rename(from, to);
+      },
+    };
+    setImportIoForTest(io);
+    const forced = await sil("state", "export", "--legacy-paths", "--force");
+    setImportIoForTest(null);
+    expect(interleaved).toBe(true);
+    expect(forced.code).toBe(0);
+
+    expect((await sil("state", "migrate")).code).toBe(0);
+    expect(rows("critic")).toBe(2);
+    expect(existsSync(claim)).toBe(false);
+    const row = openState()
+      .query("SELECT backup_path FROM legacy_imports WHERE store = 'critic' AND state = 'verified' AND ino = ?")
+      .get(original.ino) as { backup_path: string | null } | null;
+    expect(row?.backup_path).toBeTruthy();
+    expect(readFileSync(row!.backup_path!)).toEqual(original.bytes);
   });
 });

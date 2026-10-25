@@ -326,10 +326,11 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       continue;
     }
     // Only now is the earlier export's file gone. A crash before this leaves a
-    // stale row whose file status shows as missing.
+    // stale row whose file status shows as missing. A row a concurrent migrate
+    // has claimed (backup name set) stays: that migrate finalizes it.
     if (s.supersedes === null) continue;
     try {
-      db.query("DELETE FROM legacy_imports WHERE id = ?").run(s.supersedes);
+      db.query("DELETE FROM legacy_imports WHERE id = ? AND backup_path IS NULL").run(s.supersedes);
     } catch (error) {
       result.failures.push({
         stream: s.stream,

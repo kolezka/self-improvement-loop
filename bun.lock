@@ -14,6 +14,7 @@
         "@sil/ops": "workspace:*",
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
         "@sil/transcript": "workspace:*",
         "@sil/worker": "workspace:*",
@@ -171,6 +172,13 @@
         "@sil/worker": "workspace:*",
       },
     },
+    "packages/statedb": {
+      "name": "@sil/statedb",
+      "version": "1.2.11",
+      "dependencies": {
+        "@sil/core": "workspace:*",
+      },
+    },
     "packages/store": {
       "name": "@sil/store",
       "version": "1.2.11",
@@ -271,6 +279,8 @@
     "@sil/review": ["@sil/review@workspace:packages/review"],
 
     "@sil/server": ["@sil/server@workspace:apps/server"],
+
+    "@sil/statedb": ["@sil/statedb@workspace:packages/statedb"],
 
     "@sil/store": ["@sil/store@workspace:packages/store"],
 

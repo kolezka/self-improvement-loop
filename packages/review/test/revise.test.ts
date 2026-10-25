@@ -157,7 +157,6 @@ describe("revise", () => {
   });
 
   test("an unwritable proposal-events log does not fail a revise that already committed", async () => {
-    if (process.getuid?.() === 0) return; // root ignores file permissions
     const world = makeWorld();
     seed(world);
     await stage(world);

@@ -401,7 +401,6 @@ describe("accept", () => {
   });
 
   test("an unwritable proposal-events log does not fail a merge that already landed", async () => {
-    if (process.getuid?.() === 0) return; // root ignores file permissions
     const world = makeWorld();
     const repo = seed(world);
     await stage(world);
@@ -1357,7 +1356,6 @@ describe("rehome and retire", () => {
 
 describe("a human's rehome survives a lost proposal event", () => {
   test("a later promote with hook-earning evidence does not re-route a pattern a human rehomed to rule, even when the rehomed event failed to append", async () => {
-    if (process.getuid?.() === 0) return; // root ignores file permissions
     const world = makeWorld();
     await accepted(world); // originally served by "skill"
 

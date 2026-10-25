@@ -651,8 +651,9 @@ Older builds read the JSONL files and know nothing about the DB. To downgrade:
    not in the loop state" run `sil state migrate`; for quarantined lines see
    above; for "already exists" pass `--force`, which replaces only a file that
    is exactly one this DB recorded; for "no longer exists in the loop state"
-   stop: the file at the old path is the last copy of that document, so decide
-   by hand whether to keep it. Then run the export again until it exits 0.
+   stop: the file at the old path may hold data the loop state no longer has;
+   inspect it and any `<file>.imported-*` backup before deciding what to keep.
+   Then run the export again until it exits 0.
 5. Check that the old path of every store with rows in `sil state status` has a
    file.
 6. Install the older plugin. Then reinstall the schedule the way your saved

@@ -29,6 +29,9 @@ const REAL_IMPORT_IO: ImportIo = {
 
 let importIo: ImportIo = REAL_IMPORT_IO;
 
+/** The legacy-file calls in use; the export's temp files go through them too. */
+export const legacyIo = (): ImportIo => importIo;
+
 /** Swap the importer's filesystem calls; null restores node:fs. */
 export function setImportIoForTest(io: ImportIo | null): void {
   importIo = io ?? REAL_IMPORT_IO;

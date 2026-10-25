@@ -2,7 +2,7 @@
 // real child process against a tmp home.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
@@ -223,6 +223,48 @@ describe("sil state", () => {
     expect(backupsOf(paths.criticFeedbackFile())).toHaveLength(2);
     expect(backupsOf(paths.humanFeedbackFile())).toHaveLength(2);
     expect(s.imports.every((i) => i.backupCheck === "ok")).toBe(true);
+  });
+
+  test("a forced export refuses a file the older build appended to, and migrate imports that line", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ts: "2026-10-03T00:00:00.000Z", world: "default", pattern: "old-build", verdict: "keep" });
+    const appended = readFileSync(paths.criticFeedbackFile(), "utf8");
+
+    const forced = sil("state", "export", "--legacy-paths", "--force");
+    expect(forced.code).toBe(1);
+    expect(forced.err).toContain("critic.jsonl");
+    expect(forced.err).toContain("run sil state migrate first");
+    expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(appended);
+    expect(status().streams["critic"]!.rows).toBe(2);
+
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(status().streams["critic"]!.rows).toBe(3);
+  });
+
+  test("status shows an exported file that is gone as missing", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    rmSync(paths.criticFeedbackFile());
+    const s = status();
+    expect(s.imports[1]).toMatchObject({ store: "critic", backupPath: null, backupCheck: "missing" });
+  });
+
+  test("a StateReadError reaching the CLI prints one error line and exits 1", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    const backup = backupsOf(paths.criticFeedbackFile())[0]!;
+    chmodSync(backup, 0o000);
+    try {
+      const r = sil("state", "status");
+      expect(r.code).toBe(1);
+      const lines = r.err.trimEnd().split("\n");
+      expect(lines).toEqual(["error: the backup of the critic feedback log cannot be read (EACCES)"]);
+    } finally {
+      chmodSync(backup, 0o600);
+    }
   });
 
   test("export without --legacy-paths is a usage error", () => {

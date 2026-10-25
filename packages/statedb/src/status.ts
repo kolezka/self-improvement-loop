@@ -2,11 +2,11 @@
 // export back to the legacy JSONL paths (design D14).
 
 import type { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
-import { readFileSync, rmSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
-import { ensureImported, importAll, type ImportAllResult, importAllOn, importSuspendedAt, reasonOf, SUSPENDED_KEY } from "./import.ts";
+import { ensureImported, importAll, type ImportAllResult, importAllOn, importSuspendedAt, legacyIo, reasonOf, SUSPENDED_KEY } from "./import.ts";
 import { openState, openStateReporting } from "./open.ts";
 import { exportBodiesOn, type Stream, STREAMS, strictImportError } from "./streams.ts";
 
@@ -71,14 +71,28 @@ interface ImportRowFull {
   lines_imported: number;
   sha256: string | null;
   size: number | null;
+  original_path: string;
+  dev: number | null;
+  ino: number | null;
 }
 
 const labelOf = (store: string): string => (Object.hasOwn(STREAMS, store) ? STREAMS[store as Stream].label : store);
 
 /** Re-read a backup and compare it with the bytes its import row recorded. */
 function checkBackup(row: ImportRowFull): { check: BackupCheck | null; grewBytes: number | null } {
-  // An export row (D14) has no backup until migrate claims its file.
-  if (!row.backup_path) return { check: null, grewBytes: null };
+  // An export row (D14) has no backup until migrate claims its file. Its file
+  // sits at the legacy path; only a missing or replaced file is worth showing.
+  if (!row.backup_path) {
+    let current: { dev: number; ino: number };
+    try {
+      current = statSync(row.original_path);
+    } catch (error) {
+      if (fsx.errnoCode(error) === "ENOENT") return { check: "missing", grewBytes: null };
+      throw new StateReadError(`the export of ${labelOf(row.store)} cannot be checked (${fsx.errnoCode(error) || reasonOf(error)})`);
+    }
+    const same = current.dev === row.dev && current.ino === row.ino;
+    return { check: same ? null : "changed", grewBytes: null };
+  }
   let bytes: Buffer;
   try {
     bytes = readFileSync(row.backup_path);
@@ -111,7 +125,7 @@ export function stateStatus(): StateStatus {
       // A failed row is history once a later verified import of the same file (store, dev, ino) succeeded.
       const rows = db
         .query(
-          `SELECT id, store, state, backup_path, failure, lines_imported, sha256, size FROM legacy_imports f
+          `SELECT id, store, state, backup_path, failure, lines_imported, sha256, size, original_path, dev, ino FROM legacy_imports f
            WHERE state = 'verified' OR NOT EXISTS (
              SELECT 1 FROM legacy_imports v WHERE v.state = 'verified' AND v.id > f.id
                AND v.store = f.store AND v.dev = f.dev AND v.ino = f.ino)
@@ -185,16 +199,49 @@ export function dropQuarantine(stream: Stream): number {
 
 export interface ExportLegacyResult {
   written: string[];
-  refused: string[];
+  refused: { path: string; message: string }[];
   failures: { stream: Stream; message: string }[];
 }
 
+/** Why an existing target may not be replaced, or null when it may. Only a file
+ * byte-identical to a recorded verified row for that path may go, and only
+ * with `force`: anything else may hold lines the database does not have. */
+function refusalFor(db: Database, target: string, force: boolean): { message: string; supersedes: number | null } | null {
+  let bytes: Buffer;
+  let st: { dev: number; ino: number };
+  try {
+    st = statSync(target);
+    bytes = readFileSync(target);
+  } catch (error) {
+    if (fsx.errnoCode(error) === "ENOENT") return null;
+    throw error;
+  }
+  const match = db
+    .query(
+      `SELECT id, backup_path FROM legacy_imports WHERE state = 'verified' AND original_path = ? AND dev = ? AND ino = ? AND size = ? AND sha256 = ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(target, st.dev, st.ino, bytes.length, sha256(bytes)) as { id: number; backup_path: string | null } | null;
+  if (!match) return { message: `${target} has lines that are not in the loop state; run sil state migrate first`, supersedes: null };
+  if (!force) return { message: `${target} already exists; pass --force to overwrite it`, supersedes: null };
+  // An earlier export row whose file this one replaces describes nothing on disk any more.
+  return { message: "", supersedes: match.backup_path === null ? match.id : null };
+}
+
+interface Staged {
+  stream: Stream;
+  target: string;
+  temp: string;
+}
+
 /** Write every stream back to its legacy JSONL path (design D14). An existing
- * file is refused without `force`; a stream with no rows writes nothing; a
- * stream that cannot be exported (quarantine, read failure) is a failure and
- * the others still go out. Each written file is recorded as a `verified`
- * import row and legacy imports are suspended, in one transaction, so the
- * next open does not import the files again. */
+ * file is refused unless it is an unchanged recorded file and `force` is set;
+ * a stream with no rows writes nothing; a stream that cannot be exported is a
+ * failure and the others still go out. Files are written to temps, recorded
+ * as `verified` import rows with the suspension of legacy imports in one
+ * transaction, and renamed into place only after the commit, so a failed
+ * export never touches an original and the next open does not import the
+ * files again. */
 export function exportLegacy(force: boolean): ExportLegacyResult {
   const result: ExportLegacyResult = { written: [], refused: [], failures: [] };
   const ready: Stream[] = [];
@@ -210,12 +257,13 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   if (ready.length === 0) return result;
 
   const db = openState();
+  const io = legacyIo();
   try {
     db.run("BEGIN IMMEDIATE");
   } catch (error) {
     throw new StateWriteError(`loop state export cannot start (${reasonOf(error)})`);
   }
-  const written: string[] = [];
+  const staged: Staged[] = [];
   try {
     const now = new Date().toISOString();
     const record = db.query(
@@ -233,33 +281,48 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
         continue;
       }
       if (bodies.length === 0) continue;
-      if (!force && present(target)) {
-        result.refused.push(target);
+      const refusal = refusalFor(db, target, force);
+      if (refusal?.message) {
+        result.refused.push({ path: target, message: refusal.message });
         continue;
       }
+      const temp = `${target}.export-${process.pid}-${randomBytes(6).toString("hex")}`;
       try {
-        fsx.atomicWrite(target, `${bodies.join("\n")}\n`);
+        fsx.ensureDir(dirname(target));
+        writeFileSync(temp, `${bodies.join("\n")}\n`, { flag: "wx" });
       } catch (error) {
+        rmSync(temp, { force: true });
         result.failures.push({ stream, message: `${STREAMS[stream].label} cannot be exported (${fsx.errnoCode(error) || reasonOf(error)})` });
         continue;
       }
-      written.push(target);
-      // Record what is on disk, not what was meant to be written.
-      const st = statSync(target);
-      const bytes = readFileSync(target);
+      staged.push({ stream, target, temp });
+      // Record what is on disk; the rename keeps the inode.
+      const st = io.stat(temp);
+      const bytes = io.readFile(temp);
+      if (refusal?.supersedes != null) db.query("DELETE FROM legacy_imports WHERE id = ?").run(refusal.supersedes);
       record.run(stream, target, bodies.length, sha256(bytes), bytes.length, st.dev, st.ino, now, now);
     }
-    if (written.length > 0) {
+    if (staged.length > 0) {
       db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(SUSPENDED_KEY, now);
     }
     db.run("COMMIT");
   } catch (error) {
     if (db.inTransaction) db.run("ROLLBACK");
-    // Unrecorded files would be imported again on the next open and double their rows.
-    for (const path of written) rmSync(path, { force: true });
+    for (const s of staged) rmSync(s.temp, { force: true });
     throw new StateWriteError(`loop state export cannot be recorded (${fsx.errnoCode(error) || reasonOf(error)})`);
   }
-  result.written = written;
+  for (const s of staged) {
+    try {
+      io.rename(s.temp, s.target);
+      result.written.push(s.target);
+    } catch (error) {
+      // The row is committed; status shows its file as missing until this is fixed by hand.
+      result.failures.push({
+        stream: s.stream,
+        message: `${STREAMS[s.stream].label} was exported but not moved into place (${fsx.errnoCode(error) || reasonOf(error)}); the export is at ${s.temp}`,
+      });
+    }
+  }
   return result;
 }
 

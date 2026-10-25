@@ -61,7 +61,7 @@ export function cmdStateExport(opts: { legacyPaths?: boolean; force?: boolean })
   }
   const result = exportLegacy(opts.force === true);
   for (const path of result.written) console.log(`wrote ${path}`);
-  for (const path of result.refused) console.error(`error: ${path} already exists; pass --force to overwrite it`);
+  for (const r of result.refused) console.error(`error: ${r.message}`);
   for (const f of result.failures) console.error(`error: ${f.message}`);
   if (result.written.length === 0 && result.refused.length === 0 && result.failures.length === 0) console.log("nothing to export");
   return result.refused.length > 0 || result.failures.length > 0 ? 1 : 0;

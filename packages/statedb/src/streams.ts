@@ -48,21 +48,24 @@ export function appendRecord(stream: Stream, record: Record<string, unknown>): v
   }
 }
 
-// One state.log line per process per stream (and per STATE dir, so a test that
-// switches SIL_STATE_DIR gets its own line).
+// One state.log line per process per store and world (and per STATE dir, so a
+// test that switches SIL_STATE_DIR gets its own line).
 const logged = new Set<string>();
 
-function logOnce(stream: Stream, reason: string): void {
+/** Log a tolerant read's failure once for `key` (a store, or a store and world). */
+export function logStateOnce(key: string, label: string, reason: string): void {
   const file = paths.logFile("state");
-  const key = `${file}\0${stream}`;
-  if (logged.has(key)) return;
-  logged.add(key);
+  const full = `${file}\0${key}`;
+  if (logged.has(full)) return;
+  logged.add(full);
   try {
-    fsx.appendLine(file, `${new Date().toISOString()} ${STREAMS[stream].label}: tolerant read used what the database has (${reason})`);
+    fsx.appendLine(file, `${new Date().toISOString()} ${label}: tolerant read used what the database has (${reason})`);
   } catch {
     // A tolerant read never throws, and this log is the only place left to report to.
   }
 }
+
+const logOnce = (stream: Stream, reason: string): void => logStateOnce(stream, STREAMS[stream].label, reason);
 
 /** What a strict reader throws when the import before its read fails. */
 export function strictImportError(stream: Stream, error: unknown): StateReadError {

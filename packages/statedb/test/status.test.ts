@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeState, dropQuarantine, listQuarantine, openState, stateStatus } from "../src/index.ts";
+import { paths } from "@sil/core";
+import { closeState, dropQuarantine, exportLegacy, listQuarantine, openState, replaceAliases, saveDoc, stateStatus } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -49,7 +50,7 @@ describe("stateStatus imports", () => {
   test("a failed row has no backup check", () => {
     importRow("failed", 1, 10, "boom");
     expect(stateStatus().imports).toEqual([
-      { store: "critic", state: "failed", backupPath: null, failure: "boom", lines: 0, backupCheck: null, grewBytes: null },
+      { store: "critic", world: null, state: "failed", backupPath: null, failure: "boom", lines: 0, backupCheck: null, grewBytes: null },
     ]);
   });
 });
@@ -62,8 +63,69 @@ describe("quarantine helpers", () => {
     insert.run("critic", 1);
     insert.run("human", 2);
     expect(listQuarantine().map((q) => q.store)).toEqual(["critic", "human"]);
-    expect(listQuarantine("human")).toEqual([{ id: 2, store: "human", source: "src", lineNo: 2, reason: "not JSON" }]);
+    expect(listQuarantine("human")).toEqual([{ id: 2, store: "human", world: null, source: "src", lineNo: 2, reason: "not JSON" }]);
     expect(dropQuarantine("critic")).toBe(1);
     expect(listQuarantine().map((q) => q.store)).toEqual(["human"]);
+  });
+});
+
+const quarantineRow = (store: string, world: string | null): void => {
+  openState()
+    .query("INSERT INTO quarantine (store, world, source, line_no, reason, raw, quarantined_at) VALUES (?, ?, 'src', NULL, 'not JSON', 'x', 't')")
+    .run(store, world);
+};
+
+describe("documents and aliases in status and quarantine", () => {
+  test("stateStatus lists each document and aliases world it has seen", () => {
+    saveDoc("worker_status", null, { state: "idle" });
+    replaceAliases("default", { a: "b", c: "d" });
+    const { docs } = stateStatus();
+    expect(docs).toContainEqual({ store: "worker_status", world: null, rows: 1, quarantined: 0, pending: false });
+    expect(docs).toContainEqual({ store: "aliases", world: "default", rows: 2, quarantined: 0, pending: false });
+  });
+
+  test("listQuarantine returns the world of a per-world row", () => {
+    quarantineRow("aliases", "a");
+    quarantineRow("critic", null);
+    expect(listQuarantine("aliases")).toEqual([{ id: 1, store: "aliases", world: "a", source: "src", lineNo: null, reason: "not JSON" }]);
+  });
+
+  test("dropQuarantine drops every world without a world, one world with it", () => {
+    quarantineRow("refine_attempts", "a");
+    quarantineRow("refine_attempts", "b");
+    expect(dropQuarantine("refine_attempts")).toBe(2);
+    expect(listQuarantine("refine_attempts")).toEqual([]);
+    quarantineRow("refine_attempts", "a");
+    quarantineRow("refine_attempts", "b");
+    expect(dropQuarantine("refine_attempts", "a")).toBe(1);
+    expect(listQuarantine("refine_attempts").map((q) => q.world)).toEqual(["b"]);
+  });
+
+  test("exportLegacy writes documents and aliases in writeJson format and records export rows", () => {
+    saveDoc("queue_cleared", null, { default: "2026-10-25T00:00:00Z" });
+    replaceAliases("default", { zeta: "z", alpha: "a" });
+    const result = exportLegacy(false);
+    expect(result.failures).toEqual([]);
+    expect(result.refused).toEqual([]);
+    expect(result.written.sort()).toEqual([paths.aliasesFile("default"), paths.queueClearedFile()].sort());
+    expect(readFileSync(paths.queueClearedFile(), "utf8")).toBe(`${JSON.stringify({ default: "2026-10-25T00:00:00Z" }, null, 2)}\n`);
+    expect(readFileSync(paths.aliasesFile("default"), "utf8")).toBe(`${JSON.stringify({ alpha: "a", zeta: "z" }, null, 2)}\n`);
+    const rows = openState()
+      .query("SELECT store, world, original_path AS path FROM legacy_imports WHERE origin = 'export' ORDER BY store")
+      .all();
+    expect(rows).toEqual([
+      { store: "aliases", world: "default", path: paths.aliasesFile("default") },
+      { store: "queue_cleared", world: null, path: paths.queueClearedFile() },
+    ]);
+  });
+
+  test("exportLegacy refuses a quarantined document world and still exports the others", () => {
+    saveDoc("refine_attempts", "b", { x: 1 });
+    quarantineRow("refine_attempts", "a");
+    const result = exportLegacy(false);
+    expect(result.failures).toEqual([
+      { store: "refine_attempts", world: "a", message: 'the refine attempts of world "a" could not be imported; see sil state quarantine' },
+    ]);
+    expect(result.written).toEqual([paths.refineAttemptsFile("b")]);
   });
 });

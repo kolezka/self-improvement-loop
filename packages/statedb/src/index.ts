@@ -1,3 +1,5 @@
+export { readAliases, replaceAliases } from "./aliases.ts";
+export { type DocMode, readDoc, saveDoc } from "./docs.ts";
 export {
   ensureImported,
   importAll,
@@ -19,6 +21,7 @@ export {
   migrateLegacy,
   stateStatus,
   type StateStatus,
+  type StatusDoc,
   type StatusImport,
 } from "./status.ts";
 export {

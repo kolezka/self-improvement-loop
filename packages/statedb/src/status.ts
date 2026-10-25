@@ -1,5 +1,5 @@
 // What `sil state` shows and does: status, quarantine list and drop, and the
-// export back to the legacy JSONL paths (design D14).
+// export back to the legacy file paths (design D14).
 
 import type { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
@@ -7,13 +7,16 @@ import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
 import { ensureImported, importAll, type ImportAllResult, importAllOn, importSuspendedAt, legacyIo, reasonOf, SUSPENDED_KEY } from "./import.ts";
+import { quarantineCountOn, quarantinedMessage, storeRef, strictStoreImportError } from "./docs.ts";
 import { openState, openStateReporting } from "./open.ts";
+import { type DocName, legacyWorlds, type StoreName, type StoreRef, STORES } from "./stores.ts";
 import { exportBodiesOn, type Stream, STREAMS, strictImportError } from "./streams.ts";
 
 export type BackupCheck = "ok" | "missing" | "grew" | "changed";
 
 export interface StatusImport {
   store: string;
+  world: string | null;
   state: string;
   backupPath: string | null;
   failure: string | null;
@@ -32,10 +35,82 @@ export interface StateStatus {
   /** The export time while `sil state export` has suspended legacy imports, else null. */
   suspended: string | null;
   streams: Record<Stream, { rows: number; quarantined: number; pending: boolean }>;
+  /** Every document and aliases world seen, sorted by store then world. */
+  docs: StatusDoc[];
   imports: StatusImport[];
 }
 
+/** `rows` is 0 or 1 for a document and the pair count for aliases. */
+export interface StatusDoc {
+  store: DocName | "aliases";
+  world: string | null;
+  rows: number;
+  quarantined: number;
+  pending: boolean;
+}
+
 const STREAM_NAMES = Object.keys(STREAMS) as Stream[];
+type DocStore = DocName | "aliases";
+const DOC_STORES = (Object.keys(STORES) as StoreName[]).filter((store) => STORES[store].kind !== "stream") as DocStore[];
+const isDocStore = (store: string): store is DocStore => (DOC_STORES as string[]).includes(store);
+const PER_WORLD_DOC_STORES = DOC_STORES.filter((store) => STORES[store].perWorld) as ("refine_attempts" | "aliases")[];
+const GLOBAL_DOC_STORES = DOC_STORES.filter((store) => !STORES[store].perWorld);
+
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Sort refs by store, then world (null first). */
+const byStoreThenWorld = (a: StoreRef, b: StoreRef): number =>
+  cmp(a.store, b.store) || (a.world === b.world ? 0 : a.world === null ? -1 : b.world === null ? 1 : cmp(a.world, b.world));
+
+/** The D6 pending check for one store and world: its legacy path or its claim exists. */
+function pendingAt(ref: StoreRef): boolean {
+  const legacy = STORES[ref.store].legacyPath(ref.world);
+  try {
+    return present(legacy) || present(`${legacy}.importing`);
+  } catch (error) {
+    throw new StateReadError(`${STORES[ref.store].label(ref.world)} cannot be checked (${fsx.errnoCode(error) || reasonOf(error)})`);
+  }
+}
+
+/** Per-world worlds with a legacy file, as StateReadError when they cannot be listed. */
+function legacyWorldsOrThrow(store: "refine_attempts" | "aliases"): string[] {
+  try {
+    return legacyWorlds(store);
+  } catch (error) {
+    throw new StateReadError(`the legacy ${store} files cannot be listed (${fsx.errnoCode(error) || reasonOf(error)})`);
+  }
+}
+
+/** Every document and aliases world the database has seen: rows, quarantine
+ * rows and import rows. A per-world row without a world is not a ref. Read on
+ * `db` inside the caller's snapshot. */
+function docRefsOn(db: Database): StoreRef[] {
+  const found = db
+    .query(
+      `SELECT name AS store, world FROM docs
+       UNION SELECT 'aliases', world FROM aliases
+       UNION SELECT store, world FROM quarantine
+       UNION SELECT store, world FROM legacy_imports`,
+    )
+    .all() as { store: string; world: string | null }[];
+  const refs: StoreRef[] = [];
+  for (const { store, world } of found) {
+    if (!isDocStore(store)) continue;
+    const perWorld = STORES[store].perWorld;
+    if (perWorld && (world === null || world === "")) continue;
+    refs.push({ store, world: perWorld ? world : null });
+  }
+  return refs;
+}
+
+/** Unique refs, sorted by store then world. */
+function uniqueSorted(refs: StoreRef[]): StoreRef[] {
+  const byKey = new Map<string, StoreRef>();
+  for (const ref of refs) byKey.set(refKey(ref), ref);
+  return [...byKey.values()].sort(byStoreThenWorld);
+}
+
+const refKey = (ref: StoreRef): string => `${ref.store}\0${ref.world ?? ""}`;
 
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
@@ -65,6 +140,7 @@ function inSnapshot<T>(db: Database, fn: () => T): T {
 interface ImportRowFull {
   id: number;
   store: string;
+  world: string | null;
   state: string;
   backup_path: string | null;
   failure: string | null;
@@ -76,7 +152,11 @@ interface ImportRowFull {
   ino: number | null;
 }
 
-const labelOf = (store: string): string => (Object.hasOwn(STREAMS, store) ? STREAMS[store as Stream].label : store);
+function labelOf(store: string, world: string | null): string {
+  if (!Object.hasOwn(STORES, store)) return store;
+  const spec = STORES[store as StoreName];
+  return spec.perWorld && world === null ? store : spec.label(world);
+}
 
 /** Re-read a backup and compare it with the bytes its import row recorded. */
 function checkBackup(row: ImportRowFull): { check: BackupCheck | null; grewBytes: number | null } {
@@ -88,7 +168,7 @@ function checkBackup(row: ImportRowFull): { check: BackupCheck | null; grewBytes
       current = statSync(row.original_path);
     } catch (error) {
       if (fsx.errnoCode(error) === "ENOENT") return { check: "missing", grewBytes: null };
-      throw new StateReadError(`the export of ${labelOf(row.store)} cannot be checked (${fsx.errnoCode(error) || reasonOf(error)})`);
+      throw new StateReadError(`the export of ${labelOf(row.store, row.world)} cannot be checked (${fsx.errnoCode(error) || reasonOf(error)})`);
     }
     const same = current.dev === row.dev && current.ino === row.ino;
     return { check: same ? null : "changed", grewBytes: null };
@@ -98,7 +178,7 @@ function checkBackup(row: ImportRowFull): { check: BackupCheck | null; grewBytes
     bytes = readFileSync(row.backup_path);
   } catch (error) {
     if (fsx.errnoCode(error) === "ENOENT") return { check: "missing", grewBytes: null };
-    throw new StateReadError(`the backup of ${labelOf(row.store)} cannot be read (${fsx.errnoCode(error) || reasonOf(error)})`);
+    throw new StateReadError(`the backup of ${labelOf(row.store, row.world)} cannot be read (${fsx.errnoCode(error) || reasonOf(error)})`);
   }
   const size = row.size ?? -1;
   if (bytes.length === size && sha256(bytes) === row.sha256) return { check: "ok", grewBytes: null };
@@ -110,7 +190,14 @@ function checkBackup(row: ImportRowFull): { check: BackupCheck | null; grewBytes
  * first-open import, so `pending` is what is still waiting after it. */
 export function stateStatus(): StateStatus {
   const db = openState();
-  let read: { version: number; fsClass: string | null; suspended: string | null; counts: Map<string, { rows: number; quarantined: number }>; rows: ImportRowFull[] };
+  let read: {
+    version: number;
+    fsClass: string | null;
+    suspended: string | null;
+    counts: Map<string, { rows: number; quarantined: number }>;
+    docs: (StoreRef & { rows: number; quarantined: number })[];
+    rows: ImportRowFull[];
+  };
   try {
     read = inSnapshot(db, () => {
       const version = Number(Object.values(db.query("PRAGMA user_version").get() as object)[0]);
@@ -122,10 +209,19 @@ export function stateStatus(): StateStatus {
           .get(stream) as { rows: number; quarantined: number };
         counts.set(stream, { rows, quarantined });
       }
+      const docs = docRefsOn(db).map((ref) => {
+        const rowWorld = ref.world ?? "";
+        const { n } = (
+          ref.store === "aliases"
+            ? db.query("SELECT count(*) AS n FROM aliases WHERE world = ?").get(rowWorld)
+            : db.query("SELECT count(*) AS n FROM docs WHERE name = ? AND world = ?").get(ref.store, rowWorld)
+        ) as { n: number };
+        return { ...ref, rows: n, quarantined: quarantineCountOn(db, ref) };
+      });
       // A failed row is history once a later verified import of the same file (store, dev, ino) succeeded.
       const rows = db
         .query(
-          `SELECT id, store, state, backup_path, failure, lines_imported, sha256, size, original_path, dev, ino FROM legacy_imports f
+          `SELECT id, store, world, state, backup_path, failure, lines_imported, sha256, size, original_path, dev, ino FROM legacy_imports f
            WHERE (f.state = 'verified' OR NOT EXISTS (
              SELECT 1 FROM legacy_imports v WHERE v.state = 'verified' AND v.id > f.id
                AND v.store = f.store AND v.dev = f.dev AND v.ino = f.ino))
@@ -133,7 +229,7 @@ export function stateStatus(): StateStatus {
            ORDER BY id`,
         )
         .all() as ImportRowFull[];
-      return { version, fsClass: fs?.value ?? null, suspended: importSuspendedAt(db), counts, rows };
+      return { version, fsClass: fs?.value ?? null, suspended: importSuspendedAt(db), counts, docs, rows };
     });
   } catch (error) {
     throw new StateReadError(`loop state cannot be read (${reasonOf(error)})`);
@@ -141,21 +237,26 @@ export function stateStatus(): StateStatus {
 
   const streams = {} as StateStatus["streams"];
   for (const stream of STREAM_NAMES) {
-    const legacy = STREAMS[stream].legacyPath();
-    let pending: boolean;
-    try {
-      pending = present(legacy) || present(`${legacy}.importing`);
-    } catch (error) {
-      throw new StateReadError(`${STREAMS[stream].label} cannot be checked (${fsx.errnoCode(error) || reasonOf(error)})`);
-    }
-    streams[stream] = { ...read.counts.get(stream)!, pending };
+    streams[stream] = { ...read.counts.get(stream)!, pending: pendingAt({ store: stream, world: null }) };
   }
+
+  // A legacy file the snapshot has no row for yet (imports suspended, or a
+  // file that came after the open) is still a store to show.
+  const counted = new Map(read.docs.map((d) => [refKey(d), d]));
+  const waiting: StoreRef[] = [];
+  for (const store of GLOBAL_DOC_STORES) if (pendingAt({ store, world: null })) waiting.push({ store, world: null });
+  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsOrThrow(store)) waiting.push({ store, world });
+  const docs = uniqueSorted([...read.docs, ...waiting]).map((ref): StatusDoc => {
+    const seen = counted.get(refKey(ref));
+    return { store: ref.store as DocStore, world: ref.world, rows: seen?.rows ?? 0, quarantined: seen?.quarantined ?? 0, pending: pendingAt(ref) };
+  });
 
   const imports = read.rows.map((row): StatusImport => {
     const verified = row.state === "verified";
     const backup = verified ? checkBackup(row) : null;
     return {
       store: row.store,
+      world: row.world,
       state: row.state,
       backupPath: row.backup_path,
       failure: row.failure,
@@ -165,43 +266,47 @@ export function stateStatus(): StateStatus {
     };
   });
 
-  return { dbPath: resolve(paths.loopStateDb()), schemaVersion: read.version, fsClass: read.fsClass, suspended: read.suspended, streams, imports };
+  return { dbPath: resolve(paths.loopStateDb()), schemaVersion: read.version, fsClass: read.fsClass, suspended: read.suspended, streams, docs, imports };
 }
 
 export interface QuarantineEntry {
   id: number;
   store: string;
+  world: string | null;
   source: string;
   lineNo: number | null;
   reason: string;
 }
 
-/** Quarantined lines in id order, for one stream or all of them. */
-export function listQuarantine(stream?: Stream): QuarantineEntry[] {
+/** Quarantined lines and files in id order, for one store or all of them. */
+export function listQuarantine(store?: StoreName): QuarantineEntry[] {
   const db = openState();
   try {
-    const sql = "SELECT id, store, source, line_no AS lineNo, reason FROM quarantine";
-    const rows = stream === undefined ? db.query(`${sql} ORDER BY id`).all() : db.query(`${sql} WHERE store = ? ORDER BY id`).all(stream);
+    const sql = "SELECT id, store, world, source, line_no AS lineNo, reason FROM quarantine";
+    const rows = store === undefined ? db.query(`${sql} ORDER BY id`).all() : db.query(`${sql} WHERE store = ? ORDER BY id`).all(store);
     return rows as QuarantineEntry[];
   } catch (error) {
     throw new StateReadError(`the quarantine cannot be read (${reasonOf(error)})`);
   }
 }
 
-/** Delete a stream's quarantined lines. Their raw text stays in the backup file. Returns how many went. */
-export function dropQuarantine(stream: Stream): number {
+/** Delete a store's quarantine rows: one world's when `world` is given, else
+ * every world's. Their raw text stays in the backup file. Returns how many went. */
+export function dropQuarantine(store: StoreName, world?: string): number {
+  const ref = world === undefined ? null : storeRef(store, world);
   const db = openState();
   try {
-    return db.query("DELETE FROM quarantine WHERE store = ?").run(stream).changes;
+    if (ref === null) return db.query("DELETE FROM quarantine WHERE store = ?").run(store).changes;
+    return db.query("DELETE FROM quarantine WHERE store = ? AND world IS ?").run(store, ref.world).changes;
   } catch (error) {
-    throw new StateWriteError(`the quarantine of ${STREAMS[stream].label} cannot be written (${reasonOf(error)})`);
+    throw new StateWriteError(`the quarantine of ${labelOf(store, ref?.world ?? null)} cannot be written (${reasonOf(error)})`);
   }
 }
 
 export interface ExportLegacyResult {
   written: string[];
   refused: { path: string; message: string }[];
-  failures: { stream: Stream; message: string }[];
+  failures: { store: StoreName; world: string | null; message: string }[];
 }
 
 /** Why an existing target may not be replaced, or null when it may. Only a file
@@ -229,7 +334,7 @@ function refusalFor(db: Database, target: string, force: boolean): { message: st
 }
 
 interface Staged {
-  stream: Stream;
+  ref: StoreRef;
   target: string;
   temp: string;
   /** The earlier export row this file replaces, marked only after the rename. */
@@ -237,27 +342,63 @@ interface Staged {
   rowId: number;
 }
 
-/** Write every stream back to its legacy JSONL path (design D14). An existing
- * file is refused unless it is an unchanged recorded file and `force` is set;
- * a stream with no rows writes nothing; a stream that cannot be exported is a
- * failure and the others still go out. Files are written to temps, recorded
- * as `verified` import rows with the suspension of legacy imports in one
+/** The legacy file text of a document or aliases world, in fsx.writeJson's
+ * format, or null when it has no row. Read on `db` inside the caller's transaction. */
+function docTextOn(db: Database, ref: StoreRef): { text: string; lines: number } | null {
+  const rowWorld = ref.world ?? "";
+  if (ref.store === "aliases") {
+    const rows = db.query("SELECT alias, canonical FROM aliases WHERE world = ? ORDER BY alias").all(rowWorld) as { alias: string; canonical: string }[];
+    if (rows.length === 0) return null;
+    const map: Record<string, string> = {};
+    for (const row of rows) map[row.alias] = row.canonical;
+    return { text: `${JSON.stringify(map, null, 2)}\n`, lines: rows.length };
+  }
+  const row = db.query("SELECT body FROM docs WHERE name = ? AND world = ?").get(ref.store, rowWorld) as { body: string } | null;
+  return row ? { text: `${JSON.stringify(JSON.parse(row.body), null, 2)}\n`, lines: 1 } : null;
+}
+
+/** Write every store back to its legacy path (design D14): streams as JSONL,
+ * documents and aliases in fsx.writeJson's format. An existing file is
+ * refused unless it is an unchanged recorded file and `force` is set; a store
+ * with no rows writes nothing; a store that cannot be exported is a failure
+ * and the others still go out. Files are written to temps, recorded as
+ * `verified` import rows with the suspension of legacy imports in one
  * transaction, and renamed into place only after the commit, so a failed
  * export never touches an original and the next open does not import the
  * files again. */
 export function exportLegacy(force: boolean): ExportLegacyResult {
   const result: ExportLegacyResult = { written: [], refused: [], failures: [] };
+  const fail = (ref: StoreRef, message: string): void => {
+    result.failures.push({ store: ref.store, world: ref.world, message });
+  };
+  // Every pending legacy file is imported first, so the export is never older than it.
   const ready: Stream[] = [];
-  for (const stream of STREAM_NAMES) {
+  const notImported = new Set<string>();
+  const importFirst = (ref: StoreRef): boolean => {
     try {
-      ensureImported({ store: stream, world: null });
-      ready.push(stream);
+      ensureImported(ref);
+      return true;
     } catch (error) {
       if (!(error instanceof StateReadError || error instanceof StateWriteError)) throw error;
-      result.failures.push({ stream, message: strictImportError(stream, error).message });
+      const message = STORES[ref.store].kind === "stream" ? strictImportError(ref.store as Stream, error).message : strictStoreImportError(ref, error).message;
+      fail(ref, message);
+      notImported.add(refKey(ref));
+      return false;
     }
+  };
+  for (const stream of STREAM_NAMES) if (importFirst({ store: stream, world: null })) ready.push(stream);
+  for (const store of GLOBAL_DOC_STORES) importFirst({ store, world: null });
+  for (const store of PER_WORLD_DOC_STORES) {
+    let worlds: string[];
+    try {
+      worlds = legacyWorlds(store);
+    } catch (error) {
+      // A file that was not imported is still at its path, where the export refuses to replace it.
+      fail({ store, world: null }, `the legacy ${store} files cannot be listed (${fsx.errnoCode(error) || reasonOf(error)})`);
+      continue;
+    }
+    for (const world of worlds) importFirst({ store, world });
   }
-  if (ready.length === 0) return result;
 
   const db = openState();
   const io = legacyIo();
@@ -270,17 +411,37 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   try {
     const now = new Date().toISOString();
     const record = db.query(
-      `INSERT INTO legacy_imports (store, original_path, backup_path, state, origin, lines_imported, sha256, size, dev, ino, started_at, verified_at)
-       VALUES (?, ?, NULL, 'verified', 'export', ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT INTO legacy_imports (store, world, original_path, backup_path, state, origin, lines_imported, sha256, size, dev, ino, started_at, verified_at)
+       VALUES (?, ?, ?, NULL, 'verified', 'export', ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     );
+    /** Write `text` to a temp next to `target` and record it; a temp that cannot be written is a failure. */
+    const stage = (ref: StoreRef, target: string, text: string, lines: number, supersedes: number | null): void => {
+      const temp = `${target}.export-${process.pid}-${randomBytes(6).toString("hex")}`;
+      try {
+        fsx.ensureDir(dirname(target));
+        writeFileSync(temp, text, { flag: "wx" });
+      } catch (error) {
+        rmSync(temp, { force: true });
+        fail(ref, `${labelOf(ref.store, ref.world)} cannot be exported (${fsx.errnoCode(error) || reasonOf(error)})`);
+        return;
+      }
+      // Record what is on disk; the rename keeps the inode.
+      const entry: Staged = { ref, target, temp, supersedes, rowId: -1 };
+      staged.push(entry);
+      const st = io.stat(temp);
+      const bytes = io.readFile(temp);
+      entry.rowId = (record.get(ref.store, ref.world, target, lines, sha256(bytes), bytes.length, st.dev, st.ino, now, now) as { id: number }).id;
+    };
+
     for (const stream of ready) {
+      const ref: StoreRef = { store: stream, world: null };
       const target = STREAMS[stream].legacyPath();
       let bodies: string[];
       try {
         bodies = exportBodiesOn(db, stream);
       } catch (error) {
         if (!(error instanceof StateReadError)) throw error;
-        result.failures.push({ stream, message: error.message });
+        fail(ref, error.message);
         continue;
       }
       const refusal = refusalFor(db, target, force);
@@ -289,21 +450,34 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
         result.refused.push({ path: target, message: refusal.message });
         continue;
       }
-      const temp = `${target}.export-${process.pid}-${randomBytes(6).toString("hex")}`;
+      stage(ref, target, bodies.length === 0 ? "" : `${bodies.join("\n")}\n`, bodies.length, refusal?.supersedes ?? null);
+    }
+
+    for (const ref of uniqueSorted(docRefsOn(db))) {
+      if (notImported.has(refKey(ref))) continue;
+      const label = labelOf(ref.store, ref.world);
+      let content: { text: string; lines: number } | null;
       try {
-        fsx.ensureDir(dirname(target));
-        writeFileSync(temp, bodies.length === 0 ? "" : `${bodies.join("\n")}\n`, { flag: "wx" });
+        // Like a stream with quarantined lines (design D13), never exported silently short.
+        if (quarantineCountOn(db, ref) > 0) {
+          fail(ref, quarantinedMessage(ref));
+          continue;
+        }
+        content = docTextOn(db, ref);
       } catch (error) {
-        rmSync(temp, { force: true });
-        result.failures.push({ stream, message: `${STREAMS[stream].label} cannot be exported (${fsx.errnoCode(error) || reasonOf(error)})` });
+        fail(ref, `${label} cannot be read (${reasonOf(error)})`);
         continue;
       }
-      // Record what is on disk; the rename keeps the inode.
-      staged.push({ stream, target, temp, supersedes: refusal?.supersedes ?? null, rowId: -1 });
-      const st = io.stat(temp);
-      const bytes = io.readFile(temp);
-      staged[staged.length - 1]!.rowId = (record.get(stream, target, bodies.length, sha256(bytes), bytes.length, st.dev, st.ino, now, now) as { id: number }).id;
+      if (content === null) continue;
+      const target = STORES[ref.store].legacyPath(ref.world);
+      const refusal = refusalFor(db, target, force);
+      if (refusal?.message) {
+        result.refused.push({ path: target, message: refusal.message });
+        continue;
+      }
+      stage(ref, target, content.text, content.lines, refusal?.supersedes ?? null);
     }
+
     if (staged.length > 0) {
       db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(SUSPENDED_KEY, now);
     }
@@ -314,16 +488,14 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
     throw new StateWriteError(`loop state export cannot be recorded (${fsx.errnoCode(error) || reasonOf(error)})`);
   }
   for (const s of staged) {
+    const label = labelOf(s.ref.store, s.ref.world);
     try {
       io.rename(s.temp, s.target);
       result.written.push(s.target);
     } catch (error) {
       // The original keeps its row, so a later migrate only moves it to a backup.
       // The row is committed; status shows its file as missing until this is fixed by hand.
-      result.failures.push({
-        stream: s.stream,
-        message: `${STREAMS[s.stream].label} was exported but not moved into place (${fsx.errnoCode(error) || reasonOf(error)}); the export is at ${s.temp}`,
-      });
+      fail(s.ref, `${label} was exported but not moved into place (${fsx.errnoCode(error) || reasonOf(error)}); the export is at ${s.temp}`);
       continue;
     }
     // Keep the older row for crash recovery even if a migrate claimed it
@@ -332,10 +504,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
     try {
       db.query("UPDATE legacy_imports SET superseded_by = ? WHERE id = ? AND origin = 'export'").run(s.rowId, s.supersedes);
     } catch (error) {
-      result.failures.push({
-        stream: s.stream,
-        message: `${STREAMS[s.stream].label} was exported but its earlier export row was not marked as superseded (${reasonOf(error)})`,
-      });
+      fail(s.ref, `${label} was exported but its earlier export row was not marked as superseded (${reasonOf(error)})`);
     }
   }
   return result;

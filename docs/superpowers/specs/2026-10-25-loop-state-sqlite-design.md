@@ -553,6 +553,15 @@ New `sil state` command:
   Rows the new hooks write between the export and the downgrade stay only in the
   DB; OPERATIONS.md says so. Refuses to overwrite an existing file without
   `--force`.
+  Without more, the next non-hook open would import the exported files again
+  (new inodes) and double every row (found while building phase 1). So the export
+  also records each file it writes as a `verified` `legacy_imports` row (size,
+  sha256, dev, ino) and sets `meta.legacy_import_suspended`; while that is set,
+  the D6 pending check skips legacy imports and the files stay where the older
+  build reads them. `sil state migrate` clears it and imports: D6 step 2's inode
+  and hash match turns an unchanged exported file into a backup without importing
+  it again, and a file the older build appended to imports only its new tail.
+  `sil state status` shows the suspension.
 - `sil state quarantine [--drop <store>]`.
 
 ### D15. Docs

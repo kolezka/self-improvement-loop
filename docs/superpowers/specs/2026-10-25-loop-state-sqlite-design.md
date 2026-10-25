@@ -323,9 +323,11 @@ runs. So a tolerant read only sees a short history when another process holds th
 lock for longer than that, which `sil state status` and the state log show.
 
 **Docs** (`cleared.json`, `worker-status.json`, `aliases.json`,
-`refine-attempts/<w>.json`, phase 2) import the same way, one document each.
-Aliases go through `saveAliases`, so a legacy file that breaks the one-hop rule is
-quarantined, not imported around the check.
+`refine-attempts/<w>.json`, phase 2) import the same way, one file at a time.
+`cleared.json`, `worker-status.json` and each refine attempts file become one
+`docs` row. An aliases file is checked with `assertOneHop` from `@sil/core` and
+becomes one `aliases` row per pair; a file that fails the check is quarantined
+whole, not imported around it.
 
 Phase 2 rulings, as built:
 
@@ -340,9 +342,9 @@ Phase 2 rulings, as built:
 - An aliases file that is not valid JSON quarantines with reason `not JSON`. A
   file that fails the map or pair rule, or the one-hop rule, quarantines with
   that rule's message.
-- The legacy import does not call `saveAliases`, as the paragraph above planned.
-  It writes the `aliases` rows of the world itself, one per pair, after running
-  the same `assertOneHop` from `@sil/core` (D13).
+- The legacy import does not call `saveAliases`. It writes the `aliases` rows of
+  the world itself, one per pair, after running the same `assertOneHop` that
+  `replaceAliases` runs (D13).
 
 The originals stay on disk, byte for byte, under the backup name, with their
 sha256 in `legacy_imports`. That is the backup. They are removed only by a later

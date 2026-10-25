@@ -641,15 +641,18 @@ Older builds read the JSONL files and know nothing about the DB. To downgrade:
    file that is not one this DB recorded is refused even with `--force`. Two
    cases are particular to them. An aliases world that was emptied, whose file
    was exported earlier, gets `{}` with `--force`. A document whose row is gone
-   has no empty form, so its file is refused. Step 4 names the designed
-   command for each refusal; the only stop that needs your judgment is a
-   `grew` backup from step 2, whose extra bytes no command brings back.
+   has no empty form, so its file is refused. Two cases stop the way back and
+   need your decision: a `grew` backup from step 2, and a refusal that says a
+   document "no longer exists in the loop state". Every other refusal step 4
+   names has a `sil` command.
 4. If the export exits 1, stop. Do not install the older plugin. The export may
    have written some stores and paused imports, but at least one store is
    missing. Read its `error:` lines and fix the cause: for "has lines that are
    not in the loop state" run `sil state migrate`; for quarantined lines see
    above; for "already exists" pass `--force`, which replaces only a file that
-   is exactly one this DB recorded. Then run the export again until it exits 0.
+   is exactly one this DB recorded; for "no longer exists in the loop state"
+   stop: the file at the old path is the last copy of that document, so decide
+   by hand whether to keep it. Then run the export again until it exits 0.
 5. Check that the old path of every store with rows in `sil state status` has a
    file.
 6. Install the older plugin. Then reinstall the schedule the way your saved

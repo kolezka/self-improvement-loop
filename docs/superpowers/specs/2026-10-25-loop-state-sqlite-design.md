@@ -1,6 +1,7 @@
 # Loop state in SQLite: design
 
-Status: draft for approval, 2026-10-25. Scope approved by the user on 2026-10-25.
+Status: approved by the user on 2026-10-25 (scope, design and Q1 to Q3, see
+"Answers" at the end).
 Evidence base: the storage inventory (copied to the plan workspace as
 `.plan/storage-inventory.md`, not committed) plus the code reads cited below.
 
@@ -478,9 +479,17 @@ in `sil state export`; the live file is gone), README.md:272.
 8. `COMPACT_MIN_DROP` and `readUsageEvents` are removed.
 9. Bundle format unchanged; bundle import of aliases now goes through `saveAliases`.
 
-## Questions for the user
+## Answers
 
-Open until the user answers; answers get recorded here.
+The user answered all three on 2026-10-25, each as proposed.
+
+- Q1: import live data automatically, on the first non-hook open after the user
+  installs a release that contains the phase (D6). No second read path.
+- Q2: the DB is `STATE/loop-state.sqlite`. Aliases move from DATA to STATE in
+  phase 2.
+- Q3: one PR per phase, in order, each passing CI and its own review.
+
+## Questions for the user (answered above)
 
 - Q1. When the live import runs. Proposed: automatically, at the first non-hook
   open after the user installs a release that contains the phase (D6), with the

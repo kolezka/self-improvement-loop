@@ -53,6 +53,13 @@ function seedCritic(): string {
   return readFileSync(file, "utf8");
 }
 
+/** A global and a per-world document at their legacy paths, as fsx.writeJson writes them. */
+function seedDocs(): { cleared: string } {
+  fsx.writeJson(paths.queueClearedFile(), { default: "2026-10-01T00:00:00.000Z" });
+  fsx.writeJson(paths.refineAttemptsFile("default"), { "skill-a": 1 });
+  return { cleared: readFileSync(paths.queueClearedFile(), "utf8") };
+}
+
 const backupsOf = (file: string): string[] =>
   readdirSync(dirname(file))
     .filter((name) => name.startsWith(`${basename(file)}.imported-`))
@@ -63,7 +70,9 @@ interface StatusJson {
   suspended: string | null;
   schemaVersion: number;
   streams: Record<string, { rows: number; quarantined: number; pending: boolean }>;
-  imports: { store: string; state: string; backupPath: string | null; failure: string | null; lines: number; backupCheck: string | null }[];
+  docs: { store: string; world: string | null; rows: number; quarantined: number; pending: boolean }[];
+  invalidWorldEntries: { store: string; name: string }[];
+  imports: { store: string; world: string | null; state: string; backupPath: string | null; failure: string | null; lines: number; backupCheck: string | null }[];
 }
 
 function status(): StatusJson {
@@ -74,6 +83,24 @@ function status(): StatusJson {
 }
 
 describe("sil state", () => {
+  test("status shows invalid legacy world names without importing their files", () => {
+    const invalid = join(paths.dataDir(), "worlds", "a b", "aliases.json");
+    mkdirSync(dirname(invalid), { recursive: true });
+    writeFileSync(invalid, '{"wrong":"target"}\n');
+    const json = status();
+    expect(json.invalidWorldEntries).toContainEqual({ store: "aliases", name: "a b" });
+    const text = sil("state", "status");
+    expect(text.code).toBe(0);
+    expect(text.out).toContain('documents:\n  invalid world name, not imported: aliases "a b"');
+    expect(readFileSync(invalid, "utf8")).toBe('{"wrong":"target"}\n');
+  });
+
+  test("quarantine --world rejects invalid names as a usage error", () => {
+    const result = sil("state", "quarantine", "--drop", "aliases", "--world", "a b");
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('world name "a b" is not a valid world name');
+  });
+
   test("migrate imports a seeded log, prints its outcome and leaves a backup", () => {
     const seed = seedCritic();
     const r = sil("state", "migrate");
@@ -96,7 +123,7 @@ describe("sil state", () => {
     const first = status();
     // Positive control: the child used the tmp state dir, not the real one.
     expect(first.dbPath).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
-    expect(first.schemaVersion).toBe(1);
+    expect(first.schemaVersion).toBe(2);
     expect(first.streams["critic"]).toEqual({ rows: 2, quarantined: 0, pending: false });
     expect(first.imports).toHaveLength(1);
     expect(first.imports[0]).toMatchObject({ store: "critic", state: "verified", lines: 2, failure: null, backupCheck: "ok" });
@@ -382,6 +409,88 @@ describe("sil state", () => {
     const r = sil("state", "quarantine", "--drop", "toString");
     expect(r.code).toBe(2);
     expect(r.err).toContain("toString");
+  });
+
+  test("migrate prints one line per document, with the world for a per-world one", () => {
+    seedDocs();
+    const r = sil("state", "migrate");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const lines = r.out.trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines.filter((l) => l.startsWith("queue_cleared:"))).toHaveLength(1);
+    expect(lines.filter((l) => l.startsWith("refine_attempts (default):"))).toHaveLength(1);
+  });
+
+  test("status --json lists the documents and the world of a per-world import", () => {
+    seedDocs();
+    expect(sil("state", "migrate").code).toBe(0);
+    const s = status();
+    expect(s.docs).toEqual([
+      { store: "queue_cleared", world: null, rows: 1, quarantined: 0, pending: false },
+      { store: "refine_attempts", world: "default", rows: 1, quarantined: 0, pending: false },
+    ]);
+    expect(s.imports.filter((i) => i.world === "default").map((i) => i.store)).toEqual(["refine_attempts"]);
+    expect(s.imports.filter((i) => i.world === null).map((i) => i.store)).toEqual(["queue_cleared"]);
+  });
+
+  test("status text lists a documents block with the world in parentheses", () => {
+    seedDocs();
+    expect(sil("state", "migrate").code).toBe(0);
+    const r = sil("state", "status");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const lines = r.out.split("\n");
+    const at = lines.indexOf("documents:");
+    expect(at).toBeGreaterThan(-1);
+    const block = lines.slice(at + 1, at + 3);
+    expect(block[0]).toMatch(/^  queue_cleared\s+1 rows?$/);
+    expect(block[1]).toMatch(/^  refine_attempts \(default\)\s+1 rows?$/);
+  });
+
+  test("export --legacy-paths after a migrate writes cleared.json back byte for byte", () => {
+    const { cleared } = seedDocs();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(existsSync(paths.queueClearedFile())).toBe(false);
+    const r = sil("state", "export", "--legacy-paths");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(readFileSync(paths.queueClearedFile(), "utf8")).toBe(cleared);
+  });
+
+  test("quarantine --drop with --world drops one world's quarantined document", () => {
+    const file = paths.refineAttemptsFile("default");
+    fsx.writeJson(file, [1]);
+    fsx.writeJson(paths.refineAttemptsFile("other"), [2]);
+    expect(sil("state", "migrate").code).toBe(0);
+    const listed = sil("state", "quarantine");
+    expect(listed.out).toContain("refine_attempts");
+
+    const dropped = sil("state", "quarantine", "--drop", "refine_attempts", "--world", "default");
+    expect(dropped.err).toBe("");
+    expect(dropped.code).toBe(0);
+    expect(dropped.out).toContain("dropped 1");
+    expect(status().docs.filter((d) => d.store === "refine_attempts").map((d) => [d.world, d.quarantined])).toEqual([
+      ["default", 0],
+      ["other", 1],
+    ]);
+  });
+
+  test("quarantine --drop names every store when the store is unknown", () => {
+    const r = sil("state", "quarantine", "--drop", "nope");
+    expect(r.code).toBe(2);
+    for (const store of ["reflect_runs", "critic", "human", "proposal_events", "queue_cleared", "worker_status", "refine_attempts", "aliases"]) {
+      expect(r.err).toContain(store);
+    }
+  });
+
+  test("quarantine --drop of a global store with --world is a usage error", () => {
+    const r = sil("state", "quarantine", "--drop", "critic", "--world", "default");
+    expect(r.code).toBe(2);
+    const lines = r.err.trimEnd().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("error: ");
+    expect(lines[0]).toContain("--world");
   });
 
   test("a broken database fails status with one error line and no stack", () => {

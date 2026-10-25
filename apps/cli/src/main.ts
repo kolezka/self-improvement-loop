@@ -372,6 +372,7 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .command("quarantine")
     .description("list lines that could not be imported")
     .option("--drop <store>", "delete a store's quarantined lines")
+    .option("--world <name>", "with --drop: only this world of a per-world store")
     .action(wire((opts) => cmdStateQuarantine(opts)));
 
   program.command("hook-snapshot").action(wire(() => cmdHookSnapshot()));

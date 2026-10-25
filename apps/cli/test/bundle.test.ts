@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Config, type HumanFeedback, loadConfig } from "@sil/core";
+import { Config, type HumanFeedback, loadConfig, StateReadError } from "@sil/core";
 import { listHuman } from "@sil/feedback";
+import { loadAliases, loadAliasesStrict, saveAliases } from "@sil/store";
 import { appendRecord, closeState, openState, readRecords } from "@sil/statedb";
 import { exportBundle, humanBytes, importBundle, isArchivePath, portableConfig } from "../src/bundle.ts";
 import { run } from "../src/main.ts";
@@ -287,6 +288,120 @@ describe("feedback logs in loop state", () => {
     const archive = join(tmp, "sil.tar.gz");
     expect(() => exportBundle({ dest: archive })).toThrow("the critic feedback log has 1 quarantined line; see sil state quarantine");
     expect(existsSync(archive)).toBe(false);
+  });
+});
+
+describe("aliases in loop state", () => {
+  async function exportAliasesFromHostA(): Promise<string> {
+    expect(await run(["init"])).toBe(0);
+    saveAliases("default", { old: "new" });
+    const dest = join(tmp, "bundle");
+    exportBundle({ dest });
+    return dest;
+  }
+
+  test("export writes the world's map as sorted two-space JSON", async () => {
+    expect(await run(["init"])).toBe(0);
+    saveAliases("default", { zeta: "zed", alpha: "first" });
+    const dest = join(tmp, "bundle");
+    exportBundle({ dest });
+    const text = readFileSync(join(dest, "worlds", "default", "aliases.json"), "utf8");
+    expect(text).toBe(`${JSON.stringify({ alpha: "first", zeta: "zed" }, null, 2)}\n`);
+    expect(text).not.toBe(`${JSON.stringify({ zeta: "zed", alpha: "first" }, null, 2)}\n`);
+  });
+
+  test("export writes no aliases file for a world with no aliases", async () => {
+    expect(await run(["init"])).toBe(0);
+    const dest = join(tmp, "bundle");
+    exportBundle({ dest });
+    expect(existsSync(join(dest, "manifest.json"))).toBe(true);
+    expect(existsSync(join(dest, "worlds", "default", "aliases.json"))).toBe(false);
+  });
+
+  test("import onto an empty host makes the bundle's aliases readable", async () => {
+    const dest = await exportAliasesFromHostA();
+    useRoots("hostB");
+    importBundle({ src: dest });
+    expect(loadAliases("default")).toEqual({ old: "new" });
+  });
+
+  test("a host with aliases keeps them and reports a skip, unless --force", async () => {
+    const dest = await exportAliasesFromHostA();
+    useRoots("hostC");
+    expect(await run(["init"])).toBe(0);
+    const baseline = importBundle({ src: dest });
+    expect(loadAliases("default")).toEqual({ old: "new" });
+
+    useRoots("hostB");
+    expect(await run(["init"])).toBe(0);
+    saveAliases("default", { mine: "host" });
+    const kept = importBundle({ src: dest });
+    expect(loadAliases("default")).toEqual({ mine: "host" });
+    expect(kept.skipped - baseline.skipped).toBe(1);
+    expect(baseline.files - kept.files).toBe(1);
+
+    importBundle({ src: dest, force: true });
+    expect(loadAliases("default")).toEqual({ old: "new" });
+  });
+
+  test("a chained bundle map is a one-hop warning and leaves the host map alone", async () => {
+    const dest = await exportAliasesFromHostA();
+    writeFileSync(join(dest, "worlds", "default", "aliases.json"), `${JSON.stringify({ a: "b", b: "c" }, null, 2)}\n`);
+    useRoots("hostB");
+    expect(await run(["init"])).toBe(0);
+    saveAliases("default", { mine: "host" });
+
+    const result = importBundle({ src: dest, force: true });
+    const warned = result.warnings.filter((w) => w.startsWith("aliases.json (world default): not imported ("));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("one hop");
+    expect(loadAliases("default")).toEqual({ mine: "host" });
+  });
+
+  for (const [kind, body] of [
+    ["chained", `${JSON.stringify({ a: "b", b: "c" }, null, 2)}\n`],
+    ["bad JSON", "not json"],
+  ] as const) {
+    test(`a ${kind} bundle map warns even when the host has aliases and no --force`, async () => {
+      const dest = await exportAliasesFromHostA();
+      writeFileSync(join(dest, "worlds", "default", "aliases.json"), body);
+      // Baseline: a host with no aliases, where the file is never a skip either.
+      useRoots("hostC");
+      expect(await run(["init"])).toBe(0);
+      const baseline = importBundle({ src: dest });
+
+      useRoots("hostB");
+      expect(await run(["init"])).toBe(0);
+      saveAliases("default", { x: "y" });
+      const result = importBundle({ src: dest });
+      const warned = result.warnings.filter((w) => w.startsWith("aliases.json (world default): not imported ("));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain(kind === "chained" ? "one hop" : "not JSON");
+      expect(result.skipped).toBe(baseline.skipped);
+      expect(loadAliases("default")).toEqual({ x: "y" });
+    });
+  }
+
+  test("a bundle aliases file that is not a map of names is a warning, not a write", async () => {
+    const dest = await exportAliasesFromHostA();
+    const file = join(dest, "worlds", "default", "aliases.json");
+    useRoots("hostB");
+    for (const body of ["not json", '["a"]', '{"a":1}', '{"Not A Slug":"b"}']) {
+      writeFileSync(file, body);
+      const result = importBundle({ src: dest, force: true });
+      expect(result.warnings.filter((w) => w.startsWith("aliases.json (world default): not imported ("))).toHaveLength(1);
+      expect(loadAliasesStrict("default")).toEqual({});
+    }
+  });
+
+  test("export refuses a quarantined aliases store and writes no bundle", async () => {
+    expect(await run(["init"])).toBe(0);
+    const { paths } = await import("@sil/core");
+    // A legacy aliases file that is not a map: the strict read quarantines it.
+    writeFileSync(paths.aliasesFile("default"), "not json");
+    const dir = join(tmp, "bundle");
+    expect(() => exportBundle({ dest: dir })).toThrow(StateReadError);
+    expect(existsSync(dir)).toBe(false);
   });
 });
 

@@ -5,3 +5,4 @@ export * as paths from "./paths.ts";
 export * as fsx from "./fsx.ts";
 export * as samples from "./samples.ts";
 export * from "./config.ts";
+export * from "./aliases-rule.ts";

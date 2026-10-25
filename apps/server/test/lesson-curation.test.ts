@@ -290,7 +290,6 @@ describe("one dispatcher across CLI and HTTP", () => {
     const seededPaths = [
       "state/queue/pending/fixture-pending-1.json",
       "state/queue/done/fixture-done-1.json",
-      "state/worker-status.json",
       "state/logs/worker.log",
       "config/config.yaml",
       "config/llm.yaml",

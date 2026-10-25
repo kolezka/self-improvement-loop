@@ -534,15 +534,22 @@ Two consequences worth knowing:
 
 ## Loop state (`sil state`)
 
-Four logs moved from JSONL files into one SQLite file,
+Four logs, three documents (queue cutoffs, worker status, per-world refine
+attempts) and the per-world alias map moved from files into one SQLite file,
 `~/.local/state/self-improvement-loop/loop-state.sqlite`:
 
-| Store | Old file (in the state dir) |
+| Store | Old file (in the state dir unless noted) |
 | --- | --- |
 | `reflect_runs` | `usage/reflect-runs.jsonl` |
 | `critic` | `feedback/critic.jsonl` |
 | `human` | `feedback/human.jsonl` |
 | `proposal_events` | `curriculum/proposal-events.jsonl` |
+| `queue_cleared` | `queue/cleared.json` |
+| `worker_status` | `worker-status.json` |
+| `refine_attempts` | `curriculum/refine-attempts/<world>.json`, one per world |
+| `aliases` | `worlds/<world>/aliases.json` in the data dir (`~/.local/share/self-improvement-loop/`), one per world |
+
+An aliases file's backup stays in the data dir, next to where the file was.
 
 Nothing to do by hand. The first `sil` command, worker pass or `sil web` that
 reads or writes one of these imports the old file and renames it to
@@ -551,10 +558,10 @@ reads or writes one of these imports the old file and renames it to
 for byte. Nothing deletes it.
 
 ```
-sil state status [--json]          # DB path, schema, rows per store, each import and its backup check
+sil state status [--json]          # DB path, schema, rows per store, documents, each import and its backup check
 sil state migrate                  # import any old file now (handy before a first sil web)
-sil state quarantine               # lines that were not JSON objects and did not import
-sil state quarantine --drop <store>
+sil state quarantine               # lines and documents that did not import
+sil state quarantine --drop <store> [--world <w>]
 sil state export --legacy-paths [--force]
 ```
 
@@ -562,6 +569,14 @@ sil state export --legacy-paths [--force]
 imported. `backup grew after import: N bytes not in the DB` means an older
 process appended N bytes to the file after the import. Those bytes are only in
 that backup, unchanged; no reader, migrate or export uses them.
+
+The `documents:` block lists each document and each aliases world, with its
+rows (1 for a document, the pair count for aliases), quarantined entries and
+whether an old file is still waiting. A document is not imported line by line.
+If the file is not valid JSON, or an aliases file breaks the one-hop rule, the
+whole file goes to quarantine with the reason, and the backup keeps it whole.
+`--drop` on a per-world store drops every world's entries unless you pass
+`--world`.
 
 A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
 old JSONL file is also still whole in that file's backup. A line from a bundle
@@ -572,7 +587,19 @@ store has quarantined lines, strict readers (the consoles' scorecards),
 
 ### Going back to an older plugin
 
-Older builds read the JSONL files and know nothing about the DB. To downgrade:
+#### Which older plugin
+
+Builds before 1.2.12 read only the legacy files. The recipe below returns to
+those builds after the export succeeds.
+
+Version 1.2.12 uses this same database at schema 1 and refuses a schema 2 file.
+There is no supported way back to 1.2.12: the loop state moves forward only,
+and a problem found after this release is fixed in a newer release, not by
+downgrading. If you must run 1.2.12 anyway, stop here and ask for help; the
+schema 2 database must not be deleted, and restoring it over data a 1.2.12
+build has written would lose that data.
+
+To downgrade:
 
 1. Stop everything that can write:
    - close every Claude Code session (their hooks start workers);
@@ -621,13 +648,24 @@ Older builds read the JSONL files and know nothing about the DB. To downgrade:
    lines too (`sil state quarantine`), or that store will not export.
 3. Run `sil state export --legacy-paths`. It writes each store that has rows to
    its old path in the old format, and pauses imports so this build leaves those
-   files alone. A store with no rows gets no file.
+   files alone. A store with no rows gets no file. Documents and aliases are
+   written back too, as pretty-printed JSON, under the same refusal rules: a
+   file that is not one this DB recorded is refused even with `--force`. Two
+   cases are particular to them. An aliases world that was emptied, whose file
+   was exported earlier, gets `{}` with `--force`. A document whose row is gone
+   has no empty form, so its file is refused. Two cases stop the way back and
+   need your decision: a `grew` backup from step 2, and a refusal that says a
+   document "no longer exists in the loop state". Every other refusal step 4
+   names has a `sil` command.
 4. If the export exits 1, stop. Do not install the older plugin. The export may
    have written some stores and paused imports, but at least one store is
    missing. Read its `error:` lines and fix the cause: for "has lines that are
    not in the loop state" run `sil state migrate`; for quarantined lines see
    above; for "already exists" pass `--force`, which replaces only a file that
-   is exactly one this DB recorded. Then run the export again until it exits 0.
+   is exactly one this DB recorded; for "no longer exists in the loop state"
+   stop: the file at the old path may hold data the loop state no longer has;
+   inspect it and any `<file>.imported-*` backup before deciding what to keep.
+   Then run the export again until it exits 0.
 5. Check that the old path of every store with rows in `sil state status` has a
    file.
 6. Install the older plugin. Then reinstall the schedule the way your saved
@@ -652,7 +690,24 @@ sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
 ```
 
 `body` is the record as one JSON line: the imported line with surrounding
-whitespace trimmed, or what this build wrote. The other tables are
+whitespace trimmed, or what this build wrote.
+
+Documents are in `docs`, one row per name and world (`world` is `''` for a
+global document):
+
+```
+sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
+  "SELECT name, world, body FROM docs ORDER BY name, world"
+```
+
+Alias maps are in `aliases`, one row per pair:
+
+```
+sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
+  "SELECT alias, canonical FROM aliases WHERE world = 'default' ORDER BY alias"
+```
+
+The other tables are
 `quarantine`, `legacy_imports` (one row per import or export, with size, sha256
 and, once the file has been moved aside, its backup path) and `meta`. Do not
 write to the file by hand.

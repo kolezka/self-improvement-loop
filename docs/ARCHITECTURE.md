@@ -86,7 +86,7 @@ usage/payloads/<world>.jsonl        PreToolUse samples (tool name, command, file
                                     backfill an empty one from old transcripts with `sil import payloads --days 30`
 usage/nudge-fires.jsonl             nudge emissions (V1 format)
 loop-state.sqlite                   loop state DB (with -wal and -shm), mode 600; see "Loop state" below
-<old log>.imported-<stamp>-<id>     an imported legacy log, kept byte for byte as its backup
+<old file>.imported-<stamp>-<id>    an imported legacy log or document, kept byte for byte as its backup
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions
 sessions/<session_id>/              per-session markers (once_per, delivered, offsets)
 worker.lock
@@ -97,7 +97,9 @@ Data dir (`$SIL_DATA_DIR`, default `~/.local/share/self-improvement-loop/`):
 
 ```
 worlds/<world>/reflections/<YYYY-MM-DD>-<pattern>-<id>.md
-worlds/<world>/aliases.json
+worlds/<world>/aliases.json.imported-<stamp>-<id>
+                                    aliases moved into STATE/loop-state.sqlite in 1.3;
+                                    the imported file stays here as its backup
 worlds/<world>/digests/<pattern>.json   rolling summary of a cluster, plus the
                                         reflection ids it covers (a cache)
 worlds/<world>/learned/             default target repo (git, auto-init) when the
@@ -107,7 +109,9 @@ worlds/<world>/learned/             default target repo (git, auto-init) when th
 ### Loop state
 
 `STATE/loop-state.sqlite` holds four logs that used to be JSONL files in the
-state dir. Each is a stream of rows in one table, `log_records`:
+state dir, three documents that used to be JSON files (the queue cutoffs, the
+worker status and the per-world refine attempts), and the per-world alias map.
+Each log is a stream of rows in one table, `log_records`:
 
 | Stream | Was | Written by |
 | --- | --- | --- |
@@ -116,27 +120,48 @@ state dir. Each is a stream of rows in one table, `log_records`:
 | `human` | `feedback/human.jsonl` | `/feedback` and `sil feedback add` |
 | `proposal_events` | `curriculum/proposal-events.jsonl` | staged, revised, accepted, rejected and the other proposal events |
 
+The three documents live one row each in the `docs` table, keyed by name and
+world. The alias maps live in the `aliases` table, one row per pair and world.
+That makes four stores beside the logs:
+
+| Store | Was | Written by |
+| --- | --- | --- |
+| `queue_cleared` | `queue/cleared.json` | "Clear done" and "Clear failed" (`queue.clear`, `queue.unclear`) |
+| `worker_status` | `worker-status.json` | the worker, at the end of each run |
+| `refine_attempts` | `curriculum/refine-attempts/<world>.json` | the curriculum, for refines that already gated out |
+| `aliases` | DATA `worlds/<world>/aliases.json` | `saveAliases` (CLI, web pane, bundle import) |
+
+The one-hop rule has one implementation, `assertOneHop` in `@sil/core`, and
+every path that writes aliases runs it: `replaceAliases` for API and bundle
+writes, and the legacy importer for a file it imports (a file that fails it is
+quarantined whole).
+
 The code is `@sil/statedb` (`packages/statedb`), which depends on `@sil/core`
 only and keeps `bun:sqlite` out of `@sil/core` and the browser bundles.
 `openState()` is the one opener and the only thing that creates the file. Every
 connection runs WAL, `synchronous=FULL`, a 2 s busy timeout and foreign keys on.
-`PRAGMA user_version` is the schema version (1); a newer one raises instead of
-being read. Hooks do not touch the DB yet.
+`PRAGMA user_version` is the schema version (2: version 1 added the logs,
+version 2 the `docs` and `aliases` tables); a newer one raises instead of being
+read. Hooks do not touch the DB yet.
 
 Before any read or write of a stream, a non-hook process checks whether the old
 JSONL file is still there. If it is, it imports it in one transaction: every
 nonblank line that is a JSON object becomes a row (trimmed), any other nonblank
 line goes to the `quarantine` table with its raw text (up to 64 KiB), blank
 lines are counted and skipped, and the file is renamed to
-`<file>.imported-<stamp>-<id>`. That renamed file is the original, byte for
-byte, with its size and sha256 in `legacy_imports`; nothing deletes it.
+`<file>.imported-<stamp>-<id>`. A document or aliases file imports the same
+way, whole: a document becomes one `docs` row, an aliases file one `aliases`
+row per pair, and a file that does not pass becomes one quarantine entry.
+Per-world files are found by listing the state and data dirs, not from config.
+That renamed file is the original, byte for byte, with its size and sha256 in `legacy_imports`; nothing deletes it.
 `sil state export --legacy-paths` pauses these imports until `sil state migrate`
 clears the pause. Readers
 come in three kinds: strict (raises on a quarantined line), counted (returns the
 quarantine count, as `history.series` and `readProposalEvents` do) and tolerant
-(reads what the DB has, logs once to `logs/state.log`). `sil state` shows and
-manages all of this; OPERATIONS.md has the commands and the way back to an
-older plugin.
+(reads what the DB has, logs once to `logs/state.log`). `sil state status`
+shows the streams, a `documents:` block for the three documents and each
+aliases world, and every import. `sil state` shows and manages all of this;
+OPERATIONS.md has the commands and the way back to an older plugin.
 
 ## Worlds and targets
 

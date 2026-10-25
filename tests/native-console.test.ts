@@ -6,6 +6,7 @@
 // skip with a warning without it, like tests/dist.test.ts.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -437,6 +438,34 @@ describe.skipIf(!built)("native console bridge against the acceptance fixture", 
     return { files: inventory(fx.root), git };
   }
 
+  // The opener refreshes meta.fs_probed_at on every first open, so the DB
+  // bytes are not a "no writes" signal. The rows below are. The state dir's
+  // own mtime goes too: on Linux SQLite recreates the -wal and -shm files on
+  // open, which bumps it; every file inside the dir is still compared.
+  const LOOP_STATE_FILES = ["state/loop-state.sqlite", "state/loop-state.sqlite-wal", "state/loop-state.sqlite-shm", "state"];
+
+  function withoutDb(files: Record<string, string>): Record<string, string> {
+    const out = { ...files };
+    for (const name of LOOP_STATE_FILES) delete out[name];
+    return out;
+  }
+
+  /** Every loop-state row a read must leave alone. meta stays out (fs_probed_at). */
+  function loopStateRows(): Record<string, unknown[]> {
+    const db = new Database(join(fx.env["SIL_STATE_DIR"]!, "loop-state.sqlite"), { readonly: true });
+    try {
+      return {
+        docs: db.query("SELECT * FROM docs ORDER BY name, world").all(),
+        log_records: db.query("SELECT * FROM log_records ORDER BY id").all(),
+        legacy_imports: db.query("SELECT * FROM legacy_imports ORDER BY id").all(),
+        quarantine: db.query("SELECT * FROM quarantine ORDER BY id").all(),
+        aliases: db.query("SELECT * FROM aliases ORDER BY world, alias").all(),
+      };
+    } finally {
+      db.close();
+    }
+  }
+
   // The guard this test used before review: six dirs, no targets. Kept only
   // to show the positive control below gets past it.
   function sixDirGuard(): Record<string, Record<string, string>> {
@@ -449,6 +478,8 @@ describe.skipIf(!built)("native console bridge against the acceptance fixture", 
     const expectedBody = fx.git(fx.target, "show", `${fx.branch}:skills/${NATIVE_FIXTURE_PATTERN}/SKILL.md`);
     expect(expectedBody).toBe(fx.skillBody);
     const before = ownedState();
+    const rowsBefore = loopStateRows();
+    expect(rowsBefore["docs"]!.length).toBeGreaterThan(0);
     expect(Object.keys(before.files)).toContain("target/.git/HEAD");
     expect(Object.keys(before.files)).toContain("workspace-two");
     expect(Object.keys(before.files)).toContain("gitconfig");
@@ -459,8 +490,10 @@ describe.skipIf(!built)("native console bridge against the acceptance fixture", 
 
     // Compared right after the reads, before any control below writes.
     const after = ownedState();
+    const rowsAfter = loopStateRows();
     expect(after.git).toEqual(before.git);
-    expect(after.files).toEqual(before.files);
+    expect(withoutDb(after.files)).toEqual(withoutDb(before.files));
+    expect(rowsAfter).toEqual(rowsBefore);
     expect(existsSync(join(fx.root, FIXTURE_CLAUDE_MARKER))).toBe(false);
 
     // review.diff serves trimmed `git diff base...branch`: the pages rebuild exactly that.

@@ -369,7 +369,7 @@ describe("importAll", () => {
     fsx.appendJsonl(STREAMS.human.legacyPath(), { n: 2 });
     const result = importAll();
     expect(result.failures).toEqual([]);
-    expect(result.outcomes.map((o) => [o.stream, o.imported, o.quarantined, o.blank])).toEqual([
+    expect(result.outcomes.map((o) => [o.store, o.imported, o.quarantined, o.blank])).toEqual([
       ["critic", 1, 0, 0],
       ["human", 2, 0, 0],
     ]);
@@ -383,17 +383,17 @@ describe("importAll", () => {
     fsx.appendJsonl(critic(), { n: 1 });
     const result = importAll();
     expect(result.failures).toEqual([]);
-    expect(result.outcomes.map((o) => [o.stream, o.imported])).toEqual([["critic", 1]]);
+    expect(result.outcomes.map((o) => [o.store, o.imported])).toEqual([["critic", 1]]);
   });
 
   test("one failing stream is listed and every other stream is still imported", () => {
     for (const stream of Object.keys(STREAMS) as Stream[]) fsx.appendJsonl(STREAMS[stream].legacyPath(), { stream });
     const failingClaim = `${STREAMS.reflect_runs.legacyPath()}.importing`;
     setImportIoForTest(failingIo("readFile", (path) => path === failingClaim, "EIO"));
-    let result = { outcomes: [] as { stream: Stream }[], failures: [] as unknown[] };
+    let result = { outcomes: [] as { store: Stream }[], failures: [] as unknown[] };
     expect(caught(() => (result = importAll() as unknown as typeof result))).toBeNull();
-    expect(result.failures).toEqual([{ stream: "reflect_runs", message: "the reflect runs log cannot be imported (EIO)" }]);
-    expect(result.outcomes.map((o) => o.stream)).toEqual(["critic", "human", "proposal_events"]);
+    expect(result.failures).toEqual([{ store: "reflect_runs", world: null, message: "the reflect runs log cannot be imported (EIO)" }]);
+    expect(result.outcomes.map((o) => o.store)).toEqual(["critic", "human", "proposal_events"]);
     for (const stream of ["critic", "human", "proposal_events"] as Stream[]) expect(rowCount(stream)).toBe(1);
     expect(importRows("reflect_runs").map((r) => [r.state, r.failure])).toEqual([["failed", "EIO"]]);
   });
@@ -422,11 +422,11 @@ describe("importAll", () => {
         return readFileSync(path);
       },
     });
-    let result = { outcomes: [] as { stream: Stream; imported: number }[], failures: [] as unknown[] };
+    let result = { outcomes: [] as { store: Stream; imported: number }[], failures: [] as unknown[] };
     expect(caught(() => (result = importAll() as unknown as typeof result))).toBeNull();
     expect(claimReads).toBe(2);
-    expect(result.outcomes.map((o) => [o.stream, o.imported])).toEqual([["critic", 1]]);
-    expect(result.failures).toEqual([{ stream: "critic", message: "the critic feedback log cannot be imported (EIO)" }]);
+    expect(result.outcomes.map((o) => [o.store, o.imported])).toEqual([["critic", 1]]);
+    expect(result.failures).toEqual([{ store: "critic", world: null, message: "the critic feedback log cannot be imported (EIO)" }]);
     expect(rowCount("critic")).toBe(1);
   });
 });

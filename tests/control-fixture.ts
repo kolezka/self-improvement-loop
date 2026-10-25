@@ -5,6 +5,7 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { closeState, saveDoc } from "@sil/statedb";
 
 export interface ControlFixture {
   root: string;
@@ -49,6 +50,23 @@ function queueEntry(sessionId: string): Record<string, unknown> {
 function writeText(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, text, "utf8");
+}
+
+/** Writes the worker status row into the fixture's loop-state database. The
+ * SIL dirs point at the fixture only for this write, and the handle is closed
+ * so the child process opens the file itself. */
+function seedWorkerStatus(dirs: Record<string, string>, value: Record<string, unknown>): void {
+  const saved = Object.fromEntries(Object.keys(dirs).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, dirs);
+  try {
+    saveDoc("worker_status", null, value);
+  } finally {
+    closeState();
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 }
 
 export interface ControlFixtureOptions {
@@ -130,13 +148,10 @@ export function createControlFixture(options: ControlFixtureOptions = {}): Contr
       writeText(join(stateDir, "queue", bucket, `${id}.json`), JSON.stringify(queueEntry(id), null, 2));
     }
   }
-  writeText(
-    join(stateDir, "worker-status.json"),
-    JSON.stringify({
-      last_run: FIXTURE_LAST_RUN,
-      last_summary: { reflected: ["fixture-done-1"], failed: ["fixture-failed-1"], skipped: [], curriculum: {}, duration_s: 4.2 },
-    }),
-  );
+  seedWorkerStatus({ SIL_CONFIG_DIR: configDir, SIL_STATE_DIR: stateDir, SIL_DATA_DIR: dataDir }, {
+    last_run: FIXTURE_LAST_RUN,
+    last_summary: { reflected: ["fixture-done-1"], failed: ["fixture-failed-1"], skipped: [], curriculum: {}, duration_s: 4.2 },
+  });
   writeText(join(stateDir, "logs", "worker.log"), `first line\n${FIXTURE_LOG_LINE}\n`);
 
   const marker = join(root, FIXTURE_CLAUDE_MARKER);

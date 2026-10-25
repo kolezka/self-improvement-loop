@@ -23,6 +23,7 @@ import type { ChatFn } from "@sil/providers";
 import { reflectSession } from "@sil/critic";
 import { compactUsageEvents, rebuild as rebuildScorecards, recordReflectRun } from "@sil/feedback";
 import { entryPath, listQueue, listQueueStrict, loadEntry, moveEntry, reflectedSessions, writeEntry, type Bucket } from "@sil/store";
+import { readDoc, saveDoc } from "@sil/statedb";
 import { countToolUses } from "@sil/transcript";
 import { run as curriculumRun } from "@sil/curriculum";
 import { exportNew } from "./outline.ts";
@@ -377,7 +378,7 @@ export async function runOnce(cfg?: Config, opts: RunOnceOptions = {}): Promise<
       }
 
       summary.duration_s = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
-      fsx.writeJson(join(paths.stateDir(), "worker-status.json"), { last_run: fsx.nowIso(), last_summary: sampleSummary(summary) });
+      saveDoc("worker_status", null, { last_run: fsx.nowIso(), last_summary: sampleSummary(summary) });
       log({ action: "run", reflected: summary.reflected.length, failed: summary.failed.length, skipped: summary.skipped.length });
     });
   } catch (e) {
@@ -564,28 +565,18 @@ function statusLockPid(path: string): number | null {
   return Number.parseInt(t, 10);
 }
 
-/** The last run's record, or nulls when the worker never wrote one. */
-function statusLastRun(path: string): { last_run: string | null; last_summary: RunSummary | null } {
-  let text: string | null;
-  try {
-    text = fsx.readTextIfPresent(path);
-  } catch (err) {
-    throw new StateReadError(`worker-status.json cannot be read (${fsx.errnoCode(err)})`);
-  }
-  if (text === null) return { last_run: null, last_summary: null };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    throw new StateReadError("worker-status.json is not valid JSON");
-  }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new StateReadError("worker-status.json is not a status record");
+/** The last run's record, or nulls when the worker never wrote one. A
+ * legacy file that cannot be imported, or an import still in progress, throws. */
+function statusLastRun(): { last_run: string | null; last_summary: RunSummary | null } {
+  const raw = readDoc("worker_status", null, "strict");
+  if (raw === null) return { last_run: null, last_summary: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new StateReadError("the worker status is not a status record");
   const rec = raw as { last_run?: unknown; last_summary?: unknown };
   const lastRun = rec.last_run ?? null;
   const lastSummary = rec.last_summary ?? null;
-  if (lastRun !== null && typeof lastRun !== "string") throw new StateReadError("worker-status.json has a last_run that is not a time");
+  if (lastRun !== null && typeof lastRun !== "string") throw new StateReadError("the worker status has a last_run that is not a time");
   if (lastSummary !== null && (typeof lastSummary !== "object" || Array.isArray(lastSummary))) {
-    throw new StateReadError("worker-status.json has a last_summary that is not a record");
+    throw new StateReadError("the worker status has a last_summary that is not a record");
   }
   return { last_run: lastRun, last_summary: lastSummary as RunSummary | null };
 }
@@ -617,7 +608,7 @@ function statusLastCurriculum(dir: string): Record<string, string> {
 }
 
 export function status(): WorkerStatus {
-  const { last_run, last_summary } = statusLastRun(join(paths.stateDir(), "worker-status.json"));
+  const { last_run, last_summary } = statusLastRun();
   const lastCurriculum = statusLastCurriculum(paths.stateDir());
   // Both lock fields come from this one read, never a second, tolerant one.
   const pid = statusLockPid(paths.workerLockFile());

@@ -16,6 +16,7 @@ import {
   pruneQueueBucket,
   reapStaleSessionDirs,
   runOnce,
+  status as workerStatus,
   STATUS_SUMMARY_IDS,
 } from "../src/index.ts";
 import { setSilDirs, restoreEnv, writeSampleTranscript } from "../../transcript/test/fixture.ts";
@@ -267,7 +268,7 @@ describe("runOnce status file", () => {
     const summary = await runOnce(cfg({ minToolUses: 99 }), { reflect: true, curriculum: false, chat: goodChat });
     expect(summary.skipped).toHaveLength(total);
 
-    const raw = JSON.parse(readFileSync(join(paths.stateDir(), "worker-status.json"), "utf8")) as {
+    const raw = workerStatus() as unknown as {
       last_summary: { skipped: string[]; counts: { skipped: number } };
     };
     expect(raw.last_summary.skipped).toHaveLength(STATUS_SUMMARY_IDS);
@@ -277,8 +278,8 @@ describe("runOnce status file", () => {
 
 describe("runOnce run marker", () => {
   // worker_runs (history.series) reads this line to chart worker activity over
-  // time; worker-status.json only ever holds the latest pass.
-  test("logs exactly one action=run line per pass, counts matching worker-status.json", async () => {
+  // time; the worker status only ever holds the latest pass.
+  test("logs exactly one action=run line per pass, counts matching the worker status", async () => {
     prepareEnv();
     writePending("sess-good", { ended: true });
     writePending("sess-no-transcript", { ended: true, transcriptOk: false });
@@ -292,7 +293,7 @@ describe("runOnce run marker", () => {
     const runLines = lines.filter((l) => l["action"] === "run");
     expect(runLines).toHaveLength(1);
 
-    const status = JSON.parse(readFileSync(join(paths.stateDir(), "worker-status.json"), "utf8")) as {
+    const status = workerStatus() as unknown as {
       last_summary: { counts: { reflected: number; failed: number; skipped: number } };
     };
     expect(runLines[0]).toMatchObject({

@@ -48,6 +48,19 @@ CREATE INDEX legacy_imports_inode ON legacy_imports (store, dev, ino);
 -- meta keys: created_at, fs_class, fs_dev, fs_probed_at
 `;
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, up: (db) => db.run(V1) }];
+// Phase 2: documents, aliases, and the world of a quarantined per-world line.
+const V2 = `
+CREATE TABLE docs (name TEXT NOT NULL, world TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL CHECK (json_valid(body)), updated_at TEXT NOT NULL,
+  PRIMARY KEY (name, world));
+CREATE TABLE aliases (world TEXT NOT NULL, alias TEXT NOT NULL, canonical TEXT NOT NULL,
+  PRIMARY KEY (world, alias));
+ALTER TABLE quarantine ADD COLUMN world TEXT;
+`;
 
-export const SCHEMA_VERSION = 1;
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, up: (db) => db.run(V1) },
+  { version: 2, up: (db) => db.run(V2) },
+];
+
+export const SCHEMA_VERSION = 2;

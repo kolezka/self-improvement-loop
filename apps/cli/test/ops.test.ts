@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { Database } from "bun:sqlite";
 import { CONTROL_MAX_REQUEST_BYTES, decodeControlResponse } from "@sil/core/control-protocol";
 import {
   createControlFixture,
@@ -67,6 +68,32 @@ function inventory(root: string): Map<string, string> {
   };
   walk(root);
   return out;
+}
+
+const LOOP_STATE_FILES = ["state/loop-state.sqlite", "state/loop-state.sqlite-wal", "state/loop-state.sqlite-shm"];
+
+/** The inventory without the loop-state database files. */
+function inventoryWithoutDb(root: string): Map<string, string> {
+  const out = inventory(root);
+  for (const name of LOOP_STATE_FILES) out.delete(name);
+  return out;
+}
+
+/** Every loop-state row a read must leave alone, read from the fixture's
+ * database. meta stays out: the opener refreshes fs_probed_at. */
+function loopStateRows(): Record<string, unknown[]> {
+  const db = new Database(join(fx.env["SIL_STATE_DIR"]!, "loop-state.sqlite"), { readonly: true });
+  try {
+    return {
+      docs: db.query("SELECT * FROM docs ORDER BY name, world").all(),
+      log_records: db.query("SELECT * FROM log_records ORDER BY id").all(),
+      legacy_imports: db.query("SELECT * FROM legacy_imports ORDER BY id").all(),
+      quarantine: db.query("SELECT * FROM quarantine ORDER BY id").all(),
+      aliases: db.query("SELECT * FROM aliases ORDER BY world, alias").all(),
+    };
+  } finally {
+    db.close();
+  }
 }
 
 function addHttpEndpoint(): void {
@@ -132,7 +159,10 @@ describe("sil ops", () => {
   test("decodes the seeded worker status and a log line, with no writes and no model calls", async () => {
     addHttpEndpoint();
     const hitsBefore = httpHits;
-    const before = inventory(fx.root);
+    // The opener refreshes meta.fs_probed_at on every first open, so the DB bytes are not a "no writes" signal; the row snapshot is.
+    const before = inventoryWithoutDb(fx.root);
+    const rowsBefore = loopStateRows();
+    expect(rowsBefore["docs"]!.map((d) => (d as { name: string }).name)).toContain("worker_status");
     const { code, stdout, stderr } = await runOps(
       request([
         { id: "status", op: "worker.status" },
@@ -160,7 +190,8 @@ describe("sil ops", () => {
     expect(worlds.ok && (worlds.value as { name: string }[]).map((w) => w.name)).toEqual(["fixture"]);
     expect(resp.results["queue"]!.ok).toBe(true);
 
-    expect(inventory(fx.root)).toEqual(before);
+    expect(inventoryWithoutDb(fx.root)).toEqual(before);
+    expect(loopStateRows()).toEqual(rowsBefore);
     expect(httpHits).toBe(hitsBefore);
     expect(existsSync(join(fx.root, FIXTURE_CLAUDE_MARKER))).toBe(false);
   });

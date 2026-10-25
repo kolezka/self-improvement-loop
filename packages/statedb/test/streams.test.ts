@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { paths, StateReadError, StateWriteError } from "@sil/core";
-import { appendRecord, closeState, openState, readRecords } from "../src/index.ts";
+import { appendRecord, closeState, exportJsonl, openState, readRecords, replaceStream } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -107,5 +107,78 @@ describe("appendRecord and readRecords", () => {
     const error = caught(() => appendRecord("reflect_runs", { a: 1 }));
     expect(error).toBeInstanceOf(StateWriteError);
     expect((error as Error).message.startsWith("the reflect runs log ")).toBe(true);
+  });
+});
+
+describe("exportJsonl and replaceStream", () => {
+  const seedQuarantine = (store: string): void => {
+    openState()
+      .query("INSERT INTO quarantine (store, source, line_no, reason, raw, quarantined_at) VALUES (?, 'seed', 1, 'not JSON', 'oops', 'now')")
+      .run(store);
+  };
+
+  test("exportJsonl is null for an empty stream and the bodies in id order otherwise", () => {
+    expect(exportJsonl("human")).toBeNull();
+    appendRecord("human", { ts: "2026-10-25T10:00:00Z", n: 1 });
+    appendRecord("human", { ts: "2026-10-25T09:00:00Z", n: 2 });
+    expect(exportJsonl("human")).toBe('{"ts":"2026-10-25T10:00:00Z","n":1}\n{"ts":"2026-10-25T09:00:00Z","n":2}\n');
+  });
+
+  test("exportJsonl refuses a stream with quarantined lines, even with no rows", () => {
+    seedQuarantine("critic");
+    const one = caught(() => exportJsonl("critic"));
+    expect(one).toBeInstanceOf(StateReadError);
+    expect((one as Error).message).toBe("the critic feedback log has 1 quarantined line; see sil state quarantine");
+    seedQuarantine("critic");
+    expect((caught(() => exportJsonl("critic")) as Error).message).toBe(
+      "the critic feedback log has 2 quarantined lines; see sil state quarantine",
+    );
+    expect(exportJsonl("human")).toBeNull();
+  });
+
+  test("replaceStream fills an empty stream with ts and NFC world columns, quarantining bad lines", () => {
+    const jsonl = '{"ts":"2026-10-25T10:00:00Z","world":"Cafe\u0301"}\n\nnot json\n[1]\n{"n":2}\n';
+    expect(replaceStream("human", jsonl, "/b/state/feedback/human.jsonl", false)).toEqual({ written: true, imported: 2, quarantined: 2 });
+    const rows = openState().query("SELECT ts, world, body, import_id FROM log_records WHERE stream = 'human' ORDER BY id").all();
+    expect(rows).toEqual([
+      { ts: "2026-10-25T10:00:00Z", world: "Caf\u00e9", body: '{"ts":"2026-10-25T10:00:00Z","world":"Cafe\u0301"}', import_id: null },
+      { ts: null, world: null, body: '{"n":2}', import_id: null },
+    ]);
+    const bad = openState().query("SELECT store, source, import_id, line_no, reason, raw FROM quarantine ORDER BY id").all();
+    expect(bad).toEqual([
+      { store: "human", source: "/b/state/feedback/human.jsonl", import_id: null, line_no: 3, reason: "not JSON", raw: "not json" },
+      { store: "human", source: "/b/state/feedback/human.jsonl", import_id: null, line_no: 4, reason: "not a JSON object", raw: "[1]" },
+    ]);
+  });
+
+  test("replaceStream leaves a stream with rows alone without force and replaces rows and quarantine with it", () => {
+    appendRecord("critic", { host: true });
+    seedQuarantine("critic");
+    appendRecord("human", { other: "stream" });
+    expect(replaceStream("critic", '{"bundle":1}\n', "src", false)).toEqual({ written: false, imported: 0, quarantined: 0 });
+    expect(readRecords("critic", "counted")).toEqual({ records: [{ host: true }], quarantined: 1 });
+
+    expect(replaceStream("critic", '{"bundle":1}\n{"bundle":2}\n', "src", true)).toEqual({ written: true, imported: 2, quarantined: 0 });
+    expect(readRecords("critic", "strict")).toEqual({ records: [{ bundle: 1 }, { bundle: 2 }], quarantined: 0 });
+    expect(readRecords("human", "strict").records).toEqual([{ other: "stream" }]);
+  });
+
+  test("a legacy file still at the old path counts as host rows", () => {
+    // Open first, so the first-open import has already run and only the pending check can see the file.
+    openState();
+    mkdirSync(dirname(paths.humanFeedbackFile()), { recursive: true });
+    writeFileSync(paths.humanFeedbackFile(), '{"legacy":1}\n');
+    expect(replaceStream("human", '{"bundle":1}\n', "src", false).written).toBe(false);
+    expect(readRecords("human", "strict").records).toEqual([{ legacy: 1 }]);
+  });
+
+  test("replaceStream on a broken database throws StateWriteError starting with the label", () => {
+    mkdirSync(paths.loopStateDb(), { recursive: true });
+    const error = caught(() => replaceStream("human", '{"a":1}\n', "src", true));
+    expect(error).toBeInstanceOf(StateWriteError);
+    expect((error as Error).message.startsWith("the human feedback log cannot be written (")).toBe(true);
+    const read = caught(() => exportJsonl("human"));
+    expect(read).toBeInstanceOf(StateReadError);
+    expect((read as Error).message.startsWith("the human feedback log cannot be read (")).toBe(true);
   });
 });

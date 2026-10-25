@@ -70,6 +70,10 @@ class Refused extends Error {}
 const CHANGED = "claimed file changed after import";
 const RAW_CAP_BYTES = 64 * 1024;
 
+/** A quarantined line's raw text, cut to the first 64 KiB. */
+export const capRaw = (piece: string): string =>
+  Buffer.byteLength(piece) > RAW_CAP_BYTES ? Buffer.from(piece).subarray(0, RAW_CAP_BYTES).toString("utf8") : piece;
+
 const sqliteCode = (error: unknown): string => {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" ? code : "";
@@ -152,8 +156,7 @@ function importLines(db: Database, stream: Stream, importId: number, source: str
   );
   const counts: Counts = { imported: 0, quarantined: 0, blank: 0 };
   const reject = (piece: string, lineNo: number, reason: string): void => {
-    const raw = Buffer.byteLength(piece) > RAW_CAP_BYTES ? Buffer.from(piece).subarray(0, RAW_CAP_BYTES).toString("utf8") : piece;
-    quarantine.run(stream, source, importId, lineNo, reason, raw, now);
+    quarantine.run(stream, source, importId, lineNo, reason, capRaw(piece), now);
     counts.quarantined += 1;
   };
   for (let i = 0; i < pieces.length; i++) {

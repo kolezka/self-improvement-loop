@@ -9,4 +9,14 @@ export {
 } from "./import.ts";
 export { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 export { closeState, openState } from "./open.ts";
-export { appendRecord, type ReadMode, type ReadResult, readRecords, type Stream, STREAMS } from "./streams.ts";
+export {
+  appendRecord,
+  exportJsonl,
+  type ReadMode,
+  type ReadResult,
+  readRecords,
+  replaceStream,
+  type ReplaceResult,
+  type Stream,
+  STREAMS,
+} from "./streams.ts";

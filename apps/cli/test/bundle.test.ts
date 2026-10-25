@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Config, loadConfig } from "@sil/core";
+import { Config, type HumanFeedback, loadConfig } from "@sil/core";
+import { listHuman } from "@sil/feedback";
+import { appendRecord, closeState, openState, readRecords } from "@sil/statedb";
 import { exportBundle, humanBytes, importBundle, isArchivePath, portableConfig } from "../src/bundle.ts";
 import { run } from "../src/main.ts";
 
@@ -22,11 +24,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  try {
+    closeState();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(tmp, { recursive: true, force: true });
   }
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 describe("pure helpers", () => {
@@ -198,6 +204,86 @@ describe("sil import bundle", () => {
 
     writeFileSync(join(plain, "manifest.json"), JSON.stringify({ version: 99, created_at: "now", worlds: [] }));
     expect(() => importBundle({ src: plain })).toThrow(/version 99 is not supported/);
+  });
+});
+
+describe("feedback logs in loop state", () => {
+  const human: HumanFeedback[] = [
+    { ts: "2026-10-25T10:00:00Z", world: "default", ref: "skill:a", vote: "good", note: "", session_id: null },
+    { ts: "2026-10-25T09:00:00Z", world: "default", ref: "skill:b", vote: "bad", note: "older ts, appended later", session_id: "s1" },
+  ];
+  const critic = [{ ts: "2026-10-25T08:00:00Z", world: "default", ref: "rule:c", verdict: "misfire" }];
+  const lines = (records: object[]): string => records.map((r) => `${JSON.stringify(r)}\n`).join("");
+
+  async function exportFromHostA(): Promise<string> {
+    expect(await run(["init"])).toBe(0);
+    for (const r of human) appendRecord("human", r);
+    for (const r of critic) appendRecord("critic", r);
+    const dest = join(tmp, "bundle");
+    exportBundle({ dest });
+    return dest;
+  }
+
+  test("export with history writes each log's bodies in append order", async () => {
+    const dest = await exportFromHostA();
+    expect(readFileSync(join(dest, "state", "feedback", "human.jsonl"), "utf8")).toBe(lines(human));
+    expect(readFileSync(join(dest, "state", "feedback", "critic.jsonl"), "utf8")).toBe(lines(critic));
+  });
+
+  test("import onto an empty host makes the bundle's records readable", async () => {
+    const dest = await exportFromHostA();
+    useRoots("hostB");
+    importBundle({ src: dest });
+    expect(listHuman()).toEqual(human);
+    expect(readRecords("critic", "strict").records).toEqual(critic);
+  });
+
+  test("a host that has rows keeps them and reports a skip, unless --force", async () => {
+    const dest = await exportFromHostA();
+    useRoots("hostC");
+    expect(await run(["init"])).toBe(0);
+    const baseline = importBundle({ src: dest });
+
+    useRoots("hostB");
+    expect(await run(["init"])).toBe(0);
+    const own: HumanFeedback = { ts: "2026-10-24T00:00:00Z", world: "default", ref: "skill:host", vote: "good", note: "", session_id: null };
+    appendRecord("human", own);
+    const kept = importBundle({ src: dest });
+    expect(listHuman()).toEqual([own]);
+    expect(readRecords("critic", "strict").records).toEqual(critic);
+    expect(kept.skipped - baseline.skipped).toBe(1);
+    expect(baseline.files - kept.files).toBe(1);
+
+    importBundle({ src: dest, force: true });
+    expect(listHuman()).toEqual(human);
+    expect(readRecords("critic", "strict").records).toEqual(critic);
+  });
+
+  test("a bad line in a bundle file is quarantined and the good lines import", async () => {
+    const dest = await exportFromHostA();
+    const file = join(dest, "state", "feedback", "human.jsonl");
+    writeFileSync(file, `${lines(human)}not json\n`);
+
+    useRoots("hostB");
+    importBundle({ src: dest });
+    expect(readRecords("human", "counted")).toEqual({ records: human, quarantined: 1 });
+    const rows = openState().query("SELECT store, source, line_no, reason, raw FROM quarantine").all();
+    expect(rows).toEqual([{ store: "human", source: file, line_no: 3, reason: "not JSON", raw: "not json" }]);
+  });
+
+  test("export refuses a log with quarantined lines and writes no bundle", async () => {
+    expect(await run(["init"])).toBe(0);
+    const { paths } = await import("@sil/core");
+    appendRecord("human", human[0]!);
+    // A legacy critic file with a bad line: the export's import quarantines it.
+    writeFileSync(paths.criticFeedbackFile(), `${lines(critic)}garbage\n`);
+
+    const dir = join(tmp, "bundle");
+    expect(() => exportBundle({ dest: dir })).toThrow("the critic feedback log has 1 quarantined line; see sil state quarantine");
+    expect(existsSync(dir)).toBe(false);
+    const archive = join(tmp, "sil.tar.gz");
+    expect(() => exportBundle({ dest: archive })).toThrow("the critic feedback log has 1 quarantined line; see sil state quarantine");
+    expect(existsSync(archive)).toBe(false);
   });
 });
 

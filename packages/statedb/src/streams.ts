@@ -1,8 +1,9 @@
 // Append-only record streams in log_records, with the strict, counted and
 // tolerant readers of design D8.
 
+import type { Database } from "bun:sqlite";
 import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
-import { ensureImported, ImportError, reasonOf } from "./import.ts";
+import { capRaw, ensureImported, ImportError, reasonOf } from "./import.ts";
 import { openState } from "./open.ts";
 
 export type Stream = "reflect_runs" | "critic" | "human" | "proposal_events";
@@ -21,17 +22,26 @@ export interface ReadResult {
   quarantined: number;
 }
 
+/** The one insert for rows a process writes itself (not a legacy import). */
+function insertRecord(db: Database, stream: Stream, record: Record<string, unknown>, body: string, recordedAt: string): void {
+  const ts = typeof record["ts"] === "string" ? record["ts"] : null;
+  const world = typeof record["world"] === "string" ? record["world"].normalize("NFC") : null;
+  db.query("INSERT INTO log_records (stream, ts, world, body, recorded_at, import_id) VALUES (?, ?, ?, ?, ?, NULL)").run(
+    stream,
+    ts,
+    world,
+    body,
+    recordedAt,
+  );
+}
+
 /** Append one record. Any failure throws StateWriteError starting with the stream's label. */
 export function appendRecord(stream: Stream, record: Record<string, unknown>): void {
   const { label } = STREAMS[stream];
   try {
     if (record === null || typeof record !== "object" || Array.isArray(record)) throw new StateWriteError(`${label} cannot be written (not a JSON object)`);
     ensureImported(stream);
-    const ts = typeof record["ts"] === "string" ? record["ts"] : null;
-    const world = typeof record["world"] === "string" ? record["world"].normalize("NFC") : null;
-    openState()
-      .query("INSERT INTO log_records (stream, ts, world, body, recorded_at, import_id) VALUES (?, ?, ?, ?, ?, NULL)")
-      .run(stream, ts, world, JSON.stringify(record), new Date().toISOString());
+    insertRecord(openState(), stream, record, JSON.stringify(record), new Date().toISOString());
   } catch (error) {
     if (error instanceof StateWriteError && error.message.startsWith(label)) throw error;
     throw new StateWriteError(`${label} cannot be written (${reasonOf(error)})`);
@@ -54,6 +64,13 @@ function logOnce(stream: Stream, reason: string): void {
   }
 }
 
+/** What a strict reader throws when the import before its read fails. */
+function strictImportError(stream: Stream, error: unknown): StateReadError {
+  const { label } = STREAMS[stream];
+  if (error instanceof ImportError && error.busy) return new StateReadError(`${label} is being imported`);
+  return new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
+}
+
 const EMPTY = (): ReadResult => ({ records: [], quarantined: 0 });
 
 /** Read a stream in append order. The pending check and import run before the
@@ -63,16 +80,10 @@ export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
   try {
     ensureImported(stream);
   } catch (error) {
-    const opened = error instanceof ImportError;
-    if (mode === "tolerant") {
-      logOnce(stream, reasonOf(error));
-      // An import failure alone still leaves the database readable.
-      if (!opened) return EMPTY();
-    } else if (opened && error.busy) {
-      throw new StateReadError(`${label} is being imported`);
-    } else {
-      throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
-    }
+    if (mode !== "tolerant") throw strictImportError(stream, error);
+    logOnce(stream, reasonOf(error));
+    // An import failure alone still leaves the database readable.
+    if (!(error instanceof ImportError)) return EMPTY();
   }
 
   let result: ReadResult;
@@ -98,4 +109,97 @@ export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
   const bad = result.quarantined;
   if (mode === "strict" && bad > 0) throw new StateReadError(`${label} has ${bad} ${bad === 1 ? "line" : "lines"} that could not be imported`);
   return result;
+}
+
+const plural = (n: number, word: string): string => `${n} ${n === 1 ? word : `${word}s`}`;
+
+/** The stream as JSONL for a bundle: bodies in id order, one per line, or null
+ * when it has no rows. Refuses a stream with quarantined lines (design D13), so
+ * an export is never silently short. */
+export function exportJsonl(stream: Stream): string | null {
+  const { label } = STREAMS[stream];
+  try {
+    ensureImported(stream);
+  } catch (error) {
+    throw strictImportError(stream, error);
+  }
+  let bodies: string[];
+  let bad: number;
+  try {
+    const db = openState();
+    db.run("BEGIN");
+    try {
+      bodies = (db.query("SELECT body FROM log_records WHERE stream = ? ORDER BY id").all(stream) as { body: string }[]).map((r) => r.body);
+      bad = (db.query("SELECT count(*) AS n FROM quarantine WHERE store = ?").get(stream) as { n: number }).n;
+      db.run("COMMIT");
+    } finally {
+      if (db.inTransaction) db.run("ROLLBACK");
+    }
+  } catch (error) {
+    throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
+  }
+  if (bad > 0) throw new StateReadError(`${label} has ${plural(bad, "quarantined line")}; see sil state quarantine`);
+  return bodies.length === 0 ? null : `${bodies.join("\n")}\n`;
+}
+
+export interface ReplaceResult {
+  written: boolean;
+  imported: number;
+  quarantined: number;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Load a bundle's JSONL as the whole stream, never appended to host rows. A
+ * stream that already has rows is left alone unless `force`, which replaces
+ * its rows and quarantine in one transaction. Bad lines are quarantined under
+ * `source`. Any failure throws StateWriteError starting with the stream's label. */
+export function replaceStream(stream: Stream, jsonl: string, source: string, force: boolean): ReplaceResult {
+  const { label } = STREAMS[stream];
+  try {
+    // A legacy file still waiting at the old path is host data too.
+    ensureImported(stream);
+    const db = openState();
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const { n } = db.query("SELECT count(*) AS n FROM log_records WHERE stream = ?").get(stream) as { n: number };
+      if (n > 0 && !force) {
+        db.run("ROLLBACK");
+        return { written: false, imported: 0, quarantined: 0 };
+      }
+      db.query("DELETE FROM log_records WHERE stream = ?").run(stream);
+      db.query("DELETE FROM quarantine WHERE store = ?").run(stream);
+      const now = new Date().toISOString();
+      const quarantine = db.query(
+        "INSERT INTO quarantine (store, source, import_id, line_no, reason, raw, quarantined_at) VALUES (?, ?, NULL, ?, ?, ?, ?)",
+      );
+      const result: ReplaceResult = { written: true, imported: 0, quarantined: 0 };
+      const pieces = jsonl.split("\n");
+      for (let i = 0; i < pieces.length; i++) {
+        const piece = pieces[i]!;
+        const text = piece.trim();
+        if (!text) continue;
+        let value: unknown;
+        try {
+          value = JSON.parse(text);
+        } catch {
+          value = undefined;
+        }
+        if (isRecord(value)) {
+          insertRecord(db, stream, value, text, now);
+          result.imported += 1;
+        } else {
+          quarantine.run(stream, source, i + 1, value === undefined ? "not JSON" : "not a JSON object", capRaw(piece), now);
+          result.quarantined += 1;
+        }
+      }
+      db.run("COMMIT");
+      return result;
+    } finally {
+      if (db.inTransaction) db.run("ROLLBACK");
+    }
+  } catch (error) {
+    throw new StateWriteError(`${label} cannot be written (${reasonOf(error)})`);
+  }
 }

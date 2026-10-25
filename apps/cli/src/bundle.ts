@@ -9,12 +9,13 @@
 // other file in the config dir is read, so an `env` file an operator keeps
 // next to it never travels. The new host sets its own secrets.
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Config, ValidationError, fsx, loadConfig, paths, saveConfig, targetRoot, writeHookSnapshot } from "@sil/core";
 import { git } from "@sil/curriculum";
+import { exportJsonl, replaceStream, type Stream } from "@sil/statedb";
 import { mergeWorlds } from "./importer.ts";
 
 export const BUNDLE_VERSION = 1;
@@ -179,6 +180,29 @@ function runTar(args: string[]): void {
   }
 }
 
+// --- feedback logs --------------------------------------------------------
+
+/** The loop-state streams a bundle carries, at their bundle paths. */
+const FEEDBACK_LOGS: readonly { stream: Stream; rel: string }[] = [
+  { stream: "human", rel: join("state", "feedback", "human.jsonl") },
+  { stream: "critic", rel: join("state", "feedback", "critic.jsonl") },
+];
+
+/** Load one bundle log into loop state. Same counts as copyOne: a stream the
+ * host already has rows in is skipped unless `force`. */
+function restoreLog(file: string, source: string, stream: Stream, force: boolean): CopyStats {
+  const out = blank();
+  if (!existsSync(file)) return out;
+  const text = readFileSync(file, "utf8");
+  const result = replaceStream(stream, text, source, force);
+  if (!result.written) out.skipped = 1;
+  else {
+    out.files = 1;
+    out.bytes = Buffer.byteLength(text);
+  }
+  return out;
+}
+
 // --- export -------------------------------------------------------------
 
 export interface ExportOptions {
@@ -208,7 +232,8 @@ function selectWorlds(cfg: Config, names: string[] | undefined): Config {
   return { ...cfg, worlds: cfg.worlds.filter((w) => names.includes(w.name)) };
 }
 
-function stageExport(work: string, cfg: Config, history: boolean): { manifest: BundleManifest; warnings: string[] } {
+function stageExport(work: string, cfg: Config, logs: Map<string, string> | null): { manifest: BundleManifest; warnings: string[] } {
+  const history = logs !== null;
   const warnings: string[] = [];
   mkdirSync(join(work, "config"), { recursive: true });
   saveConfig(portableConfig(cfg), join(work, "config", "config.yaml"));
@@ -244,8 +269,10 @@ function stageExport(work: string, cfg: Config, history: boolean): { manifest: B
     // scorecard reads it.
     copyOne(paths.usageEventsFile(), join(work, "state", "usage", "events.jsonl"));
     copyOne(paths.nudgeFiresFile(), join(work, "state", "usage", "nudge-fires.jsonl"));
-    copyOne(paths.humanFeedbackFile(), join(work, "state", "feedback", "human.jsonl"));
-    copyOne(paths.criticFeedbackFile(), join(work, "state", "feedback", "critic.jsonl"));
+    for (const [rel, text] of logs) {
+      mkdirSync(dirname(join(work, rel)), { recursive: true });
+      writeFileSync(join(work, rel), text);
+    }
   }
 
   const manifest = BundleManifest.parse({
@@ -270,11 +297,22 @@ export function exportBundle(opts: ExportOptions): ExportResult {
   const cfg = selectWorlds(loadConfig(), opts.worlds);
   if (cfg.worlds.length === 0) throw new ValidationError("nothing to export: config.yaml has no worlds");
 
+  // Read the logs before touching dest: a log that refuses to export (quarantined
+  // lines) must leave no half-written bundle behind.
+  let logs: Map<string, string> | null = null;
+  if (history) {
+    logs = new Map();
+    for (const log of FEEDBACK_LOGS) {
+      const text = exportJsonl(log.stream);
+      if (text !== null) logs.set(log.rel, text);
+    }
+  }
+
   const work = archive ? mkdtempSync(join(tmpdir(), "sil-export-")) : dest;
   try {
     if (!archive && existsSync(dest) && opts.force) rmSync(dest, { recursive: true, force: true });
     mkdirSync(work, { recursive: true });
-    const { manifest, warnings } = stageExport(work, cfg, history);
+    const { manifest, warnings } = stageExport(work, cfg, logs);
     const size = treeSize(work);
     if (archive) {
       mkdirSync(dirname(dest), { recursive: true });
@@ -330,7 +368,8 @@ export function ensureRuntimeDirs(cfg: Config): void {
   for (const sub of ["logs", "sessions", "usage", "feedback"]) fsx.ensureDir(join(paths.stateDir(), sub));
 }
 
-function restore(root: string, manifest: BundleManifest, opts: ImportOptions): ImportResult {
+/** `source` is the bundle as the operator named it, for quarantine rows. */
+function restore(root: string, source: string, manifest: BundleManifest, opts: ImportOptions): ImportResult {
   const bundleCfg = loadConfig(join(root, "config", "config.yaml"));
   const wanted = opts.worlds && opts.worlds.length > 0 ? opts.worlds : manifest.worlds.map((w) => w.name);
   const known = new Set(bundleCfg.worlds.map((w) => w.name));
@@ -381,10 +420,12 @@ function restore(root: string, manifest: BundleManifest, opts: ImportOptions): I
   const pairs: [string, string][] = [
     [join(root, "state", "usage", "events.jsonl"), paths.usageEventsFile()],
     [join(root, "state", "usage", "nudge-fires.jsonl"), paths.nudgeFiresFile()],
-    [join(root, "state", "feedback", "human.jsonl"), paths.humanFeedbackFile()],
-    [join(root, "state", "feedback", "critic.jsonl"), paths.criticFeedbackFile()],
   ];
   for (const [from, to] of pairs) add(stats, copyOne(from, to, opts.force === true));
+  for (const log of FEEDBACK_LOGS) {
+    const where = root === source ? join(source, log.rel) : `${source}:${log.rel}`;
+    add(stats, restoreLog(join(root, log.rel), where, log.stream, opts.force === true));
+  }
 
   saveConfig(cfg);
   ensureRuntimeDirs(cfg);
@@ -396,12 +437,12 @@ export function importBundle(opts: ImportOptions): ImportResult {
   const src = paths.expandHome(opts.src);
   if (!existsSync(src)) throw new ValidationError(`no such bundle: ${src}`);
   const archive = isArchivePath(src);
-  if (!archive) return { ...restore(src, readManifest(src), opts), path: src, archive };
+  if (!archive) return { ...restore(src, src, readManifest(src), opts), path: src, archive };
 
   const work = mkdtempSync(join(tmpdir(), "sil-import-"));
   try {
     runTar(["-xzf", src, "-C", work]);
-    return { ...restore(work, readManifest(work), opts), path: src, archive };
+    return { ...restore(work, src, readManifest(work), opts), path: src, archive };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

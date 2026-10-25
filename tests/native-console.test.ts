@@ -439,8 +439,10 @@ describe.skipIf(!built)("native console bridge against the acceptance fixture", 
   }
 
   // The opener refreshes meta.fs_probed_at on every first open, so the DB
-  // bytes are not a "no writes" signal. The rows below are.
-  const LOOP_STATE_FILES = ["state/loop-state.sqlite", "state/loop-state.sqlite-wal", "state/loop-state.sqlite-shm"];
+  // bytes are not a "no writes" signal. The rows below are. The state dir's
+  // own mtime goes too: on Linux SQLite recreates the -wal and -shm files on
+  // open, which bumps it; every file inside the dir is still compared.
+  const LOOP_STATE_FILES = ["state/loop-state.sqlite", "state/loop-state.sqlite-wal", "state/loop-state.sqlite-shm", "state"];
 
   function withoutDb(files: Record<string, string>): Record<string, string> {
     const out = { ...files };

@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { QueueEntry } from "@sil/core";
-import { paths, StateReadError } from "@sil/core";
+import { paths, StateReadError, ValidationError } from "@sil/core";
 import { closeState } from "@sil/statedb";
 import { appendProposalEvent, writeEntry } from "@sil/store";
 import type { HistorySeries } from "../src/handlers/history.ts";
@@ -92,8 +92,9 @@ describe("history.series", () => {
     } catch (caught) {
       error = caught;
     }
-    expect(error).toBeInstanceOf(StateReadError);
-    expect((error as Error).message.startsWith("the human feedback log cannot be read (")).toBe(true);
+    // Which reader hits the database first is an implementation detail; the rejection must be loud.
+    expect(error instanceof StateReadError || error instanceof ValidationError).toBe(true);
+    expect((error as Error).message).toMatch(/^(the queue cutoffs|the human feedback log) cannot be read \(/);
   });
 
   test("critic skipped is the stream's quarantine count across worlds; another world's record is excluded", async () => {

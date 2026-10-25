@@ -9,6 +9,7 @@
 // Failure messages must name no absolute path.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,6 +76,16 @@ function failed(r: ControlResult | undefined, codes: string[], mentions?: string
   if (mentions !== undefined) expect(r.error.message).toContain(mentions);
 }
 
+/** Runs one statement on the fixture's loop-state database. */
+function loopStateRun(sql: string): void {
+  const db = new Database(join(state(), "loop-state.sqlite"));
+  try {
+    db.run(sql);
+  } finally {
+    db.close();
+  }
+}
+
 const W = "fixture";
 const state = () => fx.env["SIL_STATE_DIR"]!;
 const data = () => fx.env["SIL_DATA_DIR"]!;
@@ -88,10 +99,12 @@ function editConfig(edit: (cfg: { worlds: Record<string, unknown>[] }) => void):
 }
 
 describe("worker.status", () => {
+  // The status lives in the loop-state database; a file written after the
+  // fixture is a spill that the next read imports and quarantines.
   test("a malformed worker-status.json fails the read, not 'never ran'", () => {
     expect(value<{ last_run: string | null }>(ops([{ id: "w", op: "worker.status" }])["w"]).last_run).toBe("2026-10-21T09:30:00.000Z");
     writeFileSync(join(state(), "worker-status.json"), "{ not json");
-    failed(ops([{ id: "w", op: "worker.status" }])["w"], ["StateReadError"], "worker-status.json");
+    failed(ops([{ id: "w", op: "worker.status" }])["w"], ["StateReadError"], "the worker status could not be imported");
   });
 
   test("an unreadable worker lock fails the read, not 'not held'", () => {
@@ -103,8 +116,8 @@ describe("worker.status", () => {
     failed(ops([{ id: "w", op: "worker.status" }])["w"], ["StateReadError"], "worker lock");
   });
 
-  test("no status file and no lock are absence: never ran, not held", () => {
-    rmSync(join(state(), "worker-status.json"));
+  test("no status row and no lock are absence: never ran, not held", () => {
+    loopStateRun("DELETE FROM docs WHERE name = 'worker_status'");
     const v = value<{ last_run: string | null; lock_held: boolean; lock_pid: number | null }>(ops([{ id: "w", op: "worker.status" }])["w"]);
     expect(v).toMatchObject({ last_run: null, lock_held: false, lock_pid: null });
   });
@@ -533,10 +546,18 @@ describe("S5: queue cutoff errors name no path and no content", () => {
   test("a valid cutoff hides done entries; a broken one fails with a safe ValidationError", () => {
     writeFileSync(cleared(), JSON.stringify({ done: "2026-10-21T09:10:00Z", failed: null }));
     expect(value<{ hidden: { done: number } }>(ops(read)["q"]).hidden.done).toBe(1);
-    for (const text of ["{ RAWSECRET-cutoff", JSON.stringify({ done: "RAWSECRET-cutoff", failed: 7 })]) {
+    // Each broken file is a spill the next read imports. Not JSON is
+    // quarantined; the wrong shape imports and fails the shape check. The
+    // quarantine row is dropped between variants so each one is seen alone.
+    const cases: [string, string][] = [
+      ["{ RAWSECRET-cutoff", "the queue cutoffs could not be imported; see sil state quarantine"],
+      [JSON.stringify({ done: "RAWSECRET-cutoff", failed: 7 }), "the queue cutoffs do not have the expected shape"],
+    ];
+    for (const [text, message] of cases) {
+      loopStateRun("DELETE FROM quarantine");
       writeFileSync(cleared(), text);
       const r = ops(read)["q"];
-      failed(r, ["ValidationError"], "cleared.json");
+      failed(r, ["ValidationError"], message);
       expect(r!.ok ? "" : r!.error.message).not.toContain("RAWSECRET");
     }
   });

@@ -1,8 +1,9 @@
 // Reversible queue hide: "Clear done" / "Clear failed" record a cutoff
-// timestamp. No queue file ever moves or is deleted for this.
+// timestamp in loop state. No queue file ever moves or is deleted for this.
 
 import { z } from "zod";
-import { fsx, paths, ValidationError } from "@sil/core";
+import { StateReadError, ValidationError } from "@sil/core";
+import { readDoc, saveDoc } from "@sil/statedb";
 
 const QueueClearedSchema = z.object({
   done: z.string().nullable(),
@@ -16,36 +17,30 @@ export interface QueueCleared {
 
 const DEFAULT_CLEARED: QueueCleared = { done: null, failed: null };
 
-/** A missing file means nothing has been hidden yet. Anything else wrong
- * with it (torn JSON, permission denied, the wrong shape) must not read as
- * that same default: it would silently bring back every hidden session. */
+/** No row means nothing has been hidden yet. Anything else wrong with the
+ * cutoffs (a legacy file that cannot be imported, the wrong shape) must not
+ * read as that same default: it would silently bring back every hidden session. */
 // The consoles show these messages: a short name and a reason, never the
 // absolute path, the parser's text or the file's content.
-const LABEL = "the queue cutoffs (queue/cleared.json)";
+const LABEL = "the queue cutoffs";
 
 export function loadQueueCleared(): QueueCleared {
-  const path = paths.queueClearedFile();
-  let text: string;
+  let doc: Record<string, unknown> | null;
   try {
-    text = fsx.readText(path);
+    doc = readDoc("queue_cleared", null, "strict");
   } catch (err) {
-    if (fsx.errnoCode(err) === "ENOENT") return DEFAULT_CLEARED;
-    throw new ValidationError(`${LABEL} cannot be read (${fsx.errnoCode(err)})`);
+    if (err instanceof StateReadError) throw new ValidationError(err.message);
+    throw err;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new ValidationError(`${LABEL} are not valid JSON`);
-  }
-  const result = QueueClearedSchema.safeParse(parsed);
+  if (doc === null) return DEFAULT_CLEARED;
+  const result = QueueClearedSchema.safeParse(doc);
   if (!result.success) throw new ValidationError(`${LABEL} do not have the expected shape`);
   return result.data;
 }
 
 export function setQueueCleared(bucket: "done" | "failed", iso: string | null): QueueCleared {
   const next = { ...loadQueueCleared(), [bucket]: iso };
-  fsx.writeJson(paths.queueClearedFile(), next);
+  saveDoc("queue_cleared", null, next);
   return next;
 }
 

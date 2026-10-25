@@ -48,3 +48,10 @@ export class ValidationError extends Error {
 export class StateReadError extends Error {
   override name = "StateReadError";
 }
+
+/** Loop state that cannot be written: the database cannot be opened, written
+ * or committed. Same message rule as StateReadError: a short label and the
+ * error code, never an absolute path or the content. */
+export class StateWriteError extends Error {
+  override name = "StateWriteError";
+}

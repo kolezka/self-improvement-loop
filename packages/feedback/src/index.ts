@@ -15,6 +15,7 @@ import {
   type UsageEvent,
   type World,
 } from "@sil/core";
+import { appendRecord, readRecords, type Stream } from "@sil/statedb";
 import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger } from "@sil/store";
 import { installedArtifacts } from "@sil/critic";
 import { patternRates, type SessionDayRow } from "./rates.ts";
@@ -35,7 +36,7 @@ export interface ScorecardOptions {
  * silently dropped. Not part of `Scorecard[]` itself, so every existing
  * reader keeps its return type; call `scorecardDiagnostics` for this. */
 export interface ScorecardDiagnostics {
-  /** critic.jsonl lines for this world with a bare (unprefixed) ref that did
+  /** Critic feedback records for this world with a bare (unprefixed) ref that did
    * not resolve to exactly one installed artifact: unknown or ambiguous.
    * Excluded from every scorecard row rather than guessed into one. */
   unresolved_critic_refs: number;
@@ -75,17 +76,17 @@ export function appendUsage(event: UsageEvent): void {
  * this exactly once, where a critic outcome is finalised, and never for a
  * session skipped before the critic ran: see worker/src/index.ts. */
 export function recordReflectRun(event: ReflectRunEvent): void {
-  fsx.appendJsonl(paths.reflectRunsFile(), event);
+  appendRecord("reflect_runs", event);
 }
 
+/** Returns where the record now lives: the loop state database. */
 export function recordHuman(fb: HumanFeedback): string {
-  const path = paths.humanFeedbackFile();
-  fsx.appendJsonl(path, fb);
-  return path;
+  appendRecord("human", fb);
+  return paths.loopStateDb();
 }
 
 export function listHuman(world?: string): HumanFeedback[] {
-  const all = fsx.readJsonl<HumanFeedback>(paths.humanFeedbackFile());
+  const all = readRecords("human", "tolerant").records as unknown as HumanFeedback[];
   return world === undefined ? all : all.filter((f) => f.world === world);
 }
 
@@ -106,13 +107,13 @@ export function complaints(world: World, cfg: Config, ref: string, since?: strin
   };
 
   const known = refsByName(installedArtifacts(world, cfg));
-  for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile())) {
+  for (const ev of readRecords("critic", "tolerant").records) {
     if (ev["verdict"] !== "misfired" || ev["world"] !== world.name) continue;
     const rawRef = ev["ref"];
     if (!rawRef || resolveBareRef(String(rawRef), known) !== ref) continue;
     push(ev["ts"], ev["reason"]);
   }
-  for (const ev of fsx.readJsonl<Record<string, unknown>>(paths.humanFeedbackFile())) {
+  for (const ev of readRecords("human", "tolerant").records) {
     if (ev["vote"] !== "bad" || ev["world"] !== world.name || ev["ref"] !== ref) continue;
     push(ev["ts"], ev["note"]);
   }
@@ -130,6 +131,8 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   // the worker's rebuild and the planner.
   const readLog = (path: string, label: string): Record<string, unknown>[] =>
     strict ? fsx.readJsonlStrict<Record<string, unknown>>(path, label) : fsx.readJsonl<Record<string, unknown>>(path);
+  // The critic, human and reflect-run logs live in loop state; the labels are STREAMS'.
+  const readStream = (stream: Stream): Record<string, unknown>[] => readRecords(stream, strict ? "strict" : "tolerant").records;
   const ledger = strict ? loadLedger(ledgerPath(world)) : loadLedgerSafe(world);
   // Frozen before usage, fires or human feedback add anything: a bare critic
   // ref may only resolve against this world's own installed artifacts, never
@@ -189,7 +192,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   // World filter first, name resolution after (design rule 6): a bare ref is
   // only ever matched against this world's own refs, never across worlds.
   let unresolvedCriticRefs = 0;
-  for (const ev of readLog(paths.criticFeedbackFile(), "the critic feedback log")) {
+  for (const ev of readStream("critic")) {
     if (ev["world"] !== world.name) continue;
     if (ev["ref_unresolved"]) {
       unresolvedCriticRefs += 1;
@@ -209,7 +212,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     else if (ev["verdict"] === "misfired") bump(misfiredByRef, r);
   }
 
-  for (const ev of readLog(paths.humanFeedbackFile(), "the human feedback log")) {
+  for (const ev of readStream("human")) {
     if (ev["world"] !== world.name) continue;
     const ref = ev["ref"];
     if (!ref) continue;
@@ -247,7 +250,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   }
   // Source 2: the critic ran on this session but did not always record. The
   // queue's `done` bucket is pruned to 500 and cannot serve as history.
-  for (const rec of readLog(paths.reflectRunsFile(), "the reflect runs log")) {
+  for (const rec of readStream("reflect_runs")) {
     if (rec["world"] !== world.name) continue;
     const sid = rec["session_id"];
     const ts = rec["ts"];

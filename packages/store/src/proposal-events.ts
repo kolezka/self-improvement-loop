@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 import { fsx, paths } from "@sil/core";
+import { appendRecord, readRecords } from "@sil/statedb";
 
 // "rehomed" is a human decision only (`review.rehome`); kept that way on
 // purpose, because `run()`'s own re-route reads past "rehomed" events to
@@ -28,7 +29,7 @@ export interface ProposalEvent {
 }
 
 export function appendProposalEvent(world: string, pattern: string, event: ProposalEventKind): void {
-  fsx.appendJsonl(paths.proposalEventsFile(), { ts: fsx.nowIso(), world, pattern, event });
+  appendRecord("proposal_events", { ts: fsx.nowIso(), world, pattern, event });
 }
 
 /** appendProposalEvent runs after a commit (stage, accept, reject, rehome,
@@ -56,22 +57,18 @@ export function recordProposalEvent(world: string, pattern: string, event: Propo
   }
 }
 
-/** Every recorded event, oldest first. A line that fails to parse or match the
- * schema is data loss for one record, not for the file: it is counted in
- * `skipped`, never silently dropped from the count. */
+/** Every recorded event, oldest first. A line the import quarantined, or a row
+ * that fails the schema, is data loss for one record, not for the log: it is
+ * counted in `skipped`, never silently dropped from the count. A read failure
+ * throws StateReadError, never reads as empty. */
 export function readProposalEvents(): { events: ProposalEvent[]; skipped: number } {
-  const path = paths.proposalEventsFile();
-  if (!fsx.exists(path)) return { events: [], skipped: 0 };
+  const { records, quarantined } = readRecords("proposal_events", "counted");
   const events: ProposalEvent[] = [];
-  let skipped = 0;
-  for (const line of fsx.readText(path).split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
-    try {
-      events.push(ProposalEventSchema.parse(JSON.parse(t)));
-    } catch {
-      skipped += 1;
-    }
+  let skipped = quarantined;
+  for (const record of records) {
+    const parsed = ProposalEventSchema.safeParse(record);
+    if (parsed.success) events.push(parsed.data);
+    else skipped += 1;
   }
   return { events, skipped };
 }

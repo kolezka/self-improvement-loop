@@ -11,6 +11,7 @@
     "./consts": "./src/consts.ts",
     "./errors": "./src/errors.ts",
     "./fsx": "./src/fsx.ts",
+    "./fs-probe": "./src/fs-probe.ts",
     "./samples": "./src/samples.ts",
     "./layout": "./src/layout.ts",
     "./lessons": "./src/lessons.ts",

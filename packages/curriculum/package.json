@@ -12,6 +12,7 @@
     "@sil/nudges": "workspace:*",
     "@sil/providers": "workspace:*",
     "@sil/feedback": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "@sil/statedb": "workspace:*"
   }
 }

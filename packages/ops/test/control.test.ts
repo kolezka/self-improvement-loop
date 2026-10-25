@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { ConfigError, StateReadError, ValidationError } from "@sil/core";
+import { ConfigError, StateReadError, StateWriteError, ValidationError } from "@sil/core";
 import { CurationError } from "@sil/core/lesson-curation";
 import { QueueReadError } from "@sil/store";
 import { ProposalChanged } from "../src/handlers/console.ts";
@@ -249,6 +249,14 @@ describe("per-read execution results", () => {
     });
     const purged = await executeControlRead(req([{ id: "p", op: "lessons.store" }]));
     expect(err(purged.results["p"])).toEqual({ code: "PURGED", message: "lesson curation was purged: key", retryable: false });
+  });
+
+  test("a StateWriteError keeps its own code and message, like a StateReadError", async () => {
+    stub("worker.status", () => {
+      throw new StateWriteError("loop state: EACCES");
+    });
+    const resp = await executeControlRead(req([{ id: "state", op: "worker.status" }]));
+    expect(err(resp.results["state"])).toEqual({ code: "StateWriteError", message: "loop state: EACCES", retryable: false });
   });
 
   test("console reads and curated lesson reads are registered and allowed", () => {

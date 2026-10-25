@@ -1,0 +1,396 @@
+// sil state: status, migrate, export --legacy-paths and quarantine, run as a
+// real child process against a tmp home.
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { fsx, paths, StateReadError } from "@sil/core";
+import { closeState, readRecords, replaceStream } from "@sil/statedb";
+
+const CLI = join(import.meta.dir, "..", "src", "main.ts");
+
+let tmp: string;
+let env: Record<string, string>;
+const saved: Record<string, string | undefined> = {};
+
+beforeEach(() => {
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "sil-state-cli-")));
+  env = { PATH: process.env["PATH"] ?? "", HOME: join(tmp, "home") };
+  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"]) {
+    saved[k] = process.env[k];
+    process.env[k] = join(tmp, k.toLowerCase());
+    env[k] = join(tmp, k.toLowerCase());
+  }
+});
+
+afterEach(() => {
+  try {
+    closeState();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+function sil(...args: string[]): { code: number; out: string; err: string } {
+  const p = Bun.spawnSync(["bun", "run", CLI, ...args], { env, cwd: tmp, stdout: "pipe", stderr: "pipe" });
+  return { code: p.exitCode ?? -1, out: p.stdout.toString(), err: p.stderr.toString() };
+}
+
+const CRITIC = [
+  { ts: "2026-10-01T00:00:00.000Z", world: "default", pattern: "a", verdict: "keep" },
+  { ts: "2026-10-02T00:00:00.000Z", world: "default", pattern: "b", verdict: "drop" },
+];
+
+function seedCritic(): string {
+  const file = paths.criticFeedbackFile();
+  for (const record of CRITIC) fsx.appendJsonl(file, record);
+  return readFileSync(file, "utf8");
+}
+
+const backupsOf = (file: string): string[] =>
+  readdirSync(dirname(file))
+    .filter((name) => name.startsWith(`${basename(file)}.imported-`))
+    .map((name) => join(dirname(file), name));
+
+interface StatusJson {
+  dbPath: string;
+  suspended: string | null;
+  schemaVersion: number;
+  streams: Record<string, { rows: number; quarantined: number; pending: boolean }>;
+  imports: { store: string; state: string; backupPath: string | null; failure: string | null; lines: number; backupCheck: string | null }[];
+}
+
+function status(): StatusJson {
+  const r = sil("state", "status", "--json");
+  expect(r.err).toBe("");
+  expect(r.code).toBe(0);
+  return JSON.parse(r.out) as StatusJson;
+}
+
+describe("sil state", () => {
+  test("migrate imports a seeded log, prints its outcome and leaves a backup", () => {
+    const seed = seedCritic();
+    const r = sil("state", "migrate");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const lines = r.out.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("critic");
+    expect(lines[0]).toContain("2 imported");
+    expect(existsSync(paths.criticFeedbackFile())).toBe(false);
+    const backups = backupsOf(paths.criticFeedbackFile());
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(backups[0]!, "utf8")).toBe(seed);
+  });
+
+  test("status reports rows and re-checks each backup against its import row", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+
+    const first = status();
+    // Positive control: the child used the tmp state dir, not the real one.
+    expect(first.dbPath).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
+    expect(first.schemaVersion).toBe(1);
+    expect(first.streams["critic"]).toEqual({ rows: 2, quarantined: 0, pending: false });
+    expect(first.imports).toHaveLength(1);
+    expect(first.imports[0]).toMatchObject({ store: "critic", state: "verified", lines: 2, failure: null, backupCheck: "ok" });
+
+    const backup = first.imports[0]!.backupPath!;
+    appendFileSync(backup, `${JSON.stringify({ ts: "2026-10-03T00:00:00.000Z", pattern: "late" })}\n`);
+    expect(status().imports[0]!.backupCheck).toBe("grew");
+
+    const text = readFileSync(backup, "utf8");
+    writeFileSync(backup, `X${text.slice(1)}`);
+    expect(status().imports[0]!.backupCheck).toBe("changed");
+
+    rmSync(backup);
+    expect(status().imports[0]!.backupCheck).toBe("missing");
+  });
+
+  test("status prints the late-append warning in text mode", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    const backup = backupsOf(paths.criticFeedbackFile())[0]!;
+    appendFileSync(backup, "{}\n");
+    const r = sil("state", "status");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("backup grew after import: 3 bytes not in the DB");
+  });
+
+  test("export --legacy-paths writes the original bytes back and refuses a second run without --force", () => {
+    const seed = seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(existsSync(paths.criticFeedbackFile())).toBe(false);
+
+    const first = sil("state", "export", "--legacy-paths");
+    expect(first.err).toBe("");
+    expect(first.code).toBe(0);
+    expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(seed);
+    // Streams with no rows write no file.
+    expect(existsSync(paths.humanFeedbackFile())).toBe(false);
+
+    const second = sil("state", "export", "--legacy-paths");
+    expect(second.code).toBe(1);
+    expect(second.err).toContain("critic.jsonl already exists");
+    expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(seed);
+    expect(status().streams["critic"]!.rows).toBe(2);
+
+    const forced = sil("state", "export", "--legacy-paths", "--force");
+    expect(forced.code).toBe(0);
+    expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(seed);
+    expect(status().streams["critic"]!.rows).toBe(2);
+    // The replaced export's row goes once the new file is in place.
+    expect(status().imports.filter((i) => i.backupPath === null)).toEqual([expect.objectContaining({ store: "critic", backupCheck: null })]);
+  });
+
+  test("forced export retains history but hides only its superseded export row", () => {
+    const critic = paths.criticFeedbackFile();
+    fsx.appendJsonl(critic, { n: 1 });
+    expect(sil("state", "migrate").code).toBe(0);
+    const [olderBackup] = backupsOf(critic);
+    appendFileSync(olderBackup!, '{"late":true}\n');
+    fsx.appendJsonl(critic, { n: 2 });
+    expect(sil("state", "migrate").code).toBe(0);
+    const [newerBackup] = backupsOf(critic).filter((path) => path !== olderBackup);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths", "--force").code).toBe(0);
+    const s = status();
+    expect(s.imports.find((row) => row.backupPath === olderBackup)?.backupCheck).toBe("grew");
+    expect(s.imports.find((row) => row.backupPath === newerBackup)?.backupCheck).toBe("ok");
+    expect(s.imports.filter((row) => row.store === "critic" && row.backupPath === null)).toHaveLength(1);
+    const db = new Database(s.dbPath, { readonly: true });
+    try {
+      const retained = db.query("SELECT count(*) AS n FROM legacy_imports WHERE store = 'critic' AND backup_path IS NULL").get() as { n: number };
+      expect(retained.n).toBe(2);
+      const exportRows = db.query("SELECT id, superseded_by FROM legacy_imports WHERE store = 'critic' AND origin = 'export' ORDER BY id").all() as { id: number; superseded_by: number | null }[];
+      expect(exportRows).toHaveLength(2);
+      expect(exportRows[0]!.superseded_by).toBe(exportRows[1]!.id);
+      expect(exportRows[1]!.superseded_by).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a forced export empties a verified legacy target after a stream is replaced with empty data", () => {
+    const critic = paths.criticFeedbackFile();
+    fsx.appendJsonl(critic, { n: 1 });
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(readFileSync(critic, "utf8")).toBe('{"n":1}\n');
+    expect(replaceStream("critic", "", "empty-bundle", true).written).toBe(true);
+    expect(readRecords("critic", "strict").records).toEqual([]);
+    closeState();
+    const result = sil("state", "export", "--legacy-paths", "--force");
+    expect(result.code).toBe(0);
+    expect(result.out).toContain(`wrote ${critic}`);
+    expect(readFileSync(critic, "utf8")).toBe("");
+    const s = status();
+    expect(s.streams["critic"]!.rows).toBe(0);
+    expect(s.imports.filter((row) => row.store === "critic" && row.backupPath === null)).toEqual([
+      expect.objectContaining({ lines: 0, backupCheck: null }),
+    ]);
+    const db = new Database(s.dbPath, { readonly: true });
+    try {
+      const row = db.query("SELECT origin, size FROM legacy_imports WHERE store = 'critic' AND backup_path IS NULL ORDER BY id DESC LIMIT 1").get() as { origin: string; size: number };
+      expect(row).toEqual({ origin: "export", size: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("an empty export refuses an unrecorded legacy target and keeps its bytes", () => {
+    const critic = paths.criticFeedbackFile();
+    fsx.appendJsonl(critic, { n: 1 });
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(replaceStream("critic", "", "empty-bundle", true).written).toBe(true);
+    appendFileSync(critic, '{"n":2}\n');
+    const before = readFileSync(critic, "utf8");
+    closeState();
+    const result = sil("state", "export", "--legacy-paths", "--force");
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("sil state migrate");
+    expect(readFileSync(critic, "utf8")).toBe(before);
+    expect(status().imports.filter((row) => row.store === "critic" && row.backupPath === null)).toHaveLength(1);
+  });
+
+  test("status shows the export's suspension and no backup check for an export row", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    const before = Date.now();
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    const s = status();
+    expect(s.suspended).not.toBeNull();
+    expect(Date.parse(s.suspended!)).toBeGreaterThanOrEqual(before - 1000);
+    expect(s.imports).toHaveLength(2);
+    expect(s.imports[1]).toMatchObject({ store: "critic", state: "verified", backupPath: null, lines: 2, backupCheck: null });
+  });
+
+  test("after an export a new process reads the DB as is and leaves the legacy files alone", () => {
+    const critic = seedCritic();
+    fsx.appendJsonl(paths.humanFeedbackFile(), { ts: "2026-10-01T00:00:00.000Z", world: "default", ref: "hook:x", vote: "good", note: "" });
+    const human = readFileSync(paths.humanFeedbackFile(), "utf8");
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+
+    const reader = join(tmp, "reader.ts");
+    writeFileSync(
+      reader,
+      [
+        `import { paths } from ${JSON.stringify(join(import.meta.dir, "..", "..", "..", "packages", "core", "src", "index.ts"))};`,
+        `import { readRecords, STREAMS } from ${JSON.stringify(join(import.meta.dir, "..", "..", "..", "packages", "statedb", "src", "index.ts"))};`,
+        `const counts = Object.fromEntries(Object.keys(STREAMS).map((s) => [s, readRecords(s, "strict").records.length]));`,
+        `console.log(JSON.stringify({ db: paths.loopStateDb(), counts }));`,
+      ].join("\n"),
+    );
+    const p = Bun.spawnSync(["bun", reader], { env, cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" });
+    expect(p.stderr.toString()).toBe("");
+    expect(p.exitCode).toBe(0);
+    const out = JSON.parse(p.stdout.toString()) as { db: string; counts: Record<string, number> };
+    // Positive control: the child read the tmp DB.
+    expect(out.db).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
+    expect(out.counts).toEqual({ reflect_runs: 0, critic: 2, human: 1, proposal_events: 0 });
+    expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(critic);
+    expect(readFileSync(paths.humanFeedbackFile(), "utf8")).toBe(human);
+  });
+
+  test("migrate after an export imports only lines the older build appended", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ts: "2026-10-03T00:00:00.000Z", world: "default", pattern: "c", verdict: "keep" });
+    const appended = readFileSync(paths.criticFeedbackFile(), "utf8");
+
+    const r = sil("state", "migrate");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("critic: 1 imported");
+    const s = status();
+    expect(s.suspended).toBeNull();
+    expect(s.streams["critic"]).toEqual({ rows: 3, quarantined: 0, pending: false });
+    expect(existsSync(paths.criticFeedbackFile())).toBe(false);
+    const backups = backupsOf(paths.criticFeedbackFile()).map((b) => readFileSync(b, "utf8"));
+    expect(backups).toContain(appended);
+    expect(s.imports.every((i) => i.backupCheck === "ok")).toBe(true);
+  });
+
+  test("migrate after an unchanged export adds no rows and moves the files to backups", () => {
+    seedCritic();
+    fsx.appendJsonl(paths.humanFeedbackFile(), { ts: "2026-10-01T00:00:00.000Z", world: "default", ref: "hook:x", vote: "good", note: "" });
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+
+    const r = sil("state", "migrate");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const s = status();
+    expect(s.suspended).toBeNull();
+    expect(s.streams["critic"]!.rows).toBe(2);
+    expect(s.streams["human"]!.rows).toBe(1);
+    expect(existsSync(paths.criticFeedbackFile())).toBe(false);
+    expect(existsSync(paths.humanFeedbackFile())).toBe(false);
+    expect(backupsOf(paths.criticFeedbackFile())).toHaveLength(2);
+    expect(backupsOf(paths.humanFeedbackFile())).toHaveLength(2);
+    expect(s.imports.every((i) => i.backupCheck === "ok")).toBe(true);
+  });
+
+  test("a forced export refuses a file the older build appended to, and migrate imports that line", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    fsx.appendJsonl(paths.criticFeedbackFile(), { ts: "2026-10-03T00:00:00.000Z", world: "default", pattern: "old-build", verdict: "keep" });
+    const appended = readFileSync(paths.criticFeedbackFile(), "utf8");
+
+    const forced = sil("state", "export", "--legacy-paths", "--force");
+    expect(forced.code).toBe(1);
+    expect(forced.err).toContain("critic.jsonl");
+    expect(forced.err).toContain("run sil state migrate first");
+    expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(appended);
+    expect(status().streams["critic"]!.rows).toBe(2);
+
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(status().streams["critic"]!.rows).toBe(3);
+  });
+
+  test("status shows an exported file that is gone as missing", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    rmSync(paths.criticFeedbackFile());
+    const s = status();
+    expect(s.imports[1]).toMatchObject({ store: "critic", backupPath: null, backupCheck: "missing" });
+  });
+
+  test("a StateReadError reaching the CLI prints one error line and exits 1", () => {
+    seedCritic();
+    expect(sil("state", "migrate").code).toBe(0);
+    const backup = backupsOf(paths.criticFeedbackFile())[0]!;
+    chmodSync(backup, 0o000);
+    try {
+      const r = sil("state", "status");
+      expect(r.code).toBe(1);
+      const lines = r.err.trimEnd().split("\n");
+      expect(lines).toEqual(["error: the backup of the critic feedback log cannot be read (EACCES)"]);
+    } finally {
+      chmodSync(backup, 0o600);
+    }
+  });
+
+  test("export without --legacy-paths is a usage error", () => {
+    const r = sil("state", "export");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("--legacy-paths");
+  });
+
+  test("quarantine lists bad lines, export refuses that stream only, and --drop clears it", () => {
+    const file = paths.criticFeedbackFile();
+    fsx.ensureDir(dirname(file));
+    writeFileSync(file, `${JSON.stringify(CRITIC[0])}\nnot json\n`);
+    const human = paths.humanFeedbackFile();
+    fsx.appendJsonl(human, { ts: "2026-10-01T00:00:00.000Z", world: "default", ref: "hook:x", vote: "good", note: "" });
+    const humanSeed = readFileSync(human, "utf8");
+    expect(sil("state", "migrate").code).toBe(0);
+
+    const listed = sil("state", "quarantine");
+    expect(listed.code).toBe(0);
+    expect(listed.out).toContain("critic");
+    expect(listed.out).toContain("not JSON");
+
+    const exported = sil("state", "export", "--legacy-paths");
+    expect(exported.code).toBe(1);
+    expect(exported.err).toContain("the critic feedback log has 1 quarantined line; see sil state quarantine");
+    expect(existsSync(file)).toBe(false);
+    expect(readFileSync(human, "utf8")).toBe(humanSeed);
+    rmSync(human);
+
+    expect(() => readRecords("critic", "strict")).toThrow(StateReadError);
+    closeState();
+
+    const dropped = sil("state", "quarantine", "--drop", "critic");
+    expect(dropped.code).toBe(0);
+    expect(dropped.out).toContain("1");
+    expect(sil("state", "quarantine").out).not.toContain("not JSON");
+    expect(readRecords("critic", "strict").records).toHaveLength(1);
+  });
+
+  test("quarantine --drop refuses an unknown store", () => {
+    const r = sil("state", "quarantine", "--drop", "toString");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("toString");
+  });
+
+  test("a broken database fails status with one error line and no stack", () => {
+    mkdirSync(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"), { recursive: true });
+    const r = sil("state", "status");
+    expect(r.code).toBe(1);
+    const lines = r.err.trimEnd().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("error: loop state");
+    expect(r.err).not.toMatch(/^\s+at /m);
+  });
+});

@@ -14,6 +14,7 @@
         "@sil/ops": "workspace:*",
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
         "@sil/transcript": "workspace:*",
         "@sil/worker": "workspace:*",
@@ -34,6 +35,7 @@
         "@sil/ops": "workspace:*",
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
         "@sil/transcript": "workspace:*",
         "@sil/worker": "workspace:*",
@@ -64,6 +66,7 @@
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/ops": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "zod": "^4.6.5",
       },
     },
@@ -95,6 +98,7 @@
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/providers": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
         "@sil/transcript": "workspace:*",
       },
@@ -107,6 +111,7 @@
         "@sil/feedback": "workspace:*",
         "@sil/nudges": "workspace:*",
         "@sil/providers": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
         "zod": "^4.6.5",
       },
@@ -117,6 +122,7 @@
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
       },
     },
@@ -146,6 +152,7 @@
         "@sil/feedback": "workspace:*",
         "@sil/providers": "workspace:*",
         "@sil/review": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
         "@sil/transcript": "workspace:*",
         "@sil/worker": "workspace:*",
@@ -171,11 +178,19 @@
         "@sil/worker": "workspace:*",
       },
     },
+    "packages/statedb": {
+      "name": "@sil/statedb",
+      "version": "1.2.11",
+      "dependencies": {
+        "@sil/core": "workspace:*",
+      },
+    },
     "packages/store": {
       "name": "@sil/store",
       "version": "1.2.11",
       "dependencies": {
         "@sil/core": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "yaml": "^2.9.1",
         "zod": "^4.6.5",
       },
@@ -196,6 +211,7 @@
         "@sil/curriculum": "workspace:*",
         "@sil/feedback": "workspace:*",
         "@sil/providers": "workspace:*",
+        "@sil/statedb": "workspace:*",
         "@sil/store": "workspace:*",
         "@sil/transcript": "workspace:*",
       },
@@ -271,6 +287,8 @@
     "@sil/review": ["@sil/review@workspace:packages/review"],
 
     "@sil/server": ["@sil/server@workspace:apps/server"],
+
+    "@sil/statedb": ["@sil/statedb@workspace:packages/statedb"],
 
     "@sil/store": ["@sil/store@workspace:packages/store"],
 

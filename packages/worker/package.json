@@ -13,6 +13,7 @@
     "@sil/critic": "workspace:*",
     "@sil/feedback": "workspace:*",
     "@sil/curriculum": "workspace:*",
-    "@sil/providers": "workspace:*"
+    "@sil/providers": "workspace:*",
+    "@sil/statedb": "workspace:*"
   }
 }

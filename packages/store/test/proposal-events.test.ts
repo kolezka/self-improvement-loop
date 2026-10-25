@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { paths } from "@sil/core";
+import { paths, StateReadError } from "@sil/core";
+import { closeState } from "@sil/statedb";
 import { appendProposalEvent, readProposalEvents, recordProposalEvent } from "../src/index.ts";
 
 let tmp: string;
@@ -17,6 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeState();
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -24,18 +26,55 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
+function seedLegacy(text: string): void {
+  const file = paths.proposalEventsFile();
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, text);
+}
+
+const legacyLine = (event: string): string => `${JSON.stringify({ ts: "2026-10-01T00:00:00.000Z", world: "default", pattern: "p-one", event })}\n`;
+
+/** A directory where the database file goes: openState fails through the real
+ * path, the same way a broken mount or a refused file would. */
+function blockDatabase(): void {
+  mkdirSync(paths.loopStateDb(), { recursive: true });
+}
+
 describe("proposal events", () => {
-  test("append then read round-trips and counts a bad line as skipped", () => {
-    appendProposalEvent("default", "p-one", "staged");
-    appendFileSync(paths.proposalEventsFile(), "not json\n");
+  test("append then read round-trips and counts a line the import refused as skipped", () => {
+    seedLegacy(legacyLine("staged") + "not json\n");
     appendProposalEvent("default", "p-one", "accepted");
     const { events, skipped } = readProposalEvents();
     expect(events.map((e) => e.event)).toEqual(["staged", "accepted"]);
     expect(skipped).toBe(1);
   });
 
-  test("missing file reads as empty, not an error", () => {
+  test("a JSON object that fails the schema is counted as skipped, not dropped", () => {
+    seedLegacy(legacyLine("staged") + `${JSON.stringify({ event: "bogus" })}\n`);
+    const { events, skipped } = readProposalEvents();
+    expect(events.map((e) => e.event)).toEqual(["staged"]);
+    expect(skipped).toBe(1);
+  });
+
+  test("quarantined and schema-invalid lines add up", () => {
+    seedLegacy(`not json\n${JSON.stringify({ event: "bogus" })}\n${legacyLine("revised")}`);
+    expect(readProposalEvents()).toMatchObject({ events: [{ event: "revised" }], skipped: 2 });
+  });
+
+  test("missing log reads as empty, not an error", () => {
     expect(readProposalEvents()).toEqual({ events: [], skipped: 0 });
+  });
+
+  test("an unreadable database throws StateReadError naming the log, never reads as empty", () => {
+    blockDatabase();
+    let error: unknown = null;
+    try {
+      readProposalEvents();
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(StateReadError);
+    expect((error as Error).message.startsWith("the proposal events log cannot be read (")).toBe(true);
   });
 
   test("records world and pattern on each event", () => {
@@ -55,43 +94,29 @@ describe("recordProposalEvent", () => {
   });
 
   test("on a write failure, does not throw: logs to curriculum.log and returns the message", () => {
-    if (process.getuid?.() === 0) return; // root ignores file permissions
+    blockDatabase();
+    const result = recordProposalEvent("default", "p-one", "accepted");
+    expect(result).not.toBeNull();
+    expect(result!.startsWith("the proposal events log")).toBe(true);
 
-    // Create the events directory first so chmod has something to lock down;
-    // appendJsonl's own mkdirSync(recursive) would otherwise just no-op past
-    // a missing dir without ever touching a permission check.
-    const eventsDir = dirname(paths.proposalEventsFile());
-    mkdirSync(eventsDir, { recursive: true });
-    chmodSync(eventsDir, 0o000);
-    try {
-      const result = recordProposalEvent("default", "p-one", "accepted");
-      expect(result).not.toBeNull();
-      expect(result).toContain("EACCES");
-
-      const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
-      expect(curriculumLog).toContain("ERROR proposal event accepted default/p-one");
-    } finally {
-      chmodSync(eventsDir, 0o755);
-    }
+    const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
+    expect(curriculumLog).toContain("ERROR proposal event accepted default/p-one");
   });
 
   test("a write failure whose own fallback log write also fails does not throw", () => {
     if (process.getuid?.() === 0) return; // root ignores file permissions
     // A disk-full condition, or the same broken mount, can hit both the
-    // events file and the log the fallback writes to; the fallback must not
+    // database and the log the fallback writes to; the fallback must not
     // turn that into a second, unhandled throw.
-    const eventsDir = dirname(paths.proposalEventsFile());
-    mkdirSync(eventsDir, { recursive: true });
-    chmodSync(eventsDir, 0o000);
+    blockDatabase();
     const logsDir = dirname(paths.logFile("curriculum"));
     mkdirSync(logsDir, { recursive: true });
     chmodSync(logsDir, 0o000);
     try {
       const result = recordProposalEvent("default", "p-one", "accepted");
       expect(result).not.toBeNull();
-      expect(result).toContain("EACCES");
+      expect(result!.startsWith("the proposal events log")).toBe(true);
     } finally {
-      chmodSync(eventsDir, 0o755);
       chmodSync(logsDir, 0o755);
     }
   });

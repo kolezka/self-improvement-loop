@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AliasSemanticConfig, fsx, paths, SECTIONS, type Config, type LlmConfig, type QueueEntry, type World } from "@sil/core";
+import { AliasSemanticConfig, fsx, SECTIONS, type Config, type LlmConfig, type QueueEntry, type World } from "@sil/core";
 import { listLessons, listReflections } from "@sil/store";
 import type { ChatMessage } from "@sil/providers";
+import { closeState, readRecords } from "@sil/statedb";
 import { installedArtifacts, parseAnswer, reflectSession } from "../src/index.ts";
 import { setSilDirs, restoreEnv, writeSampleTranscript } from "../../transcript/test/fixture.ts";
 
@@ -17,8 +18,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  restoreEnv(savedEnv);
-  rmSync(tmpDir, { recursive: true, force: true });
+  try {
+    closeState();
+  } finally {
+    restoreEnv(savedEnv);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 function entry(sessionId = "sess-1", world = "default"): QueueEntry {
@@ -143,7 +148,7 @@ describe("reflectSession recorded path", () => {
     expect(text).toContain("\nPattern: verify-callsites\n");
     for (const heading of SECTIONS) expect(text).toContain(heading);
 
-    const fbLines = fsx.readJsonl<{ ref: string; verdict: string }>(paths.criticFeedbackFile());
+    const fbLines = readRecords("critic", "strict").records as unknown as { ref: string; verdict: string }[];
     const verdicts = new Set(fbLines.map((l) => `${l.ref}:${l.verdict}`));
     expect(verdicts.has("skill:debugging:used")).toBe(true);
     expect(verdicts.has("skill:debugging:helpful")).toBe(true);
@@ -166,7 +171,7 @@ describe("reflectSession recorded path", () => {
 
     await reflectSession(e, { cfg: c, world: w, llm: llm(), chat: fakeChat });
 
-    const fbLines = fsx.readJsonl<{ ref: string; verdict: string; reason?: string }>(paths.criticFeedbackFile());
+    const fbLines = readRecords("critic", "strict").records as unknown as { ref: string; verdict: string; reason?: string }[];
     const misfired = fbLines.find((l) => l.verdict === "misfired")!;
     expect(misfired.ref).toBe("hook:noisy-thing");
     expect(misfired.reason).toBe("fired on an unrelated file");
@@ -188,7 +193,7 @@ describe("reflectSession record false path", () => {
     expect(result.recorded).toBe(false);
     expect(result.reflection_id).toBeNull();
     expect(result.path).toBeNull();
-    expect(fsx.exists(paths.criticFeedbackFile())).toBe(false);
+    expect(readRecords("critic", "strict").records).toEqual([]);
     expect(listLessons("default")).toEqual([]);
   });
 
@@ -294,7 +299,7 @@ describe("reflectSession feedback refs and lesson repo", () => {
     const answer = { ...JSON.parse(goodAnswer()), rules_relevant: ["verify-callsites", "rule:already-prefixed"] };
     const fakeChat = async () => JSON.stringify(answer);
     await reflectSession(entry(), { cfg: c, world: w, llm: llm(), chat: fakeChat });
-    const lines = fsx.readJsonl<{ ref: string; verdict: string }>(paths.criticFeedbackFile());
+    const lines = readRecords("critic", "strict").records as unknown as { ref: string; verdict: string }[];
     const relevant = lines.filter((l) => l.verdict === "relevant").map((l) => l.ref).sort();
     expect(relevant).toEqual(["rule:already-prefixed", "rule:verify-callsites"]);
   });
@@ -372,7 +377,7 @@ describe("reflectSession normalizes bare artifact refs", () => {
     const result = await reflectSession(entry(), { cfg: c, world: w, llm: llm(), chat: fakeChat });
 
     expect(result.recorded).toBe(true);
-    const lines = fsx.readJsonl<{ ref: string; verdict: string }>(paths.criticFeedbackFile());
+    const lines = readRecords("critic", "strict").records as unknown as { ref: string; verdict: string }[];
     const refs = lines.map((l) => `${l.ref}:${l.verdict}`);
     expect(refs).toContain("skill:concurrent-worktree-mutation:used");
     expect(refs).toContain("skill:concurrent-worktree-mutation:helpful");
@@ -392,7 +397,7 @@ describe("reflectSession normalizes bare artifact refs", () => {
 
     expect(result.recorded).toBe(true);
     expect(listReflections("default")).toHaveLength(1);
-    const lines = fsx.readJsonl<Record<string, unknown>>(paths.criticFeedbackFile());
+    const lines = readRecords("critic", "strict").records;
     const flagged = lines.filter((l) => l["ref_unresolved"] === "totally-unknown-thing");
     expect(flagged).toHaveLength(1);
     expect(Object.hasOwn(flagged[0]!, "ref")).toBe(false);

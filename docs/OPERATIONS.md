@@ -532,6 +532,131 @@ Two consequences worth knowing:
   600, so a restart keeps every open tab working. Rotate it by deleting that
   file and restarting the service. A loopback bind is tokenless and unaffected.
 
+## Loop state (`sil state`)
+
+Four logs moved from JSONL files into one SQLite file,
+`~/.local/state/self-improvement-loop/loop-state.sqlite`:
+
+| Store | Old file (in the state dir) |
+| --- | --- |
+| `reflect_runs` | `usage/reflect-runs.jsonl` |
+| `critic` | `feedback/critic.jsonl` |
+| `human` | `feedback/human.jsonl` |
+| `proposal_events` | `curriculum/proposal-events.jsonl` |
+
+Nothing to do by hand. The first `sil` command, worker pass or `sil web` that
+reads or writes one of these imports the old file and renames it to
+`<file>.imported-<stamp>-<id>`, for example
+`human.jsonl.imported-2026-10-25T065425046Z-1`. That file is your original, byte
+for byte. Nothing deletes it.
+
+```
+sil state status [--json]          # DB path, schema, rows per store, each import and its backup check
+sil state migrate                  # import any old file now (handy before a first sil web)
+sil state quarantine               # lines that were not JSON objects and did not import
+sil state quarantine --drop <store>
+sil state export --legacy-paths [--force]
+```
+
+`status` re-reads every backup. `backup ok` means it still matches what was
+imported. `backup grew after import: N bytes not in the DB` means an older
+process appended N bytes to the file after the import. Those bytes are only in
+that backup, unchanged; no reader, migrate or export uses them.
+
+A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
+old JSONL file is also still whole in that file's backup. A line from a bundle
+(`sil import bundle`) has no backup: the DB copy is all the loop keeps. While a
+store has quarantined lines, strict readers (the consoles' scorecards),
+`sil export` and `sil state export` refuse to read that store. Before
+`--drop`, make sure you still have the backup or the bundle the line came from.
+
+### Going back to an older plugin
+
+Older builds read the JSONL files and know nothing about the DB. To downgrade:
+
+1. Stop everything that can write:
+   - close every Claude Code session (their hooks start workers);
+   - stop any `sil web` you started by hand;
+   - save what `sil schedule show` prints, and the worker interval from its
+     unit file: `OnUnitActiveSec` in `~/.config/systemd/user/sil-worker.timer`,
+     or `StartInterval` (seconds) in whichever of
+     `~/Library/LaunchAgents/com.raqz.sil-worker.plist` and the older
+     `com.kolezka.sil-worker.plist` exists;
+   - run `sil schedule uninstall`. It removes unit files even when stopping a
+     job fails. On macOS, this must print nothing:
+
+     ```sh
+     launchctl list | grep -E 'com\.(raqz|kolezka)\.sil-'
+     ```
+
+     If a label remains, run `launchctl remove <label>` and check again.
+     On Linux, check each unit named in `apps/cli/src/schedule.ts`:
+
+     ```sh
+     for unit in sil-worker.timer sil-worker.service sil-web.service; do
+       state=$(systemctl --user show -p ActiveState "$unit") || { echo "cannot check $unit"; exit 1; }
+       case "$state" in
+         ActiveState=active|ActiveState=activating) echo "$unit is $state"; exit 1 ;;
+       esac
+     done
+     ```
+
+     Every query must exit 0, and every unit must be neither active nor
+     activating. If a unit is still running, use `systemctl --user stop <unit>`
+     and check again. If a query fails, stop the rollback and investigate;
+     a failed query does not prove the scheduler stopped;
+   - check that no worker, web or curriculum process is left:
+
+     ```
+     pgrep -fl '(dist/cli\.js|apps/cli/src/main\.ts) (worker|web|curriculum)'
+     ```
+
+     It prints nothing (exit 1) when all are gone. Stop whatever it lists;
+   - from here until the older plugin is installed, run only the `sil state`
+     commands below. Other commands write too, for example `sil feedback`,
+     `sil review`, `sil reflect` and `sil curriculum`.
+2. Run `sil state status`. If any backup says `grew`, stop here: those bytes
+   are not in the DB and the export would not contain them. They are still in
+   that backup file; decide by hand what to do with them. Clear any quarantined
+   lines too (`sil state quarantine`), or that store will not export.
+3. Run `sil state export --legacy-paths`. It writes each store that has rows to
+   its old path in the old format, and pauses imports so this build leaves those
+   files alone. A store with no rows gets no file.
+4. If the export exits 1, stop. Do not install the older plugin. The export may
+   have written some stores and paused imports, but at least one store is
+   missing. Read its `error:` lines and fix the cause: for "has lines that are
+   not in the loop state" run `sil state migrate`; for quarantined lines see
+   above; for "already exists" pass `--force`, which replaces only a file that
+   is exactly one this DB recorded. Then run the export again until it exits 0.
+5. Check that the old path of every store with rows in `sil state status` has a
+   file.
+6. Install the older plugin. Then reinstall the schedule the way your saved
+   `sil schedule show` output describes: `--systemd` or `--launchd` from the
+   section it listed, `--web` if a `sil-web` unit was there, and
+   `--interval-min` with the interval you saved, in minutes.
+
+If you upgrade again later, run `sil state migrate` once. Until then imports
+stay paused, `sil state status` says `legacy imports suspended since ...`, and
+nothing the older build wrote is read. Migrate turns an unchanged exported file
+into a backup without importing it twice, and imports only the lines the older
+build appended.
+
+### Reading the DB directly
+
+`sil state export --legacy-paths` is the normal way to get JSONL back. To look
+without changing anything:
+
+```
+sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
+  "SELECT body FROM log_records WHERE stream = 'human' ORDER BY id"
+```
+
+`body` is the record as one JSON line: the imported line with surrounding
+whitespace trimmed, or what this build wrote. The other tables are
+`quarantine`, `legacy_imports` (one row per import or export, with size, sha256
+and, once the file has been moved aside, its backup path) and `meta`. Do not
+write to the file by hand.
+
 ## Logs
 
 ```
@@ -542,6 +667,9 @@ sil logs curriculum
 ```
 
 Log files live at `~/.local/state/self-improvement-loop/logs/{hook,worker,web,curriculum}.log`.
+
+A tolerant read that had to fall back to what the loop state DB already had
+writes one line per store to `logs/state.log` (no `sil logs` name for it yet).
 
 ## Troubleshooting
 

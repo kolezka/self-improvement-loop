@@ -6,6 +6,7 @@
   "dependencies": {
     "@sil/core": "workspace:*",
     "@sil/ops": "workspace:*",
+    "@sil/statedb": "workspace:*",
     "zod": "^4.6.5"
   }
 }

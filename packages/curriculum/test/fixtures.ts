@@ -4,13 +4,12 @@
 // own global config all point inside a temp dir, so a test can never read or
 // write the machine's real state.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type Config,
   Config as ConfigSchema,
-  fsx,
   type Layout,
   paths,
   targetRoot,
@@ -18,6 +17,8 @@ import {
   type World,
 } from "@sil/core";
 import { git, setNudgeAdapter, type GateCorpusResult, type NudgeAdapter } from "@sil/curriculum";
+import { recordReflectRun } from "@sil/feedback";
+import { closeState } from "@sil/statedb";
 import { writeReflection } from "@sil/store";
 
 const ENV_KEYS = [
@@ -65,11 +66,33 @@ export function silEnv(): TestEnv {
 }
 
 export function cleanupEnv(env: TestEnv): void {
-  for (const [key, value] of Object.entries(env.saved)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
+  try {
+    closeState();
+  } finally {
+    for (const [key, value] of Object.entries(env.saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(env.tmp, { recursive: true, force: true });
   }
-  rmSync(env.tmp, { recursive: true, force: true });
+}
+
+/** Put a directory where the loop-state database goes, so every open fails
+ * through the real path (a chmod'd file is not enough: a read-only open in
+ * this process breaks later writes even after the mode is restored). Returns
+ * the undo, which puts the original file back. */
+export function blockLoopState(): () => void {
+  closeState();
+  const db = paths.loopStateDb();
+  const aside = `${db}.blocked`;
+  const had = existsSync(db);
+  if (had) renameSync(db, aside);
+  mkdirSync(db, { recursive: true });
+  return () => {
+    closeState();
+    rmdirSync(db);
+    if (had) renameSync(aside, db);
+  };
 }
 
 // --- worlds and config -------------------------------------------------------
@@ -156,7 +179,7 @@ export function writeSessionReflection(world: World, pattern: string, day: strin
  * files than the scenario needs. */
 export function writeFillerSessions(world: World, day: string, n: number, startAt: number): void {
   for (let i = 0; i < n; i++) {
-    fsx.appendJsonl(paths.reflectRunsFile(), {
+    recordReflectRun({
       ts: `${day}T00:00:00Z`,
       world: world.name,
       session_id: `filler-${startAt + i}`,

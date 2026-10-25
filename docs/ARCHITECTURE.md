@@ -85,11 +85,12 @@ usage/hook-runs.jsonl               hook run diagnostics (exit code, duration), 
 usage/payloads/<world>.jsonl        PreToolUse samples (tool name, command, file path), rotated; the router's gate corpus
                                     backfill an empty one from old transcripts with `sil import payloads --days 30`
 usage/nudge-fires.jsonl             nudge emissions (V1 format)
-feedback/human.jsonl                /feedback entries
+loop-state.sqlite                   loop state DB (with -wal and -shm), mode 600; see "Loop state" below
+<old log>.imported-<stamp>-<id>     an imported legacy log, kept byte for byte as its backup
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions
 sessions/<session_id>/              per-session markers (once_per, delivered, offsets)
 worker.lock
-logs/{hook,worker,web,curriculum}.log
+logs/{hook,worker,web,curriculum,state}.log
 ```
 
 Data dir (`$SIL_DATA_DIR`, default `~/.local/share/self-improvement-loop/`):
@@ -102,6 +103,40 @@ worlds/<world>/digests/<pattern>.json   rolling summary of a cluster, plus the
 worlds/<world>/learned/             default target repo (git, auto-init) when the
                                     world configures no `target`
 ```
+
+### Loop state
+
+`STATE/loop-state.sqlite` holds four logs that used to be JSONL files in the
+state dir. Each is a stream of rows in one table, `log_records`:
+
+| Stream | Was | Written by |
+| --- | --- | --- |
+| `reflect_runs` | `usage/reflect-runs.jsonl` | the worker, once per critic run that finished |
+| `critic` | `feedback/critic.jsonl` | the critic's verdicts on served artifacts |
+| `human` | `feedback/human.jsonl` | `/feedback` and `sil feedback add` |
+| `proposal_events` | `curriculum/proposal-events.jsonl` | staged, revised, accepted, rejected and the other proposal events |
+
+The code is `@sil/statedb` (`packages/statedb`), which depends on `@sil/core`
+only and keeps `bun:sqlite` out of `@sil/core` and the browser bundles.
+`openState()` is the one opener and the only thing that creates the file. Every
+connection runs WAL, `synchronous=FULL`, a 2 s busy timeout and foreign keys on.
+`PRAGMA user_version` is the schema version (1); a newer one raises instead of
+being read. Hooks do not touch the DB yet.
+
+Before any read or write of a stream, a non-hook process checks whether the old
+JSONL file is still there. If it is, it imports it in one transaction: every
+nonblank line that is a JSON object becomes a row (trimmed), any other nonblank
+line goes to the `quarantine` table with its raw text (up to 64 KiB), blank
+lines are counted and skipped, and the file is renamed to
+`<file>.imported-<stamp>-<id>`. That renamed file is the original, byte for
+byte, with its size and sha256 in `legacy_imports`; nothing deletes it.
+`sil state export --legacy-paths` pauses these imports until `sil state migrate`
+clears the pause. Readers
+come in three kinds: strict (raises on a quarantined line), counted (returns the
+quarantine count, as `history.series` and `readProposalEvents` do) and tolerant
+(reads what the DB has, logs once to `logs/state.log`). `sil state` shows and
+manages all of this; OPERATIONS.md has the commands and the way back to an
+older plugin.
 
 ## Worlds and targets
 
@@ -412,8 +447,9 @@ is every reflected session of the world in the window, `hits` the ones whose
 (alias-resolved) reflection is this pattern; `rate` is `null` below
 `promotion.observe_min_sessions` (default 20), since a ratio over a handful of
 sessions is noise, not a signal. Reflected sessions come from two sources: a
-reflection's own `session_id` when it has one, and `usage/reflect-runs.jsonl`,
-one line per critic run that finished, recorded or not, written by the worker
+reflection's own `session_id` when it has one, and the `reflect_runs` stream
+in loop state (formerly `usage/reflect-runs.jsonl`), one row per critic run
+that finished, recorded or not, written by the worker
 right after `reflectSession` returns. The second source exists because the
 queue's `done` bucket is pruned to 500 entries and cannot serve as history; a
 world with any real volume loses the sessions that were reflected but did not

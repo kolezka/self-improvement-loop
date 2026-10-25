@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_ERROR_RESULT_PREFIX, type QueueEntry } from "@sil/core";
+import { closeState } from "@sil/statedb";
 import { writeEntry } from "@sil/store";
 import { defaultDeps, type Deps } from "../src/deps.ts";
 import { run } from "../src/main.ts";
@@ -70,11 +71,15 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  try {
+    closeState();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(tmp, { recursive: true, force: true });
   }
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 function fakeDeps(): Deps {

@@ -28,6 +28,7 @@ import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
 import { cmdReviewAccept, cmdReviewDelete, cmdReviewList, cmdReviewRehome, cmdReviewReject, cmdReviewRetire, cmdReviewShow } from "./commands/review.ts";
 import { cmdScheduleInstall, cmdScheduleShow, cmdScheduleUninstall } from "./commands/schedule.ts";
+import { cmdStateExport, cmdStateMigrate, cmdStateQuarantine, cmdStateStatus } from "./commands/state.ts";
 import { cmdStatus } from "./commands/status.ts";
 import { cmdWeb } from "./commands/web.ts";
 import { cmdWorker } from "./commands/worker.ts";
@@ -351,6 +352,27 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .argument("<name>")
     .option("--lines <n>", "", intOption)
     .action(wire((name: string, opts) => cmdLogs(name, opts)));
+
+  const state = program.command("state").description("the loop-state database: status, migrate, export, quarantine");
+  state
+    .command("status")
+    .option("--json")
+    .action(wire((opts) => cmdStateStatus(opts)));
+  state
+    .command("migrate")
+    .description("import every legacy log file now")
+    .action(wire(() => cmdStateMigrate()));
+  state
+    .command("export")
+    .description("write every store back to its legacy file path")
+    .option("--legacy-paths", "write to the original JSONL paths")
+    .option("--force", "overwrite a file that already exists")
+    .action(wire((opts) => cmdStateExport(opts)));
+  state
+    .command("quarantine")
+    .description("list lines that could not be imported")
+    .option("--drop <store>", "delete a store's quarantined lines")
+    .action(wire((opts) => cmdStateQuarantine(opts)));
 
   program.command("hook-snapshot").action(wire(() => cmdHookSnapshot()));
 

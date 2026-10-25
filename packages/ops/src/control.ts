@@ -52,7 +52,7 @@ const ALLOWED = new Set(CONTROL_READ_OPS);
 
 // Domain errors whose message is meant for the operator. Anything else is a
 // bug and gets a generic message; its detail goes to stderr only.
-const DOMAIN_ERRORS = new Set(["ConfigError", "ValidationError", "ReviewError", "GitError", "LockHeld", "ProviderError", "ProposalChanged", "QueueReadError", "StateReadError"]);
+const DOMAIN_ERRORS = new Set(["ConfigError", "ValidationError", "ReviewError", "GitError", "LockHeld", "ProviderError", "ProposalChanged", "QueueReadError", "StateReadError", "StateWriteError"]);
 const MAX_MESSAGE_CHARS = 500;
 
 // A key that names a secret, bare or quoted (also with JSON-escaped quotes),

@@ -9,6 +9,7 @@
   "dependencies": {
     "@sil/core": "workspace:*",
     "@sil/store": "workspace:*",
-    "@sil/critic": "workspace:*"
+    "@sil/critic": "workspace:*",
+    "@sil/statedb": "workspace:*"
   }
 }

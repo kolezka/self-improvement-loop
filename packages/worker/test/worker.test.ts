@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { AliasSemanticConfig, fsx, LlmConfig, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
+import { closeState } from "@sil/statedb";
 import { listQueue, loadEntry, writeEntry } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import {
@@ -28,8 +29,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  restoreEnv(savedEnv);
-  rmSync(tmpDir, { recursive: true, force: true });
+  try {
+    closeState();
+  } finally {
+    restoreEnv(savedEnv);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 function prepareEnv(): void {

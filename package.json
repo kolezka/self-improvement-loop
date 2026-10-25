@@ -33,6 +33,7 @@
     "@sil/ops": "workspace:*",
     "@sil/providers": "workspace:*",
     "@sil/review": "workspace:*",
+    "@sil/statedb": "workspace:*",
     "@sil/store": "workspace:*",
     "@sil/transcript": "workspace:*",
     "@sil/worker": "workspace:*",

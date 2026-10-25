@@ -12,6 +12,7 @@ import { decodeControlResponse } from "@sil/core/control-protocol";
 import { decodeCurationMutationResponse, type CurationMutationResponse } from "@sil/core/control-mutation";
 import { encodeLessonKey, type CurationMutation, type CurationPrecondition, type LessonKey } from "@sil/core/lesson-curation";
 import { encodeCurationMutationRequest } from "@sil/core/lesson-curation-wire";
+import { appendRecord, closeState } from "@sil/statedb";
 import { openCurationStoreForRead } from "@sil/store";
 import { createCurationFixture, useFixtureEnv, type CurationFixture } from "../../../tests/curation-fixture.ts";
 import { FIXTURE_CLAUDE_MARKER } from "../../../tests/control-fixture.ts";
@@ -49,6 +50,7 @@ afterEach(async () => {
   const exited = await Promise.race([serverChild.exited.then(() => true), Bun.sleep(5000).then(() => false)]);
   if (!exited) serverChild.kill();
   await serverChild.exited;
+  closeState();
   restoreEnv();
   fx.cleanup();
 });
@@ -270,10 +272,13 @@ describe("one dispatcher across CLI and HTTP", () => {
     const controls = "--server-positive-control\n--positive-control\n";
     expect(readFileSync(marker, "utf8")).toBe(controls);
     // Populated learning state as sentinels: any write to these shows in the diff.
+    // Feedback and proposal events live in the loop-state database, so it is
+    // seeded and closed here and its files join the inventory.
+    appendRecord("human", { ref: "skill:x", vote: "good" });
+    appendRecord("critic", { ref: "skill:x", score: 1 });
+    appendRecord("proposal_events", { event: "staged", pattern: "x" });
+    closeState();
     const sentinels: Array<[string, string]> = [
-      [paths.humanFeedbackFile(), `${JSON.stringify({ ref: "skill:x", vote: "good" })}\n`],
-      [paths.criticFeedbackFile(), `${JSON.stringify({ ref: "skill:x", score: 1 })}\n`],
-      [paths.proposalEventsFile(), `${JSON.stringify({ event: "staged", pattern: "x" })}\n`],
       [join(paths.reflectionsDir(fx.world), "2026-10-01-sentinel-0001.md"), "sentinel reflection\n"],
       [join(paths.inboxDir(fx.world), "sentinel-inbox.json"), JSON.stringify(Lesson.parse({ id: "sentinel-inbox", world: fx.world, pattern: "p", text: "sentinel", created: "2026-10-01T00:00:00.000Z" }))],
     ];
@@ -290,6 +295,7 @@ describe("one dispatcher across CLI and HTTP", () => {
       "config/config.yaml",
       "config/llm.yaml",
       ...sentinels.map(([file]) => relative(fx.root, file)),
+      relative(fx.root, paths.loopStateDb()),
     ];
     for (const seeded of seededPaths) expect(before.has(seeded)).toBe(true);
 

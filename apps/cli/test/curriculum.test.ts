@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ledgerPath, loadConfig, paths, type PromotionEntry, targetRoot } from "@sil/core";
 import { git } from "@sil/curriculum";
+import { closeState } from "@sil/statedb";
 import { loadLedger, saveLedger } from "@sil/store";
 import { run } from "../src/main.ts";
 
@@ -19,11 +20,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  try {
+    closeState();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(tmp, { recursive: true, force: true });
   }
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 describe("sil curriculum run --apply", () => {

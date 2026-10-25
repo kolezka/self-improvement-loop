@@ -109,3 +109,17 @@ describe("scripts/sil", () => {
     expect((proc.stdout ?? Buffer.alloc(0)).toString("utf8").trim()).toBe(root);
   });
 });
+
+describe("loopStateDb", () => {
+  test("lives in the state dir as loop-state.sqlite", async () => {
+    const { loopStateDb } = await import("../src/paths.ts");
+    const prev = process.env["SIL_STATE_DIR"];
+    process.env["SIL_STATE_DIR"] = tmp;
+    try {
+      expect(loopStateDb()).toBe(join(tmp, "loop-state.sqlite"));
+    } finally {
+      if (prev === undefined) delete process.env["SIL_STATE_DIR"];
+      else process.env["SIL_STATE_DIR"] = prev;
+    }
+  });
+});

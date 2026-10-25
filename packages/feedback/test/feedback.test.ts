@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type World } from "@sil/core";
+import { closeState } from "@sil/statedb";
 import { saveAliases, saveLedger, writeReflection } from "@sil/store";
-import { complaints, compactUsageEvents, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecardDiagnostics, scorecards } from "../src/index.ts";
+import { complaints, compactUsageEvents, listHuman, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecardDiagnostics, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -16,8 +17,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  restoreEnv(savedEnv);
-  rmSync(tmpDir, { recursive: true, force: true });
+  try {
+    closeState();
+  } finally {
+    restoreEnv(savedEnv);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 const NOW = new Date("2026-09-14T12:00:00.000Z");
@@ -629,13 +634,10 @@ describe("recurrence since promotion", () => {
 });
 
 describe("recordHuman", () => {
-  test("appends jsonl", () => {
+  test("appends one record to loop state", () => {
     const fb = { ts: new Date().toISOString(), world: "default", ref: "skill:steady-thing", vote: "bad" as const, note: "did not help", session_id: null };
-    const path = recordHuman(fb);
-    const lines = fsx.readJsonl<{ ref: string; vote: string }>(path);
-    expect(lines.length).toBe(1);
-    expect(lines[0]!.ref).toBe("skill:steady-thing");
-    expect(lines[0]!.vote).toBe("bad");
+    expect(recordHuman(fb)).toBe(paths.loopStateDb());
+    expect(listHuman()).toEqual([fb]);
   });
 });
 

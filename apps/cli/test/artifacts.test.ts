@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ledgerPath, loadConfig, targetRoot, worldNamed } from "@sil/core";
+import { closeState } from "@sil/statedb";
 import { run } from "../src/main.ts";
 
 let tmp: string;
@@ -17,11 +18,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  try {
+    closeState();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(tmp, { recursive: true, force: true });
   }
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 /** Seeds a promoted ledger row with no reflected sessions at all: the

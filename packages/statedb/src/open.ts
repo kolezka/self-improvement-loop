@@ -39,14 +39,14 @@ function createFile(path: string): boolean {
   }
 }
 
-function configure(db: Database): void {
-  db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+function configure(db: Database, busyMs: number): void {
+  db.run(`PRAGMA busy_timeout = ${busyMs}`);
   // WAL is persistent: set it once, at create or on a file that is not WAL yet.
   if (String(readPragma(db, "journal_mode")).toLowerCase() !== "wal") db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA synchronous = FULL");
   db.run("PRAGMA foreign_keys = ON");
   const ok =
-    readPragma(db, "busy_timeout") === BUSY_TIMEOUT_MS &&
+    readPragma(db, "busy_timeout") === busyMs &&
     String(readPragma(db, "journal_mode")).toLowerCase() === "wal" &&
     readPragma(db, "synchronous") === 2 &&
     readPragma(db, "foreign_keys") === 1;
@@ -116,17 +116,18 @@ export function checkSameDevice(dir: string, probe: Probe): void {
 }
 
 /** Open an existing file with the opener's flags and busy timeout. */
-export function connect(path: string): Database {
+export function connect(path: string, busyMs = BUSY_TIMEOUT_MS): Database {
   const db = new Database(path, { readwrite: true, create: false, strict: true });
-  db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  db.run(`PRAGMA busy_timeout = ${busyMs}`);
   return db;
 }
 
-/** Everything openState does to a fresh handle before it records the probe. */
-export function prepare(db: Database): void {
+/** Everything openState does to a fresh handle before it records the probe.
+ * `busyMs` is the busy timeout while opening; the handle keeps it. */
+export function prepare(db: Database, busyMs = BUSY_TIMEOUT_MS): void {
   const version = userVersion(db);
   if (version > SCHEMA_VERSION) throw newerSchema(version);
-  configure(db);
+  configure(db, busyMs);
   migrate(db);
 }
 
@@ -148,21 +149,31 @@ function openAt(path: string): Opened {
     // from "PRAGMA journal_mode = WAL" at once, without the busy timeout
     // applying. So a busy open starts over on a fresh handle, for up to the
     // busy timeout. Refusals (newer schema, filesystem) are not busy and stay fatal.
+    // Each attempt waits at most the time left, so the whole open stays inside
+    // the busy timeout, retries included.
     const deadline = Date.now() + BUSY_TIMEOUT_MS;
     for (;;) {
+      const busyMs = Math.max(1, deadline - Date.now());
       let db: Database | null = null;
       try {
-        db = connect(path);
+        db = connect(path, busyMs);
         checkSameDevice(dir, probe);
-        prepare(db);
+        prepare(db, busyMs);
         recordProbe(db, probe);
         // On this handle, not through openState: the cache is not filled yet.
-        return { db, firstOpen: importAllOn(db) };
+        const firstOpen = importAllOn(db);
+        db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+        if (readPragma(db, "busy_timeout") !== BUSY_TIMEOUT_MS) throw new StateWriteError("loop state: connection settings not applied");
+        return { db, firstOpen };
       } catch (error) {
         db?.close();
-        if (!isBusy(error) || Date.now() >= deadline) throw error;
+        if (!isBusy(error)) throw error;
+        const pause = Math.min(OPEN_RETRY_PAUSE_MS, deadline - Date.now());
+        // Checked right before the next attempt would start, not before the pause.
+        if (pause <= 0) throw error;
+        Bun.sleepSync(pause);
+        if (Date.now() >= deadline) throw error;
       }
-      Bun.sleepSync(OPEN_RETRY_PAUSE_MS);
     }
   } catch (error) {
     if (error instanceof StateWriteError) throw error;

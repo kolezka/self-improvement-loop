@@ -289,9 +289,27 @@ function finalize(db: Database, stream: Stream, rowId: number, counts: Counts): 
 /** Run the D6 import for one stream on `db`. Handles a claim left by a crash
  * first, then the old path once; a spill created after that waits for the next check. */
 export function importStreamOn(db: Database, stream: Stream): ImportOutcome[] {
+  const { outcomes, error } = importStreamCollecting(db, stream);
+  if (error) throw error;
+  return outcomes;
+}
+
+/** importStreamOn, but a failure comes back next to the outcomes already
+ * committed in this call (a leftover claim can import before the old path fails). */
+function importStreamCollecting(db: Database, stream: Stream): { outcomes: ImportOutcome[]; error: ImportError | null } {
+  const outcomes: ImportOutcome[] = [];
+  try {
+    importStreamPasses(db, stream, outcomes);
+    return { outcomes, error: null };
+  } catch (error) {
+    if (!(error instanceof ImportError)) throw error;
+    return { outcomes, error };
+  }
+}
+
+function importStreamPasses(db: Database, stream: Stream, outcomes: ImportOutcome[]): void {
   const original = STREAMS[stream].legacyPath();
   const claimName = claimPath(stream);
-  const outcomes: ImportOutcome[] = [];
   for (let pass = 0; pass < 2; pass++) {
     const startedAt = new Date().toISOString();
     begin(db, stream);
@@ -302,7 +320,7 @@ export function importStreamOn(db: Database, stream: Stream): ImportOutcome[] {
       if (!claim) {
         if (!statOrNull(original)) {
           db.run("COMMIT");
-          return outcomes;
+          return;
         }
         importIo.rename(original, claimName);
         claim = importIo.stat(claimName);
@@ -316,7 +334,6 @@ export function importStreamOn(db: Database, stream: Stream): ImportOutcome[] {
     const backupPath = finalize(db, stream, result.row.id, result.counts);
     outcomes.push({ stream, ...result.counts, backupPath });
   }
-  return outcomes;
 }
 
 /** The first-open import (design D4). A failure here never fails the open:
@@ -333,7 +350,10 @@ export function importAllOn(db: Database): ImportAllResult {
         recordFailure(db, stream, (error as ImportError).reason, null, new Date().toISOString());
         throw error;
       }
-      if (pending) result.outcomes.push(...importStreamOn(db, stream));
+      if (!pending) continue;
+      const collected = importStreamCollecting(db, stream);
+      result.outcomes.push(...collected.outcomes);
+      if (collected.error) throw collected.error;
     } catch (error) {
       if (!(error instanceof ImportError)) throw error;
       result.failures.push({ stream, message: error.message });

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { paths, StateWriteError } from "@sil/core";
 import * as fsProbe from "@sil/core/fs-probe";
 import type { FilesystemClass } from "@sil/core/fs-probe";
-import { closeState, openState, SCHEMA_VERSION } from "../src/index.ts";
+import { closeState, MIGRATIONS, openState, SCHEMA_VERSION } from "../src/index.ts";
 import { checkSameDevice, connect, prepare, type Probe, recordProbe } from "../src/open.ts";
 
 // mock.module stays registered for the whole bun test process, so the stub
@@ -161,4 +161,95 @@ describe("checkSameDevice", () => {
     expect(() => checkSameDevice(tmp, probe(dev + 1))).toThrow(new StateWriteError("loop state: unsupported filesystem (device changed since probe)"));
     expect(() => checkSameDevice(tmp, probe(dev))).not.toThrow();
   });
+});
+
+describe("openState under a held write lock", () => {
+  test("a write lock that is never released fails the open with SQLITE_BUSY within about 2 s", () => {
+    openState();
+    closeState();
+    const raw = new Database(paths.loopStateDb());
+    try {
+      raw.run("BEGIN IMMEDIATE");
+      const started = performance.now();
+      let error: unknown = null;
+      try {
+        openState();
+      } catch (e) {
+        error = e;
+      }
+      const elapsed = performance.now() - started;
+      expect(error).toBeInstanceOf(StateWriteError);
+      expect((error as Error).message).toBe("loop state: cannot open database (SQLITE_BUSY)");
+      expect(elapsed).toBeGreaterThanOrEqual(1900);
+      expect(elapsed).toBeLessThan(2500);
+    } finally {
+      if (raw.inTransaction) raw.run("ROLLBACK");
+      raw.close();
+    }
+  }, 15_000);
+
+  test(
+    "an attempt that starts just before the deadline waits only the time left",
+    async () => {
+      // A rollback-journal file with another process's write pending: the
+      // switch to WAL fails at once, so the opener retries fast for PHASE_MS.
+      // Then the holder starts its COMMIT while its own second connection keeps
+      // a read open, so the COMMIT waits holding a PENDING lock that blocks every
+      // new reader, with no gap. The next attempt waits in its first read. It
+      // must stop at the open's 2 s deadline, not run a full busy timeout of its own.
+      const PHASE_MS = 1200;
+      const p = paths.loopStateDb();
+      mkdirSync(dirname(p), { recursive: true });
+      const seed = new Database(p, { create: true });
+      MIGRATIONS[0]!.up(seed);
+      seed.run("PRAGMA user_version = 1");
+      seed.close();
+      const holder =
+        `import { Database } from "bun:sqlite";\n` +
+        `const reader = new Database(${JSON.stringify(p)});\nreader.run("BEGIN");\nreader.query("SELECT count(*) FROM meta").get();\n` +
+        `const db = new Database(${JSON.stringify(p)});\ndb.run("PRAGMA busy_timeout = 10000");\n` +
+        'db.run("BEGIN IMMEDIATE");\ndb.run("INSERT INTO meta (key, value) VALUES (\'holder\', \'x\')");\nconsole.log("rollback-locked");\n' +
+        `Bun.sleepSync(${PHASE_MS});\nconsole.log("committing");\n` +
+        'try { db.run("COMMIT"); console.log("committed"); } catch (e) { console.log("commit " + e.code); }\n';
+      const env = { PATH: process.env["PATH"] ?? "", HOME: join(tmp, "home"), SIL_STATE_DIR: process.env["SIL_STATE_DIR"]! };
+      const child = Bun.spawn(["bun", "-e", holder], { env, stdout: "pipe", stderr: "pipe" });
+      const reader = child.stdout.getReader();
+      let out = "";
+      try {
+        while (!out.includes("rollback-locked")) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          out += new TextDecoder().decode(value);
+        }
+        expect(out).toContain("rollback-locked");
+        const started = performance.now();
+        let error: unknown = null;
+        try {
+          openState();
+        } catch (e) {
+          error = e;
+        }
+        const elapsed = performance.now() - started;
+        // Positive control: the holder reached its COMMIT and was still in it
+        // (not committed) when the open gave up.
+        child.kill();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          out += new TextDecoder().decode(value);
+        }
+        expect(out).toContain("committing");
+        expect(out).not.toContain("committed");
+        expect(error).toBeInstanceOf(StateWriteError);
+        expect((error as Error).message).toBe("loop state: cannot open database (SQLITE_BUSY)");
+        expect(elapsed).toBeGreaterThanOrEqual(1900);
+        expect(elapsed).toBeLessThan(2500);
+      } finally {
+        reader.releaseLock();
+        child.kill();
+        await child.exited;
+      }
+    },
+    15_000,
+  );
 });

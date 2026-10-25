@@ -407,4 +407,26 @@ describe("importAll", () => {
     expect(rowCount("human")).toBe(1);
     expect((db.query("SELECT count(*) AS n FROM legacy_imports WHERE state = 'verified'").get() as { n: number }).n).toBe(1);
   });
+
+  test("a committed claim import is kept in the outcomes when the same stream's next file fails", () => {
+    const claim = `${critic()}.importing`;
+    seedRaw(claim, '{"n":1}\n');
+    fsx.appendJsonl(critic(), { n: 2 });
+    // The first read of the claim name is the leftover claim; the second is the old path after its claim rename.
+    let claimReads = 0;
+    setImportIoForTest({
+      stat: (path) => statSync(path),
+      rename: (from, to) => renameSync(from, to),
+      readFile: (path) => {
+        if (path === claim && ++claimReads === 2) throw ioError("EIO");
+        return readFileSync(path);
+      },
+    });
+    let result = { outcomes: [] as { stream: Stream; imported: number }[], failures: [] as unknown[] };
+    expect(caught(() => (result = importAll() as unknown as typeof result))).toBeNull();
+    expect(claimReads).toBe(2);
+    expect(result.outcomes.map((o) => [o.stream, o.imported])).toEqual([["critic", 1]]);
+    expect(result.failures).toEqual([{ stream: "critic", message: "the critic feedback log cannot be imported (EIO)" }]);
+    expect(rowCount("critic")).toBe(1);
+  });
 });

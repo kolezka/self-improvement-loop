@@ -327,6 +327,23 @@ lock for longer than that, which `sil state status` and the state log show.
 Aliases go through `saveAliases`, so a legacy file that breaks the one-hop rule is
 quarantined, not imported around the check.
 
+Phase 2 rulings, as built:
+
+- Per-world legacy files are found by listing the filesystem (`legacyWorlds`),
+  not from config, so a world that left the config still imports. A world dir
+  that cannot be listed fails loud: EACCES is not "absent".
+- The importer is NFC-only, like today's readers. On a filesystem that keeps NFC
+  and NFD names apart, a legacy file with an NFD name is left untouched (D9).
+- A document import replaces the row. There is no tail import for documents:
+  their writers rename atomically, so any size difference on a claimed document
+  is `claimed file changed after import`.
+- An aliases file that is not valid JSON quarantines with reason `not JSON`. A
+  file that fails the map or pair rule, or the one-hop rule, quarantines with
+  that rule's message.
+- The legacy import does not call `saveAliases`, as the paragraph above planned.
+  It writes the `aliases` rows of the world itself, one per pair, after running
+  the same `assertOneHop` from `@sil/core` (D13).
+
 The originals stay on disk, byte for byte, under the backup name, with their
 sha256 in `legacy_imports`. That is the backup. They are removed only by a later
 cleanup stage, never by this one.
@@ -377,6 +394,9 @@ CREATE TABLE docs (name TEXT NOT NULL, world TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (name, world));     -- 'queue_cleared', 'worker_status', 'refine_attempts'
 CREATE TABLE aliases (world TEXT NOT NULL, alias TEXT NOT NULL, canonical TEXT NOT NULL,
   PRIMARY KEY (world, alias));
+ALTER TABLE quarantine ADD COLUMN world TEXT;
+-- Per-world stores record their world on a quarantine row, so a strict read of
+-- one world does not fail on another world's quarantined file.
 
 -- v3 (phase 3): no new table; streams 'usage_events', 'nudge_fires', 'hook_runs',
 -- 'payload_samples' in log_records, plus an index for compaction:
@@ -455,10 +475,17 @@ reads it today: the web console ignores the result (`Artifacts.svelte:273`) and
 the CLI ignores the return (`commands/feedback.ts:16`) (finding 9).
 
 Documents: `loadQueueCleared` keeps raising `ValidationError` with its label;
-`statusLastRun` keeps raising `StateReadError("worker-status.json ...")` with the
-label kept as "worker-status" (the file name no longer applies; the message text
-changes, the class does not). `loadAliasesStrict` and `loadAliases` keep their
-split. `loadAttempts` stays tolerant.
+`statusLastRun` keeps raising `StateReadError` (the file name no longer applies;
+the message text changes, the class does not). `loadAliasesStrict` and
+`loadAliases` keep their split. `loadAttempts` stays tolerant.
+
+As built in phase 2, the labels are `the queue cutoffs`, `the worker status`,
+`the refine attempts of world "<w>"` and `the aliases of world "<w>"`. A strict
+read of a store with a quarantined file raises `<label> could not be imported;
+see sil state quarantine`. A row that is present but whose body is not a JSON
+object is malformed (`<label> is not a JSON object`), never read as missing. A
+tolerant read of a store that has rows and also a quarantined later file returns
+the rows.
 
 ### D9. Ids and world names
 
@@ -542,6 +569,11 @@ The bundle stays a file tree with the same paths and line format
   the host is skipped unless `--force`, which replaces that stream's rows in one
   transaction. Aliases import through `saveAliases` (today `copyOne` bypasses the
   one-hop check). Bad lines in a bundle file are quarantined, as in D6.
+- As built in phase 2: the one-hop rule has one implementation, `assertOneHop`
+  in `@sil/core`, and every path that writes aliases runs it: `replaceAliases`
+  (behind `saveAliases`) for API and bundle writes, and the legacy importer for
+  a file it imports (a file that fails it is quarantined whole). A bundle
+  `aliases.json` that fails validation becomes a warning, not a write.
 - Contents do not change: still no hook-runs, reflect-runs or proposal-events in
   a bundle.
 
@@ -583,7 +615,14 @@ New `sil state` command:
   every import backup and its check stay listed. An empty stream whose legacy file
   still exists gets an empty file only when that file matches a recorded verified
   row; otherwise the export refuses (final review, I1).
-- `sil state quarantine [--drop <store>]`.
+  Phase 2: the export also writes documents and aliases back, in `fsx.writeJson`
+  format (two-space JSON and a trailing newline). The I1 rule carries over: an
+  aliases world that was emptied, whose exported file is recorded, gets `{}` with
+  `--force`. A document whose row is gone has no empty form, so its file is
+  refused. Export and status enumerate the same set: every document and aliases
+  ref the DB knows plus every world with a legacy file.
+- `sil state quarantine [--drop <store> [--world <w>]]`. Without `--world`, a
+  per-world store drops the quarantine of every world.
 
 ### D15. Docs
 

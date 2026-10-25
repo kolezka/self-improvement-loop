@@ -1,17 +1,18 @@
 // Loop state end to end through the real modules, no mocks and no seams: four
-// legacy JSONL logs in a tmp home, read back through scorecards, proposal
-// events, history.series and the real `sil state` CLI. Then the way back:
-// export to the legacy paths and migrate again without doubling a row.
+// legacy JSONL logs, three legacy documents and an aliases file in a tmp home,
+// read back through scorecards, proposal events, history.series, the queue and
+// worker ops, the aliases reader and the real `sil state` CLI. Then the way back: export to the
+// legacy paths and migrate again without doubling a row.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { Ledger, ledgerPath, loadConfig, paths, type Scorecard, worldNamed } from "@sil/core";
+import { fsx, Ledger, ledgerPath, loadConfig, paths, type QueueEntry, type Scorecard, worldNamed } from "@sil/core";
 import * as feedback from "@sil/feedback";
 import { invoke } from "@sil/ops";
 import { closeState, readRecords, type StateStatus, type Stream } from "@sil/statedb";
-import { readProposalEvents, saveLedger } from "@sil/store";
+import { loadAliases, loadQueueCleared, readProposalEvents, saveLedger, writeEntry } from "@sil/store";
 import type { HistorySeries } from "../packages/ops/src/handlers/history.ts";
 
 const REPO = join(import.meta.dir, "..");
@@ -216,5 +217,159 @@ describe("loop state end to end", () => {
       expect(existsSync(LEGACY[stream]())).toBe(false);
     }
     expect(readProposalEvents().events).toHaveLength(3);
+  });
+});
+
+// Phase 2: three documents and the aliases file, next to the four logs.
+type DocStore = "queue_cleared" | "worker_status" | "refine_attempts" | "aliases";
+const DOC_NAMES: DocStore[] = ["aliases", "queue_cleared", "refine_attempts", "worker_status"];
+const DOC_LEGACY: Record<DocStore, () => string> = {
+  queue_cleared: () => paths.queueClearedFile(),
+  worker_status: () => join(paths.stateDir(), "worker-status.json"),
+  refine_attempts: () => paths.refineAttemptsFile(WORLD),
+  aliases: () => paths.aliasesFile(WORLD),
+};
+
+function doneEntry(sessionId: string, lastStop: string): QueueEntry {
+  return {
+    session_id: sessionId,
+    transcript_path: "/tmp/x.jsonl",
+    cwd: "/tmp",
+    world: WORLD,
+    git_head: null,
+    first_stop: lastStop,
+    last_stop: lastStop,
+    stops: 1,
+    ended: true,
+    tool_uses: 5,
+    attempts: 0,
+    result: "recorded: x",
+  };
+}
+
+interface DocSeeds {
+  cutoff: string;
+  lastRun: string;
+  aliases: Record<string, string>;
+  text: Record<DocStore, string>;
+}
+
+/** Writes the three legacy documents and the aliases file with fsx.writeJson, the format export writes back. */
+function seedDocs(): DocSeeds {
+  const now = Date.now();
+  const cutoff = new Date(now - 3600_000).toISOString();
+  const lastRun = new Date(now - 60_000).toISOString();
+  const aliases = { "check-callsites": PATTERN, "verify-call-sites": PATTERN };
+  const values: Record<DocStore, unknown> = {
+    queue_cleared: { done: cutoff, failed: null },
+    worker_status: { last_run: lastRun, last_summary: null },
+    refine_attempts: { "skill:stale-rule": "2026-10-20T10:00:00.000Z" },
+    aliases,
+  };
+  const text = {} as Record<DocStore, string>;
+  for (const doc of DOC_NAMES) {
+    fsx.writeJson(DOC_LEGACY[doc](), values[doc]);
+    text[doc] = readFileSync(DOC_LEGACY[doc](), "utf8");
+  }
+  // One done session before the cutoff (hidden) and one after it (shown).
+  writeEntry("done", doneEntry("sess-before", new Date(now - 2 * 3600_000).toISOString()));
+  writeEntry("done", doneEntry("sess-after", new Date(now - 1800_000).toISOString()));
+  return { cutoff, lastRun, aliases, text };
+}
+
+const DOC_ROWS: Record<DocStore, { world: string | null; rows: number }> = {
+  aliases: { world: WORLD, rows: 2 },
+  queue_cleared: { world: null, rows: 1 },
+  refine_attempts: { world: WORLD, rows: 1 },
+  worker_status: { world: null, rows: 1 },
+};
+
+function expectDocs(status: StateStatus): void {
+  expect(status.docs.map((d) => d.store)).toEqual(DOC_NAMES);
+  for (const d of status.docs) {
+    const doc = d.store as DocStore;
+    expect(d).toEqual({ store: doc, world: DOC_ROWS[doc].world, rows: DOC_ROWS[doc].rows, quarantined: 0, pending: false });
+  }
+}
+
+describe("documents end to end", () => {
+  test("legacy documents import once, read the same through every reader, and keep byte-exact backups", async () => {
+    const logs = seedLegacy();
+    const seeded = seedDocs();
+    for (const doc of DOC_NAMES) expect(existsSync(DOC_LEGACY[doc]())).toBe(true);
+    expect(existsSync(paths.loopStateDb())).toBe(false);
+
+    const list = (await invoke("queue.list", {})) as {
+      done: { session_id: string }[];
+      hidden: { done: number; failed: number };
+      cleared: { done: string | null; failed: string | null };
+    };
+    expect(list.cleared).toEqual({ done: seeded.cutoff, failed: null });
+    expect(list.done.map((e) => e.session_id)).toEqual(["sess-after"]);
+    expect(list.hidden).toEqual({ done: 1, failed: 0 });
+
+    const worker = (await invoke("worker.status", {})) as { last_run: string | null };
+    expect(worker.last_run).toBe(seeded.lastRun);
+
+    expect(loadAliases(WORLD)).toEqual(seeded.aliases);
+
+    const status = statusJson();
+    expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
+    expect(status.schemaVersion).toBe(2);
+    expectDocs(status);
+    expect(status.imports).toHaveLength(8);
+    for (const imp of status.imports) {
+      expect(imp.state).toBe("verified");
+      expect(imp.backupCheck).toBe("ok");
+    }
+    for (const doc of DOC_NAMES) {
+      const imp = status.imports.find((i) => i.store === doc);
+      expect(imp).toBeDefined();
+      expect(imp!.world).toBe(DOC_ROWS[doc].world);
+      expect(imp!.backupPath!.startsWith(`${DOC_LEGACY[doc]()}.imported-`)).toBe(true);
+      expect(readFileSync(imp!.backupPath!, "utf8")).toBe(seeded.text[doc]);
+      expect(existsSync(DOC_LEGACY[doc]())).toBe(false);
+    }
+    for (const stream of STREAM_NAMES) {
+      const imp = status.imports.find((i) => i.store === stream);
+      expect(readFileSync(imp!.backupPath!, "utf8")).toBe(logs[stream]);
+      expect(existsSync(LEGACY[stream]())).toBe(false);
+    }
+  });
+
+  test("the way back: export writes all eight files, migrate takes them back with the same counts", () => {
+    const logs = seedLegacy();
+    const seeded = seedDocs();
+    const first = sil(["state", "migrate"]);
+    expect(first.stderr).toBe("");
+    expect(first.exitCode).toBe(0);
+    expectDocs(statusJson());
+
+    const exported = sil(["state", "export", "--legacy-paths"]);
+    expect(exported.stderr).toBe("");
+    expect(exported.exitCode).toBe(0);
+    for (const stream of STREAM_NAMES) {
+      expect(exported.stdout).toContain(`wrote ${LEGACY[stream]()}`);
+      expect(readFileSync(LEGACY[stream](), "utf8")).toBe(logs[stream]);
+    }
+    for (const doc of DOC_NAMES) {
+      expect(exported.stdout).toContain(`wrote ${DOC_LEGACY[doc]()}`);
+      // What the older plugin reads is what it wrote.
+      expect(readFileSync(DOC_LEGACY[doc](), "utf8")).toBe(seeded.text[doc]);
+    }
+
+    const back = sil(["state", "migrate"]);
+    expect(back.stderr).toBe("");
+    expect(back.exitCode).toBe(0);
+    const after = statusJson();
+    expect(after.suspended).toBeNull();
+    expectDocs(after);
+    const counts = { reflect_runs: 3, critic: 4, human: 2, proposal_events: 3 };
+    for (const stream of STREAM_NAMES) {
+      expect(after.streams[stream]).toEqual({ rows: counts[stream], quarantined: 0, pending: false });
+    }
+    for (const doc of DOC_NAMES) expect(existsSync(DOC_LEGACY[doc]())).toBe(false);
+    expect(loadQueueCleared()).toEqual({ done: seeded.cutoff, failed: null });
+    expect(loadAliases(WORLD)).toEqual(seeded.aliases);
   });
 });

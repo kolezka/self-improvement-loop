@@ -6,6 +6,7 @@ import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fsx, paths, StateWriteError } from "@sil/core";
 import { probeFilesystem } from "@sil/core/fs-probe";
+import { importAllOn } from "./import.ts";
 import { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 
 const BUSY_TIMEOUT_MS = 2000;
@@ -141,6 +142,8 @@ function openAt(path: string): Database {
     checkSameDevice(dir, probe);
     prepare(db);
     recordProbe(db, probe);
+    // On this handle, not through openState: the cache is not filled yet.
+    importAllOn(db);
     return db;
   } catch (error) {
     db?.close();
@@ -149,7 +152,8 @@ function openAt(path: string): Database {
   }
 }
 
-/** The loop-state database for the current STATE dir. Throws StateWriteError
+/** The loop-state database for the current STATE dir. The first open per path
+ * also imports every pending legacy file. Throws StateWriteError
  * on an unsupported filesystem, a newer schema, or any open failure. */
 export function openState(): Database {
   const path = resolve(paths.loopStateDb());

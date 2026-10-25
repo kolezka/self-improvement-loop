@@ -1,7 +1,7 @@
 // Alias maps in the aliases table, one row per pair and world. replaceAliases
 // is the single place an alias write checks the one-hop rule.
 
-import { assertOneHop, StateWriteError } from "@sil/core";
+import { assertOneHop, isSlug, StateWriteError, ValidationError } from "@sil/core";
 import { type DocMode, readStore, storeRef } from "./docs.ts";
 import { ensureImported, reasonOf } from "./import.ts";
 import { openState } from "./open.ts";
@@ -15,22 +15,24 @@ export function readAliases(world: string, mode: DocMode): Record<string, string
       alias: string;
       canonical: string;
     }[];
-    const map: Record<string, string> = {};
-    for (const row of rows) map[row.alias] = row.canonical;
-    return map;
+    // fromEntries defines own keys, so a "__proto__" row is not lost to the setter.
+    return Object.fromEntries(rows.map((row) => [row.alias, row.canonical]));
   });
 }
 
-/** Replace every alias of a world. A chain throws the core ValidationError
- * unchanged; any other failure throws StateWriteError starting with the label. */
+/** Replace every alias of a world. Every key and value must be a pattern
+ * name. A chain throws the core ValidationError unchanged; any other failure
+ * throws StateWriteError starting with the label. */
 export function replaceAliases(world: string, aliases: Record<string, string>): void {
   const ref = storeRef("aliases", world);
   const label = STORES.aliases.label(ref.world);
-  assertOneHop(aliases);
   try {
-    for (const canonical of Object.values(aliases)) {
-      if (typeof canonical !== "string") throw new StateWriteError(`${label} cannot be written (not a map of names)`);
+    const notNames = new StateWriteError(`${label} cannot be written (not a map of names)`);
+    if (aliases === null || typeof aliases !== "object" || Array.isArray(aliases)) throw notNames;
+    for (const [alias, canonical] of Object.entries(aliases)) {
+      if (typeof canonical !== "string" || !isSlug(alias) || !isSlug(canonical)) throw notNames;
     }
+    assertOneHop(aliases);
     // A legacy file still waiting at the old path is older than this write.
     ensureImported(ref);
     const db = openState();
@@ -44,6 +46,7 @@ export function replaceAliases(world: string, aliases: Record<string, string>): 
       if (db.inTransaction) db.run("ROLLBACK");
     }
   } catch (error) {
+    if (error instanceof ValidationError) throw error;
     if (error instanceof StateWriteError && error.message.startsWith(label)) throw error;
     throw new StateWriteError(`${label} cannot be written (${reasonOf(error)})`);
   }

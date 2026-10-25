@@ -349,8 +349,8 @@ function docTextOn(db: Database, ref: StoreRef): { text: string; lines: number }
   if (ref.store === "aliases") {
     const rows = db.query("SELECT alias, canonical FROM aliases WHERE world = ? ORDER BY alias").all(rowWorld) as { alias: string; canonical: string }[];
     if (rows.length === 0) return null;
-    const map: Record<string, string> = {};
-    for (const row of rows) map[row.alias] = row.canonical;
+    // fromEntries defines own keys, so a "__proto__" row is not lost to the setter.
+    const map = Object.fromEntries(rows.map((row) => [row.alias, row.canonical]));
     return { text: `${JSON.stringify(map, null, 2)}\n`, lines: rows.length };
   }
   const row = db.query("SELECT body FROM docs WHERE name = ? AND world = ?").get(ref.store, rowWorld) as { body: string } | null;
@@ -468,12 +468,22 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
         fail(ref, `${label} cannot be read (${reasonOf(error)})`);
         continue;
       }
-      if (content === null) continue;
       const target = STORES[ref.store].legacyPath(ref.world);
       const refusal = refusalFor(db, target, force);
+      // Nothing in the loop state and no file at the path: nothing to write.
+      if (content === null && !refusal) continue;
       if (refusal?.message) {
         result.refused.push({ path: target, message: refusal.message });
         continue;
+      }
+      // An emptied store whose recorded file is still there (design D14, final
+      // review I1): aliases get the empty map; a document has no empty form.
+      if (content === null) {
+        if (ref.store !== "aliases") {
+          result.refused.push({ path: target, message: `${target} holds ${label}, which no longer exists in the loop state` });
+          continue;
+        }
+        content = { text: "{}\n", lines: 0 };
       }
       stage(ref, target, content.text, content.lines, refusal?.supersedes ?? null);
     }

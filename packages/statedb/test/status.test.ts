@@ -128,4 +128,50 @@ describe("documents and aliases in status and quarantine", () => {
     ]);
     expect(result.written).toEqual([paths.refineAttemptsFile("b")]);
   });
+
+  test("a forced export of an emptied aliases world replaces its exported file with {}", () => {
+    replaceAliases("default", { a: "b" });
+    expect(exportLegacy(false).written).toEqual([paths.aliasesFile("default")]);
+    replaceAliases("default", {});
+    const result = exportLegacy(true);
+    expect(result.failures).toEqual([]);
+    expect(result.refused).toEqual([]);
+    expect(result.written).toEqual([paths.aliasesFile("default")]);
+    expect(readFileSync(paths.aliasesFile("default"), "utf8")).toBe("{}\n");
+    const rows = openState()
+      .query("SELECT world, lines_imported AS lines, size FROM legacy_imports WHERE origin = 'export' AND store = 'aliases' ORDER BY id")
+      .all();
+    expect(rows).toEqual([
+      { world: "default", lines: 1, size: Buffer.byteLength(`${JSON.stringify({ a: "b" }, null, 2)}\n`) },
+      { world: "default", lines: 0, size: 3 },
+    ]);
+  });
+
+  test("an emptied aliases world without --force refuses the existing file", () => {
+    replaceAliases("default", { a: "b" });
+    exportLegacy(false);
+    replaceAliases("default", {});
+    const result = exportLegacy(false);
+    expect(result.refused).toEqual([{ path: paths.aliasesFile("default"), message: `${paths.aliasesFile("default")} already exists; pass --force to overwrite it` }]);
+    expect(readFileSync(paths.aliasesFile("default"), "utf8")).toBe(`${JSON.stringify({ a: "b" }, null, 2)}\n`);
+  });
+
+  test("an aliases export keeps a __proto__ row", () => {
+    replaceAliases("default", { safe: "s" });
+    openState().query("INSERT INTO aliases (world, alias, canonical) VALUES ('default', '__proto__', 'x')").run();
+    exportLegacy(false);
+    const text = readFileSync(paths.aliasesFile("default"), "utf8");
+    expect(Object.keys(JSON.parse(text))).toEqual(["__proto__", "safe"]);
+  });
+
+  test("a forced export refuses a recorded document file whose row is gone", () => {
+    saveDoc("queue_cleared", null, { default: "t" });
+    exportLegacy(false);
+    openState().query("DELETE FROM docs WHERE name = 'queue_cleared'").run();
+    const result = exportLegacy(true);
+    expect(result.refused).toEqual([
+      { path: paths.queueClearedFile(), message: `${paths.queueClearedFile()} holds the queue cutoffs, which no longer exists in the loop state` },
+    ]);
+    expect(readFileSync(paths.queueClearedFile(), "utf8")).toBe(`${JSON.stringify({ default: "t" }, null, 2)}\n`);
+  });
 });

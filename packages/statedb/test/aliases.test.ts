@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StateReadError, ValidationError } from "@sil/core";
+import { paths, StateReadError, StateWriteError, ValidationError } from "@sil/core";
 import { closeState, openState, readAliases, replaceAliases } from "../src/index.ts";
 
 let tmp: string;
@@ -70,5 +71,26 @@ describe("readAliases and replaceAliases", () => {
     expect((error as Error).message).toBe('the aliases of world "a" could not be imported; see sil state quarantine');
     expect(readAliases("a", "tolerant")).toEqual({});
     expect(readAliases("b", "strict")).toEqual({ x: "y" });
+  });
+
+  test("a __proto__ row reads back as an own key, and replaceAliases refuses a non-slug key", () => {
+    replaceAliases("default", { safe: "s" });
+    closeState();
+    const raw = new Database(paths.loopStateDb());
+    raw.query("INSERT INTO aliases (world, alias, canonical) VALUES ('default', '__proto__', 'x')").run();
+    raw.close();
+    const read = readAliases("default", "strict");
+    expect(Object.hasOwn(read, "__proto__")).toBe(true);
+    expect(Object.keys(read)).toEqual(["__proto__", "safe"]);
+    const bad: Record<string, string> = Object.fromEntries([["__proto__", "y"]]);
+    const error = caught(() => replaceAliases("default", bad));
+    expect(error).toBeInstanceOf(StateWriteError);
+    expect((error as Error).message).toBe('the aliases of world "default" cannot be written (not a map of names)');
+  });
+
+  test("a malformed map is a labeled StateWriteError, not a raw TypeError", () => {
+    const error = caught(() => replaceAliases("default", null as unknown as Record<string, string>));
+    expect(error).toBeInstanceOf(StateWriteError);
+    expect((error as Error).message.startsWith('the aliases of world "default" cannot be written (')).toBe(true);
   });
 });

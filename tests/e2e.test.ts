@@ -14,6 +14,7 @@ import * as curriculum from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
 import type { ChatFn } from "@sil/providers";
 import * as review from "@sil/review";
+import { closeState } from "@sil/statedb";
 import * as store from "@sil/store";
 import * as worker from "@sil/worker";
 
@@ -71,11 +72,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const k of ENV_KEYS) {
-    if (saved[k] === undefined) delete process.env[k];
-    else process.env[k] = saved[k];
+  try {
+    closeState();
+  } finally {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    rmSync(tmp, { recursive: true, force: true });
   }
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 function runHook(payload: Record<string, unknown>): Record<string, unknown> | null {

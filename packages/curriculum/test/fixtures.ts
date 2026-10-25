@@ -10,14 +10,14 @@ import { dirname, join } from "node:path";
 import {
   type Config,
   Config as ConfigSchema,
-  fsx,
   type Layout,
-  paths,
   targetRoot,
   World as WorldSchema,
   type World,
 } from "@sil/core";
 import { git, setNudgeAdapter, type GateCorpusResult, type NudgeAdapter } from "@sil/curriculum";
+import { recordReflectRun } from "@sil/feedback";
+import { closeState } from "@sil/statedb";
 import { writeReflection } from "@sil/store";
 
 const ENV_KEYS = [
@@ -65,11 +65,15 @@ export function silEnv(): TestEnv {
 }
 
 export function cleanupEnv(env: TestEnv): void {
-  for (const [key, value] of Object.entries(env.saved)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
+  try {
+    closeState();
+  } finally {
+    for (const [key, value] of Object.entries(env.saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(env.tmp, { recursive: true, force: true });
   }
-  rmSync(env.tmp, { recursive: true, force: true });
 }
 
 // --- worlds and config -------------------------------------------------------
@@ -156,7 +160,7 @@ export function writeSessionReflection(world: World, pattern: string, day: strin
  * files than the scenario needs. */
 export function writeFillerSessions(world: World, day: string, n: number, startAt: number): void {
   for (let i = 0; i < n; i++) {
-    fsx.appendJsonl(paths.reflectRunsFile(), {
+    recordReflectRun({
       ts: `${day}T00:00:00Z`,
       world: world.name,
       session_id: `filler-${startAt + i}`,

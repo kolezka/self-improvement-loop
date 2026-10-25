@@ -11,7 +11,6 @@ import {
   ledgerPath,
   servedType,
   modelFor,
-  paths,
   SECTIONS,
   StateReadError,
   targetRoot,
@@ -23,6 +22,7 @@ import {
 import { gitRepositoryRoot } from "@sil/core/repo-root";
 import type { ChatFn, ChatMessage } from "@sil/providers";
 import { chat as defaultChat } from "@sil/providers";
+import { appendRecord } from "@sil/statedb";
 import { loadLedger, patternCounts, listReflections, putLesson, writeReflection } from "@sil/store";
 import { evidencePack, type EvidencePack } from "@sil/transcript";
 
@@ -431,7 +431,5 @@ function appendFeedbackEvents(
   for (const m of misfired) lines.push({ ...refField(m), verdict: "misfired", reflection_id: reflectionId, ts, world, reason: m.reason });
   // The model often names a rule by its slug alone; scorecards join on `rule:<slug>`.
   for (const ref of rulesRelevant) lines.push({ ref: ref.includes(":") ? ref : `rule:${ref}`, verdict: "relevant", reflection_id: reflectionId, ts, world });
-  if (lines.length === 0) return;
-  const path = paths.criticFeedbackFile();
-  for (const line of lines) fsx.appendJsonl(path, line);
+  for (const line of lines) appendRecord("critic", line);
 }

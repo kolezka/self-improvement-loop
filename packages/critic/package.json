@@ -10,6 +10,7 @@
     "@sil/core": "workspace:*",
     "@sil/store": "workspace:*",
     "@sil/transcript": "workspace:*",
-    "@sil/providers": "workspace:*"
+    "@sil/providers": "workspace:*",
+    "@sil/statedb": "workspace:*"
   }
 }

@@ -582,18 +582,29 @@ Older builds read the JSONL files and know nothing about the DB. To downgrade:
      or `StartInterval` (seconds) in whichever of
      `~/Library/LaunchAgents/com.raqz.sil-worker.plist` and the older
      `com.kolezka.sil-worker.plist` exists;
-   - run `sil schedule uninstall`. It removes the unit files even when stopping
-     a job failed, so check that the scheduler let go. The line for your system
-     must print nothing:
+   - run `sil schedule uninstall`. It removes unit files even when stopping a
+     job fails. On macOS, this must print nothing:
 
-     ```
-     launchctl list | grep -E 'com\.(raqz|kolezka)\.sil-'      # macOS
-     systemctl --user list-units --all | grep 'sil-'           # Linux
+     ```sh
+     launchctl list | grep -E 'com\.(raqz|kolezka)\.sil-'
      ```
 
-     A label still listed is a loaded job that can start a worker. Remove it
-     with `launchctl remove <label>` or
-     `systemctl --user disable --now <unit>`, then check again;
+     If a label remains, run `launchctl remove <label>` and check again.
+     On Linux, check each unit named in `apps/cli/src/schedule.ts`:
+
+     ```sh
+     for unit in sil-worker.timer sil-worker.service sil-web.service; do
+       state=$(systemctl --user show -p ActiveState "$unit") || { echo "cannot check $unit"; exit 1; }
+       case "$state" in
+         ActiveState=active|ActiveState=activating) echo "$unit is $state"; exit 1 ;;
+       esac
+     done
+     ```
+
+     Every query must exit 0, and every unit must be neither active nor
+     activating. If a unit is still running, use `systemctl --user stop <unit>`
+     and check again. If a query fails, stop the rollback and investigate;
+     a failed query does not prove the scheduler stopped;
    - check that no worker, web or curriculum process is left:
 
      ```

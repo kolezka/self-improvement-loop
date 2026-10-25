@@ -560,32 +560,60 @@ sil state export --legacy-paths [--force]
 
 `status` re-reads every backup. `backup ok` means it still matches what was
 imported. `backup grew after import: N bytes not in the DB` means an older
-process appended to it after the import; `sil state migrate` does not pick that
-up, so copy those lines over by hand if you need them.
+process appended N bytes to the file after the import. Those lines are only in
+the backup: no reader sees them, `sil state migrate` does not look at backups,
+and `sil state export` does not write them. To bring them in, copy the last N
+bytes to the old path and import that:
 
-A quarantined line keeps its raw text in the DB, and the backup still has it.
-While a store has quarantined lines, strict readers (the consoles' scorecards),
-`sil export` and `sil state export` refuse to read that store. Once you have what you
-need from the line, drop it with `--drop`; the backup keeps the raw text.
+```
+tail -c N <backup path> >> <old path>    # for example .../feedback/human.jsonl
+sil state migrate
+```
+
+Check the copied lines first. Status keeps saying `grew` for that backup
+afterwards, because the backup itself still differs from what was imported.
+
+A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
+old JSONL file is also still whole in that file's backup. A line from a bundle
+(`sil import bundle`) has no backup: the DB copy is all the loop keeps. While a
+store has quarantined lines, strict readers (the consoles' scorecards),
+`sil export` and `sil state export` refuse to read that store. Before
+`--drop`, make sure you still have the backup or the bundle the line came from.
 
 ### Going back to an older plugin
 
 Older builds read the JSONL files and know nothing about the DB. To downgrade:
 
-1. `sil state export --legacy-paths`. This writes each store back to its old
-   path in the old format and pauses imports, so the new build leaves those
-   files alone. It refuses a path that already has a file. `--force` only
-   replaces a file that is exactly one this DB already recorded; any other file
-   may hold lines the DB lacks, so run `sil state migrate` first.
-2. Install the older plugin right away. Anything the new build writes between
-   step 1 and the install, such as a worker pass or a vote, goes only to the DB.
-   The older build will not see it.
+1. Stop everything of the new version that writes. `sil schedule uninstall`
+   removes the worker timer and the web service (`sil schedule show` confirms).
+   Stop any `sil web` or `sil worker --loop` you started by hand. Set
+   `worker.auto_kick: false` in `config.yaml` and run `sil hook-snapshot`, so a
+   Claude Code hook does not start a worker (hooks read the snapshot, not
+   `config.yaml`). Do not vote or run other `sil` commands until step 6.
+2. Run `sil state status` and look for `backup grew after import`. That backup
+   holds lines the DB does not have, and the export will not include them:
+   bring them in as described above first. Clear any quarantined lines
+   too (`sil state quarantine`), or that store will not export.
+3. Run `sil state export --legacy-paths`. It writes each store that has rows to
+   its old path in the old format, and pauses imports so this build leaves those
+   files alone. A store with no rows gets no file.
+4. If the export exits 1, stop. Do not install the older plugin. The export may
+   have written some stores and paused imports, but at least one store is
+   missing. Read its `error:` lines and fix the cause: for "has lines that are
+   not in the loop state" run `sil state migrate`; for quarantined lines see
+   above; for "already exists" pass `--force`, which replaces only a file that
+   is exactly one this DB recorded. Then run the export again until it exits 0.
+5. Check that the old path of every store with rows in `sil state status` has a
+   file.
+6. Install the older plugin. Then put back what step 1 stopped with the older
+   build's own commands: `sil schedule install`, and `worker.auto_kick` plus
+   `sil hook-snapshot` if you want it on.
 
 If you upgrade again later, run `sil state migrate` once. Until then imports
 stay paused, `sil state status` says `legacy imports suspended since ...`, and
-nothing the older build wrote is read. Migrate turns an unchanged
-exported file into a backup without importing it twice, and imports only the
-lines the older build appended.
+nothing the older build wrote is read. Migrate turns an unchanged exported file
+into a backup without importing it twice, and imports only the lines the older
+build appended.
 
 ### Reading the DB directly
 
@@ -597,9 +625,11 @@ sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
   "SELECT body FROM log_records WHERE stream = 'human' ORDER BY id"
 ```
 
-`body` is the record's JSON line as it was written. The other tables are `quarantine`,
-`legacy_imports` (one row per import or export, with the backup path, size and
-sha256) and `meta`. Do not write to the file by hand.
+`body` is the record as one JSON line: the imported line with surrounding
+whitespace trimmed, or what this build wrote. The other tables are
+`quarantine`, `legacy_imports` (one row per import or export, with size, sha256
+and, once the file has been moved aside, its backup path) and `meta`. Do not
+write to the file by hand.
 
 ## Logs
 

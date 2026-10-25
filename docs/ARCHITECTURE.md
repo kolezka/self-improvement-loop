@@ -125,8 +125,9 @@ being read. Hooks do not touch the DB yet.
 
 Before any read or write of a stream, a non-hook process checks whether the old
 JSONL file is still there. If it is, it imports it in one transaction: every
-line becomes a row, a line that is not a JSON object goes to the `quarantine`
-table with its raw text, and the file is renamed to
+nonblank line that is a JSON object becomes a row (trimmed), any other nonblank
+line goes to the `quarantine` table with its raw text (up to 64 KiB), blank
+lines are counted and skipped, and the file is renamed to
 `<file>.imported-<stamp>-<id>`. That renamed file is the original, byte for
 byte, with its size and sha256 in `legacy_imports`; nothing deletes it.
 `sil state export --legacy-paths` pauses these imports until `sil state migrate`

@@ -1,6 +1,6 @@
 // pattern -> canonical pattern. One hop only, on purpose.
 
-import { fsx, isSlug, paths, StateReadError, ValidationError } from "@sil/core";
+import { assertOneHop, fsx, isSlug, paths, StateReadError } from "@sil/core";
 
 /** A world's aliases for a value shown as complete (review sources, artifact
  * counts, scorecards in the consoles). No aliases file is no aliases. One that
@@ -49,16 +49,7 @@ export function loadAliases(world: string): Record<string, string> {
 // that is also some other entry's value never reaches disk. A key that is
 // also its own value (alias === canonical) is caught by the same check.
 export function saveAliases(world: string, aliases: Record<string, string>): string {
-  const values = new Set(Object.values(aliases));
-  for (const key of Object.keys(aliases)) {
-    if (!values.has(key)) continue;
-    const source = Object.entries(aliases).find(([k, v]) => v === key && k !== key)?.[0];
-    throw new ValidationError(
-      source
-        ? `"${key}" is a key (-> "${aliases[key]}") and also the value of "${source}" (-> "${key}"); aliases resolve one hop only`
-        : `"${key}" is a key (-> "${aliases[key]}") and also its own value`,
-    );
-  }
+  assertOneHop(aliases);
   const sorted = Object.fromEntries(Object.entries(aliases).sort(([a], [b]) => (a < b ? -1 : 1)));
   const p = paths.aliasesFile(world);
   fsx.writeJson(p, sorted);

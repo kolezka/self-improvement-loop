@@ -32,3 +32,13 @@ export {
   type Stream,
   STREAMS,
 } from "./streams.ts";
+export {
+  type DocName,
+  legacyWorlds,
+  type StoreKind,
+  type StoreName,
+  type StoreRef,
+  STORES,
+  type StoreSpec,
+  worldKey,
+} from "./stores.ts";

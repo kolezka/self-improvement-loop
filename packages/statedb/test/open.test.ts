@@ -45,14 +45,14 @@ afterEach(() => {
 const pragma = (db: Database, name: string): unknown => Object.values(db.query(`PRAGMA ${name}`).get() as object)[0];
 
 describe("openState", () => {
-  test("creates a missing database at version 1 in WAL mode with every v1 table", () => {
+  test("creates a missing database at version 2 in WAL mode with every v1 table", () => {
     const p = paths.loopStateDb();
     expect(existsSync(p)).toBe(false);
     const db = openState();
     expect(existsSync(p)).toBe(true);
     expect(statSync(p).mode & 0o777).toBe(0o600);
-    expect(pragma(db, "user_version")).toBe(1);
-    expect(SCHEMA_VERSION).toBe(1);
+    expect(pragma(db, "user_version")).toBe(2);
+    expect(SCHEMA_VERSION).toBe(2);
     expect(pragma(db, "journal_mode")).toBe("wal");
     expect(pragma(db, "synchronous")).toBe(2);
     expect(pragma(db, "busy_timeout")).toBe(2000);
@@ -83,12 +83,12 @@ describe("openState", () => {
     const raw = new Database(p);
     try {
       raw.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-      raw.run("PRAGMA user_version = 2");
+      raw.run("PRAGMA user_version = 3");
     } finally {
       raw.close();
     }
     expect(() => openState()).toThrow(StateWriteError);
-    expect(() => openState()).toThrow(new StateWriteError("loop state was written by a newer sil (schema 2, this build knows 1)"));
+    expect(() => openState()).toThrow(new StateWriteError("loop state was written by a newer sil (schema 3, this build knows 2)"));
     const after = new Database(p, { readonly: true });
     try {
       expect(after.query("SELECT count(*) AS n FROM meta").get()).toEqual({ n: 0 });
@@ -141,12 +141,12 @@ describe("openState", () => {
       // Another process upgrades the file between prepare and the metadata write.
       const raw = new Database(p);
       try {
-        raw.run("PRAGMA user_version = 2");
+        raw.run("PRAGMA user_version = 3");
       } finally {
         raw.close();
       }
       const probe: Probe = { fsClass: "local", dev: 12345, at: "2000-01-01T00:00:00.000Z" };
-      expect(() => recordProbe(db, probe)).toThrow(new StateWriteError("loop state was written by a newer sil (schema 2, this build knows 1)"));
+      expect(() => recordProbe(db, probe)).toThrow(new StateWriteError("loop state was written by a newer sil (schema 3, this build knows 2)"));
       expect(metaRows()).toEqual(before);
     } finally {
       db.close();
@@ -201,8 +201,8 @@ describe("openState under a held write lock", () => {
       const p = paths.loopStateDb();
       mkdirSync(dirname(p), { recursive: true });
       const seed = new Database(p, { create: true });
-      MIGRATIONS[0]!.up(seed);
-      seed.run("PRAGMA user_version = 1");
+      for (const step of MIGRATIONS) step.up(seed);
+      seed.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       seed.close();
       const holder =
         `import { Database } from "bun:sqlite";\n` +

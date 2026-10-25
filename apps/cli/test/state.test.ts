@@ -96,7 +96,7 @@ describe("sil state", () => {
     const first = status();
     // Positive control: the child used the tmp state dir, not the real one.
     expect(first.dbPath).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
-    expect(first.schemaVersion).toBe(1);
+    expect(first.schemaVersion).toBe(2);
     expect(first.streams["critic"]).toEqual({ rows: 2, quarantined: 0, pending: false });
     expect(first.imports).toHaveLength(1);
     expect(first.imports[0]).toMatchObject({ store: "critic", state: "verified", lines: 2, failure: null, backupCheck: "ok" });

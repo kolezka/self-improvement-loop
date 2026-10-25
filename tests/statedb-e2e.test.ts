@@ -155,7 +155,7 @@ describe("loop state end to end", () => {
     // control that the child ran against the tmp home, not the real one.
     const status = statusJson();
     expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
-    expect(status.schemaVersion).toBe(1);
+    expect(status.schemaVersion).toBe(2);
     expect(status.suspended).toBeNull();
     const counts = { reflect_runs: 3, critic: 4, human: 2, proposal_events: 3 };
     for (const stream of STREAM_NAMES) {

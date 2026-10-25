@@ -2,9 +2,13 @@
 // back to the legacy JSONL paths, and the quarantine of lines that could not
 // be imported (design D14).
 
-import { dropQuarantine, exportLegacy, listQuarantine, migrateLegacy, type Stream, stateStatus, STREAMS } from "@sil/statedb";
+import { dropQuarantine, exportLegacy, listQuarantine, migrateLegacy, type StoreName, STORES, type Stream, stateStatus, STREAMS } from "@sil/statedb";
 
 const STREAM_NAMES = Object.keys(STREAMS) as Stream[];
+const STORE_NAMES = Object.keys(STORES) as StoreName[];
+
+/** A store as the operator types it, with the world for a per-world one. */
+const named = (store: string, world: string | null): string => (world === null ? store : `${store} (${world})`);
 
 export function cmdStateStatus(opts: { json?: boolean }): number {
   const status = stateStatus();
@@ -22,6 +26,14 @@ export function cmdStateStatus(opts: { json?: boolean }): number {
     const notes = [s.quarantined > 0 ? `${s.quarantined} quarantined` : "", s.pending ? "legacy file waiting" : ""].filter(Boolean);
     console.log(`  ${stream.padEnd(16)} ${String(s.rows).padStart(7)} rows${notes.length ? `  (${notes.join(", ")})` : ""}`);
   }
+  if (status.docs.length === 0) console.log("documents: none");
+  else {
+    console.log("documents:");
+    for (const d of status.docs) {
+      const notes = [d.quarantined > 0 ? `${d.quarantined} quarantined` : "", d.pending ? "legacy file waiting" : ""].filter(Boolean);
+      console.log(`  ${named(d.store, d.world).padEnd(16)} ${String(d.rows).padStart(7)} rows${notes.length ? `  (${notes.join(", ")})` : ""}`);
+    }
+  }
   if (status.imports.length === 0) {
     console.log("imports: none");
     return 0;
@@ -29,7 +41,7 @@ export function cmdStateStatus(opts: { json?: boolean }): number {
   console.log("imports:");
   for (const imp of status.imports) {
     if (imp.state === "failed") {
-      console.log(`  ${imp.store.padEnd(16)} failed: ${imp.failure ?? "no reason recorded"}`);
+      console.log(`  ${named(imp.store, imp.world).padEnd(16)} failed: ${imp.failure ?? "no reason recorded"}`);
       continue;
     }
     let check: string;
@@ -38,7 +50,7 @@ export function cmdStateStatus(opts: { json?: boolean }): number {
     else if (imp.backupCheck === "missing") check = "backup missing";
     else if (imp.backupCheck === "ok") check = "backup ok";
     else check = "exported, not imported back yet";
-    console.log(`  ${imp.store.padEnd(16)} ${imp.lines} lines, ${check}${imp.backupPath ? `: ${imp.backupPath}` : ""}`);
+    console.log(`  ${named(imp.store, imp.world).padEnd(16)} ${imp.lines} lines, ${check}${imp.backupPath ? `: ${imp.backupPath}` : ""}`);
   }
   return 0;
 }
@@ -47,7 +59,7 @@ export function cmdStateMigrate(): number {
   const { resumed, outcomes, failures } = migrateLegacy();
   if (resumed !== null) console.log(`resumed legacy imports (suspended by the export at ${resumed})`);
   for (const o of outcomes) {
-    console.log(`${o.world === null ? o.store : `${o.store} (${o.world})`}: ${o.imported} imported, ${o.quarantined} quarantined, ${o.blank} blank; backup ${o.backupPath}`);
+    console.log(`${named(o.store, o.world)}: ${o.imported} imported, ${o.quarantined} quarantined, ${o.blank} blank; backup ${o.backupPath}`);
   }
   for (const f of failures) console.error(`error: ${f.message}`);
   if (outcomes.length === 0 && failures.length === 0) console.log("nothing to import");
@@ -67,14 +79,24 @@ export function cmdStateExport(opts: { legacyPaths?: boolean; force?: boolean })
   return result.refused.length > 0 || result.failures.length > 0 ? 1 : 0;
 }
 
-export function cmdStateQuarantine(opts: { drop?: string }): number {
+export function cmdStateQuarantine(opts: { drop?: string; world?: string }): number {
+  if (opts.world !== undefined && opts.drop === undefined) {
+    console.error("error: --world goes with --drop <store>");
+    return 2;
+  }
   if (opts.drop !== undefined) {
-    if (!Object.hasOwn(STREAMS, opts.drop)) {
-      console.error(`error: unknown store ${JSON.stringify(opts.drop)}; expected one of ${STREAM_NAMES.join(", ")}`);
+    if (!Object.hasOwn(STORES, opts.drop)) {
+      console.error(`error: unknown store ${JSON.stringify(opts.drop)}; expected one of ${STORE_NAMES.join(", ")}`);
       return 2;
     }
-    const n = dropQuarantine(opts.drop as Stream);
-    console.log(`dropped ${n} quarantined ${n === 1 ? "line" : "lines"} from ${opts.drop}`);
+    const store = opts.drop as StoreName;
+    if (opts.world !== undefined && !STORES[store].perWorld) {
+      console.error(`error: ${store} is global and has no world; drop it without --world`);
+      return 2;
+    }
+    // Without --world a per-world store drops every world's rows.
+    const n = dropQuarantine(store, opts.world);
+    console.log(`dropped ${n} quarantined ${n === 1 ? "entry" : "entries"} from ${named(store, opts.world ?? null)}`);
     return 0;
   }
   const entries = listQuarantine();
@@ -83,7 +105,7 @@ export function cmdStateQuarantine(opts: { drop?: string }): number {
     return 0;
   }
   for (const e of entries) {
-    console.log(`${e.store.padEnd(16)} line ${String(e.lineNo ?? "?").padStart(6)}  ${e.reason}  (${e.source})`);
+    console.log(`${named(e.store, e.world).padEnd(16)} line ${String(e.lineNo ?? "?").padStart(6)}  ${e.reason}  (${e.source})`);
   }
   return 0;
 }

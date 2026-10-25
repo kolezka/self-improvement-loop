@@ -13,8 +13,9 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
-import { type Config, ValidationError, fsx, loadConfig, paths, saveConfig, targetRoot, writeHookSnapshot } from "@sil/core";
+import { assertOneHop, type Config, isSlug, ValidationError, fsx, loadConfig, paths, saveConfig, targetRoot, writeHookSnapshot } from "@sil/core";
 import { git } from "@sil/curriculum";
+import { loadAliasesStrict, saveAliases } from "@sil/store";
 import { exportJsonl, replaceStream, type Stream } from "@sil/statedb";
 import { mergeWorlds } from "./importer.ts";
 
@@ -205,6 +206,61 @@ function restoreLog(file: string, source: string, stream: Stream, force: boolean
   return out;
 }
 
+// --- aliases ------------------------------------------------------------
+
+/** A bundle aliases file as a one-hop map of names, or why it is not one. */
+function checkBundleAliases(text: string): { map: Record<string, string> } | { reason: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { reason: "not JSON" };
+  }
+  const notNames = { reason: "not a map of pattern names" };
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return notNames;
+  const map: Record<string, string> = {};
+  for (const [alias, canonical] of Object.entries(parsed)) {
+    if (typeof canonical !== "string" || !isSlug(alias) || !isSlug(canonical)) return notNames;
+    map[alias] = canonical;
+  }
+  try {
+    assertOneHop(map);
+  } catch (error) {
+    if (error instanceof ValidationError) return { reason: error.message };
+    throw error;
+  }
+  return { map };
+}
+
+/** Load one world's bundle aliases through saveAliases. Same counts as copyOne:
+ * a world the host already has aliases for is skipped unless `force`. A file
+ * that is not a one-hop map of names becomes a warning and writes nothing. */
+function restoreAliases(file: string, world: string, force: boolean, warnings: string[]): CopyStats {
+  const out = blank();
+  if (!existsSync(file)) return out;
+  if (!force && Object.keys(loadAliasesStrict(world)).length > 0) {
+    out.skipped = 1;
+    return out;
+  }
+  const text = readFileSync(file, "utf8");
+  const notImported = (reason: string): CopyStats => {
+    warnings.push(`aliases.json (world ${world}): not imported (${reason})`);
+    return out;
+  };
+  const checked = checkBundleAliases(text);
+  if ("reason" in checked) return notImported(checked.reason);
+  try {
+    // replaceAliases checks the one-hop rule again; it is the write point every caller passes.
+    saveAliases(world, checked.map);
+  } catch (error) {
+    if (error instanceof ValidationError) return notImported(error.message);
+    throw error;
+  }
+  out.files = 1;
+  out.bytes = Buffer.byteLength(text);
+  return out;
+}
+
 // --- export -------------------------------------------------------------
 
 export interface ExportOptions {
@@ -234,7 +290,12 @@ function selectWorlds(cfg: Config, names: string[] | undefined): Config {
   return { ...cfg, worlds: cfg.worlds.filter((w) => names.includes(w.name)) };
 }
 
-function stageExport(work: string, cfg: Config, logs: Map<string, string> | null): { manifest: BundleManifest; warnings: string[] } {
+function stageExport(
+  work: string,
+  cfg: Config,
+  aliases: Map<string, Record<string, string>>,
+  logs: Map<string, string> | null,
+): { manifest: BundleManifest; warnings: string[] } {
   const history = logs !== null;
   const warnings: string[] = [];
   mkdirSync(join(work, "config"), { recursive: true });
@@ -245,7 +306,9 @@ function stageExport(work: string, cfg: Config, logs: Map<string, string> | null
   for (const world of cfg.worlds) {
     const slot = join(work, "worlds", paths.safeComponent(world.name));
     const reflections = copyTree(paths.reflectionsDir(world.name), join(slot, "reflections"));
-    copyOne(paths.aliasesFile(world.name), join(slot, "aliases.json"));
+    const map = aliases.get(world.name) ?? {};
+    // Sorted by alias, as saveAliases stores it; a world with no aliases writes no file.
+    if (Object.keys(map).length > 0) fsx.writeJson(join(slot, "aliases.json"), map);
     copyOne(paths.scorecardsFile(world.name), join(slot, "scorecards.json"));
 
     // An external target is the operator's own repo with its own remote, so it
@@ -299,8 +362,9 @@ export function exportBundle(opts: ExportOptions): ExportResult {
   const cfg = selectWorlds(loadConfig(), opts.worlds);
   if (cfg.worlds.length === 0) throw new ValidationError("nothing to export: config.yaml has no worlds");
 
-  // Read the logs before touching dest: a log that refuses to export (quarantined
-  // lines) must leave no half-written bundle behind.
+  // Read the aliases and logs before touching dest: a store that refuses to
+  // export (quarantined lines, an unreadable map) must leave no half-written bundle behind.
+  const aliases = new Map(cfg.worlds.map((w) => [w.name, loadAliasesStrict(w.name)]));
   let logs: Map<string, string> | null = null;
   if (history) {
     logs = new Map();
@@ -314,7 +378,7 @@ export function exportBundle(opts: ExportOptions): ExportResult {
   try {
     if (!archive && existsSync(dest) && opts.force) rmSync(dest, { recursive: true, force: true });
     mkdirSync(work, { recursive: true });
-    const { manifest, warnings } = stageExport(work, cfg, logs);
+    const { manifest, warnings } = stageExport(work, cfg, aliases, logs);
     const size = treeSize(work);
     if (archive) {
       mkdirSync(dirname(dest), { recursive: true });
@@ -395,7 +459,7 @@ function restore(root: string, source: string, manifest: BundleManifest, opts: I
     // Reflections are append-only. A same-named file on the host is the same
     // reflection, so it is never overwritten, not even with --force.
     add(stats, copyTree(join(slot, "reflections"), paths.reflectionsDir(world.name), false));
-    add(stats, copyOne(join(slot, "aliases.json"), paths.aliasesFile(world.name), opts.force === true));
+    add(stats, restoreAliases(join(slot, "aliases.json"), world.name, opts.force === true, warnings));
     add(stats, copyOne(join(slot, "scorecards.json"), paths.scorecardsFile(world.name), opts.force === true));
 
     const learned = join(slot, "learned");

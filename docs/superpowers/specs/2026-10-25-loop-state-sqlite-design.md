@@ -274,6 +274,11 @@ access; long-lived processes (`sil web`, `sil worker --loop`) need nothing else.
    holding the lock, then `COMMIT` (this transaction wrote nothing, so there is
    nothing to roll back). Holding the lock means no other importer can see
    `P.importing` between the last `stat` and the rename (third builder check).
+   The row owns only the file with its `dev` and `ino`: finalize renames
+   `P.importing` only when both match, treats a missing `P.importing` whose backup
+   is already in place as done (another process finished it, not a failure), never
+   renames over an existing file at `backup_path`, and leaves a `P.importing` with
+   another inode to that file's own claim (final review, C1).
 
 Failure anywhere in steps 1 to 5 rolls the transaction back: no row is visible
 and none is half imported. A crash after `rename` in step 3 leaves `P.importing`,
@@ -350,6 +355,8 @@ CREATE TABLE legacy_imports (
   original_path TEXT NOT NULL,     -- P
   backup_path TEXT,                -- P.imported-<stamp>-<id>, set in the verifying transaction
   state TEXT NOT NULL CHECK (state IN ('verified', 'failed')),
+  origin TEXT NOT NULL DEFAULT 'import' CHECK (origin IN ('import', 'export')),
+  superseded_by INTEGER REFERENCES legacy_imports(id),  -- export rows replaced by a later forced export
   lines_imported INTEGER NOT NULL DEFAULT 0,
   lines_quarantined INTEGER NOT NULL DEFAULT 0,
   lines_blank INTEGER NOT NULL DEFAULT 0,
@@ -569,6 +576,13 @@ New `sil state` command:
   first. The export writes temp files, commits the rows and the suspension, and
   only then renames the temps into place, so a failed export never touches an
   original.
+  Export rows are never deleted (final review, C2: a migrate can rename a file to
+  `.importing` and then roll back its claim, so no row predicate proves a file is
+  unclaimed). A forced replace sets the earlier export row's `superseded_by` after
+  its rename succeeds, and `sil state status` hides only superseded export rows;
+  every import backup and its check stay listed. An empty stream whose legacy file
+  still exists gets an empty file only when that file matches a recorded verified
+  row; otherwise the export refuses (final review, I1).
 - `sil state quarantine [--drop <store>]`.
 
 ### D15. Docs

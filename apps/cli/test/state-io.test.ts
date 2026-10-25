@@ -2,7 +2,7 @@
 // run the CLI in this process through run().
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths } from "@sil/core";
@@ -282,5 +282,19 @@ describe("sil state failure paths", () => {
       .get(original.ino) as { backup_path: string | null } | null;
     expect(row?.backup_path).toBeTruthy();
     expect(readFileSync(row!.backup_path!)).toEqual(original.bytes);
+
+    const late = '{"late":true}\n';
+    appendFileSync(row!.backup_path!, late);
+    const listed = await sil("state", "status", "--json");
+    expect(listed.code).toBe(0);
+    const status = JSON.parse(listed.out.join("\n")) as {
+      dbPath: string;
+      imports: { backupPath: string | null; backupCheck: string | null; grewBytes: number | null }[];
+    };
+    expect(status.dbPath).toBe(paths.loopStateDb());
+    expect(status.imports.find((entry) => entry.backupPath === row!.backup_path)).toMatchObject({
+      backupCheck: "grew",
+      grewBytes: Buffer.byteLength(late),
+    });
   });
 });

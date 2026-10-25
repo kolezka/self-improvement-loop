@@ -129,7 +129,7 @@ export function stateStatus(): StateStatus {
            WHERE (f.state = 'verified' OR NOT EXISTS (
              SELECT 1 FROM legacy_imports v WHERE v.state = 'verified' AND v.id > f.id
                AND v.store = f.store AND v.dev = f.dev AND v.ino = f.ino))
-             AND NOT (f.origin = 'export' AND f.superseded_by IS NOT NULL)
+             AND NOT (f.origin = 'export' AND f.superseded_by IS NOT NULL AND f.backup_path IS NULL)
            ORDER BY id`,
         )
         .all() as ImportRowFull[];

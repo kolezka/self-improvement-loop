@@ -34,6 +34,7 @@ import {
 import * as feedback from "@sil/feedback";
 import * as providers from "@sil/providers";
 import type { ChatFn, DecideFn } from "@sil/providers";
+import { readDoc, saveDoc } from "@sil/statedb";
 import {
   loadLedger as loadLedgerFile,
   parseLedger,
@@ -786,7 +787,7 @@ function stillRefused(cached: string, current: string): boolean {
 }
 
 function loadAttempts(world: World): Attempts {
-  const raw = fsx.readJsonOr<unknown>(paths.refineAttemptsFile(world.name), {});
+  const raw = readDoc("refine_attempts", world.name, "tolerant");
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
   const out: Attempts = {};
   for (const [k, v] of Object.entries(raw)) if (typeof v === "string") out[k] = v;
@@ -794,7 +795,7 @@ function loadAttempts(world: World): Attempts {
 }
 
 function saveAttempts(world: World, attempts: Attempts): void {
-  fsx.writeJson(paths.refineAttemptsFile(world.name), attempts);
+  saveDoc("refine_attempts", world.name, attempts);
 }
 
 /** Fast-forward the staged branch into the default branch, in the live repo.

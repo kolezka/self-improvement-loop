@@ -39,6 +39,7 @@ import {
   run,
   type RunOptions,
 } from "@sil/curriculum";
+import { readDoc } from "@sil/statedb";
 import { parseLedger, readProposalEvents, recordProposalEvent, saveLedger, writeReflection } from "@sil/store";
 import {
   addReflections,
@@ -1451,7 +1452,8 @@ describe("a cluster refine by recurrence", () => {
     const { world } = seedLive();
     const refused = new FakeChat({ draft: { artifact: ruleBody() }, verdict: false, reason: "rule 3" });
     await run(world, makeCfg(), opts({ apply: true, chat: refused.fn, cards: [card()] }));
-    expect(Object.keys(fsx.readJsonOr<Record<string, string>>(paths.refineAttemptsFile(world.name), {}))).toEqual([PATTERN]);
+    expect(existsSync(paths.refineAttemptsFile(world.name))).toBe(false);
+    expect(Object.keys(readDoc("refine_attempts", world.name, "tolerant") ?? {})).toEqual([PATTERN]);
 
     // Past the mark of 17, so the plan promotes instead of refining.
     addReflections(world, PATTERN, 17, { startDay: 4 });
@@ -1459,7 +1461,8 @@ describe("a cluster refine by recurrence", () => {
 
     expect(report.gated_out).toEqual({});
     expect(report.staged).toEqual([PATTERN]);
-    expect(fsx.readJsonOr<Record<string, string>>(paths.refineAttemptsFile(world.name), {})).toEqual({});
+    expect(existsSync(paths.refineAttemptsFile(world.name))).toBe(false);
+    expect(readDoc("refine_attempts", world.name, "tolerant") ?? {}).toEqual({});
   });
 
   test("a provider failure on a cluster refine is not cached", async () => {

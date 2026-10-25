@@ -8,6 +8,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError, fsx, paths, readConfig, StateReadError } from "@sil/core";
+import { closeState } from "@sil/statedb";
 import {
   listLessons,
   listLessonsStrict,
@@ -34,6 +35,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeState();
   for (const p of locked.splice(0)) chmodSync(p, 0o700);
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
@@ -126,10 +128,14 @@ describe("aliases", () => {
     mkdirSync(join(file, ".."), { recursive: true });
     writeFileSync(file, JSON.stringify({ old: "new" }));
     expect(loadAliasesStrict(W)).toEqual({ old: "new" });
+    // The valid file was imported; a new one at the old path is a spill the
+    // next read imports, and a broken one is quarantined. Tolerant keeps the
+    // rows that imported (design D8), strict raises.
     writeFileSync(file, "{ broken");
-    expect(loadAliases(W)).toEqual({});
+    expect(loadAliases(W)).toEqual({ old: "new" });
     const err = thrown(() => loadAliasesStrict(W));
     expect(err).toBeInstanceOf(StateReadError);
+    expect(err!.message).toContain("could not be imported");
     expect(err!.message).not.toContain(tmp);
   });
 });

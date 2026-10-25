@@ -350,10 +350,11 @@ describe("ledger, artifacts and aliases", () => {
     mkdirSync(join(aliases, ".."), { recursive: true });
     writeFileSync(aliases, JSON.stringify({ "old-name": "probe-skill" }));
     expect(value<{ total: number }>(ops(artifactReads)["p"]).total).toBe(1);
+    // The valid file was imported; a broken one at the old path is quarantined on the next read.
     writeFileSync(aliases, "{ broken");
     const r = ops(artifactReads);
     failed(r["i"], ["StateReadError"], "aliases");
-    failed(r["p"], ["StateReadError"], "aliases");
+    failed(r["p"], ["StateReadError"], "could not be imported");
   });
 });
 

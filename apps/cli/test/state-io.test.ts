@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSyn
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths } from "@sil/core";
-import { closeState, type ImportIo, migrateLegacy, openState, setImportIoForTest, stateStatus } from "@sil/statedb";
+import { closeState, type ImportIo, migrateLegacy, openState, readRecords, setImportIoForTest, stateStatus } from "@sil/statedb";
 import { run } from "../src/main.ts";
 
 let tmp: string;
@@ -196,6 +196,44 @@ describe("sil state failure paths", () => {
     expect(readFileSync(row!.backup_path!)).toEqual(original.bytes);
     const entry = stateStatus().imports.find((i) => i.backupPath === row!.backup_path);
     expect(entry?.backupCheck).toBe("ok");
+  });
+
+  test("forced export keeps an export row when a concurrent claim rename rolls back", async () => {
+    const critic = paths.criticFeedbackFile();
+    fsx.appendJsonl(critic, { n: 1 });
+    expect((await sil("state", "migrate")).code).toBe(0);
+    expect((await sil("state", "export", "--legacy-paths")).code).toBe(0);
+    const original = readFileSync(critic);
+    let interleaved = false;
+    setImportIoForTest({
+      ...REAL,
+      rename: (from, to) => {
+        if (to === critic && from.includes(".export-") && !interleaved) {
+          interleaved = true;
+          setImportIoForTest({
+            ...REAL,
+            rename: (claimedFrom, claimedTo) => {
+              REAL.rename(claimedFrom, claimedTo);
+              if (claimedFrom === critic) throw Object.assign(new Error("crash after claim rename"), { code: "EIO" });
+            },
+          });
+          const interrupted = migrateLegacy();
+          expect(interrupted.failures.map((failure) => failure.stream)).toEqual(["critic"]);
+          setImportIoForTest(REAL);
+        }
+        REAL.rename(from, to);
+      },
+    });
+    const forced = await sil("state", "export", "--legacy-paths", "--force");
+    setImportIoForTest(null);
+    expect(interleaved).toBe(true);
+    expect(forced.code).toBe(0);
+    expect((await sil("state", "migrate")).code).toBe(0);
+    expect(readRecords("critic", "strict").records).toEqual([{ n: 1 }]);
+    const claims = openState().query("SELECT backup_path FROM legacy_imports WHERE store = 'critic' AND state = 'verified' AND original_path = ? ORDER BY id").all(critic) as { backup_path: string | null }[];
+    expect(claims.filter((row) => row.backup_path === null)).toHaveLength(0);
+    expect(stateStatus().imports.filter((row) => row.store === "critic" && row.backupCheck === "ok").length).toBeGreaterThanOrEqual(2);
+    expect(readFileSync(claims[1]!.backup_path!)).toEqual(original);
   });
 
   test("a migrate that claims the original between a forced export's commit and its rename keeps the claimed row", async () => {

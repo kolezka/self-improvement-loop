@@ -126,9 +126,10 @@ export function stateStatus(): StateStatus {
       const rows = db
         .query(
           `SELECT id, store, state, backup_path, failure, lines_imported, sha256, size, original_path, dev, ino FROM legacy_imports f
-           WHERE state = 'verified' OR NOT EXISTS (
+           WHERE (f.state = 'verified' OR NOT EXISTS (
              SELECT 1 FROM legacy_imports v WHERE v.state = 'verified' AND v.id > f.id
-               AND v.store = f.store AND v.dev = f.dev AND v.ino = f.ino)
+               AND v.store = f.store AND v.dev = f.dev AND v.ino = f.ino))
+             AND NOT (f.origin = 'export' AND f.superseded_by IS NOT NULL)
            ORDER BY id`,
         )
         .all() as ImportRowFull[];
@@ -218,22 +219,22 @@ function refusalFor(db: Database, target: string, force: boolean): { message: st
   }
   const match = db
     .query(
-      `SELECT id, backup_path FROM legacy_imports WHERE state = 'verified' AND original_path = ? AND dev = ? AND ino = ? AND size = ? AND sha256 = ?
+      `SELECT id, origin FROM legacy_imports WHERE state = 'verified' AND original_path = ? AND dev = ? AND ino = ? AND size = ? AND sha256 = ?
        ORDER BY id DESC LIMIT 1`,
     )
-    .get(target, st.dev, st.ino, bytes.length, sha256(bytes)) as { id: number; backup_path: string | null } | null;
+    .get(target, st.dev, st.ino, bytes.length, sha256(bytes)) as { id: number; origin: string } | null;
   if (!match) return { message: `${target} has lines that are not in the loop state; run sil state migrate first`, supersedes: null };
   if (!force) return { message: `${target} already exists; pass --force to overwrite it`, supersedes: null };
-  // The earlier export row whose file this one replaces; exportLegacy deletes it once the new file is in place.
-  return { message: "", supersedes: match.backup_path === null ? match.id : null };
+  return { message: "", supersedes: match.origin === "export" ? match.id : null };
 }
 
 interface Staged {
   stream: Stream;
   target: string;
   temp: string;
-  /** The earlier export row this file replaces, deleted only after the rename. */
+  /** The earlier export row this file replaces, marked only after the rename. */
   supersedes: number | null;
+  rowId: number;
 }
 
 /** Write every stream back to its legacy JSONL path (design D14). An existing
@@ -269,8 +270,8 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   try {
     const now = new Date().toISOString();
     const record = db.query(
-      `INSERT INTO legacy_imports (store, original_path, backup_path, state, lines_imported, sha256, size, dev, ino, started_at, verified_at)
-       VALUES (?, ?, NULL, 'verified', ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO legacy_imports (store, original_path, backup_path, state, origin, lines_imported, sha256, size, dev, ino, started_at, verified_at)
+       VALUES (?, ?, NULL, 'verified', 'export', ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     );
     for (const stream of ready) {
       const target = STREAMS[stream].legacyPath();
@@ -297,11 +298,11 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
         result.failures.push({ stream, message: `${STREAMS[stream].label} cannot be exported (${fsx.errnoCode(error) || reasonOf(error)})` });
         continue;
       }
-      staged.push({ stream, target, temp, supersedes: refusal?.supersedes ?? null });
       // Record what is on disk; the rename keeps the inode.
+      staged.push({ stream, target, temp, supersedes: refusal?.supersedes ?? null, rowId: -1 });
       const st = io.stat(temp);
       const bytes = io.readFile(temp);
-      record.run(stream, target, bodies.length, sha256(bytes), bytes.length, st.dev, st.ino, now, now);
+      staged[staged.length - 1]!.rowId = (record.get(stream, target, bodies.length, sha256(bytes), bytes.length, st.dev, st.ino, now, now) as { id: number }).id;
     }
     if (staged.length > 0) {
       db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(SUSPENDED_KEY, now);
@@ -325,16 +326,15 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       });
       continue;
     }
-    // Only now is the earlier export's file gone. A crash before this leaves a
-    // stale row whose file status shows as missing. A row a concurrent migrate
-    // has claimed (backup name set) stays: that migrate finalizes it.
+    // Keep the older row for crash recovery even if a migrate claimed it
+    // before this rename. Only status hides a superseded export row.
     if (s.supersedes === null) continue;
     try {
-      db.query("DELETE FROM legacy_imports WHERE id = ? AND backup_path IS NULL").run(s.supersedes);
+      db.query("UPDATE legacy_imports SET superseded_by = ? WHERE id = ? AND origin = 'export'").run(s.rowId, s.supersedes);
     } catch (error) {
       result.failures.push({
         stream: s.stream,
-        message: `${STREAMS[s.stream].label} was exported but its earlier export row was not removed (${reasonOf(error)})`,
+        message: `${STREAMS[s.stream].label} was exported but its earlier export row was not marked as superseded (${reasonOf(error)})`,
       });
     }
   }

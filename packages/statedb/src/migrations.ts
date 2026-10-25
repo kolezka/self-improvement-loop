@@ -31,6 +31,8 @@ CREATE TABLE legacy_imports (
   original_path TEXT NOT NULL,     -- P
   backup_path TEXT,                -- P.imported-<stamp>-<id>, set in the verifying transaction
   state TEXT NOT NULL CHECK (state IN ('verified', 'failed')),
+  origin TEXT NOT NULL DEFAULT 'import' CHECK (origin IN ('import', 'export')),
+  superseded_by INTEGER REFERENCES legacy_imports(id),
   lines_imported INTEGER NOT NULL DEFAULT 0,
   lines_quarantined INTEGER NOT NULL DEFAULT 0,
   lines_blank INTEGER NOT NULL DEFAULT 0,

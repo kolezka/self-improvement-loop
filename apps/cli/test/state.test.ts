@@ -2,6 +2,7 @@
 // real child process against a tmp home.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -146,6 +147,34 @@ describe("sil state", () => {
     expect(status().streams["critic"]!.rows).toBe(2);
     // The replaced export's row goes once the new file is in place.
     expect(status().imports.filter((i) => i.backupPath === null)).toEqual([expect.objectContaining({ store: "critic", backupCheck: null })]);
+  });
+
+  test("forced export retains history but hides only its superseded export row", () => {
+    const critic = paths.criticFeedbackFile();
+    fsx.appendJsonl(critic, { n: 1 });
+    expect(sil("state", "migrate").code).toBe(0);
+    const [olderBackup] = backupsOf(critic);
+    appendFileSync(olderBackup!, '{"late":true}\n');
+    fsx.appendJsonl(critic, { n: 2 });
+    expect(sil("state", "migrate").code).toBe(0);
+    const [newerBackup] = backupsOf(critic).filter((path) => path !== olderBackup);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths", "--force").code).toBe(0);
+    const s = status();
+    expect(s.imports.find((row) => row.backupPath === olderBackup)?.backupCheck).toBe("grew");
+    expect(s.imports.find((row) => row.backupPath === newerBackup)?.backupCheck).toBe("ok");
+    expect(s.imports.filter((row) => row.store === "critic" && row.backupPath === null)).toHaveLength(1);
+    const db = new Database(s.dbPath, { readonly: true });
+    try {
+      const retained = db.query("SELECT count(*) AS n FROM legacy_imports WHERE store = 'critic' AND backup_path IS NULL").get() as { n: number };
+      expect(retained.n).toBe(2);
+      const exportRows = db.query("SELECT id, superseded_by FROM legacy_imports WHERE store = 'critic' AND origin = 'export' ORDER BY id").all() as { id: number; superseded_by: number | null }[];
+      expect(exportRows).toHaveLength(2);
+      expect(exportRows[0]!.superseded_by).toBe(exportRows[1]!.id);
+      expect(exportRows[1]!.superseded_by).toBeNull();
+    } finally {
+      db.close();
+    }
   });
 
   test("status shows the export's suspension and no backup check for an export row", () => {

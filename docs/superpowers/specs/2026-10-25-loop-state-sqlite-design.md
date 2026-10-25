@@ -312,8 +312,9 @@ written before some live DB row therefore reads after it (D8 "Order").
 read an unreadable file as empty today; the planner's scorecards are best-effort
 by design (`feedback/src/index.ts:27-31`). Every reader first waits up to the 2 s
 busy timeout, and an import of a phase 1 file is expected to finish well inside
-that; the phase 1 plan measures it on a 100 000 line file and records the number
-here. So a tolerant read only sees a short history when another process holds the
+that: measured on this machine (Task 3 of the phase 1 plan), a 100 000 line
+`critic.jsonl` imports in one read, first open included, in 319 to 395 ms over 5
+runs. So a tolerant read only sees a short history when another process holds the
 lock for longer than that, which `sil state status` and the state log show.
 
 **Docs** (`cleared.json`, `worker-status.json`, `aliases.json`,

@@ -562,6 +562,13 @@ New `sil state` command:
   and hash match turns an unchanged exported file into a backup without importing
   it again, and a file the older build appended to imports only its new tail.
   `sil state status` shows the suspension.
+  `--force` only replaces a file that is byte-identical to a recorded verified row
+  for that path (same dev, ino, size and sha256); any other existing file is
+  refused, even with `--force`, because it may hold lines the DB does not have
+  (an older build appended them), and the message says to run `sil state migrate`
+  first. The export writes temp files, commits the rows and the suspension, and
+  only then renames the temps into place, so a failed export never touches an
+  original.
 - `sil state quarantine [--drop <store>]`.
 
 ### D15. Docs

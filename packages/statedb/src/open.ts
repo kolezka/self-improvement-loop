@@ -73,7 +73,8 @@ function migrate(db: Database): void {
   }
 }
 
-interface Probe {
+// Exported for tests only through this module path; src/index.ts does not re-export them.
+export interface Probe {
   fsClass: string;
   dev: number;
   at: string;
@@ -81,7 +82,7 @@ interface Probe {
 
 /** Writes the probe result. Re-reads the version under the write lock, since
  * another process may have upgraded the file after our first read. */
-function recordProbe(db: Database, probe: Probe): void {
+export function recordProbe(db: Database, probe: Probe): void {
   const upsert = db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value");
   db.run("BEGIN IMMEDIATE");
   try {
@@ -109,8 +110,23 @@ function probeDir(dir: string): Probe {
 }
 
 /** A mount or symlink swap after the probe shows up as a new device. */
-function checkSameDevice(dir: string, probe: Probe): void {
+export function checkSameDevice(dir: string, probe: Probe): void {
   if (statSync(dir).dev !== probe.dev) throw unsupported("device changed since probe");
+}
+
+/** Open an existing file with the opener's flags and busy timeout. */
+export function connect(path: string): Database {
+  const db = new Database(path, { readwrite: true, create: false, strict: true });
+  db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  return db;
+}
+
+/** Everything openState does to a fresh handle before it records the probe. */
+export function prepare(db: Database): void {
+  const version = userVersion(db);
+  if (version > SCHEMA_VERSION) throw newerSchema(version);
+  configure(db);
+  migrate(db);
 }
 
 function openAt(path: string): Database {
@@ -121,13 +137,9 @@ function openAt(path: string): Database {
     const probe = probeDir(dir);
     checkSameDevice(dir, probe);
     createFile(path);
-    db = new Database(path, { readwrite: true, create: false, strict: true });
+    db = connect(path);
     checkSameDevice(dir, probe);
-    db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    const version = userVersion(db);
-    if (version > SCHEMA_VERSION) throw newerSchema(version);
-    configure(db);
-    migrate(db);
+    prepare(db);
     recordProbe(db, probe);
     return db;
   } catch (error) {

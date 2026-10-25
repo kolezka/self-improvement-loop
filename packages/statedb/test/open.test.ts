@@ -1,26 +1,21 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths, StateWriteError } from "@sil/core";
 import * as fsProbe from "@sil/core/fs-probe";
 import type { FilesystemClass } from "@sil/core/fs-probe";
 import { closeState, openState, SCHEMA_VERSION } from "../src/index.ts";
+import { checkSameDevice, connect, prepare, type Probe, recordProbe } from "../src/open.ts";
 
 // mock.module stays registered for the whole bun test process, so the stub
-// delegates to the real probe unless a test forces a class or hooks the call.
+// delegates to the real probe unless a test forces a class.
 const realFsProbe = { ...fsProbe };
 let forcedClass: FilesystemClass | null = null;
-let duringProbe: ((path: string) => void) | null = null;
 mock.module("@sil/core/fs-probe", () => ({
   ...realFsProbe,
-  probeFilesystem: (path: string): FilesystemClass => {
-    const result = forcedClass ?? realFsProbe.probeFilesystem(path);
-    // Runs after the real classification, like a mount change right after the probe.
-    duringProbe?.(path);
-    return result;
-  },
+  probeFilesystem: (path: string): FilesystemClass => forcedClass ?? realFsProbe.probeFilesystem(path),
 }));
 
 let tmp: string;
@@ -36,13 +31,15 @@ beforeEach(() => {
 
 afterEach(() => {
   forcedClass = null;
-  duringProbe = null;
-  closeState();
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  try {
+    closeState();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(tmp, { recursive: true, force: true });
   }
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 const pragma = (db: Database, name: string): unknown => Object.values(db.query(`PRAGMA ${name}`).get() as object)[0];
@@ -69,10 +66,13 @@ describe("openState", () => {
     expect(meta.has("fs_probed_at")).toBe(true);
   });
 
-  test("reopen after closeState keeps rows", () => {
-    openState().run("INSERT INTO meta (key, value) VALUES ('probe', 'kept')");
+  test("reopen after closeState keeps rows on a new handle", () => {
+    const first = openState();
+    first.run("INSERT INTO meta (key, value) VALUES ('probe', 'kept')");
     closeState();
-    const row = openState().query("SELECT value FROM meta WHERE key = 'probe'").get() as { value: string } | null;
+    const second = openState();
+    expect(second).not.toBe(first);
+    const row = second.query("SELECT value FROM meta WHERE key = 'probe'").get() as { value: string } | null;
     expect(row?.value).toBe("kept");
   });
 
@@ -81,14 +81,20 @@ describe("openState", () => {
     mkdirSync(dirname(p), { recursive: true });
     // A plausible newer file: it has the v1 tables, so only the version check can refuse it.
     const raw = new Database(p);
-    raw.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    raw.run("PRAGMA user_version = 2");
-    raw.close();
+    try {
+      raw.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      raw.run("PRAGMA user_version = 2");
+    } finally {
+      raw.close();
+    }
     expect(() => openState()).toThrow(StateWriteError);
     expect(() => openState()).toThrow(new StateWriteError("loop state was written by a newer sil (schema 2, this build knows 1)"));
     const after = new Database(p, { readonly: true });
-    expect(after.query("SELECT count(*) AS n FROM meta").get()).toEqual({ n: 0 });
-    after.close();
+    try {
+      expect(after.query("SELECT count(*) AS n FROM meta").get()).toEqual({ n: 0 });
+    } finally {
+      after.close();
+    }
   });
 
   test("switching SIL_STATE_DIR returns a different handle to a different file", () => {
@@ -123,52 +129,36 @@ describe("openState", () => {
     expect(() => openState()).toThrow(/unsupported filesystem/);
   });
 
-  test("a STATE dir that moves to another device right after the probe is refused", () => {
-    const stateDir = dirname(paths.loopStateDb());
-    // /dev is devfs or devtmpfs, a different device from the tmp dir on macOS and Linux.
-    expect(statSync("/dev").dev).not.toBe(statSync(tmpdir()).dev);
-    duringProbe = () => {
-      rmSync(stateDir, { recursive: true, force: true });
-      mkdirSync(dirname(stateDir), { recursive: true });
-      symlinkSync("/dev", stateDir);
-    };
-    expect(() => openState()).toThrow(/unsupported filesystem/);
-    expect(existsSync(join("/dev", "loop-state.sqlite"))).toBe(false);
-  });
-
-  test("a version raised by another process after the first read is refused", async () => {
+  test("recordProbe refuses a version raised after the handle was prepared", () => {
     openState();
     closeState();
     const p = paths.loopStateDb();
-    const marker = join(tmp, "locked");
-    const script = join(tmp, "raise-version.ts");
-    // Holds the write lock with user_version = 2 pending, then commits while openState waits on it.
-    writeFileSync(
-      script,
-      [
-        'import { Database } from "bun:sqlite";',
-        'import { writeFileSync } from "node:fs";',
-        "const db = new Database(process.argv[2]);",
-        'db.run("PRAGMA busy_timeout = 2000");',
-        'db.run("BEGIN IMMEDIATE");',
-        'db.run("PRAGMA user_version = 2");',
-        "writeFileSync(process.argv[3], '');",
-        "Bun.sleepSync(400);",
-        'db.run("COMMIT");',
-        "db.close();",
-      ].join("\n"),
-    );
-    const child = Bun.spawn([process.execPath, script, p, marker], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, stdout: "ignore", stderr: "pipe" });
-    for (let i = 0; i < 400 && !existsSync(marker); i++) await Bun.sleep(5);
-    expect(existsSync(marker)).toBe(true);
-    let caught: unknown;
+    const db = connect(p);
     try {
-      openState();
-    } catch (error) {
-      caught = error;
+      prepare(db);
+      const metaRows = () => db.query("SELECT key, value FROM meta ORDER BY key").all();
+      const before = metaRows();
+      // Another process upgrades the file between prepare and the metadata write.
+      const raw = new Database(p);
+      try {
+        raw.run("PRAGMA user_version = 2");
+      } finally {
+        raw.close();
+      }
+      const probe: Probe = { fsClass: "local", dev: 12345, at: "2000-01-01T00:00:00.000Z" };
+      expect(() => recordProbe(db, probe)).toThrow(new StateWriteError("loop state was written by a newer sil (schema 2, this build knows 1)"));
+      expect(metaRows()).toEqual(before);
+    } finally {
+      db.close();
     }
-    expect(await child.exited).toBe(0);
-    expect(caught).toBeInstanceOf(StateWriteError);
-    expect((caught as Error).message).toBe("loop state was written by a newer sil (schema 2, this build knows 1)");
+  });
+});
+
+describe("checkSameDevice", () => {
+  test("refuses a dir whose device differs from the probed one", () => {
+    const dev = statSync(tmp).dev;
+    const probe = (d: number): Probe => ({ fsClass: "local", dev: d, at: new Date().toISOString() });
+    expect(() => checkSameDevice(tmp, probe(dev + 1))).toThrow(new StateWriteError("loop state: unsupported filesystem (device changed since probe)"));
+    expect(() => checkSameDevice(tmp, probe(dev))).not.toThrow();
   });
 });

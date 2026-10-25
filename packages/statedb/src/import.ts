@@ -104,6 +104,15 @@ function statOrNull(path: string): ImportStat | null {
   }
 }
 
+/** Set by `sil state export --legacy-paths` (design D14); `sil state migrate` clears it. */
+export const SUSPENDED_KEY = "legacy_import_suspended";
+
+/** The export time while legacy imports are suspended, else null. */
+export function importSuspendedAt(db: Database): string | null {
+  const row = db.query("SELECT value FROM meta WHERE key = ?").get(SUSPENDED_KEY) as { value: string } | null;
+  return row?.value ?? null;
+}
+
 const claimPath = (stream: Stream): string => `${STREAMS[stream].legacyPath()}.importing`;
 
 /** The D6 pending check: two stats, no database access. */
@@ -218,6 +227,11 @@ function importClaim(db: Database, stream: Stream, claim: ImportStat, startedAt:
     .query("SELECT id, backup_path, size, sha256 FROM legacy_imports WHERE store = ? AND dev = ? AND ino = ? AND state = 'verified' ORDER BY id DESC LIMIT 1")
     .get(stream, claim.dev, claim.ino) as ImportRow | null;
   if (known) {
+    // An export row (D14) has no backup yet; it gets one the way a fresh import does.
+    if (!known.backup_path) {
+      known.backup_path = `${STREAMS[stream].legacyPath()}.imported-${stampNow()}-${known.id}`;
+      db.query("UPDATE legacy_imports SET backup_path = ? WHERE id = ?").run(known.backup_path, known.id);
+    }
     if (known.size === bytes.length && known.sha256 === sha256(bytes)) return { row: known, counts: { imported: 0, quarantined: 0, blank: 0 } };
     if (known.size < bytes.length) return { row: known, counts: importTail(db, stream, known, bytes) };
     throw new Refused(CHANGED);
@@ -319,6 +333,11 @@ function importStreamPasses(db: Database, stream: Stream, outcomes: ImportOutcom
     let claim: ImportStat | null = null;
     let result: { row: ImportRow; counts: Counts };
     try {
+      // Checked under the write lock, so an export that commits first always wins.
+      if (importSuspendedAt(db) !== null) {
+        db.run("COMMIT");
+        return;
+      }
       claim = statOrNull(claimName);
       if (!claim) {
         if (!statOrNull(original)) {
@@ -343,6 +362,7 @@ function importStreamPasses(db: Database, stream: Stream, outcomes: ImportOutcom
  * `importStreamOn` has recorded it, and the next store access retries. */
 export function importAllOn(db: Database): ImportAllResult {
   const result: ImportAllResult = { outcomes: [], failures: [] };
+  if (importSuspendedAt(db) !== null) return result;
   for (const stream of Object.keys(STREAMS) as Stream[]) {
     try {
       let pending: boolean;

@@ -7,6 +7,8 @@ import {
   LockHeld,
   ProviderError,
   ReviewError,
+  StateReadError,
+  StateWriteError,
   type Config,
   type World,
   ValidationError,
@@ -52,7 +54,14 @@ export function mapKnownError(err: unknown): number | null {
     console.error(`error: ${err.message}`);
     return 2;
   }
-  if (err instanceof ReviewError || err instanceof GitError || err instanceof ProviderError || err instanceof ValidationError) {
+  if (
+    err instanceof ReviewError ||
+    err instanceof GitError ||
+    err instanceof ProviderError ||
+    err instanceof ValidationError ||
+    err instanceof StateReadError ||
+    err instanceof StateWriteError
+  ) {
     console.error(`error: ${err.message}`);
     return 1;
   }

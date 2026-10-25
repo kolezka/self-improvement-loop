@@ -65,7 +65,7 @@ function logOnce(stream: Stream, reason: string): void {
 }
 
 /** What a strict reader throws when the import before its read fails. */
-function strictImportError(stream: Stream, error: unknown): StateReadError {
+export function strictImportError(stream: Stream, error: unknown): StateReadError {
   const { label } = STREAMS[stream];
   if (error instanceof ImportError && error.busy) return new StateReadError(`${label} is being imported`);
   return new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
@@ -113,6 +113,22 @@ export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
 
 const plural = (n: number, word: string): string => `${n} ${n === 1 ? word : `${word}s`}`;
 
+/** A stream's bodies in id order, read on `db` inside the caller's transaction.
+ * Throws StateReadError when the stream has quarantined lines (design D13). */
+export function exportBodiesOn(db: Database, stream: Stream): string[] {
+  const { label } = STREAMS[stream];
+  let bodies: string[];
+  let bad: number;
+  try {
+    bodies = (db.query("SELECT body FROM log_records WHERE stream = ? ORDER BY id").all(stream) as { body: string }[]).map((r) => r.body);
+    bad = (db.query("SELECT count(*) AS n FROM quarantine WHERE store = ?").get(stream) as { n: number }).n;
+  } catch (error) {
+    throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
+  }
+  if (bad > 0) throw new StateReadError(`${label} has ${plural(bad, "quarantined line")}; see sil state quarantine`);
+  return bodies;
+}
+
 /** The stream as JSONL for a bundle: bodies in id order, one per line, or null
  * when it has no rows. Refuses a stream with quarantined lines (design D13), so
  * an export is never silently short. */
@@ -124,21 +140,19 @@ export function exportJsonl(stream: Stream): string | null {
     throw strictImportError(stream, error);
   }
   let bodies: string[];
-  let bad: number;
   try {
     const db = openState();
     db.run("BEGIN");
     try {
-      bodies = (db.query("SELECT body FROM log_records WHERE stream = ? ORDER BY id").all(stream) as { body: string }[]).map((r) => r.body);
-      bad = (db.query("SELECT count(*) AS n FROM quarantine WHERE store = ?").get(stream) as { n: number }).n;
+      bodies = exportBodiesOn(db, stream);
       db.run("COMMIT");
     } finally {
       if (db.inTransaction) db.run("ROLLBACK");
     }
   } catch (error) {
+    if (error instanceof StateReadError) throw error;
     throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
   }
-  if (bad > 0) throw new StateReadError(`${label} has ${plural(bad, "quarantined line")}; see sil state quarantine`);
   return bodies.length === 0 ? null : `${bodies.join("\n")}\n`;
 }
 

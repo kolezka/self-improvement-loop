@@ -10,6 +10,18 @@ export {
 export { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 export { closeState, openState } from "./open.ts";
 export {
+  type BackupCheck,
+  dropQuarantine,
+  exportLegacy,
+  type ExportLegacyResult,
+  listQuarantine,
+  type QuarantineEntry,
+  migrateLegacy,
+  stateStatus,
+  type StateStatus,
+  type StatusImport,
+} from "./status.ts";
+export {
   appendRecord,
   exportJsonl,
   type ReadMode,

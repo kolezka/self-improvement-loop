@@ -301,8 +301,13 @@ describe("aliases in loop state", () => {
   }
 
   test("export writes the world's map as sorted two-space JSON", async () => {
-    const dest = await exportAliasesFromHostA();
-    expect(readFileSync(join(dest, "worlds", "default", "aliases.json"), "utf8")).toBe(`${JSON.stringify({ old: "new" }, null, 2)}\n`);
+    expect(await run(["init"])).toBe(0);
+    saveAliases("default", { zeta: "zed", alpha: "first" });
+    const dest = join(tmp, "bundle");
+    exportBundle({ dest });
+    const text = readFileSync(join(dest, "worlds", "default", "aliases.json"), "utf8");
+    expect(text).toBe(`${JSON.stringify({ alpha: "first", zeta: "zed" }, null, 2)}\n`);
+    expect(text).not.toBe(`${JSON.stringify({ zeta: "zed", alpha: "first" }, null, 2)}\n`);
   });
 
   test("export writes no aliases file for a world with no aliases", async () => {
@@ -352,6 +357,30 @@ describe("aliases in loop state", () => {
     expect(warned[0]).toContain("one hop");
     expect(loadAliases("default")).toEqual({ mine: "host" });
   });
+
+  for (const [kind, body] of [
+    ["chained", `${JSON.stringify({ a: "b", b: "c" }, null, 2)}\n`],
+    ["bad JSON", "not json"],
+  ] as const) {
+    test(`a ${kind} bundle map warns even when the host has aliases and no --force`, async () => {
+      const dest = await exportAliasesFromHostA();
+      writeFileSync(join(dest, "worlds", "default", "aliases.json"), body);
+      // Baseline: a host with no aliases, where the file is never a skip either.
+      useRoots("hostC");
+      expect(await run(["init"])).toBe(0);
+      const baseline = importBundle({ src: dest });
+
+      useRoots("hostB");
+      expect(await run(["init"])).toBe(0);
+      saveAliases("default", { x: "y" });
+      const result = importBundle({ src: dest });
+      const warned = result.warnings.filter((w) => w.startsWith("aliases.json (world default): not imported ("));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain(kind === "chained" ? "one hop" : "not JSON");
+      expect(result.skipped).toBe(baseline.skipped);
+      expect(loadAliases("default")).toEqual({ x: "y" });
+    });
+  }
 
   test("a bundle aliases file that is not a map of names is a warning, not a write", async () => {
     const dest = await exportAliasesFromHostA();

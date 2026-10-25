@@ -232,16 +232,13 @@ function checkBundleAliases(text: string): { map: Record<string, string> } | { r
   return { map };
 }
 
-/** Load one world's bundle aliases through saveAliases. Same counts as copyOne:
- * a world the host already has aliases for is skipped unless `force`. A file
- * that is not a one-hop map of names becomes a warning and writes nothing. */
+/** Load one world's bundle aliases through saveAliases. A file that is not a
+ * one-hop map of names becomes a warning and writes nothing, checked before the
+ * host is read. A valid map follows copyOne's counts: a world the host already
+ * has aliases for is skipped unless `force`. */
 function restoreAliases(file: string, world: string, force: boolean, warnings: string[]): CopyStats {
   const out = blank();
   if (!existsSync(file)) return out;
-  if (!force && Object.keys(loadAliasesStrict(world)).length > 0) {
-    out.skipped = 1;
-    return out;
-  }
   const text = readFileSync(file, "utf8");
   const notImported = (reason: string): CopyStats => {
     warnings.push(`aliases.json (world ${world}): not imported (${reason})`);
@@ -249,6 +246,10 @@ function restoreAliases(file: string, world: string, force: boolean, warnings: s
   };
   const checked = checkBundleAliases(text);
   if ("reason" in checked) return notImported(checked.reason);
+  if (!force && Object.keys(loadAliasesStrict(world)).length > 0) {
+    out.skipped = 1;
+    return out;
+  }
   try {
     // replaceAliases checks the one-hop rule again; it is the write point every caller passes.
     saveAliases(world, checked.map);

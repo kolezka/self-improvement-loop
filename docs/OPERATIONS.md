@@ -532,6 +532,75 @@ Two consequences worth knowing:
   600, so a restart keeps every open tab working. Rotate it by deleting that
   file and restarting the service. A loopback bind is tokenless and unaffected.
 
+## Loop state (`sil state`)
+
+Four logs moved from JSONL files into one SQLite file,
+`~/.local/state/self-improvement-loop/loop-state.sqlite`:
+
+| Store | Old file (in the state dir) |
+| --- | --- |
+| `reflect_runs` | `usage/reflect-runs.jsonl` |
+| `critic` | `feedback/critic.jsonl` |
+| `human` | `feedback/human.jsonl` |
+| `proposal_events` | `curriculum/proposal-events.jsonl` |
+
+Nothing to do by hand. The first `sil` command, worker pass or `sil web` that
+reads or writes one of these imports the old file and renames it to
+`<file>.imported-<stamp>-<id>`, for example
+`human.jsonl.imported-2026-10-25T065425046Z-1`. That file is your original, byte
+for byte. Nothing deletes it.
+
+```
+sil state status [--json]          # DB path, schema, rows per store, each import and its backup check
+sil state migrate                  # import any old file now (handy before a first sil web)
+sil state quarantine               # lines that were not JSON objects and did not import
+sil state quarantine --drop <store>
+sil state export --legacy-paths [--force]
+```
+
+`status` re-reads every backup. `backup ok` means it still matches what was
+imported. `backup grew after import: N bytes not in the DB` means an older
+process appended to it after the import; `sil state migrate` does not pick that
+up, so copy those lines over by hand if you need them.
+
+A quarantined line keeps its raw text in the DB, and the backup still has it.
+While a store has quarantined lines, strict readers (the consoles' scorecards),
+`sil export` and `sil state export` refuse to read that store. Once you have what you
+need from the line, drop it with `--drop`; the backup keeps the raw text.
+
+### Going back to an older plugin
+
+Older builds read the JSONL files and know nothing about the DB. To downgrade:
+
+1. `sil state export --legacy-paths`. This writes each store back to its old
+   path in the old format and pauses imports, so the new build leaves those
+   files alone. It refuses a path that already has a file. `--force` only
+   replaces a file that is exactly one this DB already recorded; any other file
+   may hold lines the DB lacks, so run `sil state migrate` first.
+2. Install the older plugin right away. Anything the new build writes between
+   step 1 and the install, such as a worker pass or a vote, goes only to the DB.
+   The older build will not see it.
+
+If you upgrade again later, run `sil state migrate` once. Until then imports
+stay paused, `sil state status` says `legacy imports suspended since ...`, and
+nothing the older build wrote is read. Migrate turns an unchanged
+exported file into a backup without importing it twice, and imports only the
+lines the older build appended.
+
+### Reading the DB directly
+
+`sil state export --legacy-paths` is the normal way to get JSONL back. To look
+without changing anything:
+
+```
+sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
+  "SELECT body FROM log_records WHERE stream = 'human' ORDER BY id"
+```
+
+`body` is the record's JSON line as it was written. The other tables are `quarantine`,
+`legacy_imports` (one row per import or export, with the backup path, size and
+sha256) and `meta`. Do not write to the file by hand.
+
 ## Logs
 
 ```
@@ -542,6 +611,9 @@ sil logs curriculum
 ```
 
 Log files live at `~/.local/state/self-improvement-loop/logs/{hook,worker,web,curriculum}.log`.
+
+A tolerant read that had to fall back to what the loop state DB already had
+writes one line per store to `logs/state.log` (no `sil logs` name for it yet).
 
 ## Troubleshooting
 

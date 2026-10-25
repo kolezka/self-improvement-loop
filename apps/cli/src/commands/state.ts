@@ -47,7 +47,7 @@ export function cmdStateMigrate(): number {
   const { resumed, outcomes, failures } = migrateLegacy();
   if (resumed !== null) console.log(`resumed legacy imports (suspended by the export at ${resumed})`);
   for (const o of outcomes) {
-    console.log(`${o.stream}: ${o.imported} imported, ${o.quarantined} quarantined, ${o.blank} blank; backup ${o.backupPath}`);
+    console.log(`${o.world === null ? o.store : `${o.store} (${o.world})`}: ${o.imported} imported, ${o.quarantined} quarantined, ${o.blank} blank; backup ${o.backupPath}`);
   }
   for (const f of failures) console.error(`error: ${f.message}`);
   if (outcomes.length === 0 && failures.length === 0) console.log("nothing to import");

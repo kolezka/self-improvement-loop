@@ -250,7 +250,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   const ready: Stream[] = [];
   for (const stream of STREAM_NAMES) {
     try {
-      ensureImported(stream);
+      ensureImported({ store: stream, world: null });
       ready.push(stream);
     } catch (error) {
       if (!(error instanceof StateReadError || error instanceof StateWriteError)) throw error;

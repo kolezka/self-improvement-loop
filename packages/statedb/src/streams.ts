@@ -40,7 +40,7 @@ export function appendRecord(stream: Stream, record: Record<string, unknown>): v
   const { label } = STREAMS[stream];
   try {
     if (record === null || typeof record !== "object" || Array.isArray(record)) throw new StateWriteError(`${label} cannot be written (not a JSON object)`);
-    ensureImported(stream);
+    ensureImported({ store: stream, world: null });
     insertRecord(openState(), stream, record, JSON.stringify(record), new Date().toISOString());
   } catch (error) {
     if (error instanceof StateWriteError && error.message.startsWith(label)) throw error;
@@ -78,7 +78,7 @@ const EMPTY = (): ReadResult => ({ records: [], quarantined: 0 });
 export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
   const { label } = STREAMS[stream];
   try {
-    ensureImported(stream);
+    ensureImported({ store: stream, world: null });
   } catch (error) {
     if (mode !== "tolerant") throw strictImportError(stream, error);
     logOnce(stream, reasonOf(error));
@@ -135,7 +135,7 @@ export function exportBodiesOn(db: Database, stream: Stream): string[] {
 export function exportJsonl(stream: Stream): string | null {
   const { label } = STREAMS[stream];
   try {
-    ensureImported(stream);
+    ensureImported({ store: stream, world: null });
   } catch (error) {
     throw strictImportError(stream, error);
   }
@@ -173,7 +173,7 @@ export function replaceStream(stream: Stream, jsonl: string, source: string, for
   const { label } = STREAMS[stream];
   try {
     // A legacy file still waiting at the old path is host data too.
-    ensureImported(stream);
+    ensureImported({ store: stream, world: null });
     const db = openState();
     db.run("BEGIN IMMEDIATE");
     try {

@@ -218,7 +218,7 @@ describe("sil state failure paths", () => {
             },
           });
           const interrupted = migrateLegacy();
-          expect(interrupted.failures.map((failure) => failure.stream)).toEqual(["critic"]);
+          expect(interrupted.failures.map((failure) => failure.store)).toEqual(["critic"]);
           setImportIoForTest(REAL);
         }
         REAL.rename(from, to);
@@ -262,7 +262,7 @@ describe("sil state failure paths", () => {
         if (to === critic && from.includes(".export-") && !interleaved) {
           interleaved = true;
           const claimed = migrateLegacy();
-          expect(claimed.failures.map((f) => f.stream)).toEqual(["critic"]);
+          expect(claimed.failures.map((f) => f.store)).toEqual(["critic"]);
           expect(existsSync(claim)).toBe(true);
         }
         REAL.rename(from, to);

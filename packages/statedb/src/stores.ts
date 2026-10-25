@@ -3,7 +3,7 @@
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { paths } from "@sil/core";
+import { paths, WORLD_NAME_RE } from "@sil/core";
 import { type Stream, STREAMS } from "./streams.ts";
 
 export type DocName = "queue_cleared" | "worker_status" | "refine_attempts";
@@ -88,20 +88,30 @@ function present(path: string): boolean {
 const REFINE_FILE = /^(.+)\.json$/;
 const REFINE_CLAIM = /^(.+)\.json\.importing$/;
 
-/** The worlds that still have a legacy file (or an import claim on one) for a
- * per-world store, as NFC names, de-duplicated and sorted. */
-export function legacyWorlds(store: "refine_attempts" | "aliases"): string[] {
-  const found = new Set<string>();
+/** The path-safe worlds with a legacy file or claim, and invalid on-disk names
+ * whose files must stay untouched. Valid names are NFC; invalid names are raw. */
+export function legacyWorldsReport(store: "refine_attempts" | "aliases"): { worlds: string[]; invalid: string[] } {
+  const worlds = new Set<string>();
+  const invalid = new Set<string>();
+  const record = (raw: string): void => {
+    const name = worldKey(raw);
+    if (WORLD_NAME_RE.test(name) && paths.safeComponent(name) === name) worlds.add(name);
+    else invalid.add(raw);
+  };
   if (store === "refine_attempts") {
     for (const name of listNames(join(paths.stateDir(), "curriculum", "refine-attempts"))) {
       const stem = REFINE_FILE.exec(name)?.[1] ?? REFINE_CLAIM.exec(name)?.[1];
-      if (stem !== undefined) found.add(worldKey(stem));
+      if (stem !== undefined) record(stem);
     }
   } else {
-    const worlds = join(paths.dataDir(), "worlds");
-    for (const name of listNames(worlds)) {
-      if (present(join(worlds, name, "aliases.json")) || present(join(worlds, name, "aliases.json.importing"))) found.add(worldKey(name));
+    const dir = join(paths.dataDir(), "worlds");
+    for (const name of listNames(dir)) {
+      if (present(join(dir, name, "aliases.json")) || present(join(dir, name, "aliases.json.importing"))) record(name);
     }
   }
-  return [...found].sort();
+  return { worlds: [...worlds].sort(), invalid: [...invalid].sort() };
+}
+
+export function legacyWorlds(store: "refine_attempts" | "aliases"): string[] {
+  return legacyWorldsReport(store).worlds;
 }

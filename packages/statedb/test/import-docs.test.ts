@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths } from "@sil/core";
-import { closeState, ensureImported, openState, setImportIoForTest, type StoreName, STORES } from "../src/index.ts";
+import { closeState, ensureImported, openState, readAliases, readDoc, setImportIoForTest, stateStatus, type StoreName, STORES } from "../src/index.ts";
 import { ImportError } from "../src/import.ts";
 import { legacyWorlds } from "../src/stores.ts";
 
@@ -99,6 +99,33 @@ const quarantineRows = (store: StoreName): QuarantineRow[] =>
 const cleared = (): string => STORES.queue_cleared.legacyPath(null);
 
 describe("legacy document import", () => {
+  for (const store of ["refine_attempts", "aliases"] as const) {
+    test(`${store}: an invalid on-disk world does not consume a valid world's file`, () => {
+      const valid = STORES[store].legacyPath("a_b");
+      const invalid = store === "aliases"
+        ? join(paths.dataDir(), "worlds", "a b", "aliases.json")
+        : join(paths.stateDir(), "curriculum", "refine-attempts", "a b.json");
+      const validText = store === "aliases" ? '{"valid":"target"}\n' : '{"valid":1}\n';
+      const invalidText = store === "aliases" ? '{"wrong":"target"}\n' : '{"wrong":1}\n';
+      seedRaw(valid, validText);
+      seedRaw(invalid, invalidText);
+      const invalidBytes = readFileSync(invalid);
+
+      openState();
+
+      if (store === "aliases") expect(readAliases("a_b", "strict")).toEqual({ valid: "target" });
+      else expect(readDoc("refine_attempts", "a_b", "strict")).toEqual({ valid: 1 });
+      expect(importRows(store).filter((row) => row.state === "verified").map((row) => row.world)).toEqual(["a_b"]);
+      expect(existsSync(valid)).toBe(false);
+      expect(backups(valid)).toHaveLength(1);
+      expect(readFileSync(backups(valid)[0]!)).toEqual(Buffer.from(validText));
+      expect(readFileSync(invalid)).toEqual(invalidBytes);
+      expect(existsSync(`${invalid}.importing`)).toBe(false);
+      expect(backups(invalid)).toHaveLength(0);
+      expect(stateStatus().invalidWorldEntries).toContainEqual({ store, name: "a b" });
+    });
+  }
+
   test("the first open imports every document kind and keeps byte-identical backups", () => {
     const seeds: { path: string; value: unknown }[] = [
       { path: cleared(), value: { default: "2026-10-01T00:00:00.000Z" } },

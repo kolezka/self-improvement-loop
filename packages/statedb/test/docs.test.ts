@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
-import { closeState, openState, readDoc, saveDoc } from "../src/index.ts";
+import { fsx, paths, StateReadError, StateWriteError, ValidationError } from "@sil/core";
+import { closeState, dropQuarantine, openState, readAliases, readDoc, replaceAliases, saveDoc } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -55,6 +55,24 @@ describe("readDoc and saveDoc", () => {
     expect(readDoc("refine_attempts", "a", "strict")).toEqual({ "p-1": 2 });
     saveDoc("worker_status", null, { state: "busy" });
     expect(readDoc("worker_status", null, "strict")).toEqual({ state: "busy" });
+  });
+
+  test("invalid world names cannot address a valid world's stores or quarantine", () => {
+    saveDoc("refine_attempts", "a_b", { valid: 1 });
+    replaceAliases("a_b", { valid: "target" });
+    for (const action of [
+      () => readDoc("refine_attempts", "a b", "strict"),
+      () => readAliases("a b", "strict"),
+      () => saveDoc("refine_attempts", "a b", { wrong: 1 }),
+      () => replaceAliases("a b", { wrong: "target" }),
+      () => dropQuarantine("aliases", "a b"),
+    ]) {
+      const error = caught(action);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as Error).message).toBe('world name "a b" is not a valid world name');
+    }
+    expect(readDoc("refine_attempts", "a_b", "strict")).toEqual({ valid: 1 });
+    expect(readAliases("a_b", "strict")).toEqual({ valid: "target" });
   });
 
   test("a row whose body is not a JSON object is malformed, not missing", () => {

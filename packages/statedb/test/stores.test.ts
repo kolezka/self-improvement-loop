@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "@sil/core";
 import { closeState } from "../src/index.ts";
-import { legacyWorlds } from "../src/stores.ts";
+import { legacyWorlds, legacyWorldsReport } from "../src/stores.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -32,6 +32,21 @@ afterEach(() => {
 const touch = (path: string): void => writeFileSync(path, "{}");
 
 describe("legacyWorlds", () => {
+  test("both stores report raw invalid names and only return path-safe worlds", () => {
+    const refine = join(paths.stateDir(), "curriculum", "refine-attempts");
+    const aliases = join(paths.dataDir(), "worlds");
+    mkdirSync(refine, { recursive: true });
+    for (const world of ["a_b", "a b"]) {
+      touch(join(refine, `${world}.json`));
+      mkdirSync(join(aliases, world), { recursive: true });
+      touch(join(aliases, world, "aliases.json.importing"));
+    }
+    for (const store of ["refine_attempts", "aliases"] as const) {
+      expect(legacyWorldsReport(store)).toEqual({ worlds: ["a_b"], invalid: ["a b"] });
+      expect(legacyWorlds(store)).toEqual(["a_b"]);
+    }
+  });
+
   test("refine attempts: a plain file and a claim count, a backup does not; dot names are skipped", () => {
     const dir = join(paths.stateDir(), "curriculum", "refine-attempts");
     mkdirSync(dir, { recursive: true });

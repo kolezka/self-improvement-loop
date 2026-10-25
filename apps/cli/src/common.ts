@@ -54,6 +54,10 @@ export function mapKnownError(err: unknown): number | null {
     console.error(`error: ${err.message}`);
     return 2;
   }
+  if (err instanceof ValidationError && /^world name .* is not a valid world name$/.test(err.message)) {
+    console.error(`error: ${err.message}`);
+    return 2;
+  }
   if (
     err instanceof ReviewError ||
     err instanceof GitError ||

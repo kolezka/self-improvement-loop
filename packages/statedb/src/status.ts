@@ -9,7 +9,7 @@ import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
 import { ensureImported, importAll, type ImportAllResult, importAllOn, importSuspendedAt, legacyIo, reasonOf, SUSPENDED_KEY } from "./import.ts";
 import { quarantineCountOn, quarantinedMessage, storeRef, strictStoreImportError } from "./docs.ts";
 import { openState, openStateReporting } from "./open.ts";
-import { type DocName, legacyWorlds, type StoreName, type StoreRef, STORES } from "./stores.ts";
+import { type DocName, legacyWorldsReport, type StoreName, type StoreRef, STORES } from "./stores.ts";
 import { exportBodiesOn, type Stream, STREAMS, strictImportError } from "./streams.ts";
 
 export type BackupCheck = "ok" | "missing" | "grew" | "changed";
@@ -37,6 +37,8 @@ export interface StateStatus {
   streams: Record<Stream, { rows: number; quarantined: number; pending: boolean }>;
   /** Every document and aliases world seen, sorted by store then world. */
   docs: StatusDoc[];
+  /** Legacy files whose raw on-disk world names cannot be imported safely. */
+  invalidWorldEntries: { store: "refine_attempts" | "aliases"; name: string }[];
   imports: StatusImport[];
 }
 
@@ -72,10 +74,10 @@ function pendingAt(ref: StoreRef): boolean {
   }
 }
 
-/** Per-world worlds with a legacy file, as StateReadError when they cannot be listed. */
-function legacyWorldsOrThrow(store: "refine_attempts" | "aliases"): string[] {
+/** Per-world legacy files, as StateReadError when they cannot be listed. */
+function legacyWorldsReportOrThrow(store: "refine_attempts" | "aliases"): { worlds: string[]; invalid: string[] } {
   try {
-    return legacyWorlds(store);
+    return legacyWorldsReport(store);
   } catch (error) {
     throw new StateReadError(`the legacy ${store} files cannot be listed (${fsx.errnoCode(error) || reasonOf(error)})`);
   }
@@ -109,7 +111,7 @@ function docRefsOn(db: Database): StoreRef[] {
 function legacyDocRefs(): StoreRef[] {
   const refs: StoreRef[] = [];
   for (const store of GLOBAL_DOC_STORES) if (pendingAt({ store, world: null })) refs.push({ store, world: null });
-  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsOrThrow(store)) refs.push({ store, world });
+  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsReportOrThrow(store).worlds) refs.push({ store, world });
   return refs;
 }
 
@@ -263,6 +265,10 @@ export function stateStatus(): StateStatus {
     (d): StatusDoc => ({ store: d.store as DocStore, world: d.world, rows: d.rows, quarantined: d.quarantined, pending: pendingAt(d) }),
   );
 
+  const invalidWorldEntries = PER_WORLD_DOC_STORES.flatMap((store) =>
+    legacyWorldsReportOrThrow(store).invalid.map((name) => ({ store, name })),
+  );
+
   const imports = read.rows.map((row): StatusImport => {
     const verified = row.state === "verified";
     const backup = verified ? checkBackup(row) : null;
@@ -278,7 +284,7 @@ export function stateStatus(): StateStatus {
     };
   });
 
-  return { dbPath: resolve(paths.loopStateDb()), schemaVersion: read.version, fsClass: read.fsClass, suspended: read.suspended, streams, docs, imports };
+  return { dbPath: resolve(paths.loopStateDb()), schemaVersion: read.version, fsClass: read.fsClass, suspended: read.suspended, streams, docs, invalidWorldEntries, imports };
 }
 
 export interface QuarantineEntry {
@@ -401,7 +407,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   for (const stream of STREAM_NAMES) if (importFirst({ store: stream, world: null })) ready.push(stream);
   for (const store of GLOBAL_DOC_STORES) importFirst({ store, world: null });
   // A world dir that cannot be listed fails the whole export as StateReadError.
-  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsOrThrow(store)) importFirst({ store, world });
+  for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsReportOrThrow(store).worlds) importFirst({ store, world });
 
   const db = openState();
   const io = legacyIo();

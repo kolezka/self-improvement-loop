@@ -26,13 +26,14 @@ export function cmdStateStatus(opts: { json?: boolean }): number {
     const notes = [s.quarantined > 0 ? `${s.quarantined} quarantined` : "", s.pending ? "legacy file waiting" : ""].filter(Boolean);
     console.log(`  ${stream.padEnd(16)} ${String(s.rows).padStart(7)} rows${notes.length ? `  (${notes.join(", ")})` : ""}`);
   }
-  if (status.docs.length === 0) console.log("documents: none");
+  if (status.docs.length === 0 && status.invalidWorldEntries.length === 0) console.log("documents: none");
   else {
     console.log("documents:");
     for (const d of status.docs) {
       const notes = [d.quarantined > 0 ? `${d.quarantined} quarantined` : "", d.pending ? "legacy file waiting" : ""].filter(Boolean);
       console.log(`  ${named(d.store, d.world).padEnd(16)} ${String(d.rows).padStart(7)} rows${notes.length ? `  (${notes.join(", ")})` : ""}`);
     }
+    for (const entry of status.invalidWorldEntries) console.log(`  invalid world name, not imported: ${entry.store} ${JSON.stringify(entry.name)}`);
   }
   if (status.imports.length === 0) {
     console.log("imports: none");

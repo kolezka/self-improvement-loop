@@ -71,6 +71,7 @@ interface StatusJson {
   schemaVersion: number;
   streams: Record<string, { rows: number; quarantined: number; pending: boolean }>;
   docs: { store: string; world: string | null; rows: number; quarantined: number; pending: boolean }[];
+  invalidWorldEntries: { store: string; name: string }[];
   imports: { store: string; world: string | null; state: string; backupPath: string | null; failure: string | null; lines: number; backupCheck: string | null }[];
 }
 
@@ -82,6 +83,24 @@ function status(): StatusJson {
 }
 
 describe("sil state", () => {
+  test("status shows invalid legacy world names without importing their files", () => {
+    const invalid = join(paths.dataDir(), "worlds", "a b", "aliases.json");
+    mkdirSync(dirname(invalid), { recursive: true });
+    writeFileSync(invalid, '{"wrong":"target"}\n');
+    const json = status();
+    expect(json.invalidWorldEntries).toContainEqual({ store: "aliases", name: "a b" });
+    const text = sil("state", "status");
+    expect(text.code).toBe(0);
+    expect(text.out).toContain('documents:\n  invalid world name, not imported: aliases "a b"');
+    expect(readFileSync(invalid, "utf8")).toBe('{"wrong":"target"}\n');
+  });
+
+  test("quarantine --world rejects invalid names as a usage error", () => {
+    const result = sil("state", "quarantine", "--drop", "aliases", "--world", "a b");
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('world name "a b" is not a valid world name');
+  });
+
   test("migrate imports a seeded log, prints its outcome and leaves a backup", () => {
     const seed = seedCritic();
     const r = sil("state", "migrate");

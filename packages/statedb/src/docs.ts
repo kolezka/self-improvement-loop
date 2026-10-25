@@ -2,7 +2,7 @@
 // strict and tolerant readers of design D8.
 
 import type { Database } from "bun:sqlite";
-import { StateReadError, StateWriteError } from "@sil/core";
+import { StateReadError, StateWriteError, ValidationError, WORLD_NAME_RE } from "@sil/core";
 import { ensureImported, ImportError, reasonOf } from "./import.ts";
 import { openState } from "./open.ts";
 import { type DocName, type StoreName, type StoreRef, STORES, worldKey } from "./stores.ts";
@@ -15,7 +15,9 @@ export type DocMode = "strict" | "tolerant";
 export function storeRef(store: StoreName, world: string | null): StoreRef {
   if (STORES[store].perWorld) {
     if (world === null) throw new Error(`${store} used without a world`);
-    return { store, world: worldKey(world) };
+    const normalized = worldKey(world);
+    if (!WORLD_NAME_RE.test(normalized)) throw new ValidationError(`world name ${JSON.stringify(world)} is not a valid world name`);
+    return { store, world: normalized };
   }
   if (world !== null) throw new Error(`${store} is global and has no world`);
   return { store, world: null };

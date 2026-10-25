@@ -166,4 +166,35 @@ describe("sil state failure paths", () => {
     const exportRow = stateStatus().imports.find((i) => i.store === "critic" && i.backupPath === null);
     expect(exportRow?.backupCheck).toBe("missing");
   });
+
+  test("a forced export whose rename fails keeps the original recorded, so migrate only backs it up", async () => {
+    seed();
+    expect((await sil("state", "migrate")).code).toBe(0);
+    expect((await sil("state", "export", "--legacy-paths")).code).toBe(0);
+    const critic = paths.criticFeedbackFile();
+    const original = { bytes: readFileSync(critic), ino: statSync(critic).ino };
+
+    setImportIoForTest({
+      ...REAL,
+      rename: (from, to) => {
+        if (to === critic) throw Object.assign(new Error("injected"), { code: "EIO" });
+        REAL.rename(from, to);
+      },
+    });
+    const forced = await sil("state", "export", "--legacy-paths", "--force");
+    setImportIoForTest(null);
+    expect(forced.code).toBe(1);
+    expect(statSync(critic).ino).toBe(original.ino);
+
+    expect((await sil("state", "migrate")).code).toBe(0);
+    expect(rows("critic")).toBe(2);
+    expect(existsSync(critic)).toBe(false);
+    const row = openState()
+      .query("SELECT backup_path FROM legacy_imports WHERE store = 'critic' AND state = 'verified' AND ino = ?")
+      .get(original.ino) as { backup_path: string | null } | null;
+    expect(row?.backup_path).toBeTruthy();
+    expect(readFileSync(row!.backup_path!)).toEqual(original.bytes);
+    const entry = stateStatus().imports.find((i) => i.backupPath === row!.backup_path);
+    expect(entry?.backupCheck).toBe("ok");
+  });
 });

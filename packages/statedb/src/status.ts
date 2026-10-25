@@ -224,7 +224,7 @@ function refusalFor(db: Database, target: string, force: boolean): { message: st
     .get(target, st.dev, st.ino, bytes.length, sha256(bytes)) as { id: number; backup_path: string | null } | null;
   if (!match) return { message: `${target} has lines that are not in the loop state; run sil state migrate first`, supersedes: null };
   if (!force) return { message: `${target} already exists; pass --force to overwrite it`, supersedes: null };
-  // An earlier export row whose file this one replaces describes nothing on disk any more.
+  // The earlier export row whose file this one replaces; exportLegacy deletes it once the new file is in place.
   return { message: "", supersedes: match.backup_path === null ? match.id : null };
 }
 
@@ -232,6 +232,8 @@ interface Staged {
   stream: Stream;
   target: string;
   temp: string;
+  /** The earlier export row this file replaces, deleted only after the rename. */
+  supersedes: number | null;
 }
 
 /** Write every stream back to its legacy JSONL path (design D14). An existing
@@ -295,11 +297,10 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
         result.failures.push({ stream, message: `${STREAMS[stream].label} cannot be exported (${fsx.errnoCode(error) || reasonOf(error)})` });
         continue;
       }
-      staged.push({ stream, target, temp });
+      staged.push({ stream, target, temp, supersedes: refusal?.supersedes ?? null });
       // Record what is on disk; the rename keeps the inode.
       const st = io.stat(temp);
       const bytes = io.readFile(temp);
-      if (refusal?.supersedes != null) db.query("DELETE FROM legacy_imports WHERE id = ?").run(refusal.supersedes);
       record.run(stream, target, bodies.length, sha256(bytes), bytes.length, st.dev, st.ino, now, now);
     }
     if (staged.length > 0) {
@@ -316,10 +317,23 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       io.rename(s.temp, s.target);
       result.written.push(s.target);
     } catch (error) {
+      // The original keeps its row, so a later migrate only moves it to a backup.
       // The row is committed; status shows its file as missing until this is fixed by hand.
       result.failures.push({
         stream: s.stream,
         message: `${STREAMS[s.stream].label} was exported but not moved into place (${fsx.errnoCode(error) || reasonOf(error)}); the export is at ${s.temp}`,
+      });
+      continue;
+    }
+    // Only now is the earlier export's file gone. A crash before this leaves a
+    // stale row whose file status shows as missing.
+    if (s.supersedes === null) continue;
+    try {
+      db.query("DELETE FROM legacy_imports WHERE id = ?").run(s.supersedes);
+    } catch (error) {
+      result.failures.push({
+        stream: s.stream,
+        message: `${STREAMS[s.stream].label} was exported but its earlier export row was not removed (${reasonOf(error)})`,
       });
     }
   }

@@ -144,6 +144,8 @@ describe("sil state", () => {
     expect(forced.code).toBe(0);
     expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(seed);
     expect(status().streams["critic"]!.rows).toBe(2);
+    // The replaced export's row goes once the new file is in place.
+    expect(status().imports.filter((i) => i.backupPath === null)).toEqual([expect.objectContaining({ store: "critic", backupCheck: null })]);
   });
 
   test("status shows the export's suspension and no backup check for an export row", () => {

@@ -5,7 +5,7 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync, renameSync, statSync } from "node:fs";
 import { fsx, StateReadError, StateWriteError } from "@sil/core";
-import { openState } from "./open.ts";
+import { openState, openStateReporting } from "./open.ts";
 import { type Stream, STREAMS } from "./streams.ts";
 
 export interface ImportStat {
@@ -40,6 +40,16 @@ export interface ImportOutcome {
   quarantined: number;
   blank: number;
   backupPath: string;
+}
+
+export interface ImportFailure {
+  stream: Stream;
+  message: string;
+}
+
+export interface ImportAllResult {
+  outcomes: ImportOutcome[];
+  failures: ImportFailure[];
 }
 
 /** An import that did not finish. `busy` means another process held the write
@@ -229,6 +239,12 @@ function fail(db: Database, stream: Stream, error: unknown, claim: ImportStat | 
   if (error instanceof ImportError) throw error;
   if (isBusy(error)) throw new ImportError(stream, "busy", true);
   const reason = reasonOf(error);
+  recordFailure(db, stream, reason, claim, startedAt);
+  throw new ImportError(stream, reason, false);
+}
+
+/** A `failed` row in its own transaction. */
+function recordFailure(db: Database, stream: Stream, reason: string, claim: ImportStat | null, startedAt: string): void {
   try {
     db.run("BEGIN IMMEDIATE");
     db.query(
@@ -236,10 +252,9 @@ function fail(db: Database, stream: Stream, error: unknown, claim: ImportStat | 
     ).run(stream, STREAMS[stream].legacyPath(), reason, claim?.dev ?? null, claim?.ino ?? null, startedAt);
     db.run("COMMIT");
   } catch {
-    // The row is only history for `sil state status`; the import failure below is what the caller sees.
+    // The row is only history for `sil state status`; the import failure the caller throws is what it sees.
     rollback(db);
   }
-  throw new ImportError(stream, reason, false);
 }
 
 /** Step 6: under the lock, import whatever grew past the row, else rename the claim to its backup. */
@@ -306,14 +321,25 @@ export function importStreamOn(db: Database, stream: Stream): ImportOutcome[] {
 
 /** The first-open import (design D4). A failure here never fails the open:
  * `importStreamOn` has recorded it, and the next store access retries. */
-export function importAllOn(db: Database): void {
+export function importAllOn(db: Database): ImportAllResult {
+  const result: ImportAllResult = { outcomes: [], failures: [] };
   for (const stream of Object.keys(STREAMS) as Stream[]) {
     try {
-      if (isPending(stream)) importStreamOn(db, stream);
+      let pending: boolean;
+      try {
+        pending = isPending(stream);
+      } catch (error) {
+        // No stat succeeded, so the row has no dev or ino.
+        recordFailure(db, stream, (error as ImportError).reason, null, new Date().toISOString());
+        throw error;
+      }
+      if (pending) result.outcomes.push(...importStreamOn(db, stream));
     } catch (error) {
       if (!(error instanceof ImportError)) throw error;
+      result.failures.push({ stream, message: error.message });
     }
   }
+  return result;
 }
 
 /** Import `stream`'s legacy file when the pending check finds one. [] when nothing was pending. */
@@ -322,7 +348,19 @@ export function ensureImported(stream: Stream): ImportOutcome[] {
   return importStreamOn(openState(), stream);
 }
 
-/** ensureImported for every stream, in STREAMS order. */
-export function importAll(): ImportOutcome[] {
-  return (Object.keys(STREAMS) as Stream[]).flatMap((stream) => ensureImported(stream));
+/** Import every stream, in STREAMS order, collecting failures instead of
+ * throwing. When this call is the one that opens the database, the import
+ * that first open ran is this call's result. */
+export function importAll(): ImportAllResult {
+  let opened: ReturnType<typeof openStateReporting>;
+  try {
+    opened = openStateReporting();
+  } catch (error) {
+    const failures = (Object.keys(STREAMS) as Stream[]).map((stream) => ({
+      stream,
+      message: `${STREAMS[stream].label} cannot be imported (${reasonOf(error)})`,
+    }));
+    return { outcomes: [], failures };
+  }
+  return opened.firstOpen ?? importAllOn(opened.db);
 }

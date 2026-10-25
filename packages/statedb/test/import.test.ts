@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
-import { appendRecord, closeState, type ImportIo, openState, readRecords, setImportIoForTest, type Stream, STREAMS } from "../src/index.ts";
+import { appendRecord, closeState, importAll, type ImportIo, openState, readRecords, setImportIoForTest, type Stream, STREAMS } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -316,7 +316,7 @@ describe("legacy import", () => {
         `import { paths } from "@sil/core";\nimport { readRecords } from ${JSON.stringify(src)};\n` +
         'console.log("STATE " + paths.stateDir());\n' +
         `while (Date.now() < ${startAt}) {}\n` +
-        'try { console.log("RESULT " + readRecords("critic", "strict").records.length); } catch (e) { console.log("RESULT " + e.name); }\n';
+        'try { console.log("RESULT " + readRecords("critic", "strict").records.length); } catch (e) { console.log("RESULT " + e.name + " " + e.message); }\n';
       // Built only from tmp dirs: a child does not see process.env changes made after start.
       const env = {
         PATH: process.env["PATH"] ?? "",
@@ -333,8 +333,7 @@ describe("legacy import", () => {
       expect(codes).toEqual([0, 0]);
       // Positive control: both children ran against this test's STATE dir.
       expect(outputs.map((o) => o[0])).toEqual([`STATE ${stateDir}`, `STATE ${stateDir}`]);
-      for (const out of outputs) expect(["RESULT 5000", "RESULT StateReadError"]).toContain(out[1]!);
-      expect(outputs.some((out) => out[1] === "RESULT 5000")).toBe(true);
+      expect(outputs.map((out) => out[1])).toEqual(["RESULT 5000", "RESULT 5000"]);
       const db = new Database(paths.loopStateDb(), { readonly: true });
       try {
         expect((db.query("SELECT count(*) AS n FROM log_records WHERE stream = 'critic'").get() as { n: number }).n).toBe(5000);
@@ -344,4 +343,68 @@ describe("legacy import", () => {
     },
     20_000,
   );
+});
+
+const ioError = (code: string): Error => Object.assign(new Error(`${code}: injected`), { code });
+
+/** node:fs, except that `matches` paths throw `code` from `call`. */
+function failingIo(call: "stat" | "readFile", matches: (path: string) => boolean, code: string): ImportIo {
+  return {
+    stat: (path) => {
+      if (call === "stat" && matches(path)) throw ioError(code);
+      return statSync(path);
+    },
+    rename: (from, to) => renameSync(from, to),
+    readFile: (path) => {
+      if (call === "readFile" && matches(path)) throw ioError(code);
+      return readFileSync(path);
+    },
+  };
+}
+
+describe("importAll", () => {
+  test("a first call on seeded files returns the outcomes of the import its open ran", () => {
+    fsx.appendJsonl(STREAMS.critic.legacyPath(), { n: 1 });
+    fsx.appendJsonl(STREAMS.human.legacyPath(), { n: 1 });
+    fsx.appendJsonl(STREAMS.human.legacyPath(), { n: 2 });
+    const result = importAll();
+    expect(result.failures).toEqual([]);
+    expect(result.outcomes.map((o) => [o.stream, o.imported, o.quarantined, o.blank])).toEqual([
+      ["critic", 1, 0, 0],
+      ["human", 2, 0, 0],
+    ]);
+    expect(result.outcomes.map((o) => o.backupPath)).toEqual([...backups(critic()), ...backups(STREAMS.human.legacyPath())]);
+    // Nothing left: a second call reports nothing.
+    expect(importAll()).toEqual({ outcomes: [], failures: [] });
+  });
+
+  test("a spill on an already open database is returned by the next call", () => {
+    openState();
+    fsx.appendJsonl(critic(), { n: 1 });
+    const result = importAll();
+    expect(result.failures).toEqual([]);
+    expect(result.outcomes.map((o) => [o.stream, o.imported])).toEqual([["critic", 1]]);
+  });
+
+  test("one failing stream is listed and every other stream is still imported", () => {
+    for (const stream of Object.keys(STREAMS) as Stream[]) fsx.appendJsonl(STREAMS[stream].legacyPath(), { stream });
+    const failingClaim = `${STREAMS.reflect_runs.legacyPath()}.importing`;
+    setImportIoForTest(failingIo("readFile", (path) => path === failingClaim, "EIO"));
+    let result = { outcomes: [] as { stream: Stream }[], failures: [] as unknown[] };
+    expect(caught(() => (result = importAll() as unknown as typeof result))).toBeNull();
+    expect(result.failures).toEqual([{ stream: "reflect_runs", message: "the reflect runs log cannot be imported (EIO)" }]);
+    expect(result.outcomes.map((o) => o.stream)).toEqual(["critic", "human", "proposal_events"]);
+    for (const stream of ["critic", "human", "proposal_events"] as Stream[]) expect(rowCount(stream)).toBe(1);
+    expect(importRows("reflect_runs").map((r) => [r.state, r.failure])).toEqual([["failed", "EIO"]]);
+  });
+
+  test("a pending check that cannot stat at first open records failed and the open goes on", () => {
+    fsx.appendJsonl(STREAMS.human.legacyPath(), { n: 1 });
+    setImportIoForTest(failingIo("stat", (path) => path === critic(), "EIO"));
+    const db = openState();
+    const failed = importRows("critic");
+    expect(failed.map((r) => [r.state, r.failure, r.dev, r.ino])).toEqual([["failed", "EIO", null, null]]);
+    expect(rowCount("human")).toBe(1);
+    expect((db.query("SELECT count(*) AS n FROM legacy_imports WHERE state = 'verified'").get() as { n: number }).n).toBe(1);
+  });
 });

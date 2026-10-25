@@ -6,7 +6,7 @@ import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fsx, paths, StateWriteError } from "@sil/core";
 import { probeFilesystem } from "@sil/core/fs-probe";
-import { importAllOn } from "./import.ts";
+import { type ImportAllResult, importAllOn, isBusy } from "./import.ts";
 import { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 
 const BUSY_TIMEOUT_MS = 2000;
@@ -130,23 +130,41 @@ export function prepare(db: Database): void {
   migrate(db);
 }
 
-function openAt(path: string): Database {
+const OPEN_RETRY_PAUSE_MS = 10;
+
+interface Opened {
+  db: Database;
+  firstOpen: ImportAllResult;
+}
+
+function openAt(path: string): Opened {
   const dir = dirname(path);
-  let db: Database | null = null;
   try {
     fsx.ensureDir(dir);
     const probe = probeDir(dir);
     checkSameDevice(dir, probe);
     createFile(path);
-    db = connect(path);
-    checkSameDevice(dir, probe);
-    prepare(db);
-    recordProbe(db, probe);
-    // On this handle, not through openState: the cache is not filled yet.
-    importAllOn(db);
-    return db;
+    // Measured: two processes creating the file at once can get SQLITE_BUSY
+    // from "PRAGMA journal_mode = WAL" at once, without the busy timeout
+    // applying. So a busy open starts over on a fresh handle, for up to the
+    // busy timeout. Refusals (newer schema, filesystem) are not busy and stay fatal.
+    const deadline = Date.now() + BUSY_TIMEOUT_MS;
+    for (;;) {
+      let db: Database | null = null;
+      try {
+        db = connect(path);
+        checkSameDevice(dir, probe);
+        prepare(db);
+        recordProbe(db, probe);
+        // On this handle, not through openState: the cache is not filled yet.
+        return { db, firstOpen: importAllOn(db) };
+      } catch (error) {
+        db?.close();
+        if (!isBusy(error) || Date.now() >= deadline) throw error;
+      }
+      Bun.sleepSync(OPEN_RETRY_PAUSE_MS);
+    }
   } catch (error) {
-    db?.close();
     if (error instanceof StateWriteError) throw error;
     throw new StateWriteError(`loop state: cannot open database (${errorCode(error)})`);
   }
@@ -156,12 +174,18 @@ function openAt(path: string): Database {
  * also imports every pending legacy file. Throws StateWriteError
  * on an unsupported filesystem, a newer schema, or any open failure. */
 export function openState(): Database {
+  return openStateReporting().db;
+}
+
+/** openState, plus the first-open import result for the one call that opened
+ * the handle (null for every call served from the cache). */
+export function openStateReporting(): { db: Database; firstOpen: ImportAllResult | null } {
   const path = resolve(paths.loopStateDb());
   const cached = handles.get(path);
-  if (cached) return cached;
-  const db = openAt(path);
-  handles.set(path, db);
-  return db;
+  if (cached) return { db: cached, firstOpen: null };
+  const opened = openAt(path);
+  handles.set(path, opened.db);
+  return opened;
 }
 
 /** Close and forget every cached handle. */

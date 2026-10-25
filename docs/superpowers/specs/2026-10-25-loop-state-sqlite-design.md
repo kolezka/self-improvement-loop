@@ -138,9 +138,10 @@ process crash, may lose the last transactions on power loss, same as an
 unflushed append today) while the worker, CLI and server take FULL, so a human
 vote or alias edit is on disk when the command returns.
 
-Every transaction a non-hook process opens on a table a hook writes is short:
-imports and trims commit in chunks of at most 1000 rows. That is what makes a 25 ms
-hook busy timeout safe.
+Trims (phase 3) commit in chunks of at most 1000 rows. An import of one file is
+one transaction (D6), so a hook that writes while an import runs waits its 25 ms
+and spills; the spill is imported next time, so nothing is lost. Imports run once
+per file, not on every event.
 
 ### D3. Filesystem check without a spawn on hook paths
 
@@ -164,8 +165,11 @@ on macOS on every open (`database.ts:377-398`).
 
 Two openers in `@sil/statedb`:
 
-- `openForHook()`: `new Database(path, { readwrite: true, create: false })`, hook
-  pragmas, reads `PRAGMA user_version` and the two `meta` fs fields. Returns null,
+- `openForHook()`: `new Database(path, { readwrite: true, create: false })`,
+  sets only `busy_timeout`, `synchronous` and `foreign_keys`, reads
+  `PRAGMA user_version` and the two `meta` fs fields. It never sets
+  `journal_mode`: WAL is persistent and set once by the non-hook opener at create,
+  and setting it can take a write lock (builder check, finding 10). Returns null,
   never throws, when the file is missing, the version is not exactly the version
   this build knows, the fs check fails, or open fails. Never creates, never
   migrates, never imports. Opened lazily once per hook process and reused for every
@@ -179,8 +183,8 @@ Two openers in `@sil/statedb`:
   tests.
 - Long-lived processes (`sil web`, `sil worker --loop`) would otherwise only see
   spill files that existed when they opened. So every store read and write in a
-  non-hook process first runs the cheap half of the import: one `stat` of that
-  store's old path, and the full import only when it exists.
+  non-hook process first runs the D6 pending check: `stat` of that store's old
+  path and of its `.importing` path, and the import only when one exists.
 
 Ladder: `PRAGMA user_version` is the schema version. `MIGRATIONS` is an ordered
 array of `{ version, up(db) }` in `@sil/statedb`. Each pending step runs in its own
@@ -209,44 +213,117 @@ Rotation by the hook goes away for DB writes. Spill files keep today's rotating
 append, so a DB that stays unavailable for weeks still cannot grow a spill file
 without bound.
 
+Open for phase 3 (third builder check, not phase 1): a rotating spill rewrites
+`P` with an atomic rename (`fsx.ts:130-142`). If a hook reads `P`, the importer
+then claims it, and the hook renames its rotated copy into a new `P`, the overlap
+is imported twice; a long import also keeps hooks spilling long enough for a
+rotation to cut lines never imported. Phase 3 must replace this with spill
+segments that never rotate in place and that an importer claims whole (or a
+rotation that takes the same claim), before its plan is written. Phase 1 writers
+only append and never rotate, so they do not have this race.
+
 ### D6. Import of existing files (and of spill files)
 
-`openState()` runs `importLegacy()` after migrations. For each in-scope store whose
-phase is migrated:
+Revised 2026-10-25 after two rounds of the independent builder check. The first
+revision (a lease, a byte cursor, hidden rows, a 24 h watch) kept opening new
+holes, so the protocol is now one transaction per file, with SQLite's own write
+lock as the only mutex. There is no lease, no token, no partially visible import.
 
-1. If the old path does not exist, nothing to do (one `stat` per store).
-2. Claim it: `rename(old, old + ".importing-" + pid)`. The rename is the claim; a
-   second importer gets ENOENT and skips. A hook that appends after the rename
-   creates a fresh spill file for the next import.
-3. Read it, compute `sha256`, size, `dev`, `ino` and line count, and insert a
-   `legacy_imports` row with `state = 'running'`: store, original path, claimed
-   path, those values, started_at.
-4. Insert rows in file order, in chunks of at most 1000 per transaction, each row
-   carrying that `import_id`. A line that is not a JSON object (or, for docs, a
-   document that does not parse or fails its shape) goes to `quarantine` with the
-   raw text (capped at 64 KB), source file, line number, reason and `import_id`.
-   Nothing is dropped silently.
-5. The last chunk's transaction sets the row to `state = 'done'` with rows
-   imported, rows quarantined and finished_at. A restart that finds a `'running'`
-   row deletes that `import_id`'s rows and quarantine entries in one transaction
-   and imports the claimed file again from the start. A `'done'` row whose
-   claimed file is still there only needs step 6.
-6. Re-stat the claimed file. If it grew (an appender held the old inode across the
-   rename), import the tail the same way. Then verify: imported + quarantined +
-   blank lines equals the file's line count, and the sha256 of the bytes read still
-   matches. Only then rename it to `old + ".imported-" + <UTC stamp>`.
-   On a mismatch it stays as `.importing-<pid>` and `sil state status` reports it.
-7. Docs (`cleared.json`, `worker-status.json`, `aliases.json`,
-   `refine-attempts/<w>.json`) import the same way, one document each. Aliases go
-   through `saveAliases`, so a legacy file that breaks the one-hop rule is
-   quarantined, not imported around the check.
+Names, per store: the old path `P`, the claim path `P.importing` (one fixed
+name), and the backup `P.imported-<UTC stamp>-<import_id>`.
 
-A claimed file left as `.importing-<pid>` by a dead pid is reclaimed by the next
-`openState()`.
+**Pending check.** Before every read or write of a store, a non-hook process runs
+`stat(P)` and `stat(P.importing)`. If neither exists, nothing is pending. This
+runs before the read opens its snapshot, so any import that finished before the
+check is in the snapshot, and any spill that appears after it is an append that
+happened after the read began, as with a file today. Two `stat`s per store
+access; long-lived processes (`sil web`, `sil worker --loop`) need nothing else.
 
-The originals stay on disk, byte for byte, under the `.imported-` name, with
-their sha256 in `legacy_imports`. That is the backup. They are removed only by a
-later cleanup stage, never by this one.
+**Import, when something is pending:**
+
+1. `BEGIN IMMEDIATE` (waits up to the 2 s busy timeout for another importer or
+   writer; see "Busy" below).
+2. If `P.importing` exists (a crash left it), handle it first, then go on with
+   `P` in the same way. Look for a `legacy_imports` row of this store with the
+   same `dev` and `ino`:
+   - a `verified` row whose `size` equals the file's size and whose `sha256`
+     equals the hash of the file: the rows are already in; only the backup
+     rename (step 6) is left;
+   - a `verified` row with a smaller `size` whose `sha256` equals the hash of the
+     file's first `size` bytes: a late append grew it; import the bytes from
+     `size` to the end and update the row (steps 4 and 5);
+   - a `verified` row with the same inode but a larger `size` or a hash that does
+     not match: the file changed under the import. Record `failed` ("claimed file
+     changed after import") and leave the file; never guess (fourth builder check);
+   - no row: import the whole file.
+3. Otherwise `rename(P, P.importing)` inside the transaction. An appender that
+   opens `P` after this creates a new `P`, which the next pending check finds.
+4. Read `P.importing` to the end. Every nonempty line, the last one too with or
+   without its newline (today's readers accept it), becomes a `log_records` row
+   in file order, or a `quarantine` row with its raw text (capped at 64 KB), line
+   number, reason and `import_id` when it is not a JSON object. For docs, the one
+   document becomes its row or a quarantine row. Nothing is dropped silently.
+5. Check imported + quarantined + blank lines equals the number of lines read;
+   insert or update the `legacy_imports` row with `state = 'verified'`, `size`
+   (bytes read), `sha256` of those bytes, `dev`, `ino`, the counts, `verified_at`
+   and the backup name `backup_path`, computed now. `COMMIT`.
+6. Finalize under the lock: `BEGIN IMMEDIATE`, `stat(P.importing)`. If it grew
+   (an append that opened the old path before step 3 landed after step 4), import
+   the bytes past the row's `size` as in steps 4 and 5, `COMMIT`, and repeat this
+   step. If it did not grow, `rename(P.importing, backup_path)` while still
+   holding the lock, then `COMMIT` (this transaction wrote nothing, so there is
+   nothing to roll back). Holding the lock means no other importer can see
+   `P.importing` between the last `stat` and the rename (third builder check).
+
+Failure anywhere in steps 1 to 5 rolls the transaction back: no row is visible
+and none is half imported. A crash after `rename` in step 3 leaves `P.importing`,
+which step 2 handles. A crash after `COMMIT` and before the backup rename leaves
+a `verified` row matching `P.importing` by inode, which step 2 renames. A failed
+import is recorded in its own small transaction (`state = 'failed'`, `failure`
+text, `dev`, `ino`, no rows) so `sil state status` can show it; the next pending
+check simply tries again. A `failed` row is history, not a gate: what makes a
+strict reader raise is its own import attempt failing (D8), so a retry that
+succeeds ends the failure. `sil state status` lists a `failed` row only while no
+later `verified` row has the same `dev` and `ino`.
+
+**Late appends.** Every writer of a phase 1 store calls `appendFileSync(path)`,
+which opens, writes and closes per call (`packages/core/src/fsx.ts:122-125`); no
+writer in the code base holds a descriptor on these files (checked with `rg` for
+`openSync`, write streams and `FileSink`: the only long-held append descriptor is
+the detached worker's `worker.log`, `apps/hook/src/kick.ts:143`). So an append can
+reach a claimed inode only if its `open` came before step 3's rename, and step 6
+re-checks after commit. An append whose `open` precedes the rename and whose
+`write` lands after step 6's last `stat` is the one accepted loss window: it
+needs a process of the previous release to pause for the whole import between
+two system calls. That line still sits in the backup file, so it is not gone
+from disk, and it is not silent: the backup no longer matches its recorded
+`size` and `sha256`, and `sil state status` re-checks both for every backup and
+reports a mismatch as "backup grew after import: N bytes not in the DB".
+
+**Busy.** If `BEGIN IMMEDIATE` times out, another process is importing or
+writing. Strict readers raise `StateReadError("<label> is being imported")`;
+tolerant readers return the current rows and log once; writers raise
+`StateWriteError` (non-hook) or spill (hook, D5).
+
+**Order.** An import gets ids after every row already in the DB. A spill line
+written before some live DB row therefore reads after it (D8 "Order").
+
+**Tolerant readers during a failed or busy import** read what the DB has, as they
+read an unreadable file as empty today; the planner's scorecards are best-effort
+by design (`feedback/src/index.ts:27-31`). Every reader first waits up to the 2 s
+busy timeout, and an import of a phase 1 file is expected to finish well inside
+that; the phase 1 plan measures it on a 100 000 line file and records the number
+here. So a tolerant read only sees a short history when another process holds the
+lock for longer than that, which `sil state status` and the state log show.
+
+**Docs** (`cleared.json`, `worker-status.json`, `aliases.json`,
+`refine-attempts/<w>.json`, phase 2) import the same way, one document each.
+Aliases go through `saveAliases`, so a legacy file that breaks the one-hop rule is
+quarantined, not imported around the check.
+
+The originals stay on disk, byte for byte, under the backup name, with their
+sha256 in `legacy_imports`. That is the backup. They are removed only by a later
+cleanup stage, never by this one.
 
 ### D7. Schema
 
@@ -264,9 +341,27 @@ CREATE TABLE log_records (
 );
 CREATE INDEX log_records_stream_world_ts ON log_records (stream, world, ts);
 CREATE INDEX log_records_stream_id ON log_records (stream, id);
-CREATE TABLE legacy_imports (...);   -- D6 step 5
+CREATE INDEX log_records_import ON log_records (import_id) WHERE import_id IS NOT NULL;
+CREATE TABLE legacy_imports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  store TEXT NOT NULL,             -- 'reflect_runs' | 'critic' | 'human' | 'proposal_events' | later phases
+  world TEXT,                      -- per-world stores only (payloads, refine attempts); else null
+  original_path TEXT NOT NULL,     -- P
+  backup_path TEXT,                -- P.imported-<stamp>-<id>, set in the verifying transaction
+  state TEXT NOT NULL CHECK (state IN ('verified', 'failed')),
+  lines_imported INTEGER NOT NULL DEFAULT 0,
+  lines_quarantined INTEGER NOT NULL DEFAULT 0,
+  lines_blank INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT, size INTEGER, dev INTEGER, ino INTEGER,   -- of the bytes read; size grows on a late-append import
+  failure TEXT,                    -- reason when state = 'failed'
+  started_at TEXT NOT NULL, verified_at TEXT);
+CREATE INDEX legacy_imports_store_state ON legacy_imports (store, state);
 CREATE TABLE quarantine (id INTEGER PRIMARY KEY, store TEXT NOT NULL, source TEXT NOT NULL,
+  import_id INTEGER REFERENCES legacy_imports(id),
   line_no INTEGER, reason TEXT NOT NULL, raw TEXT NOT NULL, quarantined_at TEXT NOT NULL);
+CREATE INDEX quarantine_store ON quarantine (store);
+CREATE INDEX legacy_imports_inode ON legacy_imports (store, dev, ino);
+-- meta keys: created_at, fs_class, fs_dev, fs_probed_at
 
 -- v2 (phase 2)
 CREATE TABLE docs (name TEXT NOT NULL, world TEXT NOT NULL DEFAULT '',
@@ -314,17 +409,42 @@ After:
 The quarantine row keeps today's strict behavior (one bad line fails the console
 until someone fixes it) but turns the fix into a command: `sil state quarantine`
 lists them and `sil state quarantine --drop <store>` acknowledges and removes them.
-`readProposalEvents().skipped` and ops history's `skipped` counts become the
-quarantine count of that store for that world (where the raw line carries a
-readable world) or overall, so those counts stay honest.
-
 Torn last lines no longer exist for DB rows: a row is in a committed transaction
 or it is not.
 
-Order: readers return `ORDER BY ts, id`. Every in-scope writer stamps `ts` with
-`toISOString()` (UTC, `Z`), so string order is time order and matches file order
-for live writes. Imported spill rows written before newer DB rows sort by their own
-`ts`, which is the order a single file would have had.
+Order (revised after the builder check, finding 7): readers and the bundle export
+return `ORDER BY id`, the order rows reached the DB. The first import inserts in
+file order, so for existing data this is exactly today's file order, including
+records whose `ts` is missing, malformed, offset-bearing
+(`history.test.ts:119-127`) or out of order. One deliberate change: a spill line
+(phase 1: only from a process still on the previous release) reads after the DB
+rows that were already there when it was imported, even if its `ts` is older. Callers that want time order already sort themselves (`complaints`,
+ops history `fold`). Not every writer stamps `ts` itself: critic lines carry the
+reflection's `ts` and human lines the caller's.
+
+Phase 1 readers, one by one (revised after the builder check, findings 5 and 6).
+"DB fails" means `openState()` or the query fails; "pending" means the D6 import
+could not run before the read (busy past 2 s, or it failed).
+
+| reader | today | DB missing | DB fails or pending | bad lines |
+|---|---|---|---|---|
+| `listHuman`, `complaints` (`feedback/src/index.ts:87-119`) | tolerant `readJsonl`, unreadable reads empty | empty | visible rows, or empty when the DB fails; one log line | quarantined, ignored |
+| scorecards tolerant (`index.ts:131-132`) | same | empty | same | ignored |
+| scorecards strict | `readJsonlStrict`, `StateReadError(label ...)` | empty | `StateReadError` with the same label plus the reason | `StateReadError("<label> has N lines that could not be imported")` |
+| ops history human, critic (`history.ts:80-112`) | ENOENT empty, any other read error thrown | empty | thrown as `StateReadError` with label, never empty | `skipped` = that store's quarantine count, all worlds (a bad line has no trusted world, as today) |
+| `readProposalEvents` (`proposal-events.ts:62-76`) | read error thrown; JSON or schema failure counted in `skipped`, global | `{events: [], skipped: 0}` | thrown as `StateReadError`, never empty | `skipped` = quarantine count for the store plus visible rows whose `body` fails `ProposalEventSchema`, global |
+| scorecards reflect-runs (`index.ts:250`) | via `readLog` | as scorecards above | as scorecards above | as scorecards above |
+
+Ops history keeps repeating the proposal `skipped` count on every proposal series
+for every world (`history.ts:204-208`); that is today's contract, not changed here.
+Rows that are JSON objects but fail `ProposalEventSchema` are imported as rows (the
+DB only checks `json_valid`), so the schema check stays in the reader where it is
+today, and an export writes them back unchanged.
+
+`recordHuman` keeps its `string` return and returns `paths.loopStateDb()`, where
+the record now lives; ops `feedbackAdd`'s `path` field carries the same value. No caller
+reads it today: the web console ignores the result (`Artifacts.svelte:273`) and
+the CLI ignores the return (`commands/feedback.ts:16`) (finding 9).
 
 Documents: `loadQueueCleared` keeps raising `ValidationError` with its label;
 `statusLastRun` keeps raising `StateReadError("worker-status.json ...")` with the
@@ -403,8 +523,13 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
 The bundle stays a file tree with the same paths and line format
 (`apps/cli/src/bundle.ts:212-260, 320-390`), so old and new bundles interoperate.
 
-- Export writes each stream back as JSONL from `body` in `ORDER BY ts, id`, and
+- Export writes each stream back as JSONL from `body` in `ORDER BY id`, and
   `aliases.json` from the table (keys sorted, as `saveAliases` writes it).
+- A stream with quarantined lines is not exported silently short: the bundle
+  export and `sil state export` refuse with "`<label>` has N quarantined lines;
+  see `sil state quarantine`" (fourth builder check). The original bytes of those
+  lines stay in the backup file; `sil state quarantine --drop` is the explicit
+  decision to leave them out.
 - Import keeps "whole-file copy, never append": a stream that already has rows on
   the host is skipped unless `--force`, which replaces that stream's rows in one
   transaction. Aliases import through `saveAliases` (today `copyOne` bypasses the
@@ -417,8 +542,8 @@ The bundle stays a file tree with the same paths and line format
 New `sil state` command:
 
 - `sil state status`: DB path, schema version, fs class, per-store row counts,
-  `legacy_imports` rows, files left as `.importing-*`, quarantine counts, spill
-  files waiting.
+  `legacy_imports` rows (with `failed` ones and their reason), files left as
+  `.importing`, quarantine counts, spill files waiting.
 - `sil state migrate`: run `openState()` now (migrations plus imports) and print
   what it did. Useful before a first `sil web`.
 - `sil state export --legacy-paths [--force]`: write every migrated store back to
@@ -441,10 +566,20 @@ in `sil state export`; the live file is gone), README.md:272.
 
 - Every reader's strict/tolerant table (D8) row as a test per store, including
   "DB missing reads empty" and "newer schema raises the named error".
-- Import: idempotent across a crash at each step (kill points injected), tail
-  growth after the claim, quarantine counts, sha mismatch leaves `.importing-`.
-- Hook: `openForHook` returns null for missing, old, newer, fs mismatch; insert on
-  BUSY spills and the spill imports later with no loss and no duplicate.
+- Import: a crash injected after each D6 step (after the claim rename, before
+  commit, after commit before the backup rename) ends, on the next open, with
+  every line in the DB exactly once and the backup in place; a late append after
+  the claim and after commit is imported once; quarantine counts; a failed import
+  leaves `failed`, no rows and `P.importing`, and the next open retries; a second
+  process that reads during an import gets the complete rows or the named
+  "being imported" error, never a partial list.
+- Writes that must fail in tests (today `review.test.ts:1368` and
+  `proposal-events.test.ts:63,83` make the log path unwritable) need a way to make
+  the DB write fail; the builder picks one that goes through the real write path.
+- Hook (phase 3; `openForHook` is not built before phase 3, the first phase with a
+  hook writer): `openForHook` returns null for missing, old, newer, fs mismatch;
+  insert on BUSY spills and the spill imports later with no loss and no
+  duplicate.
 - Phase 3 regression for the race: concurrent hook inserts during a compaction
   lose nothing (fails on the file implementation, passes on the DB).
 - Equivalence: for each store, records read through the new reader equal the
@@ -460,7 +595,8 @@ in `sil state export`; the live file is gone), README.md:272.
   `appendRecord`, `importLegacy`, `MIGRATIONS`.
 - Whether the hook closes its handle at exit or lets the process exit
   (measure the checkpoint cost; correctness is the same in WAL).
-- Chunk size within the 1000-row cap, if measurements argue for smaller.
+- Chunk size of phase 3 trims within the 1000-row cap, if measurements argue for
+  smaller.
 - How the phase 3 benchmark builds the `origin/main` baseline (worktree or tag).
 
 ## Calls I made (check these while reading)
@@ -474,7 +610,7 @@ in `sil state export`; the live file is gone), README.md:272.
    imports.
 5. Quarantined lines keep strict readers failing (today's behavior) with a new
    `sil state quarantine --drop` as the fix.
-6. Readers order by `(ts, id)`.
+6. Readers order by `id` (append and import order; revised from `(ts, id)`).
 7. Row bounds replace byte bounds for rotation; the worker trims, the hook does not.
 8. `COMPACT_MIN_DROP` and `readUsageEvents` are removed.
 9. Bundle format unchanged; bundle import of aliases now goes through `saveAliases`.

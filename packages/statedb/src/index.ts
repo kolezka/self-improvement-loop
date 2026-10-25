@@ -10,7 +10,7 @@ export {
   setImportIoForTest,
 } from "./import.ts";
 export { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
-export { closeState, openState, StateBusyError } from "./open.ts";
+export { closeState, openState } from "./open.ts";
 export {
   type BackupCheck,
   dropQuarantine,

@@ -46,7 +46,7 @@
 
 1. The live DB is already schema 1 with about 4 MB of phase 1 rows (installed v1.2.12 imported it on 2026-10-25). Opening it with this build must upgrade in place and keep every row, backup row and quarantine row: Task 1's upgrade test seeds a v1 DB with rows in all four tables before the open.
 2. A world named `koleżka`: its `refine-attempts/koleżka.json` and `worlds/koleżka/aliases.json` import under the NFC key and read back through `loadAliases("koleżka")` and `loadAttempts` for that world (Task 2 enumerates from the filesystem; Task 5 reads back).
-3. `sil web` polling `worker.status` while another process holds the write lock (its first open is migrating or importing): the console must see `StateReadError("the worker status is being imported")`, never `last_run: null` (Task 4 busy test).
+3. `sil web` polling `worker.status` while another process holds the write lock: a warm handle with a pending legacy import reports `StateReadError("the worker status is being imported")`, while a cold open can report `StateReadError("the worker status cannot be read (loop state: cannot open database (SQLITE_BUSY))")`. Neither may return `last_run: null` (Task 4 busy tests).
 4. A `cleared.json` written by an old build after the import (a hook-started worker of the previous release) must be imported once, replace the row, and leave two backups, with the first import's backup still `ok` in `sil state status` (Task 2 spill test on a doc).
 5. A bundle whose `aliases.json` chains (`a -> b`, `b -> c`): `sil import bundle` refuses it with a warning naming the one-hop rule and leaves the host's aliases alone, instead of copying the file around the check as `copyOne` does today (Task 6).
 

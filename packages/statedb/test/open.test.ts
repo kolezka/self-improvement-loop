@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { paths, StateWriteError } from "@sil/core";
 import * as fsProbe from "@sil/core/fs-probe";
 import type { FilesystemClass } from "@sil/core/fs-probe";
-import { closeState, MIGRATIONS, openState, SCHEMA_VERSION, StateBusyError } from "../src/index.ts";
+import { closeState, MIGRATIONS, openState, SCHEMA_VERSION } from "../src/index.ts";
 import { checkSameDevice, connect, prepare, type Probe, recordProbe } from "../src/open.ts";
 
 // mock.module stays registered for the whole bun test process, so the stub
@@ -178,8 +178,8 @@ describe("openState under a held write lock", () => {
         error = e;
       }
       const elapsed = performance.now() - started;
-      expect(error).toBeInstanceOf(StateBusyError);
-      expect((error as Error).message).toBe("loop state is busy (another process holds the write lock)");
+      expect(error).toBeInstanceOf(StateWriteError);
+      expect((error as Error).message).toBe("loop state: cannot open database (SQLITE_BUSY)");
       expect(elapsed).toBeGreaterThanOrEqual(1900);
       expect(elapsed).toBeLessThan(2500);
     } finally {
@@ -240,8 +240,8 @@ describe("openState under a held write lock", () => {
         }
         expect(out).toContain("committing");
         expect(out).not.toContain("committed");
-        expect(error).toBeInstanceOf(StateBusyError);
-        expect((error as Error).message).toBe("loop state is busy (another process holds the write lock)");
+        expect(error).toBeInstanceOf(StateWriteError);
+        expect((error as Error).message).toBe("loop state: cannot open database (SQLITE_BUSY)");
         expect(elapsed).toBeGreaterThanOrEqual(1900);
         expect(elapsed).toBeLessThan(2500);
       } finally {

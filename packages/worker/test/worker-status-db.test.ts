@@ -139,7 +139,7 @@ describe("worker status in the loop-state database", () => {
   });
 
   test(
-    "busy: a cold handle under a write lock makes status() say it is being imported",
+    "busy: a cold handle under a write lock fails the status read with SQLITE_BUSY",
     () => {
       const lastRun = "2026-10-01T00:00:00.000Z";
       saveDoc("worker_status", null, { last_run: lastRun, last_summary: null });
@@ -150,7 +150,8 @@ describe("worker status in the loop-state database", () => {
         raw.run("BEGIN IMMEDIATE");
         const error = caught(() => status());
         expect(error).toBeInstanceOf(StateReadError);
-        expect((error as Error).message).toContain("the worker status is being imported");
+        expect((error as Error).message).toContain("the worker status cannot be read");
+        expect((error as Error).message).toContain("SQLITE_BUSY");
       } finally {
         if (raw.inTransaction) raw.run("ROLLBACK");
         raw.close();

@@ -145,6 +145,8 @@ interface ImportRow {
   backup_path: string | null;
   size: number;
   sha256: string;
+  dev: number;
+  ino: number;
 }
 
 interface Counts {
@@ -227,7 +229,7 @@ function importTail(db: Database, stream: Stream, row: ImportRow, bytes: Buffer)
 function importClaim(db: Database, stream: Stream, claim: ImportStat, startedAt: string): { row: ImportRow; counts: Counts } {
   const bytes = importIo.readFile(claimPath(stream));
   const known = db
-    .query("SELECT id, backup_path, size, sha256 FROM legacy_imports WHERE store = ? AND dev = ? AND ino = ? AND state = 'verified' ORDER BY id DESC LIMIT 1")
+    .query("SELECT id, backup_path, size, sha256, dev, ino FROM legacy_imports WHERE store = ? AND dev = ? AND ino = ? AND state = 'verified' ORDER BY id DESC LIMIT 1")
     .get(stream, claim.dev, claim.ino) as ImportRow | null;
   if (known) {
     // An export row (D14) has no backup yet; it gets one the way a fresh import does.
@@ -250,7 +252,7 @@ function importClaim(db: Database, stream: Stream, claim: ImportStat, startedAt:
     `UPDATE legacy_imports SET backup_path = ?, lines_imported = ?, lines_quarantined = ?, lines_blank = ?,
        sha256 = ?, size = ?, verified_at = ? WHERE id = ?`,
   ).run(backupPath, counts.imported, counts.quarantined, counts.blank, digest, bytes.length, new Date().toISOString(), id);
-  return { row: { id, backup_path: backupPath, size: bytes.length, sha256: digest }, counts };
+  return { row: { id, backup_path: backupPath, size: bytes.length, sha256: digest, dev: claim.dev, ino: claim.ino }, counts };
 }
 
 /** Roll back, record a `failed` row in its own transaction, and throw. */
@@ -285,9 +287,19 @@ function finalize(db: Database, stream: Stream, rowId: number, counts: Counts): 
     begin(db, stream);
     let current: ImportStat | null = null;
     try {
-      const row = db.query("SELECT id, backup_path, size, sha256 FROM legacy_imports WHERE id = ?").get(rowId) as ImportRow;
+      const row = db.query("SELECT id, backup_path, size, sha256, dev, ino FROM legacy_imports WHERE id = ?").get(rowId) as ImportRow;
       if (!row.backup_path) throw new Refused("verified import has no backup name");
-      current = importIo.stat(claim);
+      current = statOrNull(claim);
+      if (!current) {
+        if (!statOrNull(row.backup_path)) throw new Refused("claimed file and backup are missing");
+        db.run("COMMIT");
+        return row.backup_path;
+      }
+      if (current.dev !== row.dev || current.ino !== row.ino) {
+        // Another importer finished this claim and reused its name.
+        db.run("COMMIT");
+        return row.backup_path;
+      }
       if (current.size > row.size) {
         const more = importTail(db, stream, row, importIo.readFile(claim));
         counts.imported += more.imported;
@@ -297,6 +309,7 @@ function finalize(db: Database, stream: Stream, rowId: number, counts: Counts): 
         continue;
       }
       if (current.size < row.size) throw new Refused(CHANGED);
+      if (statOrNull(row.backup_path)) throw new Refused("import backup already exists");
       importIo.rename(claim, row.backup_path);
       db.run("COMMIT");
       return row.backup_path;

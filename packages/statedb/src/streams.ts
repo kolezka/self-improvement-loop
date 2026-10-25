@@ -4,7 +4,7 @@
 import type { Database } from "bun:sqlite";
 import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
 import { capRaw, ensureImported, ImportError, reasonOf } from "./import.ts";
-import { openState } from "./open.ts";
+import { openState, StateBusyError } from "./open.ts";
 
 export type Stream = "reflect_runs" | "critic" | "human" | "proposal_events";
 
@@ -70,7 +70,7 @@ const logOnce = (stream: Stream, reason: string): void => logStateOnce(stream, S
 /** What a strict reader throws when the import before its read fails. */
 export function strictImportError(stream: Stream, error: unknown): StateReadError {
   const { label } = STREAMS[stream];
-  if (error instanceof ImportError && error.busy) return new StateReadError(`${label} is being imported`);
+  if (error instanceof StateBusyError || (error instanceof ImportError && error.busy)) return new StateReadError(`${label} is being imported`);
   return new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
 }
 
@@ -106,6 +106,7 @@ export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
       logOnce(stream, reasonOf(error));
       return EMPTY();
     }
+    if (error instanceof StateBusyError) throw strictImportError(stream, error);
     throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
   }
 
@@ -154,6 +155,7 @@ export function exportJsonl(stream: Stream): string | null {
     }
   } catch (error) {
     if (error instanceof StateReadError) throw error;
+    if (error instanceof StateBusyError) throw strictImportError(stream, error);
     throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
   }
   return bodies.length === 0 ? null : `${bodies.join("\n")}\n`;

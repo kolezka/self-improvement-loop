@@ -4,7 +4,7 @@
 import type { Database } from "bun:sqlite";
 import { StateReadError, StateWriteError, ValidationError, WORLD_NAME_RE } from "@sil/core";
 import { ensureImported, ImportError, reasonOf } from "./import.ts";
-import { openState } from "./open.ts";
+import { openState, StateBusyError } from "./open.ts";
 import { type DocName, type StoreName, type StoreRef, STORES, worldKey } from "./stores.ts";
 import { logStateOnce } from "./streams.ts";
 
@@ -27,7 +27,7 @@ const labelOf = (ref: StoreRef): string => STORES[ref.store].label(ref.world);
 
 /** What a strict document or aliases read throws when the import before it fails. */
 export function strictStoreImportError(ref: StoreRef, error: unknown): StateReadError {
-  if (error instanceof ImportError && error.busy) return new StateReadError(`${labelOf(ref)} is being imported`);
+  if (error instanceof StateBusyError || (error instanceof ImportError && error.busy)) return new StateReadError(`${labelOf(ref)} is being imported`);
   return new StateReadError(`${labelOf(ref)} cannot be read (${reasonOf(error)})`);
 }
 
@@ -66,7 +66,10 @@ export function readStore<T>(ref: StoreRef, mode: DocMode, empty: T, read: (db: 
       if (db.inTransaction) db.run("ROLLBACK");
     }
   } catch (error) {
-    if (mode === "strict") throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
+    if (mode === "strict") {
+      if (error instanceof StateBusyError) throw strictStoreImportError(ref, error);
+      throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
+    }
     logStateOnce(logKey, label, reasonOf(error));
     return empty;
   }

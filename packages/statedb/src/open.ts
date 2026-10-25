@@ -11,6 +11,14 @@ import { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 
 const BUSY_TIMEOUT_MS = 2000;
 
+export class StateBusyError extends StateWriteError {
+  override name = "StateBusyError";
+
+  constructor() {
+    super("loop state is busy (another process holds the write lock)");
+  }
+}
+
 const handles = new Map<string, Database>();
 
 function newerSchema(version: number): StateWriteError {
@@ -176,6 +184,7 @@ function openAt(path: string): Opened {
       }
     }
   } catch (error) {
+    if (isBusy(error)) throw new StateBusyError();
     if (error instanceof StateWriteError) throw error;
     throw new StateWriteError(`loop state: cannot open database (${errorCode(error)})`);
   }

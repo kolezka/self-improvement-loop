@@ -603,6 +603,9 @@ New `sil state` command:
   and hash match turns an unchanged exported file into a backup without importing
   it again, and a file the older build appended to imports only its new tail.
   `sil state status` shows the suspension.
+  Builds before 1.2.12 read only files, but 1.2.12 refuses the schema 2 database;
+  returning to it needs the database and its WAL and SHM files moved aside after
+  export. Whether to engineer an explicit downgrade remains undecided.
   `--force` only replaces a file that is byte-identical to a recorded verified row
   for that path (same dev, ino, size and sha256); any other existing file is
   refused, even with `--force`, because it may hold lines the DB does not have

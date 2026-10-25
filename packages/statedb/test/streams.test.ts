@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -56,6 +57,25 @@ describe("appendRecord and readRecords", () => {
       { ts: null, world: null, body: JSON.stringify({ ts: 7, note: "no world" }), import_id: null },
     ]);
   });
+
+  test("a cold handle under a write lock reports the named busy error for streams", () => {
+    appendRecord("critic", { known: true });
+    expect(readRecords("critic", "strict").records).toEqual([{ known: true }]);
+    closeState();
+    const raw = new Database(paths.loopStateDb());
+    try {
+      raw.run("BEGIN IMMEDIATE");
+      for (const action of [() => readRecords("critic", "strict"), () => exportJsonl("critic")]) {
+        const error = caught(action);
+        expect(error).toBeInstanceOf(StateReadError);
+        expect((error as Error).message).toBe("the critic feedback log is being imported");
+      }
+    } finally {
+      if (raw.inTransaction) raw.run("ROLLBACK");
+      raw.close();
+    }
+    expect(readRecords("critic", "strict").records).toEqual([{ known: true }]);
+  }, 15_000);
 
   test("a missing database reads empty in all three modes", () => {
     expect(existsSync(paths.loopStateDb())).toBe(false);

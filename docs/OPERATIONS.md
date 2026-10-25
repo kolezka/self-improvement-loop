@@ -587,7 +587,19 @@ store has quarantined lines, strict readers (the consoles' scorecards),
 
 ### Going back to an older plugin
 
-Older builds read the JSONL files and know nothing about the DB. To downgrade:
+#### Which older plugin
+
+Builds before 1.2.12 read only the legacy files. The recipe below returns to
+those builds after the export succeeds.
+
+Version 1.2.12 uses this same database at schema 1 and refuses a schema 2 file.
+To return to 1.2.12, after step 3's export succeeds and any refusals are
+resolved, rename `loop-state.sqlite`, `loop-state.sqlite-wal` and
+`loop-state.sqlite-shm` aside (never delete them) so it creates a fresh schema
+1 database and imports the exported logs. Never restore the moved-aside schema
+2 database over data the older build then writes.
+
+To downgrade:
 
 1. Stop everything that can write:
    - close every Claude Code session (their hooks start workers);

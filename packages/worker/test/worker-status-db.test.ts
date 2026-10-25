@@ -139,6 +139,28 @@ describe("worker status in the loop-state database", () => {
   });
 
   test(
+    "busy: a cold handle under a write lock makes status() say it is being imported",
+    () => {
+      const lastRun = "2026-10-01T00:00:00.000Z";
+      saveDoc("worker_status", null, { last_run: lastRun, last_summary: null });
+      expect(status().last_run).toBe(lastRun);
+      closeState();
+      const raw = new Database(paths.loopStateDb());
+      try {
+        raw.run("BEGIN IMMEDIATE");
+        const error = caught(() => status());
+        expect(error).toBeInstanceOf(StateReadError);
+        expect((error as Error).message).toContain("the worker status is being imported");
+      } finally {
+        if (raw.inTransaction) raw.run("ROLLBACK");
+        raw.close();
+      }
+      expect(status().last_run).toBe(lastRun);
+    },
+    15_000,
+  );
+
+  test(
     "busy: a held write lock with a legacy file makes status() say it is being imported",
     () => {
       openState();

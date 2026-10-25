@@ -283,8 +283,8 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
         result.failures.push({ stream, message: error.message });
         continue;
       }
-      if (bodies.length === 0) continue;
       const refusal = refusalFor(db, target, force);
+      if (bodies.length === 0 && !refusal) continue;
       if (refusal?.message) {
         result.refused.push({ path: target, message: refusal.message });
         continue;
@@ -292,7 +292,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       const temp = `${target}.export-${process.pid}-${randomBytes(6).toString("hex")}`;
       try {
         fsx.ensureDir(dirname(target));
-        writeFileSync(temp, `${bodies.join("\n")}\n`, { flag: "wx" });
+        writeFileSync(temp, bodies.length === 0 ? "" : `${bodies.join("\n")}\n`, { flag: "wx" });
       } catch (error) {
         rmSync(temp, { force: true });
         result.failures.push({ stream, message: `${STREAMS[stream].label} cannot be exported (${fsx.errnoCode(error) || reasonOf(error)})` });

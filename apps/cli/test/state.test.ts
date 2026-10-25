@@ -7,7 +7,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirS
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
-import { closeState, readRecords } from "@sil/statedb";
+import { closeState, readRecords, replaceStream } from "@sil/statedb";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 
@@ -175,6 +175,49 @@ describe("sil state", () => {
     } finally {
       db.close();
     }
+  });
+
+  test("a forced export empties a verified legacy target after a stream is replaced with empty data", () => {
+    const critic = paths.criticFeedbackFile();
+    fsx.appendJsonl(critic, { n: 1 });
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(readFileSync(critic, "utf8")).toBe('{"n":1}\n');
+    expect(replaceStream("critic", "", "empty-bundle", true).written).toBe(true);
+    expect(readRecords("critic", "strict").records).toEqual([]);
+    closeState();
+    const result = sil("state", "export", "--legacy-paths", "--force");
+    expect(result.code).toBe(0);
+    expect(result.out).toContain(`wrote ${critic}`);
+    expect(readFileSync(critic, "utf8")).toBe("");
+    const s = status();
+    expect(s.streams["critic"]!.rows).toBe(0);
+    expect(s.imports.filter((row) => row.store === "critic" && row.backupPath === null)).toEqual([
+      expect.objectContaining({ lines: 0, backupCheck: null }),
+    ]);
+    const db = new Database(s.dbPath, { readonly: true });
+    try {
+      const row = db.query("SELECT origin, size FROM legacy_imports WHERE store = 'critic' AND backup_path IS NULL ORDER BY id DESC LIMIT 1").get() as { origin: string; size: number };
+      expect(row).toEqual({ origin: "export", size: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("an empty export refuses an unrecorded legacy target and keeps its bytes", () => {
+    const critic = paths.criticFeedbackFile();
+    fsx.appendJsonl(critic, { n: 1 });
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(replaceStream("critic", "", "empty-bundle", true).written).toBe(true);
+    appendFileSync(critic, '{"n":2}\n');
+    const before = readFileSync(critic, "utf8");
+    closeState();
+    const result = sil("state", "export", "--legacy-paths", "--force");
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("sil state migrate");
+    expect(readFileSync(critic, "utf8")).toBe(before);
+    expect(status().imports.filter((row) => row.store === "critic" && row.backupPath === null)).toHaveLength(1);
   });
 
   test("status shows the export's suspension and no backup check for an export row", () => {

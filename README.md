@@ -33,7 +33,7 @@ On a fresh install, this creates the config, a local `learned/` repository, and
 `~/.local/bin/sil`. The default model provider is your `claude` CLI. Background
 reviews make model calls and use your provider's quota or billing.
 
-Open the review console:
+Open the web review console, or use the [native Claude Code panel](#claude-code-panel):
 
 ```text
 /self-improvement-loop:loop web
@@ -49,6 +49,32 @@ sil schedule install --web
 Make sure `~/.local/bin` is on your `PATH`. For other model endpoints and
 troubleshooting, see the [install guide](docs/INSTALL.md). To install without a
 plugin, follow [standalone installation](docs/INSTALL.md#standalone-install-from-a-checkout).
+
+## Claude Code panel
+
+Keep the loop beside your chat with the native **Claude Code Mods** panel.
+Browse worker status, proposal diffs, artifacts and activity without opening a
+browser. Capture and edit lessons, rate artifacts, or use action buttons to
+queue the loop's commands in your session.
+
+With the plugin installed and a Claude Code build that supports Mods, start it
+with function hooks enabled:
+
+```sh
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude
+```
+
+Then open the panel inside the session:
+
+```text
+/sil
+```
+
+Use `/sil capture` to start a lesson from selected chat text. Proposal acceptance,
+rejection and revision still use the web console or CLI. The panel requires the
+plugin; standalone installs use the web console or CLI instead.
+
+See [panel setup and requirements](docs/INSTALL.md#native-console-sil).
 
 ## How it works
 

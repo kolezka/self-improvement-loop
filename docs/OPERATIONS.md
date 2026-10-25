@@ -578,17 +578,32 @@ Older builds read the JSONL files and know nothing about the DB. To downgrade:
    - close every Claude Code session (their hooks start workers);
    - stop any `sil web` you started by hand;
    - save what `sil schedule show` prints, and the worker interval from its
-     unit file (`OnUnitActiveSec` in `~/.config/systemd/user/sil-worker.timer`,
-     `StartInterval` in seconds in
-     `~/Library/LaunchAgents/com.raqz.sil-worker.plist`), then run
-     `sil schedule uninstall`;
+     unit file: `OnUnitActiveSec` in `~/.config/systemd/user/sil-worker.timer`,
+     or `StartInterval` (seconds) in whichever of
+     `~/Library/LaunchAgents/com.raqz.sil-worker.plist` and the older
+     `com.kolezka.sil-worker.plist` exists;
+   - run `sil schedule uninstall`. It removes the unit files even when stopping
+     a job failed, so check that the scheduler let go. The line for your system
+     must print nothing:
+
+     ```
+     launchctl list | grep -E 'com\.(raqz|kolezka)\.sil-'      # macOS
+     systemctl --user list-units --all | grep 'sil-'           # Linux
+     ```
+
+     A label still listed is a loaded job that can start a worker. Remove it
+     with `launchctl remove <label>` or
+     `systemctl --user disable --now <unit>`, then check again;
    - check that no worker, web or curriculum process is left:
 
      ```
      pgrep -fl '(dist/cli\.js|apps/cli/src/main\.ts) (worker|web|curriculum)'
      ```
 
-     It prints nothing (exit 1) when all are gone. Stop whatever it lists.
+     It prints nothing (exit 1) when all are gone. Stop whatever it lists;
+   - from here until the older plugin is installed, run only the `sil state`
+     commands below. Other commands write too, for example `sil feedback`,
+     `sil review`, `sil reflect` and `sil curriculum`.
 2. Run `sil state status`. If any backup says `grew`, stop here: those bytes
    are not in the DB and the export would not contain them. They are still in
    that backup file; decide by hand what to do with them. Clear any quarantined

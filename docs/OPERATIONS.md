@@ -560,18 +560,8 @@ sil state export --legacy-paths [--force]
 
 `status` re-reads every backup. `backup ok` means it still matches what was
 imported. `backup grew after import: N bytes not in the DB` means an older
-process appended N bytes to the file after the import. Those lines are only in
-the backup: no reader sees them, `sil state migrate` does not look at backups,
-and `sil state export` does not write them. To bring them in, copy the last N
-bytes to the old path and import that:
-
-```
-tail -c N <backup path> >> <old path>    # for example .../feedback/human.jsonl
-sil state migrate
-```
-
-Check the copied lines first. Status keeps saying `grew` for that backup
-afterwards, because the backup itself still differs from what was imported.
+process appended N bytes to the file after the import. Those bytes are only in
+that backup, unchanged; no reader, migrate or export uses them.
 
 A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
 old JSONL file is also still whole in that file's backup. A line from a bundle
@@ -584,16 +574,25 @@ store has quarantined lines, strict readers (the consoles' scorecards),
 
 Older builds read the JSONL files and know nothing about the DB. To downgrade:
 
-1. Stop everything of the new version that writes. `sil schedule uninstall`
-   removes the worker timer and the web service (`sil schedule show` confirms).
-   Stop any `sil web` or `sil worker --loop` you started by hand. Set
-   `worker.auto_kick: false` in `config.yaml` and run `sil hook-snapshot`, so a
-   Claude Code hook does not start a worker (hooks read the snapshot, not
-   `config.yaml`). Do not vote or run other `sil` commands until step 6.
-2. Run `sil state status` and look for `backup grew after import`. That backup
-   holds lines the DB does not have, and the export will not include them:
-   bring them in as described above first. Clear any quarantined lines
-   too (`sil state quarantine`), or that store will not export.
+1. Stop everything that can write:
+   - close every Claude Code session (their hooks start workers);
+   - stop any `sil web` you started by hand;
+   - save what `sil schedule show` prints, and the worker interval from its
+     unit file (`OnUnitActiveSec` in `~/.config/systemd/user/sil-worker.timer`,
+     `StartInterval` in seconds in
+     `~/Library/LaunchAgents/com.raqz.sil-worker.plist`), then run
+     `sil schedule uninstall`;
+   - check that no worker, web or curriculum process is left:
+
+     ```
+     pgrep -fl '(dist/cli\.js|apps/cli/src/main\.ts) (worker|web|curriculum)'
+     ```
+
+     It prints nothing (exit 1) when all are gone. Stop whatever it lists.
+2. Run `sil state status`. If any backup says `grew`, stop here: those bytes
+   are not in the DB and the export would not contain them. They are still in
+   that backup file; decide by hand what to do with them. Clear any quarantined
+   lines too (`sil state quarantine`), or that store will not export.
 3. Run `sil state export --legacy-paths`. It writes each store that has rows to
    its old path in the old format, and pauses imports so this build leaves those
    files alone. A store with no rows gets no file.
@@ -605,9 +604,10 @@ Older builds read the JSONL files and know nothing about the DB. To downgrade:
    is exactly one this DB recorded. Then run the export again until it exits 0.
 5. Check that the old path of every store with rows in `sil state status` has a
    file.
-6. Install the older plugin. Then put back what step 1 stopped with the older
-   build's own commands: `sil schedule install`, and `worker.auto_kick` plus
-   `sil hook-snapshot` if you want it on.
+6. Install the older plugin. Then reinstall the schedule the way your saved
+   `sil schedule show` output describes: `--systemd` or `--launchd` from the
+   section it listed, `--web` if a `sil-web` unit was there, and
+   `--interval-min` with the interval you saved, in minutes.
 
 If you upgrade again later, run `sil state migrate` once. Until then imports
 stay paused, `sil state status` says `legacy imports suspended since ...`, and

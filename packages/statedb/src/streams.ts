@@ -152,8 +152,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Load a bundle's JSONL as the whole stream, never appended to host rows. A
- * stream that already has rows is left alone unless `force`, which replaces
- * its rows and quarantine in one transaction. Bad lines are quarantined under
+ * stream that already has rows or quarantine rows is left alone unless `force`,
+ * which replaces both in one transaction. Bad lines are quarantined under
  * `source`. Any failure throws StateWriteError starting with the stream's label. */
 export function replaceStream(stream: Stream, jsonl: string, source: string, force: boolean): ReplaceResult {
   const { label } = STREAMS[stream];
@@ -163,7 +163,10 @@ export function replaceStream(stream: Stream, jsonl: string, source: string, for
     const db = openState();
     db.run("BEGIN IMMEDIATE");
     try {
-      const { n } = db.query("SELECT count(*) AS n FROM log_records WHERE stream = ?").get(stream) as { n: number };
+      // Quarantine rows count as host data: a bundle's bad lines may have no backup file.
+      const { n } = db
+        .query("SELECT (SELECT count(*) FROM log_records WHERE stream = ?1) + (SELECT count(*) FROM quarantine WHERE store = ?1) AS n")
+        .get(stream) as { n: number };
       if (n > 0 && !force) {
         db.run("ROLLBACK");
         return { written: false, imported: 0, quarantined: 0 };

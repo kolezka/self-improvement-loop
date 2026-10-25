@@ -11,7 +11,7 @@
 
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import { type Config, ValidationError, fsx, loadConfig, paths, saveConfig, targetRoot, writeHookSnapshot } from "@sil/core";
 import { git } from "@sil/curriculum";
@@ -189,8 +189,8 @@ const FEEDBACK_LOGS: readonly { stream: Stream; rel: string }[] = [
 ];
 
 /** Load one bundle log into loop state. Same counts as copyOne: a stream the
- * host already has rows in is skipped unless `force`. */
-function restoreLog(file: string, source: string, stream: Stream, force: boolean): CopyStats {
+ * host already has rows in is skipped unless `force`. Quarantined lines become a warning. */
+function restoreLog(file: string, source: string, stream: Stream, force: boolean, warnings: string[]): CopyStats {
   const out = blank();
   if (!existsSync(file)) return out;
   const text = readFileSync(file, "utf8");
@@ -200,6 +200,8 @@ function restoreLog(file: string, source: string, stream: Stream, force: boolean
     out.files = 1;
     out.bytes = Buffer.byteLength(text);
   }
+  const bad = result.quarantined;
+  if (bad > 0) warnings.push(`${basename(file)}: ${bad} ${bad === 1 ? "line" : "lines"} could not be imported; see sil state quarantine`);
   return out;
 }
 
@@ -424,7 +426,7 @@ function restore(root: string, source: string, manifest: BundleManifest, opts: I
   for (const [from, to] of pairs) add(stats, copyOne(from, to, opts.force === true));
   for (const log of FEEDBACK_LOGS) {
     const where = root === source ? join(source, log.rel) : `${source}:${log.rel}`;
-    add(stats, restoreLog(join(root, log.rel), where, log.stream, opts.force === true));
+    add(stats, restoreLog(join(root, log.rel), where, log.stream, opts.force === true, warnings));
   }
 
   saveConfig(cfg);

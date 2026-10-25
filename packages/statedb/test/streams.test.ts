@@ -163,6 +163,16 @@ describe("exportJsonl and replaceStream", () => {
     expect(readRecords("human", "strict").records).toEqual([{ other: "stream" }]);
   });
 
+  test("a stream with only quarantine rows is occupied: no force keeps them, force replaces them", () => {
+    seedQuarantine("human");
+    expect(replaceStream("human", '{"bundle":1}\n', "src", false)).toEqual({ written: false, imported: 0, quarantined: 0 });
+    expect(openState().query("SELECT store, raw FROM quarantine").all()).toEqual([{ store: "human", raw: "oops" }]);
+    expect(readRecords("human", "counted")).toEqual({ records: [], quarantined: 1 });
+
+    expect(replaceStream("human", '{"bundle":1}\n', "src", true)).toEqual({ written: true, imported: 1, quarantined: 0 });
+    expect(readRecords("human", "strict")).toEqual({ records: [{ bundle: 1 }], quarantined: 0 });
+  });
+
   test("a legacy file still at the old path counts as host rows", () => {
     // Open first, so the first-open import has already run and only the pending check can see the file.
     openState();

@@ -233,7 +233,8 @@ describe("feedback logs in loop state", () => {
   test("import onto an empty host makes the bundle's records readable", async () => {
     const dest = await exportFromHostA();
     useRoots("hostB");
-    importBundle({ src: dest });
+    const result = importBundle({ src: dest });
+    expect(result.warnings.filter((w) => w.includes("could not be imported"))).toEqual([]);
     expect(listHuman()).toEqual(human);
     expect(readRecords("critic", "strict").records).toEqual(critic);
   });
@@ -265,7 +266,9 @@ describe("feedback logs in loop state", () => {
     writeFileSync(file, `${lines(human)}not json\n`);
 
     useRoots("hostB");
-    importBundle({ src: dest });
+    const result = importBundle({ src: dest });
+    expect(result.warnings).toContain("human.jsonl: 1 line could not be imported; see sil state quarantine");
+    expect(result.warnings.filter((w) => w.includes("could not be imported"))).toHaveLength(1);
     expect(readRecords("human", "counted")).toEqual({ records: human, quarantined: 1 });
     const rows = openState().query("SELECT store, source, line_no, reason, raw FROM quarantine").all();
     expect(rows).toEqual([{ store: "human", source: file, line_no: 3, reason: "not JSON", raw: "not json" }]);

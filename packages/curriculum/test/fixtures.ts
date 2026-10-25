@@ -18,7 +18,8 @@ import {
 } from "@sil/core";
 import { git, setNudgeAdapter, type GateCorpusResult, type NudgeAdapter } from "@sil/curriculum";
 import { recordReflectRun } from "@sil/feedback";
-import { closeState } from "@sil/statedb";
+import { Database } from "bun:sqlite";
+import { closeState, openState } from "@sil/statedb";
 import { writeReflection } from "@sil/store";
 
 const ENV_KEYS = [
@@ -92,6 +93,25 @@ export function blockLoopState(): () => void {
     closeState();
     rmdirSync(db);
     if (had) renameSync(aside, db);
+  };
+}
+
+/** Hold the loop-state write lock from a second connection, so every write
+ * through the real path waits out the busy timeout and fails with SQLITE_BUSY
+ * while reads still work (WAL readers do not need the lock). blockLoopState
+ * fails reads too, which strict readers report before the write under test.
+ * Returns the release. */
+export function holdLoopStateWriteLock(): () => void {
+  // Open the cached handle first: its first open writes meta, which the lock would block.
+  openState();
+  const db = new Database(paths.loopStateDb(), { readwrite: true, create: false });
+  db.run("BEGIN IMMEDIATE");
+  return () => {
+    try {
+      db.run("ROLLBACK");
+    } finally {
+      db.close();
+    }
   };
 }
 

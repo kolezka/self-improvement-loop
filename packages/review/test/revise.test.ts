@@ -12,10 +12,10 @@ import { readProposalEvents } from "@sil/store";
 import * as review from "../src/index.ts";
 import {
   addReflections,
-  blockLoopState,
   cleanupEnv,
   fakeGateRunner,
   FakeChat,
+  holdLoopStateWriteLock,
   initTarget,
   installFakeNudge,
   makeCfg,
@@ -164,7 +164,8 @@ describe("revise", () => {
     const newQuote = "run `rg -n` across every call site and cross check the graphify inventory before merging";
     const fake = new FakeChat({ draft: skillDraft(PATTERN, newQuote) });
 
-    const unblock = blockLoopState();
+    // Reads (aliases, reflections) must still work: only the event insert may fail.
+    const release = holdLoopStateWriteLock();
     try {
       const result = await review.revise(world, cfg(), PATTERN, before.reviewed_state, "use rg -n", { chat: fake.fn });
       expect(result.reviewed_state).not.toBe(before.reviewed_state);
@@ -172,9 +173,11 @@ describe("revise", () => {
       const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
       expect(curriculumLog).toContain("ERROR proposal event revised");
       expect(curriculumLog).toContain("the proposal events log cannot be written");
+      expect(curriculumLog).toContain("SQLITE_BUSY");
     } finally {
-      unblock();
+      release();
     }
+    expect(readProposalEvents().events.some((e) => e.event === "revised")).toBe(false);
   });
 
   test("a concurrent change while the drafter is thinking is refused (item 12)", async () => {

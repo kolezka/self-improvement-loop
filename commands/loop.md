@@ -49,9 +49,12 @@ cat "$out"
 
 `sil web` prints its URL on stdout, not to the `web` log, so read it from that
 file. Report the URL. On loopback it has no token; a bind off loopback carries
-the token in the fragment. If the file shows the port is taken, the web service
-is probably already running: say so and give `sil schedule show`. Do not open a
-browser yourself.
+the token in the fragment. When the scheduled web job already holds the port,
+`sil web` prints `web UI already running: <url>` plus the running version and
+exits 0: report that URL as the console to use, it serves every world. Only a
+line saying the port is taken by something that is not the SIL web UI is an
+error; then say so and give `sil schedule show`. Do not open a browser
+yourself.
 
 ## `$1` is `run`: trigger a worker pass
 

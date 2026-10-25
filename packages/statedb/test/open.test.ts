@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths, StateWriteError } from "@sil/core";
@@ -9,12 +9,18 @@ import type { FilesystemClass } from "@sil/core/fs-probe";
 import { closeState, openState, SCHEMA_VERSION } from "../src/index.ts";
 
 // mock.module stays registered for the whole bun test process, so the stub
-// delegates to the real probe unless a test forces a class.
+// delegates to the real probe unless a test forces a class or hooks the call.
 const realFsProbe = { ...fsProbe };
 let forcedClass: FilesystemClass | null = null;
+let duringProbe: ((path: string) => void) | null = null;
 mock.module("@sil/core/fs-probe", () => ({
   ...realFsProbe,
-  probeFilesystem: (path: string): FilesystemClass => forcedClass ?? realFsProbe.probeFilesystem(path),
+  probeFilesystem: (path: string): FilesystemClass => {
+    const result = forcedClass ?? realFsProbe.probeFilesystem(path);
+    // Runs after the real classification, like a mount change right after the probe.
+    duringProbe?.(path);
+    return result;
+  },
 }));
 
 let tmp: string;
@@ -30,6 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   forcedClass = null;
+  duringProbe = null;
   closeState();
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
@@ -114,5 +121,54 @@ describe("openState", () => {
   test("an unknown filesystem is refused the same way", () => {
     forcedClass = "unknown";
     expect(() => openState()).toThrow(/unsupported filesystem/);
+  });
+
+  test("a STATE dir that moves to another device right after the probe is refused", () => {
+    const stateDir = dirname(paths.loopStateDb());
+    // /dev is devfs or devtmpfs, a different device from the tmp dir on macOS and Linux.
+    expect(statSync("/dev").dev).not.toBe(statSync(tmpdir()).dev);
+    duringProbe = () => {
+      rmSync(stateDir, { recursive: true, force: true });
+      mkdirSync(dirname(stateDir), { recursive: true });
+      symlinkSync("/dev", stateDir);
+    };
+    expect(() => openState()).toThrow(/unsupported filesystem/);
+    expect(existsSync(join("/dev", "loop-state.sqlite"))).toBe(false);
+  });
+
+  test("a version raised by another process after the first read is refused", async () => {
+    openState();
+    closeState();
+    const p = paths.loopStateDb();
+    const marker = join(tmp, "locked");
+    const script = join(tmp, "raise-version.ts");
+    // Holds the write lock with user_version = 2 pending, then commits while openState waits on it.
+    writeFileSync(
+      script,
+      [
+        'import { Database } from "bun:sqlite";',
+        'import { writeFileSync } from "node:fs";',
+        "const db = new Database(process.argv[2]);",
+        'db.run("PRAGMA busy_timeout = 2000");',
+        'db.run("BEGIN IMMEDIATE");',
+        'db.run("PRAGMA user_version = 2");',
+        "writeFileSync(process.argv[3], '');",
+        "Bun.sleepSync(400);",
+        'db.run("COMMIT");',
+        "db.close();",
+      ].join("\n"),
+    );
+    const child = Bun.spawn([process.execPath, script, p, marker], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, stdout: "ignore", stderr: "pipe" });
+    for (let i = 0; i < 400 && !existsSync(marker); i++) await Bun.sleep(5);
+    expect(existsSync(marker)).toBe(true);
+    let caught: unknown;
+    try {
+      openState();
+    } catch (error) {
+      caught = error;
+    }
+    expect(await child.exited).toBe(0);
+    expect(caught).toBeInstanceOf(StateWriteError);
+    expect((caught as Error).message).toBe("loop state was written by a newer sil (schema 2, this build knows 1)");
   });
 });

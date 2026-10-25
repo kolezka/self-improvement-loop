@@ -73,33 +73,62 @@ function migrate(db: Database): void {
   }
 }
 
-function recordProbe(db: Database, fsClass: string, dir: string): void {
-  const now = new Date().toISOString();
+interface Probe {
+  fsClass: string;
+  dev: number;
+  at: string;
+}
+
+/** Writes the probe result. Re-reads the version under the write lock, since
+ * another process may have upgraded the file after our first read. */
+function recordProbe(db: Database, probe: Probe): void {
   const upsert = db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value");
-  db.transaction(() => {
-    db.query("INSERT OR IGNORE INTO meta (key, value) VALUES ('created_at', ?)").run(now);
-    upsert.run("fs_class", fsClass);
-    upsert.run("fs_dev", String(statSync(dir).dev));
-    upsert.run("fs_probed_at", now);
-  })();
+  db.run("BEGIN IMMEDIATE");
+  try {
+    const current = userVersion(db);
+    if (current > SCHEMA_VERSION) throw newerSchema(current);
+    db.query("INSERT OR IGNORE INTO meta (key, value) VALUES ('created_at', ?)").run(probe.at);
+    upsert.run("fs_class", probe.fsClass);
+    upsert.run("fs_dev", String(probe.dev));
+    upsert.run("fs_probed_at", probe.at);
+    db.run("COMMIT");
+  } catch (error) {
+    db.run("ROLLBACK");
+    throw error;
+  }
+}
+
+const unsupported = (reason: string): StateWriteError => new StateWriteError(`loop state: unsupported filesystem (${reason})`);
+
+/** Probe the STATE dir itself and keep its device as of the probe. */
+function probeDir(dir: string): Probe {
+  const dev = statSync(dir).dev;
+  const fsClass = probeFilesystem(dir);
+  if (fsClass !== "local") throw unsupported(fsClass);
+  return { fsClass, dev, at: new Date().toISOString() };
+}
+
+/** A mount or symlink swap after the probe shows up as a new device. */
+function checkSameDevice(dir: string, probe: Probe): void {
+  if (statSync(dir).dev !== probe.dev) throw unsupported("device changed since probe");
 }
 
 function openAt(path: string): Database {
   const dir = dirname(path);
-  // Probe before creating anything, so a refused filesystem gets no file.
-  const fsClass = probeFilesystem(dir);
-  if (fsClass !== "local") throw new StateWriteError(`loop state: unsupported filesystem (${fsClass})`);
   let db: Database | null = null;
   try {
     fsx.ensureDir(dir);
+    const probe = probeDir(dir);
+    checkSameDevice(dir, probe);
     createFile(path);
     db = new Database(path, { readwrite: true, create: false, strict: true });
+    checkSameDevice(dir, probe);
     db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     const version = userVersion(db);
     if (version > SCHEMA_VERSION) throw newerSchema(version);
     configure(db);
     migrate(db);
-    recordProbe(db, fsClass, dir);
+    recordProbe(db, probe);
     return db;
   } catch (error) {
     db?.close();

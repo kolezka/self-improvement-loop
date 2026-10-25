@@ -3,6 +3,7 @@
 // global: the worker itself is not a per-world thing.
 
 import { fsx, paths } from "@sil/core";
+import { readRecords, type Stream } from "@sil/statedb";
 import { isHidden, listQueue, listReflections, loadQueueCleared, readProposalEvents } from "@sil/store";
 import type { HistoryArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
@@ -112,6 +113,14 @@ export function readJsonl(path: string, world: string | null): { records: Record
   return { records, skipped };
 }
 
+/** A loop-state stream for one world. `skipped` is the stream's quarantine
+ * count across all worlds: a line that could not be imported has no world to
+ * trust. A read failure throws StateReadError, never reads as empty. */
+function readStream(stream: Stream, world: string): { records: Record<string, unknown>[]; skipped: number } {
+  const { records, quarantined } = readRecords(stream, "counted");
+  return { records: records.filter((rec) => rec["world"] === world), skipped: quarantined };
+}
+
 interface Built {
   points: SeriesPoint[];
   since: string | null;
@@ -172,14 +181,14 @@ export function historySeries(args: HistoryArgs): HistorySeries {
   set("sessions_done", fold(doneEntries, "last_stop", days, now, 0));
   set("sessions_failed", fold(failedEntries, "last_stop", days, now, 0));
 
-  // votes_good / votes_bad: human.jsonl, sharing one skip count since a torn
-  // line could have been either vote.
-  const human = readJsonl(paths.humanFeedbackFile(), world.name);
+  // votes_good / votes_bad: the human feedback stream, sharing one skip count
+  // since a quarantined line could have been either vote.
+  const human = readStream("human", world.name);
   set("votes_good", fold(human.records.filter((r) => r["vote"] === "good"), "ts", days, now, human.skipped));
   set("votes_bad", fold(human.records.filter((r) => r["vote"] === "bad"), "ts", days, now, human.skipped));
 
-  // critic_verdicts: every critic.jsonl line for this world (used, helpful, misfired, relevant).
-  const critic = readJsonl(paths.criticFeedbackFile(), world.name);
+  // critic_verdicts: every critic record for this world (used, helpful, misfired, relevant).
+  const critic = readStream("critic", world.name);
   set("critic_verdicts", fold(critic.records, "ts", days, now, critic.skipped));
 
   // artifact_uses: usage/events.jsonl, skill/agent/rule kinds only (agent_stop
@@ -193,7 +202,7 @@ export function historySeries(args: HistoryArgs): HistorySeries {
   const runs = worker.records.filter((r) => r["action"] === "run");
   set("worker_runs", fold(runs, "ts", days, now, worker.skipped));
 
-  // proposals_*: the append-only history from proposal-events.jsonl, this world.
+  // proposals_*: the append-only proposal events history, this world.
   // "rerouted" is recorded alongside "staged" for the same commit (an
   // automatic re-route is a stage too), so it is also counted there; this is
   // the distinct series for how many of those stages were re-routes.

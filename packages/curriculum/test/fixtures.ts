@@ -4,13 +4,14 @@
 // own global config all point inside a temp dir, so a test can never read or
 // write the machine's real state.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type Config,
   Config as ConfigSchema,
   type Layout,
+  paths,
   targetRoot,
   World as WorldSchema,
   type World,
@@ -74,6 +75,24 @@ export function cleanupEnv(env: TestEnv): void {
     }
     rmSync(env.tmp, { recursive: true, force: true });
   }
+}
+
+/** Put a directory where the loop-state database goes, so every open fails
+ * through the real path (a chmod'd file is not enough: a read-only open in
+ * this process breaks later writes even after the mode is restored). Returns
+ * the undo, which puts the original file back. */
+export function blockLoopState(): () => void {
+  closeState();
+  const db = paths.loopStateDb();
+  const aside = `${db}.blocked`;
+  const had = existsSync(db);
+  if (had) renameSync(db, aside);
+  mkdirSync(db, { recursive: true });
+  return () => {
+    closeState();
+    rmdirSync(db);
+    if (had) renameSync(aside, db);
+  };
 }
 
 // --- worlds and config -------------------------------------------------------

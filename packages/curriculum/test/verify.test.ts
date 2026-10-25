@@ -12,7 +12,7 @@ import { join, relative } from "node:path";
 import { ledgerPath, paths, RULE_END, RULE_START, ruleTag, targetRoot, type Ledger, type PromotionEntry, type World } from "@sil/core";
 import { MAX_RULES_BYTES } from "@sil/core/lessons";
 import { artifacts, digestPath, git, previewArtifact, reflections, saveSummary, verifyArtifact } from "@sil/curriculum";
-import { saveLedger } from "@sil/store";
+import { readProposalEvents, saveLedger } from "@sil/store";
 import {
   addReflections,
   cleanupEnv,
@@ -95,7 +95,7 @@ function snapshotWrites(world: World, repo: string) {
   return {
     ledger: readFileSync(ledgerPath(world), "utf8"),
     branches: git.git(repo, ["branch", "--list"], { check: false }),
-    events: existsSync(paths.proposalEventsFile()) ? readFileSync(paths.proposalEventsFile(), "utf8") : null,
+    events: readProposalEvents(),
     state: hashTree(paths.stateDir()),
     data: hashTree(paths.dataDir()),
   };

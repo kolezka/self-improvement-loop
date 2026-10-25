@@ -4,7 +4,7 @@
 // reviewed_state refuses before the drafter is ever called).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths, ReviewError, targetRoot, type World } from "@sil/core";
 import { branchName, git, run, type RunOptions } from "@sil/curriculum";
@@ -12,6 +12,7 @@ import { readProposalEvents } from "@sil/store";
 import * as review from "../src/index.ts";
 import {
   addReflections,
+  blockLoopState,
   cleanupEnv,
   fakeGateRunner,
   FakeChat,
@@ -164,16 +165,16 @@ describe("revise", () => {
     const newQuote = "run `rg -n` across every call site and cross check the graphify inventory before merging";
     const fake = new FakeChat({ draft: skillDraft(PATTERN, newQuote) });
 
-    const eventsDir = join(paths.stateDir(), "curriculum");
-    chmodSync(eventsDir, 0o000);
+    const unblock = blockLoopState();
     try {
       const result = await review.revise(world, cfg(), PATTERN, before.reviewed_state, "use rg -n", { chat: fake.fn });
       expect(result.reviewed_state).not.toBe(before.reviewed_state);
 
       const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
       expect(curriculumLog).toContain("ERROR proposal event revised");
+      expect(curriculumLog).toContain("the proposal events log cannot be written");
     } finally {
-      chmodSync(eventsDir, 0o755);
+      unblock();
     }
   });
 

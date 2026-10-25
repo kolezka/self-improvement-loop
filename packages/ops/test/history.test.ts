@@ -4,11 +4,12 @@
 // a zero, never missing from the array.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { QueueEntry } from "@sil/core";
-import { paths } from "@sil/core";
+import { paths, StateReadError } from "@sil/core";
+import { closeState } from "@sil/statedb";
 import { appendProposalEvent, writeEntry } from "@sil/store";
 import type { HistorySeries } from "../src/handlers/history.ts";
 import { invoke } from "../src/index.ts";
@@ -25,6 +26,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeState();
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -63,7 +65,9 @@ describe("history.series", () => {
 
     expect(out.series.votes_good.map((p) => p.count)).toEqual([0, 0, 2]);
     expect(out.series.votes_bad.map((p) => p.count)).toEqual([1, 0, 0]);
-    expect(out.skipped.votes_good + out.skipped.votes_bad).toBeGreaterThanOrEqual(1);
+    // The garbage line is quarantined at import; both vote series carry it.
+    expect(out.skipped.votes_good).toBe(1);
+    expect(out.skipped.votes_bad).toBe(1);
     expect(out.series.reflections).toHaveLength(3);
     // Zero-count days are zeros, not missing.
     expect(out.series.votes_good.map((p) => p.day)).toHaveLength(3);
@@ -73,20 +77,36 @@ describe("history.series", () => {
     await expect(invoke("history.series", { world: "default", days: 91 })).rejects.toThrow();
   });
 
-  test("a missing feedback file yields zeros; an unreadable one rejects", async () => {
+  test("a missing feedback log yields zeros; an unreadable database rejects with StateReadError", async () => {
     const zeros = (await invoke("history.series", { world: "default", days: 1 })) as HistorySeries;
     expect(zeros.series.votes_good[0]!.count).toBe(0);
     expect(zeros.skipped.votes_good).toBe(0);
 
-    if (process.getuid?.() === 0) return; // root ignores file permissions
-    const path = paths.humanFeedbackFile();
-    appendLine(path, { ts: new Date().toISOString(), world: "default", ref: "skill:a", vote: "good", note: "" });
-    chmodSync(path, 0o000);
+    // A directory where the database file goes: a real open failure, not zeros.
+    closeState();
+    rmSync(paths.loopStateDb(), { force: true });
+    mkdirSync(paths.loopStateDb(), { recursive: true });
+    let error: unknown = null;
     try {
-      await expect(invoke("history.series", { world: "default", days: 1 })).rejects.toThrow();
-    } finally {
-      chmodSync(path, 0o644);
+      await invoke("history.series", { world: "default", days: 1 });
+    } catch (caught) {
+      error = caught;
     }
+    expect(error).toBeInstanceOf(StateReadError);
+    expect((error as Error).message.startsWith("the human feedback log cannot be read (")).toBe(true);
+  });
+
+  test("critic skipped is the stream's quarantine count across worlds; another world's record is excluded", async () => {
+    const path = paths.criticFeedbackFile();
+    const ts = new Date().toISOString();
+    appendLine(path, { ref: "skill:a", verdict: "used", reflection_id: "r1", ts, world: "default" });
+    appendLine(path, { ref: "skill:a", verdict: "used", reflection_id: "r2", ts, world: "other" });
+    appendRaw(path, "{torn\n");
+
+    const out = (await invoke("history.series", { world: "default", days: 1 })) as HistorySeries;
+    expect(out.series.critic_verdicts[0]!.count).toBe(1);
+    expect(out.skipped.critic_verdicts).toBe(1);
+    expect(out.skipped.votes_good).toBe(0);
   });
 
   test("sessions_done excludes another world and a session queue.clear hid", async () => {

@@ -28,6 +28,7 @@ import * as review from "../src/index.ts";
 import { foreignChanges } from "../src/snapshot.ts";
 import {
   addReflections,
+  blockLoopState,
   agentBody,
   cleanupEnv,
   commitFile,
@@ -406,8 +407,7 @@ describe("accept", () => {
     await stage(world);
     const detail = review.detail(world, cfg(), PATTERN);
 
-    const eventsDir = join(paths.stateDir(), "curriculum");
-    chmodSync(eventsDir, 0o000);
+    const unblock = blockLoopState();
     try {
       const out = review.accept(world, cfg(), PATTERN, detail.reviewed_state);
       expect(out.merged).toBe(true);
@@ -415,8 +415,9 @@ describe("accept", () => {
 
       const curriculumLog = readFileSync(paths.logFile("curriculum"), "utf8");
       expect(curriculumLog).toContain("ERROR proposal event accepted");
+      expect(curriculumLog).toContain("the proposal events log cannot be written");
     } finally {
-      chmodSync(eventsDir, 0o755);
+      unblock();
     }
   });
 
@@ -427,15 +428,14 @@ describe("accept", () => {
     await stage(world);
     const detail = review.detail(world, cfg(), PATTERN);
 
-    const eventsDir = join(paths.stateDir(), "curriculum");
-    chmodSync(eventsDir, 0o000);
+    const unblock = blockLoopState();
     const logsDir = join(paths.stateDir(), "logs");
     mkdirSync(logsDir, { recursive: true });
     chmodSync(logsDir, 0o000);
     try {
       expect(() => review.accept(world, cfg(), PATTERN, detail.reviewed_state)).not.toThrow();
     } finally {
-      chmodSync(eventsDir, 0o755);
+      unblock();
       chmodSync(logsDir, 0o755);
     }
     expect(existsSync(join(repo, "skills", PATTERN, "SKILL.md"))).toBe(true);
@@ -1365,12 +1365,11 @@ describe("a human's rehome survives a lost proposal event", () => {
     // rehome: `recordProposalEvent` swallows the error (review.rehome must
     // still complete, not throw), but the "rehomed" event itself never makes
     // it to disk.
-    const eventsPath = paths.proposalEventsFile();
-    chmodSync(eventsPath, 0o444);
+    const unblock = blockLoopState();
     try {
       review.rehome(world, cfg(), PATTERN, "rule");
     } finally {
-      chmodSync(eventsPath, 0o644);
+      unblock();
     }
     expect(readProposalEvents().events.some((e) => e.pattern === PATTERN && e.event === "rehomed")).toBe(false);
 

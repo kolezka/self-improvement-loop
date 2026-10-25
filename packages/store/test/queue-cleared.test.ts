@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { paths, ValidationError } from "@sil/core";
 import { closeState } from "@sil/statedb";
+import { Database } from "bun:sqlite";
 import { loadQueueCleared, setQueueCleared } from "../src/queue-cleared.ts";
 
 let tmp: string;
@@ -95,6 +96,21 @@ describe("loadQueueCleared", () => {
       // The import claims the file under a new name before it fails to read it.
       for (const name of readdirSync(dirname(path))) chmodSync(join(dirname(path), name), 0o644);
     }
+  });
+
+  test("a cutoffs row whose body is JSON null is malformed, not 'nothing hidden'", () => {
+    setQueueCleared("done", "2026-10-23T00:00:00Z");
+    expect(loadQueueCleared()).toEqual({ done: "2026-10-23T00:00:00Z", failed: null });
+    closeState();
+    const db = new Database(paths.loopStateDb());
+    try {
+      db.run("UPDATE docs SET body = 'null' WHERE name = 'queue_cleared'");
+    } finally {
+      db.close();
+    }
+    const error = caught(() => loadQueueCleared());
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as Error).message).toContain("the queue cutoffs is not a JSON object");
   });
 
   test("setQueueCleared refuses over a malformed file and the bytes survive in the backup", () => {

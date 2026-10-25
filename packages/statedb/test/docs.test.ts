@@ -57,6 +57,22 @@ describe("readDoc and saveDoc", () => {
     expect(readDoc("worker_status", null, "strict")).toEqual({ state: "busy" });
   });
 
+  test("a row whose body is not a JSON object is malformed, not missing", () => {
+    saveDoc("worker_status", null, { last_run: "t" });
+    expect(readDoc("worker_status", null, "strict")).toEqual({ last_run: "t" });
+    for (const body of ["null", "[1]", "7"]) {
+      openState().query("UPDATE docs SET body = ? WHERE name = 'worker_status'").run(body);
+      const error = caught(() => readDoc("worker_status", null, "strict"));
+      expect(error).toBeInstanceOf(StateReadError);
+      expect((error as Error).message).toBe("the worker status is not a JSON object");
+    }
+    expect(readDoc("worker_status", null, "tolerant")).toBeNull();
+    expect(readDoc("worker_status", null, "tolerant")).toBeNull();
+    const lines = stateLogLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("the worker status: tolerant read used what the database has (not a JSON object)");
+  });
+
   test("no row reads as null in both modes", () => {
     expect(readDoc("queue_cleared", null, "strict")).toBeNull();
     expect(readDoc("queue_cleared", null, "tolerant")).toBeNull();

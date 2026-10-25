@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, LlmConfig, paths, saveLlm, StateReadError, type Config } from "@sil/core";
-import { closeState, openState, readDoc } from "@sil/statedb";
+import { closeState, openState, readDoc, saveDoc } from "@sil/statedb";
 import { writeEntry } from "@sil/store";
 import { runOnce, status } from "../src/index.ts";
 import { restoreEnv, setSilDirs, writeSampleTranscript } from "../../transcript/test/fixture.ts";
@@ -114,6 +114,28 @@ describe("worker status in the loop-state database", () => {
     const error = caught(() => status());
     expect(error).toBeInstanceOf(StateReadError);
     expect((error as Error).message).toContain("the worker status could not be imported");
+  });
+
+  test("a status row whose body is JSON null fails status(), not 'never ran'", () => {
+    saveDoc("worker_status", null, { last_run: "2026-10-01T00:00:00.000Z", last_summary: null });
+    expect(status().last_run).toBe("2026-10-01T00:00:00.000Z");
+    closeState();
+    const db = new Database(paths.loopStateDb());
+    try {
+      db.run("UPDATE docs SET body = 'null' WHERE name = 'worker_status'");
+    } finally {
+      db.close();
+    }
+    const error = caught(() => status());
+    expect(error).toBeInstanceOf(StateReadError);
+    expect((error as Error).message).toContain("the worker status is not a JSON object");
+  });
+
+  test("a last_summary that is not a record fails status() with the labeled shape error", () => {
+    saveDoc("worker_status", null, { last_run: "2026-10-01T00:00:00.000Z", last_summary: [] });
+    const error = caught(() => status());
+    expect(error).toBeInstanceOf(StateReadError);
+    expect((error as Error).message).toBe("the worker status has a last_summary that is not a record");
   });
 
   test(

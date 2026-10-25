@@ -77,20 +77,27 @@ export function readStore<T>(ref: StoreRef, mode: DocMode, empty: T, read: (db: 
   return value;
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
 /** The `world` key of a docs row: '' for a global document. */
 const rowWorld = (ref: StoreRef): string => ref.world ?? "";
 
-/** One document, or null when it has no row (or on any failure in tolerant mode). */
+/** One document, or null when it has no row (or on any failure in tolerant mode).
+ * A row whose body is not a JSON object is malformed, never the same as no row. */
 export function readDoc(name: DocName, world: string | null, mode: DocMode): Record<string, unknown> | null {
   const ref = storeRef(name, world);
-  return readStore<Record<string, unknown> | null>(ref, mode, null, (db) => {
+  const found = readStore<{ body: unknown } | null>(ref, mode, null, (db) => {
     const row = db.query("SELECT body FROM docs WHERE name = ? AND world = ?").get(name, rowWorld(ref)) as { body: string } | null;
-    return row ? (JSON.parse(row.body) as Record<string, unknown>) : null;
+    return row ? { body: JSON.parse(row.body) as unknown } : null;
   });
+  if (found === null) return null;
+  if (isRecord(found.body)) return found.body;
+  const label = labelOf(ref);
+  if (mode === "strict") throw new StateReadError(`${label} is not a JSON object`);
+  logStateOnce(`${ref.store}\0${ref.world ?? ""}`, label, "not a JSON object");
+  return null;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Replace one document. The store's pending import runs first, so a legacy
  * file still waiting can never land over this write. Any failure throws

@@ -79,16 +79,17 @@ function inventoryWithoutDb(root: string): Map<string, string> {
   return out;
 }
 
-/** The loop-state rows a read must leave alone, read from the fixture's database. */
-function loopStateRows(): unknown {
+/** Every loop-state row a read must leave alone, read from the fixture's
+ * database. meta stays out: the opener refreshes fs_probed_at. */
+function loopStateRows(): Record<string, unknown[]> {
   const db = new Database(join(fx.env["SIL_STATE_DIR"]!, "loop-state.sqlite"), { readonly: true });
   try {
-    const count = (table: string) => (db.query(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
     return {
-      docs: db.query("SELECT name, world, body FROM docs ORDER BY name, world").all(),
-      log_records: count("log_records"),
-      legacy_imports: count("legacy_imports"),
-      quarantine: count("quarantine"),
+      docs: db.query("SELECT * FROM docs ORDER BY name, world").all(),
+      log_records: db.query("SELECT * FROM log_records ORDER BY id").all(),
+      legacy_imports: db.query("SELECT * FROM legacy_imports ORDER BY id").all(),
+      quarantine: db.query("SELECT * FROM quarantine ORDER BY id").all(),
+      aliases: db.query("SELECT * FROM aliases ORDER BY world, alias").all(),
     };
   } finally {
     db.close();
@@ -161,7 +162,7 @@ describe("sil ops", () => {
     // The opener refreshes meta.fs_probed_at on every first open, so the DB bytes are not a "no writes" signal; the row snapshot is.
     const before = inventoryWithoutDb(fx.root);
     const rowsBefore = loopStateRows();
-    expect((rowsBefore as { docs: { name: string }[] }).docs.map((d) => d.name)).toContain("worker_status");
+    expect(rowsBefore["docs"]!.map((d) => (d as { name: string }).name)).toContain("worker_status");
     const { code, stdout, stderr } = await runOps(
       request([
         { id: "status", op: "worker.status" },

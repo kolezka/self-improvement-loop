@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "@sil/core";
@@ -53,6 +53,28 @@ describe("legacyWorlds", () => {
     touch(join(worlds, "c", "aliases.json.imported-1-1"));
     touch(join(worlds, ".dot", "aliases.json"));
     expect(legacyWorlds("aliases")).toEqual(["a", "b"]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("aliases: a world dir that cannot be inspected throws, not reads as no aliases", () => {
+    const worlds = join(paths.dataDir(), "worlds");
+    for (const w of ["known", "private"]) {
+      mkdirSync(join(worlds, w), { recursive: true });
+      touch(join(worlds, w, "aliases.json"));
+    }
+    // Positive control: both worlds are found while readable.
+    expect(legacyWorlds("aliases")).toEqual(["known", "private"]);
+    chmodSync(join(worlds, "private"), 0o000);
+    try {
+      let error: unknown = null;
+      try {
+        legacyWorlds("aliases");
+      } catch (e) {
+        error = e;
+      }
+      expect((error as NodeJS.ErrnoException | null)?.code).toBe("EACCES");
+    } finally {
+      chmodSync(join(worlds, "private"), 0o755);
+    }
   });
 
   test("a missing directory is no worlds", () => {

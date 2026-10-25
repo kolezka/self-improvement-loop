@@ -1,7 +1,7 @@
 // Every store kept in the loop-state database: what kind it is, whether it is
 // per world, and the legacy file it replaces.
 
-import { existsSync, readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@sil/core";
 import { type Stream, STREAMS } from "./streams.ts";
@@ -72,6 +72,19 @@ function listNames(dir: string): string[] {
   }
 }
 
+/** Whether `path` exists. Only "not there" (ENOENT, or ENOTDIR for a parent
+ * that is a file) is false; a path that cannot be inspected throws. */
+function present(path: string): boolean {
+  try {
+    statSync(path);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
 const REFINE_FILE = /^(.+)\.json$/;
 const REFINE_CLAIM = /^(.+)\.json\.importing$/;
 
@@ -87,7 +100,7 @@ export function legacyWorlds(store: "refine_attempts" | "aliases"): string[] {
   } else {
     const worlds = join(paths.dataDir(), "worlds");
     for (const name of listNames(worlds)) {
-      if (existsSync(join(worlds, name, "aliases.json")) || existsSync(join(worlds, name, "aliases.json.importing"))) found.add(worldKey(name));
+      if (present(join(worlds, name, "aliases.json")) || present(join(worlds, name, "aliases.json.importing"))) found.add(worldKey(name));
     }
   }
   return [...found].sort();

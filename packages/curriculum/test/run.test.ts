@@ -33,11 +33,13 @@ import {
   MAX_RULE_CHARS,
   MIN_QUOTE_CHARS,
   MIN_QUOTE_WORDS,
+  RECENT_LESSONS,
+  reflections,
   ruleBudget,
   run,
   type RunOptions,
 } from "@sil/curriculum";
-import { parseLedger, readProposalEvents, recordProposalEvent, saveLedger } from "@sil/store";
+import { parseLedger, readProposalEvents, recordProposalEvent, saveLedger, writeReflection } from "@sil/store";
 import {
   addReflections,
   agentBody,
@@ -49,9 +51,11 @@ import {
   hookDraft,
   initTarget,
   installFakeNudge,
+  LESSON,
   makeCfg,
   makeWorld,
   ruleBody,
+  reflectionBody,
   ruleDraft,
   silEnv,
   skillBody,
@@ -328,6 +332,15 @@ describe("the happy path", () => {
       drafted: "skill",
       type: "skill",
       reason: "capability evidence quoted verbatim from a source",
+      signals: {
+        trigger_event: "none",
+        has_gate: false,
+        needs_own_context: false,
+        context_evidence: null,
+        capability_evidence: QUOTE,
+        no_artifact: false,
+        parse_error: null,
+      },
     });
   });
 
@@ -703,13 +716,13 @@ describe("served_by suppression", () => {
     ]);
     commitFile(repo, "promotions.json", readFileSync(ledgerPath(world), "utf8"), "chore: ledger");
 
-    // The forced draft carries no trigger_event or gate, so the re-route probe
+    // The forced draft answers every routing key with "none", so the re-route probe
     // (see "re-routing an already served pattern" below) falls through to
     // "rule" without ever reaching the gate runner: hookVerdict refuses "no
     // trigger event proposed" before it is called. A throwing runner here
     // proves that, and the drafter prompt below proves the forced path, not
     // the free-routing one, was taken.
-    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const chat = new FakeChat({ draft: ruleDraft() });
     const report = await run(
       world,
       makeCfg(),
@@ -730,6 +743,15 @@ describe("served_by suppression", () => {
       drafted: "rule",
       type: "rule",
       reason: "already served by this artifact; re-route probe kept rule: no workable gate (no trigger event proposed), no own-context need, no capability evidence",
+      signals: {
+        trigger_event: "none",
+        has_gate: false,
+        needs_own_context: false,
+        context_evidence: null,
+        capability_evidence: null,
+        no_artifact: false,
+        parse_error: null,
+      },
     });
     const { found, text } = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(found).toBe(true);
@@ -959,9 +981,105 @@ describe("re-routing an already served pattern", () => {
       drafted: "rule",
       type: "rule",
       reason: expect.stringMatching(/^already served by this artifact; re-route probe kept rule: no workable gate \(gate matched nothing/),
+      signals: expect.objectContaining({ trigger_event: "PreToolUse:Bash", has_gate: true, parse_error: null }),
     });
     const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
     expect(rules.text).toContain(ruleTag(PATTERN));
+  });
+
+  test("a probe reply that fails validation reads as unreadable, not as a considered no", async () => {
+    // It used to become the empty answer: "no workable gate (no trigger event
+    // proposed) ..." in the report, the same line a drafter saying no writes.
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo);
+
+    const chat = new FakeChat({ draft: { ...ruleDraft(), needs_own_context: "true" } });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
+
+    // The forced body is still used: only the re-route signal was unreadable.
+    expect(report.staged).toEqual([PATTERN]);
+    const routed = report.routed[PATTERN]!;
+    expect(routed.type).toBe("rule");
+    expect(routed.reason).toStartWith(
+      "already served by this artifact; re-route probe kept rule: unreadable drafter reply: routing fields failed validation: needs_own_context",
+    );
+    expect(routed.signals?.parse_error).toStartWith("routing fields failed validation: needs_own_context");
+    const rules = git.show(repo, branchName(world.name, PATTERN), "RULES.md");
+    expect(rules.text).toContain(ruleTag(PATTERN));
+  });
+
+  test("a probe reply that leaves the routing keys out reads as unreadable, not as a considered no", async () => {
+    // Every key has a default, so a bare {"artifact": ...} used to pass and
+    // print "no workable gate (no trigger event proposed)".
+    const world = worldWith();
+    const repo = initTarget(world);
+    seedRuleServed(world, repo);
+
+    const chat = new FakeChat({ draft: { artifact: ruleBody(), trigger_event: "none" } });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, cards: [observedCard(PATTERN)] }));
+
+    expect(report.staged).toEqual([PATTERN]);
+    const routed = report.routed[PATTERN]!;
+    expect(routed.reason).toBe(
+      "already served by this artifact; re-route probe kept rule: unreadable drafter reply: " +
+        "routing keys missing from reply: gate, needs_own_context, context_evidence, capability_evidence, no_artifact",
+    );
+    expect(routed.signals?.missing_keys).toEqual(["gate", "needs_own_context", "context_evidence", "capability_evidence", "no_artifact"]);
+  });
+
+  test("a fresh reply missing routing keys still routes, and the report names them", async () => {
+    // A dropped fresh pattern costs more than the rule fallback, so this only
+    // has to be visible.
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: { artifact: ruleBody() } });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.routed[PATTERN]).toMatchObject({ type: "rule" });
+    expect(report.routed[PATTERN]!.signals?.missing_keys).toEqual([
+      "trigger_event",
+      "gate",
+      "needs_own_context",
+      "context_evidence",
+      "capability_evidence",
+      "no_artifact",
+    ]);
+  });
+
+  test("artifact feedback never pushes a reflection out of the quoted window", async () => {
+    // 12 reflections plus feedback counted as 13 lessons: the oldest fell out
+    // of full quoting and the header said 13 against a summary of 12.
+    const world = makeWorld();
+    for (let i = 0; i < RECENT_LESSONS; i++) {
+      const day = `2026-09-${String(i + 1).padStart(2, "0")}`;
+      writeReflection(world.name, { id: `${day}-${PATTERN}`, created: day }, reflectionBody(PATTERN, day, `${LESSON} Marker OLDEST_${i}.`));
+    }
+    const action: PlanAction = {
+      pattern: PATTERN,
+      count: RECENT_LESSONS,
+      watermark: 0,
+      action: "promote",
+      sources: reflections(world).map((r) => r.id),
+      reason: "test",
+      feedback: "misfired twice on read-only sessions",
+    };
+    initTarget(world);
+    const prompts: string[] = [];
+    const chat: ChatFn = async (role, messages) => {
+      const prompt = messages[messages.length - 1]!.content;
+      if (role === "judge") return JSON.stringify({ verdict: "yes", reason: "quoted" });
+      if (prompt.includes("Maintain the standing summary")) return JSON.stringify({ summary: "Run rg over call sites first." });
+      prompts.push(prompt);
+      return JSON.stringify(ruleDraft());
+    };
+    await run(world, makeCfg(), opts({ apply: true, chat, actions: [action] }));
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("Marker OLDEST_0.");
+    expect(prompts[0]).toContain(`(${RECENT_LESSONS} in total`);
+    expect(prompts[0]).not.toContain("most recent lesson(s) follow in full");
+    expect(prompts[0]).toContain("Artifact feedback: misfired twice on read-only sessions");
   });
 
   test("a refine action never considers a re-route, even with hook-earning evidence", async () => {
@@ -1524,6 +1642,62 @@ describe("redraft after a route change", () => {
     // The routing contract names the same budget when it says what a rule holds.
     const free = draftMessages(PATTERN, ["a lesson"], null, null, { maxRuleChars: cap }).at(-1)!.content;
     expect(free).toContain(`does not fit one ${ruleBudget(PATTERN, cap)}-character bullet`);
+  });
+});
+
+describe("evidence handoff to the drafter and the judge", () => {
+  // The only capability quote in the cluster sits in the oldest reflection's
+  // What worked. The router accepts it, but the drafter used to see neither
+  // that section nor anything older than the newest RECENT_LESSONS.
+  const PROCEDURE =
+    "Ran `bun run build` before `bun test tests/dist.test.ts`, then compared `dist/hook.js` with the release tag.";
+  const PROC_QUOTE = "Ran `bun run build` before `bun test tests/dist.test.ts`, then compared `dist/hook.js`";
+
+  test("a quote only an old reflection's What worked carries reaches the drafter, routes to skill and reaches the judge", async () => {
+    const world = makeWorld();
+    for (let i = 0; i < 14; i++) {
+      const day = `2026-09-${String(i + 1).padStart(2, "0")}`;
+      let body = reflectionBody(PATTERN, day);
+      if (i === 0) body = body.replace("Reading the promotions ledger before touching the branch.", PROCEDURE);
+      writeReflection(world.name, { id: `${day}-${PATTERN}`, created: day }, body);
+    }
+    initTarget(world);
+
+    const calls: { role: string; prompt: string }[] = [];
+    const chat: ChatFn = async (role, messages) => {
+      const prompt = messages[messages.length - 1]!.content;
+      calls.push({ role, prompt });
+      if (role === "judge") return JSON.stringify({ verdict: "yes", reason: "quoted" });
+      if (prompt.includes("Maintain the standing summary")) {
+        return JSON.stringify({ summary: "Enumerate call sites with rg before calling a change safe." });
+      }
+      return JSON.stringify(skillDraft(PATTERN, PROC_QUOTE));
+    };
+
+    const report = await run(world, makeCfg(), opts({ apply: true, chat }));
+
+    const drafts = calls.filter((c) => c.role === "drafter" && !c.prompt.includes("Maintain the standing summary"));
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]!.prompt).toContain(PROC_QUOTE);
+    expect(report.routed[PATTERN]).toMatchObject({
+      drafted: "skill",
+      type: "skill",
+      reason: "capability evidence quoted verbatim from a source",
+      signals: { capability_evidence: PROC_QUOTE, parse_error: null },
+    });
+    expect(report.staged).toEqual([PATTERN]);
+    const judged = calls.filter((c) => c.role === "judge");
+    expect(judged).toHaveLength(1);
+    expect(judged[0]!.prompt).toContain(`Evidence quoted verbatim from the sources: ${PROC_QUOTE}`);
+  });
+
+  test("a rule is judged against the lesson lines alone", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: ruleDraft() });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([PATTERN]);
+    expect(chat.promptsFor("judge")[0]).not.toContain("Evidence quoted verbatim");
   });
 });
 

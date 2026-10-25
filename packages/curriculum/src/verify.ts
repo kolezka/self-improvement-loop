@@ -24,7 +24,7 @@ import * as context from "./context.ts";
 import type { GateRunner } from "./deps.ts";
 import * as git from "./git.ts";
 import { lint, lintHook } from "./lint.ts";
-import { draftingTexts, loadLedger, loadPayloadCorpus, reflections, sourcesText } from "./plan.ts";
+import { draftingTexts, loadLedger, loadPayloadCorpus, reflections, sourcesText, workedSections } from "./plan.ts";
 import * as prompts from "./prompts.ts";
 import { draftCaps, UPGRADE_TYPES } from "./run.ts";
 import { hookVerdict, route, RouteAnswer } from "./router.ts";
@@ -351,6 +351,7 @@ async function probeType(
     ...caps,
     summary: cachedSummaryOnly(world, pattern, items),
     knowledge: context.renderKnowledge(knowledgeRows, pattern),
+    workedSections: workedSections(items),
   };
   const raw = await chat(
     "drafter",

@@ -2,7 +2,7 @@
   import type { Component } from "svelte";
   import { onMount, tick } from "svelte";
   import { captureToken, call, dropReloadParam, reloadForBuild } from "./lib/api.ts";
-  import { appState, toast } from "./lib/state.svelte.ts";
+  import { appState, leaveGuards, toast } from "./lib/state.svelte.ts";
   import { applyTheme, loadThemeMode, saveThemeMode, THEME_MODES, watchSystemTheme, type ThemeMode } from "./lib/theme.ts";
   import { resolvedPendingCount } from "./lib/overview.ts";
   import { finishPoll, INITIAL_FORCE_POLL_STATE, requestPoll, type ForcePollState } from "./lib/poll.ts";
@@ -108,8 +108,20 @@
   let serverStale = $state(false);
   const newBuild = $derived(diskBuild !== null && diskBuild !== loadedBuild);
 
-  function onHashChange() {
+  function onHashChange(event: HashChangeEvent) {
     const next = currentHash();
+    // A same-pane change (an exact lesson link) stays inside the pane: no remount.
+    if (next === hash) return;
+    // Ask the open pane first. The URL goes back until it agrees.
+    const target = window.location.href;
+    history.replaceState(null, "", event.oldURL);
+    leaveGuards.request(() => {
+      history.replaceState(null, "", target);
+      applyHash(next);
+    });
+  }
+
+  function applyHash(next: string) {
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (!reduced && typeof document.startViewTransition === "function") {
       document.startViewTransition(() => {
@@ -120,6 +132,15 @@
       hash = next;
     }
     navOpen = false;
+  }
+
+  function onWorldChange(event: Event & { currentTarget: HTMLSelectElement }) {
+    const next = event.currentTarget.value;
+    // Keep showing the current world until the pane agrees to be replaced.
+    event.currentTarget.value = appState.world;
+    leaveGuards.request(() => {
+      appState.world = next;
+    });
   }
 
   async function loadWorlds() {
@@ -344,7 +365,7 @@
           <span class="chip warn" title="A reload cannot fix this: the process runs the bundle it started with. Restart `sil web`.">Server older than build</span>
         {/if}
         <label class="visually-hidden" for="world-select">World</label>
-        <select id="world-select" bind:value={appState.world} title="World">
+        <select id="world-select" value={appState.world} onchange={onWorldChange} title="World">
           {#each appState.worldNames as name}
             <option value={name}>{name}</option>
           {/each}

@@ -1,8 +1,7 @@
-import { closeSync, existsSync, openSync } from "node:fs";
 import { fsx, ValidationError } from "@sil/core";
 import { SECRET_RE } from "@sil/curriculum";
-import { isHidden, listQueue, listReflections, loadEntry, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
-import { iterEvidenceRecords } from "@sil/transcript";
+import { isHidden, listQueueStrict, listReflectionsStrict, loadEntryStrict, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
+import { readEvidenceRecordsStrict } from "@sil/transcript";
 import type { ClearArgs, NoArgs, SessionArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 import { deps } from "../deps.ts";
@@ -24,15 +23,16 @@ function byLastStopDesc(a: { last_stop: string }, b: { last_stop: string }): num
   return a.last_stop < b.last_stop ? 1 : a.last_stop > b.last_stop ? -1 : 0;
 }
 
+// Strict: a list read as the whole queue must not drop what it cannot read.
 function capped(bucket: Bucket) {
-  return [...listQueue(bucket)].sort(byLastStopDesc).slice(0, QUEUE_LIST_CAP);
+  return [...listQueueStrict(bucket)].sort(byLastStopDesc).slice(0, QUEUE_LIST_CAP);
 }
 
 // web console: history and queue ops
 /** Entries not hidden by the bucket's clear cutoff, capped after hiding: the
  * cap bounds what the console renders, hidden counts the whole bucket. */
-function visibleCapped(bucket: Bucket, clearedBefore: string | null): { visible: ReturnType<typeof listQueue>; hidden: number } {
-  const all = listQueue(bucket);
+function visibleCapped(bucket: Bucket, clearedBefore: string | null): { visible: ReturnType<typeof listQueueStrict>; hidden: number } {
+  const all = listQueueStrict(bucket);
   const shown = all.filter((e) => !isHidden(e, clearedBefore));
   return { visible: shown.sort(byLastStopDesc).slice(0, QUEUE_LIST_CAP), hidden: all.length - shown.length };
 }
@@ -108,9 +108,9 @@ function messageText(rec: Record<string, unknown>): string {
 
 /** The last `limit` user/assistant messages with actual text: hook
  * attachments, ai-title lines and empty tool-only turns are not a message. */
-function transcriptMessages(path: string, limit: number, maxChars: number): { role: string; text: string; ts: string | null }[] {
+function transcriptMessages(records: Record<string, unknown>[], limit: number, maxChars: number): { role: string; text: string; ts: string | null }[] {
   const out: { role: string; text: string; ts: string | null }[] = [];
-  for (const rec of iterEvidenceRecords(path)) {
+  for (const rec of records) {
     if (rec["type"] !== "user" && rec["type"] !== "assistant") continue;
     const text = messageText(rec).trim();
     if (!text) continue;
@@ -122,38 +122,22 @@ function transcriptMessages(path: string, limit: number, maxChars: number): { ro
   return out.slice(-limit);
 }
 
-/** iterEvidenceRecords swallows a read failure (EACCES, a race) into an
- * empty generator, which would otherwise surface as an empty transcript
- * instead of the error it actually is. An open-and-close check first tells
- * them apart cheaply: missing is "not persisted", anything else is a real
- * failure to report. Only opens the fd, never reads a byte, so a large
- * transcript is not pulled into memory here only to be read again by
- * transcriptMessages below. */
-function transcriptStatus(path: string): { ok: true } | { ok: false; reason: string } {
-  if (!existsSync(path)) return { ok: false, reason: "transcript not persisted" };
-  try {
-    closeSync(openSync(path, "r"));
-    return { ok: true };
-  } catch (err) {
-    const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : String(err);
-    return { ok: false, reason: `transcript unreadable: ${code}` };
-  }
-}
-
 export function queueDetail(args: SessionArgs) {
   for (const bucket of DETAIL_BUCKETS) {
-    const entry = loadEntry(bucket, args.session_id);
+    const entry = loadEntryStrict(bucket, args.session_id);
     if (!entry) continue;
-    const reflectionIds = listReflections(entry.world)
+    const reflectionIds = listReflectionsStrict(entry.world)
       .filter((r) => r.session_id === entry.session_id)
       .map((r) => r.id);
-    const status = transcriptStatus(entry.transcript_path);
+    // One read supplies both the messages and, when it fails, the reason:
+    // never an empty transcript with no reason.
+    const read = readEvidenceRecordsStrict(entry.transcript_path);
     return {
       bucket,
       entry,
       reflection_ids: reflectionIds,
-      transcript: status.ok ? transcriptMessages(entry.transcript_path, TRANSCRIPT_MESSAGE_LIMIT, TRANSCRIPT_TEXT_MAX_CHARS) : null,
-      transcript_reason: status.ok ? null : status.reason,
+      transcript: read.ok ? transcriptMessages(read.records, TRANSCRIPT_MESSAGE_LIMIT, TRANSCRIPT_TEXT_MAX_CHARS) : null,
+      transcript_reason: read.ok ? null : read.reason,
     };
   }
   throw new ValidationError(`unknown session: ${JSON.stringify(args.session_id)}`);

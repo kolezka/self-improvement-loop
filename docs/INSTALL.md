@@ -41,6 +41,63 @@ run moves to the newest release commit. Only those commits carry the prebuilt
 zip attached to the release with an `archive` source; the release notes carry the
 URL and its `sha256`. See `docs/RELEASE.md`.
 
+## Standalone install from a checkout
+
+To use the loop without installing a Claude Code plugin:
+
+```sh
+bun install
+make install-local
+# Equivalent: bun run install:local
+```
+
+Both commands build the checkout, then install symlinks into
+`$CLAUDE_CONFIG_DIR`. If that variable is unset or empty, they use `~/.claude`.
+A nonempty variable always selects that directory, creating it if needed:
+
+```sh
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" make install-local
+```
+
+The installer creates:
+
+- `self-improvement-loop` pointing to this checkout.
+- `commands/*.md` pointing to this repo's slash commands.
+- `skills/self-improvement-loop` pointing to the shared skill directory.
+- Command hook entries in `settings.json`, merged with existing settings and hooks.
+
+It does not register a plugin or modify `CLAUDE.md`, model settings, or the
+loop's own config. Running it again keeps the same links and hook entries.
+Conflicting files or links are refused before installation; move them aside
+and rerun. A malformed or symlinked `settings.json` is also refused rather than
+overwritten. Do not run standalone and plugin hooks together. If this config
+has the plugin enabled, disable it with `/plugin` before installing; also check
+project settings and do not start Claude with `--plugin-dir` for this repo.
+
+Restart Claude Code. On a fresh setup, run `scripts/sil init` from the checkout;
+this also installs the normal `~/.local/bin/sil` shim. If already initialized,
+use status instead. The CLI is available directly even before the shim exists:
+
+```sh
+"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop/scripts/sil" status
+```
+
+Slash commands are installed without a plugin namespace. If another command or
+a built-in skill owns a name such as `/loop`, use the CLI instead.
+
+Keep the checkout in place. After pulling updates, rerun `make install-local`
+to rebuild and pick up new commands. Use the same `CLAUDE_CONFIG_DIR` in the
+terminal or service that runs `sil`; an explicit `SIL_PLUGIN_ROOT` still wins.
+To move the checkout, remove only this install's symlinks, then reinstall from
+the new location. To uninstall, remove those symlinks and the hook entries whose
+commands point to `self-improvement-loop` from `settings.json`; keep unrelated
+hooks and settings. Links for commands removed from the repo are not pruned
+automatically; remove those dangling links manually.
+
+Standalone mode uses the command hooks, not the function hooks module. The
+native `/sil` console requires the plugin; `/loop`, the CLI and `sil web` work
+without it.
+
 ## Local dev install
 
 From a checkout of this repo:
@@ -144,6 +201,111 @@ for those four events. The command hooks for those four are guarded by
 sets with the hook shell's parent pid, so a nested `claude` run from a Bash tool
 call keeps its own command hooks instead of silently losing them. Stop,
 SubagentStop and SessionEnd are unaffected either way.
+
+## Native console (`/sil`)
+
+`/sil` opens a console pane beside the chat: overview, staged proposals with
+their full diff, artifacts, activity and settings, per world. It
+lives in the hooks module, so it needs what the module needs: a built `dist/`
+and function hooks enabled as above. Without the module there is no `/sil`, and
+nothing pretends otherwise. The CLI and the web UI cover the same reads, plus
+the proposal and settings writes the pane does not have yet (accept, reject,
+revise, worlds, models, schedule): `sil status`, `sil review list`,
+`sil review show <pattern>`, `sil web`. See `docs/OPERATIONS.md`.
+
+The pane talks to the loop two ways. Reads and curated-lesson edits (Capture
+and Save, Important, acknowledging a changed source, Purge) go through
+`sil ops`, the plugin's own `scripts/sil` with the plugin root pinned, one
+bounded request each. The Actions card (`/learn`, `/toolify`, `/reflect`,
+`/curriculum`, `/loop run`, `/loop web`) and the good and bad votes on
+artifacts (`/feedback`) queue the plugin's own slash commands instead, pressed
+by the person and shown in the chat. Each is queued and runs once Claude is
+idle, exactly as if typed, so `/learn`, `/toolify` and `/curriculum` run a
+model turn in the session. Votes and `/curriculum` act on the session's own
+world, so the pane draws them only while it shows that world. Proposal accept,
+reject and revise and settings writes are not in the pane. Nothing else in the
+pane starts the worker or calls a model.
+
+What has been checked, and how:
+
+- Measured by tests: the bridge against a real staged proposal (all diff and
+  body pages at one digest, a refused stale digest, no write to loop state, no
+  provider call), in `tests/native-console.test.ts` over the built `dist/`.
+- Measured by `bun run scripts/test-native.ts`: `claude plugin validate` and the
+  module's engine tests, on a mounted tree, against the installed `claude`.
+- Not verified yet: the pane in an attended terminal (typing `/sil`, resizing,
+  keyboard focus, close and reopen), reload across instances, and which Claude
+  Code builds load the module without `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.
+  Treat the flag as required until that is measured.
+
+### An isolated fixture for trying the console
+
+`scripts/native-console-fixture.ts` seeds synthetic loop state for trying `/sil`
+away from a real install and loop state. Run it with an isolated HOME, Bun cache,
+`TMPDIR` and XDG dirs of its own, since a plain `bun run` writes Bun's
+transpiler cache under your real HOME:
+
+```sh
+checkout=/path/to/self-improvement-loop
+scratch="$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/sil-setup.XXXXXX")")"
+root="$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/sil-native.XXXXXX")")"
+mkdir -p "$scratch/home" "$scratch/tmp"
+env -i HOME="$scratch/home" TMPDIR="$scratch/tmp" \
+  XDG_CONFIG_HOME="$scratch/home/.config" XDG_CACHE_HOME="$scratch/home/.cache" \
+  XDG_DATA_HOME="$scratch/home/.local/share" XDG_STATE_HOME="$scratch/home/.local/state" \
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 \
+  PATH="$(dirname "$(command -v bun)"):/usr/bin:/bin" \
+  bun run "$checkout/scripts/native-console-fixture.ts" "$root"
+```
+
+`$scratch` is the setup run's own home; `$root` is the fixture and stays
+empty until the script fills it. `tests/native-console.test.ts` runs this exact
+block with a stand-in HOME and checks nothing lands there.
+
+The root must exist, be empty and be given by its canonical path: on macOS
+`/var` and `/tmp` are symlinks, so pass the `realpath` of the dir. The script
+refuses anything else and leaves it untouched. It prints one JSON line,
+`{ root, pluginRoot, configDir }`: `pluginRoot` is this checkout and
+`configDir` is the `SIL_CONFIG_DIR`. The rest of the layout is fixed under
+root:
+
+| Path under root | What it is |
+| --- | --- |
+| `config`, `state`, `data` | `SIL_CONFIG_DIR`, `SIL_STATE_DIR`, `SIL_DATA_DIR` |
+| `home`, `claude`, `gitconfig`, `tmp` | `HOME`, `CLAUDE_CONFIG_DIR`, git global config, `TMPDIR` |
+| `bin/claude` | a stand-in `claude` that only records calls in `claude-calls.log` |
+| `workspace`, `workspace-two` | the dirs worlds `fixture` and `fixture-two` own |
+| `target`, `target-two` | each world's git target, one staged proposal each |
+
+The script also writes the hook snapshot (`state/hook-config.json`) through
+`scripts/sil hook-snapshot`, so the session's hooks and the console pick the
+same world.
+
+`worker.auto_kick` is off and the only configured endpoint is the stand-in
+`claude`, so the loop's own worker has no real model to call through this
+config. The Claude Code session you open is still a normal session: what you
+type to it goes to a model. A session started in `workspace` resolves to world
+`fixture`. To open it, run the real `claude` by its absolute path with only the
+fixture's environment, the same paths the fixture's own processes use:
+
+```sh
+real_claude="$(command -v claude)"
+cd "$root/workspace"
+env -i TERM="$TERM" HOME="$root/home" TMPDIR="$root/tmp" \
+  PATH="$root/bin:$(dirname "$(command -v bun)"):/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$root/home/.config" XDG_STATE_HOME="$root/home/.local/state" \
+  XDG_DATA_HOME="$root/home/.local/share" XDG_CACHE_HOME="$root/home/.cache" \
+  SIL_CONFIG_DIR="$root/config" SIL_STATE_DIR="$root/state" SIL_DATA_DIR="$root/data" \
+  CLAUDE_CONFIG_DIR="$root/claude" GIT_CONFIG_GLOBAL="$root/gitconfig" \
+  GIT_CONFIG_SYSTEM="$root/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+  SIL_FIXTURE_CLAUDE_MARKER="$root/claude-calls.log" \
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 \
+  "$real_claude" --plugin-dir "$checkout"
+```
+
+The empty `CLAUDE_CONFIG_DIR` has no login, so the session asks for one. The
+test checks that this block names the same paths as the fixture; the launch
+itself has not been run attended yet. Remove `$root` and `$scratch` when done.
 
 ## Reaching the UI from another machine
 

@@ -49,11 +49,13 @@ export function checkForbiddenModuleImports(code: string, label: string): void {
   if (NODE_POLYFILL_HEADER_RE.test(code)) throw new Error(`${label} contains a node: builtin polyfill`);
 }
 
-// dist/hook-module.js was 49KB with no node: builtins pulled in. A node:
-// polyfill adds tens to hundreds of KB (node:crypto alone bundles to ~900KB
-// on its own), so a jump past this is a proxy for one having snuck in past
-// checkForbiddenModuleImports, or for the entrypoint's own code bloating.
-export const MAX_HOOK_MODULE_BYTES = 200 * 1024;
+// Our own bundle-growth budget for dist/hook-module.js, not a measured engine
+// limit. It was 49KB at first; with the native Lessons view and the shared
+// lesson editor it measured 257881 bytes (2026-10-24, unminified). A jump past
+// this budget means something grew a lot (a stray node: polyfill, or the
+// entrypoint's own code) and wants a look; checkForbiddenModuleImports and the
+// source import-closure test are the actual guards against node: code.
+export const MAX_HOOK_MODULE_BYTES = 320 * 1024;
 
 /** Throws when `bytes` exceeds `MAX_HOOK_MODULE_BYTES`. */
 export function checkBundleSize(bytes: number, label: string): void {
@@ -62,9 +64,11 @@ export function checkBundleSize(bytes: number, label: string): void {
   }
 }
 
-/** Every source file that feeds dist/, in a stable order. */
-export function sourceFiles(): string[] {
-  const roots = ["packages", "apps", "scripts/build.ts", "package.json", "bun.lock"];
+/** Every source file that feeds dist/, in a stable order, relative to `root`.
+ * types/index.d.ts (the state contract the hooks module is built against) and
+ * the manifest that loads it count too. `root` exists for tests on a copy. */
+export function sourceFiles(root: string = ROOT): string[] {
+  const roots = ["packages", "apps", "scripts/build.ts", "package.json", "bun.lock", "types", ".claude-plugin/plugin.json"];
   const out: string[] = [];
   const walk = (p: string) => {
     if (!existsSync(p)) return;
@@ -73,20 +77,21 @@ export function sourceFiles(): string[] {
       const name = p.split("/").pop()!;
       if (name === "node_modules" || name === "test" || name === "dist" || name === ".svelte-kit") return;
       for (const child of readdirSync(p).sort()) walk(join(p, child));
-    } else if (/\.(ts|js|svelte|json|css|html|lock)$/.test(p) && !p.endsWith(".test.ts")) {
-      out.push(relative(ROOT, p));
+    } else if (/\.(ts|tsx|js|svelte|json|css|html|lock)$/.test(p) && !p.endsWith(".test.ts") && !p.endsWith(".native.tsx")) {
+      // .tsx: the hooks module's views. *.native.tsx are engine tests, no bundle input.
+      out.push(relative(root, p));
     }
   };
-  for (const r of roots) walk(join(ROOT, r));
+  for (const r of roots) walk(join(root, r));
   return out;
 }
 
-export function sourceHash(): string {
+export function sourceHash(root: string = ROOT): string {
   const h = createHash("sha256");
-  for (const f of sourceFiles()) {
+  for (const f of sourceFiles(root)) {
     h.update(f);
     h.update("\0");
-    h.update(readFileSync(join(ROOT, f)));
+    h.update(readFileSync(join(root, f)));
     h.update("\0");
   }
   return h.digest("hex");

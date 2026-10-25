@@ -70,6 +70,8 @@ export const RouteAnswer = z.object({
   // unattended operator could not tell a dead provider from a working one with
   // nothing to say.
   parse_error: z.string().default(""),
+  // Requested routing keys the reply left out, set by parseDraft only.
+  missing_keys: z.array(z.string()).default([]),
 });
 export type RouteAnswer = z.infer<typeof RouteAnswer>;
 

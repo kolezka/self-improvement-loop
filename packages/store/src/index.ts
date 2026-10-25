@@ -6,3 +6,4 @@ export * from "./inbox.ts";
 export * from "./queue.ts";
 export * from "./queue-cleared.ts";
 export * from "./proposal-events.ts";
+export * from "./curation/index.ts";

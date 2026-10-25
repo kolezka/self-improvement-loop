@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "@sil/core";
 import {
+  HOOK_BINS,
   install,
   LAUNCHD_WORKER_PLIST,
   launchdDir,
@@ -179,6 +180,80 @@ describe("renderLaunchd", () => {
       expect(path).not.toBeNull();
       expect(resolveBinDir("claude", path!)).toBe(dir);
     }
+  });
+
+  // The plist on disk is not always the one we rendered: plutil, Xcode or a
+  // hand edit put key and value on separate lines. launchd still reads it.
+  test("reads the PATH back from any layout launchd accepts, not only the rendered one", () => {
+    const dir = makeFakeBin("claude");
+    const rendered = renderLaunchd(60, false, `${dir}:/usr/bin`)[LAUNCHD_WORKER_PLIST]!;
+    const expected = unitPath("launchd", rendered);
+    expect(expected).toStartWith(`${dir}:`);
+
+    const reflowed = rendered.replace(/<key>PATH<\/key><string>/, "<key>PATH</key>\n\t\t<string>");
+    expect(reflowed).not.toBe(rendered);
+    expect(unitPath("launchd", reflowed)).toBe(expected);
+
+    if (existsSync("/usr/bin/plutil")) {
+      const p = join(tmp, "apple.plist");
+      writeFileSync(p, rendered, "utf8");
+      expect(Bun.spawnSync(["/usr/bin/plutil", "-convert", "xml1", p]).exitCode).toBe(0);
+      expect(unitPath("launchd", readFileSync(p, "utf8"))).toBe(expected);
+    }
+  });
+
+  test("a PATH in a comment or outside EnvironmentVariables is never read as the live one", () => {
+    const dir = makeFakeBin("claude");
+    const rendered = renderLaunchd(60, false, `${dir}:/usr/bin`)[LAUNCHD_WORKER_PLIST]!;
+    const expected = unitPath("launchd", rendered);
+    const decoy = "<!--\n<key>PATH</key>\n<string>/decoy/commented</string>\n-->\n";
+    const withComment = rendered.replace("<dict>", `<dict>\n${decoy}`);
+    expect(withComment).toContain("/decoy/commented");
+    expect(unitPath("launchd", withComment)).toBe(expected);
+
+    const outside = rendered.replace("<dict>", "<dict>\n<key>PATH</key><string>/decoy/outside</string>");
+    expect(outside).toContain("/decoy/outside");
+    expect(unitPath("launchd", outside)).toBe(expected);
+
+    const cdata =
+      "<key>Comment</key><string><![CDATA[<key>EnvironmentVariables</key><dict><key>PATH</key>" +
+      "<string>/decoy/cdata</string></dict>]]></string>";
+    const withCdata = rendered.replace("<dict>", `<dict>\n${cdata}`);
+    expect(unitPath("launchd", withCdata)).toBe(expected);
+
+    const nested = rendered.replace(
+      "<key>EnvironmentVariables</key><dict>",
+      "<key>EnvironmentVariables</key><dict><key>Extra</key><dict><key>A</key><string>b</string></dict>",
+    );
+    expect(nested).not.toBe(rendered);
+    expect(unitPath("launchd", nested)).toBe(expected);
+  });
+
+  test("decodes numeric references and rejects what plutil would not read", () => {
+    const rendered = renderLaunchd(60, false, "/usr/bin")[LAUNCHD_WORKER_PLIST]!;
+    const live = unitPath("launchd", rendered)!;
+    const encoded = rendered.replace(`<string>${live}</string>`, `<string>${live.replace(/:/g, "&#58;")}</string>`);
+    expect(encoded).toContain("&#58;");
+    expect(unitPath("launchd", encoded)).toBe(live);
+    const padded = rendered.replace(`<string>${live}</string>`, `<string>${live.replace(/:/g, "&#00000058;")}</string>`);
+    expect(unitPath("launchd", padded)).toBe(live);
+
+    const fragment = rendered.slice(rendered.indexOf("<dict>"), rendered.lastIndexOf("</plist>"));
+    expect(unitPath("launchd", fragment)).toBeNull();
+    expect(unitPath("launchd", `${rendered}<plist><dict/></plist>`)).toBeNull();
+    expect(() => unitPath("launchd", `<plist>${"<array>".repeat(50_000)}`)).not.toThrow();
+    expect(unitPath("launchd", `<plist>${"<array>".repeat(50_000)}`)).toBeNull();
+  });
+
+  test("stays linear on hostile input", () => {
+    const rendered = renderLaunchd(60, false, "/usr/bin")[LAUNCHD_WORKER_PLIST]!;
+    const hostile = rendered.replace(
+      "<dict>",
+      `<dict>\n<key>Junk</key><string><![CDATA[${"<!--".repeat(200_000)}]]></string>`,
+    );
+    const started = performance.now();
+    expect(unitPath("launchd", hostile)).toBe(unitPath("launchd", rendered));
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   // Falls back to a bare-& scan when plutil is unavailable (non-macOS); an
@@ -365,5 +440,45 @@ describe("install", () => {
     }
     expect(warnings.some((w) => w.includes("bun") && w.includes("not found on PATH"))).toBe(true);
     expect(warnings.some((w) => w.includes("claude"))).toBe(false);
+  });
+
+  // Regression: the worker's claude runs the user's hooks, and a node hook
+  // failed with exit 127 in every reflection because node was not on the job PATH.
+  for (const kind of ["systemd", "launchd"] as const) {
+    test(`${kind} install lets the user's hooks resolve every HOOK_BINS interpreter the installer has`, () => {
+      const workerDir = makeFakeBinIn("workerbin", "claude");
+      writeFileSync(join(workerDir, "bun"), "#!/bin/sh\n", "utf8");
+      chmodSync(join(workerDir, "bun"), 0o755);
+      const hookDirs = HOOK_BINS.map((bin) => makeFakeBinIn(`hookbin-${bin}`, bin));
+      const installerPath = [workerDir, ...hookDirs, "/usr/bin", "/bin"].join(":");
+
+      const { written } = install(kind, 60, false, () => {}, installerPath);
+      const content = readFileSync(written.find((p) => p.includes("worker"))!, "utf8");
+      const jobPath = unitPath(kind, content) ?? OS_MINIMAL_PATH;
+      for (const bin of HOOK_BINS) expect(resolveBinDir(bin, jobPath)).not.toBeNull();
+    });
+  }
+
+  // A hook interpreter's dir often holds other tools too; it must not change
+  // which system binary the worker runs.
+  test("a HOOK_BINS dir never shadows a MINIMAL_PATH binary", () => {
+    const workerDir = makeFakeBinIn("workerbin", "claude");
+    writeFileSync(join(workerDir, "bun"), "#!/bin/sh\n", "utf8");
+    chmodSync(join(workerDir, "bun"), 0o755);
+    const nodeDir = makeFakeBinIn("nodebin", "node");
+    writeFileSync(join(nodeDir, "sh"), "#!/bin/sh\n", "utf8");
+    chmodSync(join(nodeDir, "sh"), 0o755);
+    const jobPath = workerPath([workerDir, nodeDir, "/usr/bin", "/bin"].join(":"));
+    expect(resolveBinDir("node", jobPath)).toBe(nodeDir);
+    expect(resolveBinDir("sh", jobPath)).not.toBe(nodeDir);
+  });
+
+  test("a missing HOOK_BINS interpreter is left out without a warning", () => {
+    const dir = makeFakeBin("claude");
+    writeFileSync(join(dir, "bun"), "#!/bin/sh\n", "utf8");
+    chmodSync(join(dir, "bun"), 0o755);
+    expect(workerPath(`${dir}:/usr/bin`)).toBe(`${dir}:/usr/bin:/bin:/usr/sbin:/sbin`);
+    const { resolvedBins } = install("systemd", 60, false, () => {}, `${dir}:/usr/bin`);
+    for (const bin of HOOK_BINS) expect(bin in resolvedBins).toBe(false);
   });
 });

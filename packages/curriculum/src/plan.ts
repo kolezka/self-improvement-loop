@@ -30,7 +30,7 @@ import {
   type World,
 } from "@sil/core";
 import * as feedback from "@sil/feedback";
-import { listReflections, loadAliases, loadLedger as loadLedgerFile, parseLedger } from "@sil/store";
+import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger as loadLedgerFile, parseLedger } from "@sil/store";
 import * as artifacts from "./artifacts.ts";
 import * as git from "./git.ts";
 
@@ -60,6 +60,17 @@ export interface Cluster {
  *
  * World filtering happened in the store; alias resolution happens here, because
  * the alias map is a property of the world's own knowledge and one hop only. */
+/** As reflections(), for a value shown as complete (review sources, artifact
+ * counts): an unreadable reflection or aliases file raises StateReadError.
+ * The world filter runs before the alias map, as in reflections(). */
+export function reflectionsStrict(world: World, extraDirs: string[] = []): Reflection[] {
+  const aliases = loadAliasesStrict(world.name);
+  return listReflectionsStrict(world.name, extraDirs).map((r) => {
+    const canonical = Object.hasOwn(aliases, r.pattern) ? aliases[r.pattern]! : r.pattern;
+    return canonical === r.pattern ? r : { ...r, pattern: canonical };
+  });
+}
+
 export function reflections(world: World, extraDirs: string[] = []): Reflection[] {
   const aliases = loadAliases(world.name);
   return listReflections(world.name, extraDirs).map((r) => {
@@ -111,11 +122,14 @@ export function lessonTexts(items: Reflection[]): string[] {
   return items.map((r) => (r.lesson || r.body || "").trim());
 }
 
-// Sections the drafter does not read. "What worked" is narration the artifact
-// does not need. "Not verified" lists the claims the critic refused to stand
-// behind, and nothing in it may buy a skill or an agent.
-const DRAFTING_SKIPPED = ["## What worked", "## Not verified"] as const;
+// Sections the drafter does not read. "Not verified" lists the claims the
+// critic refused to stand behind, and nothing in it may buy a skill or an agent.
+// "What worked" stays in: the router accepts a quote from it, and it is where a
+// reflection names the commands of a procedure, so a drafter that cannot see it
+// cannot quote the evidence a skill needs.
+const DRAFTING_SKIPPED = ["## Not verified"] as const;
 const EVIDENCE_SKIPPED = ["## Not verified"] as const;
+const WORKED_HEADING = "## What worked";
 
 /** `body` with the named sections cut out, heading to next heading. */
 export function withoutSections(body: string, headings: readonly string[]): string {
@@ -129,8 +143,9 @@ export function withoutSections(body: string, headings: readonly string[]): stri
   return out.trim();
 }
 
-/** What the drafter reads for each reflection: what failed, the lesson and
- * how it was verified.
+/** What the drafter reads for each reflection: what worked, what failed, the
+ * lesson and how it was verified. Everything the router may accept a quote
+ * from, so a drafter is never asked for evidence it was not shown.
  *
  * Not the lesson line alone. The critic writes `lesson` as one imperative
  * under 300 characters, which fits one rule bullet at the default cap; handed only that,
@@ -139,6 +154,21 @@ export function withoutSections(body: string, headings: readonly string[]): stri
  * the body took a 56-reflection pattern to a skill the router accepted. */
 export function draftingTexts(items: Reflection[]): string[] {
   return items.map((r) => (r.body ? withoutSections(r.body, DRAFTING_SKIPPED) : r.lesson || "").trim());
+}
+
+/** The "What worked" section of each reflection, heading cut off, "" when it
+ * has none. Same order as `draftingTexts`, so the prompt can pick the ones it
+ * does not quote in full. */
+export function workedSections(items: Reflection[]): string[] {
+  return items.map((r) => {
+    const body = r.body || "";
+    const head = body.startsWith(WORKED_HEADING) ? 0 : body.indexOf(`\n${WORKED_HEADING}`);
+    if (head === -1) return "";
+    const start = body.indexOf("\n", head + 1);
+    if (start === -1) return "";
+    const next = body.indexOf("\n## ", start);
+    return (next === -1 ? body.slice(start) : body.slice(start, next)).trim();
+  });
 }
 
 /** Every source reflection, for the grounding lint and the router's quote

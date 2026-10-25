@@ -1,10 +1,13 @@
 {
   "name": "@sil/ops",
-  "version": "1.2.4",
+  "version": "1.2.11",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./control": "./src/control.ts",
+    "./mutation": "./src/mutation.ts",
+    "./effects": "./src/effects.ts"
   },
   "dependencies": {
     "@sil/core": "workspace:*",

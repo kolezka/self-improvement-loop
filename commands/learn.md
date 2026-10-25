@@ -6,7 +6,8 @@ argument-hint: "[what went wrong, optional]"
 Read the procedure and follow it step by step:
 
 ```sh
-cat "${CLAUDE_PLUGIN_ROOT}/skills/self-improvement-loop/learn.md"
+sil_root="${CLAUDE_PLUGIN_ROOT}"
+cat "${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/skills/self-improvement-loop/learn.md"
 ```
 
 The operator's note, if any: $ARGUMENTS

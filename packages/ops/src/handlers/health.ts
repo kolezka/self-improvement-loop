@@ -1,10 +1,10 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig, paths } from "@sil/core";
+import { fsx, loadConfig, paths, StateReadError } from "@sil/core";
 import type { NoArgs } from "../args.ts";
 import { deps } from "../deps.ts";
 
-const SIL_VERSION = "1.2.4";
+const SIL_VERSION = "1.2.11";
 
 /** Which build is on disk now, and whether the running server predates it.
  *
@@ -24,9 +24,12 @@ export function buildInfo(_args: NoArgs): Record<string, unknown> {
   try {
     build = readFileSync(path, "utf8").trim() || null;
     builtAt = statSync(path).mtime.toISOString();
-  } catch {
-    // No dist/: a dev run straight from source. null is what stops the UI
-    // announcing an update it cannot see.
+  } catch (err) {
+    // No dist/ (ENOENT): a dev run straight from source. null is what stops
+    // the UI announcing an update it cannot see. Anything else is an error.
+    if (fsx.errnoCode(err) !== "ENOENT") throw new StateReadError(`dist/.srchash cannot be read (${fsx.errnoCode(err)})`);
+    build = null;
+    builtAt = null;
   }
   const startedMs = Date.now() - process.uptime() * 1000;
   return {

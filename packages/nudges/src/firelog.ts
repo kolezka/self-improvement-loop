@@ -35,10 +35,9 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Whether an existing lock dir can be taken from its holder. The pid file
- * decides when it is readable: a dead or unparsable pid means the holder is
- * gone and the lock is reclaimed at once. With no pid file (a holder that
- * has not written one yet, or could not) fall back to the age of the dir.
+/** Whether an existing lock dir can be taken from its holder. A nonempty
+ * pid file decides: a dead or unparsable pid is reclaimed at once. A missing
+ * or empty file may still be initializing, so fall back to the dir's age.
  *
  * A lock dir that cannot be stat'ed at all, such as a dangling symlink
  * sitting on the path, is never reclaimable: withDirLock times out rather
@@ -50,7 +49,8 @@ function reclaimable(lockDir: string, staleMs: number): boolean {
   } catch {
     raw = null;
   }
-  if (raw !== null) {
+  // writeFileSync creates the file before filling it; empty is not a dead pid.
+  if (raw !== null && raw.trim() !== "") {
     const pid = Number.parseInt(raw.trim(), 10);
     if (!Number.isInteger(pid) || pid <= 0) return true;
     return !pidAlive(pid);

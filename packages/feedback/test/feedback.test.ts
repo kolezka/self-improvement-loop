@@ -638,3 +638,37 @@ describe("recordHuman", () => {
     expect(lines[0]!.vote).toBe("bad");
   });
 });
+
+// A pattern named like an Object.prototype member is an ordinary pattern. The
+// alias map is looked up by own key only, in the tolerant rebuild and in the
+// consoles' strict scorecards alike.
+describe("alias lookup is by own key", () => {
+  function seedTwo(): { w: World; c: Config } {
+    const w = world();
+    const c = cfg(w);
+    const row = (pattern: string) => ({ pattern, promoted_at_count: 0, rejected_at_count: 0, status: "promoted" as const, artifact_type: "skill" as const, served_by: null, last_updated: iso(daysAgo(10)), promoted_at: iso(daysAgo(10)), revised_at: null, revisions: 0, commit: null, feedback: null });
+    saveLedger(ledgerPath(w), { version: 1, entries: { ordinary: row("ordinary"), constructor: row("constructor") } });
+    for (const pattern of ["ordinary", "constructor"]) {
+      writeReflection(w.name, { created: iso(daysAgo(1)).slice(0, 10), session_id: `s-${pattern}` }, `Pattern: ${pattern}\n\nx\n`);
+    }
+    return { w, c };
+  }
+  const card = (cards: { name: string; recurrence_30d: number }[], name: string) => cards.find((x) => x.name === name)?.recurrence_30d;
+
+  for (const strict of [false, true]) {
+    test(`no aliases file: constructor counts like ordinary (strict ${strict})`, () => {
+      const { w, c } = seedTwo();
+      const cards = scorecards(w, c, { now: NOW, strict }) as unknown as { name: string; recurrence_30d: number }[];
+      expect(card(cards, "ordinary")).toBe(1);
+      expect(card(cards, "constructor")).toBe(1);
+    });
+
+    test(`an own alias on constructor still applies (strict ${strict})`, () => {
+      const { w, c } = seedTwo();
+      saveAliases(w.name, { constructor: "ordinary" });
+      const cards = scorecards(w, c, { now: NOW, strict }) as unknown as { name: string; recurrence_30d: number }[];
+      expect(card(cards, "ordinary")).toBe(2);
+      expect(card(cards, "constructor")).toBe(0);
+    });
+  }
+});

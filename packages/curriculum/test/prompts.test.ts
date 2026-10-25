@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { boundedSources, draftMessages, JUDGE_RULES, judgeQuestions, parseDraft, verdictFromNouls } from "../src/prompts.ts";
+import { route } from "../src/router.ts";
 
 const JUDGE_RULE_IDS = JUDGE_RULES.map(([id]) => id);
 
@@ -134,12 +135,42 @@ describe("forced drafting with wantRouteAnswer", () => {
     expect(answer.gate).toEqual({ always: true });
   });
 
-  test("keepRouteAnswer falls back to the empty answer on a reply that fails validation, body still used", () => {
-    const raw = JSON.stringify({ artifact: "- a bullet", gate: "not an object" });
+  test("keepRouteAnswer reports a schema-invalid reply as unreadable, naming the field, body still used", () => {
+    // It used to become the empty answer, which routed to rule with "no
+    // workable gate ..." and read exactly like a drafter that considered the
+    // evidence and said no.
+    const raw = JSON.stringify({ artifact: "- a bullet", needs_own_context: "true", capability_evidence: null });
     const [body, answer] = parseDraft(raw, { forcedType: "rule", keepRouteAnswer: true });
     expect(body).toBe("- a bullet");
-    expect(answer.trigger_event).toBe("none");
-    expect(answer.gate).toBeNull();
+    expect(answer.parse_error).toStartWith("routing fields failed validation: needs_own_context: ");
+    expect(answer.parse_error).toContain("boolean");
+    const routed = route(answer, "", []);
+    expect(routed.artifact_type).toBe("none");
+    expect(routed.reason).toStartWith("unreadable drafter reply: routing fields failed validation: needs_own_context");
+  });
+
+  test("keepRouteAnswer reports missing routing keys as unreadable, naming them", () => {
+    const [body, answer] = parseDraft(JSON.stringify({ artifact: "- a bullet" }), { forcedType: "rule", keepRouteAnswer: true });
+    expect(body).toBe("- a bullet");
+    expect(answer.parse_error).toBe(
+      "routing keys missing from reply: trigger_event, gate, needs_own_context, context_evidence, capability_evidence, no_artifact",
+    );
+    expect(route(answer, "", []).artifact_type).toBe("none");
+  });
+
+  test("the fresh path routes on defaults for missing keys but records them, and the reply cannot set them", () => {
+    const [, answer] = parseDraft(JSON.stringify({ artifact: "- a bullet", gate: null, missing_keys: ["x"] }));
     expect(answer.parse_error).toBe("");
+    expect(answer.missing_keys).toEqual(["trigger_event", "needs_own_context", "context_evidence", "capability_evidence", "no_artifact"]);
+  });
+
+  test("the fresh path names the failing fields too, within a bounded length", () => {
+    const raw = JSON.stringify({ artifact: "x", gate: "not an object", no_artifact: "no", needs_own_context: "y".repeat(500) });
+    const [body, answer] = parseDraft(raw);
+    expect(body).toBe("");
+    expect(answer.parse_error).toContain("gate: ");
+    expect(answer.parse_error).toContain("no_artifact: ");
+    expect(answer.parse_error).not.toContain("ZodError");
+    expect(answer.parse_error.length).toBeLessThanOrEqual(240);
   });
 });

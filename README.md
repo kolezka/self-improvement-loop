@@ -46,8 +46,9 @@ To run the worker and console as background services on macOS or Linux:
 sil schedule install --web
 ```
 
-Make sure `~/.local/bin` is on your `PATH`. For other model endpoints, standalone
-installs, and troubleshooting, see the [install guide](docs/INSTALL.md).
+Make sure `~/.local/bin` is on your `PATH`. For other model endpoints and
+troubleshooting, see the [install guide](docs/INSTALL.md). To install without a
+plugin, follow [standalone installation](docs/INSTALL.md#standalone-install-from-a-checkout).
 
 ## How it works
 

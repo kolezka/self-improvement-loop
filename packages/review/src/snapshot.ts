@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import type { ArtifactType, PromotionEntry, World } from "@sil/core";
+import { GitError, StateReadError, type ArtifactType, type PromotionEntry, type World } from "@sil/core";
 import { artifacts, branchName, git } from "@sil/curriculum";
 import { parseLedger } from "@sil/store";
 
@@ -63,9 +63,36 @@ export function snapshot(world: World, repo: string, defaultRef: string, pattern
   };
 }
 
-/** This pattern's ledger row as committed at `ref`, or null when unreadable. */
-export function branchEntry(world: World, repo: string, ref: string, pattern: string): PromotionEntry | null {
-  const { found, text } = git.show(repo, ref, ledgerRel(world));
+/** For a strict read: `rel` at commit `sha`, with any git failure raised as
+ * StateReadError naming only `what` and the commit. */
+export function showStrict(repo: string, sha: string, rel: string, what: string): git.ShowResult {
+  try {
+    return git.showAtCommit(repo, sha, rel);
+  } catch (err) {
+    if (err instanceof GitError) throw new StateReadError(`${what} at ${sha.slice(0, 12)} cannot be read: ${err.message}`);
+    throw err;
+  }
+}
+
+/** This pattern's ledger row as committed at `ref`, or null when unreadable.
+ *
+ * Tolerant by default, for accept, reject, remove and the curriculum, which
+ * treat an unknown ledger as "do the work". `strict` is for a review shown as
+ * complete: no ledger at that commit is still null, but a ledger that is there
+ * and cannot be read or parsed raises StateReadError rather than guessing the
+ * artifact type. One parser either way. */
+export function branchEntry(world: World, repo: string, ref: string, pattern: string, opts: { strict?: boolean } = {}): PromotionEntry | null {
+  const rel = ledgerRel(world);
+  if (opts.strict) {
+    const shown = showStrict(repo, ref, rel, `the ledger ${rel}`);
+    if (!shown.found) return null;
+    try {
+      return parseLedger(shown.text, rel).entries[pattern] ?? null;
+    } catch {
+      throw new StateReadError(`the ledger ${rel} at ${ref.slice(0, 12)} is not a valid ledger`);
+    }
+  }
+  const { found, text } = git.show(repo, ref, rel);
   if (!found) return null;
   try {
     return parseLedger(text, ref).entries[pattern] ?? null;
@@ -96,10 +123,13 @@ export function artifactBody(
   ref: string,
   artifactType: ArtifactType,
   pattern: string,
+  opts: { strict?: boolean } = {},
 ): { found: boolean; body: string } {
   const rel = artifacts.artifactRel(world, artifactType, pattern);
   if (!rel) return { found: artifactType === "none", body: "" };
-  const { found, text } = git.show(repo, ref, rel);
+  // Strict (a review shown as complete): a body git cannot read raises, it is
+  // never an empty one. Tolerant for accept, which recomputes and refuses.
+  const { found, text } = opts.strict ? showStrict(repo, ref, rel, `the artifact ${rel}`) : git.show(repo, ref, rel);
   if (artifactType === "rule") {
     return { found, body: text ? artifacts.ruleBulletInText(text, pattern) : "" };
   }

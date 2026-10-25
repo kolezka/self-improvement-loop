@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { call } from "../lib/api.ts";
   import Drawer from "../components/Drawer.svelte";
+  import CuratedLessons from "../components/CuratedLessons.svelte";
   import { canDelete, canRefine, canRetire, LIVE_STATUSES } from "../lib/artifact-actions.ts";
   import { filterLessons, groupByPattern } from "../lib/lessons.ts";
   import { appState, toast } from "../lib/state.svelte.ts";
@@ -428,6 +429,8 @@
     {/if}
   </div>
 </div>
+
+<CuratedLessons />
 
 <Drawer bind:open={allLessonsOpen} title="Lessons waiting for delivery">
   <div class="field lessons-search">

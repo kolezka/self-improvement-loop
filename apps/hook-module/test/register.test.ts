@@ -946,6 +946,24 @@ describe("classic.SessionEnd and session.end", () => {
     cleanup();
   });
 
+  test("a stalled or failing console state store cannot hold up or drop the spool", async () => {
+    for (const mode of ["stalled", "failing"] as const) {
+      const f = fixture(mode === "failing" ? { fail: { state: true } } : {});
+      await f.engine.answer("command.run", { command: "sil", args: "" });
+      await new Promise((r) => setTimeout(r, 0));
+      await f.engine.fire("classic.PostToolUse", postToolUse(f, "Skill", { skill: "outline" }), {});
+      let release: () => void = () => undefined;
+      if (mode === "stalled") f.engine.stateGate = new Promise<void>((r) => (release = r));
+      const ended = f.engine.fire("session.end", { reason: "clear", sessionId: SESSION }, { sessionId: SESSION });
+      const outcome = await Promise.race([ended.then(() => "ended"), new Promise((r) => setTimeout(() => r("timeout"), 200))]);
+      expect(outcome).toBe("ended");
+      expect(linesFor(readSpool(f)!, "usage-events").length).toBe(1);
+      expect(f.engine.liveTimers()).toEqual([]);
+      release();
+      cleanup();
+    }
+  });
+
   test("session.end drops the session's state, after the buffer went out", async () => {
     const f = fixture();
     await f.engine.fire("classic.PostToolUse", postToolUse(f, "Skill", { skill: "outline" }), {});
@@ -1026,6 +1044,136 @@ describe("layout roots", () => {
     const ok = await configured.fire("classic.SessionStart", sessionStart(f), CORE_CONTEXT);
     expect(contextOf(ok)[1]).toContain("self-improvement-loop is active:");
     expect(existsSync(join(f.state, "sessions", SESSION, "start.json"))).toBe(true);
+    cleanup();
+  });
+});
+
+// The native /sil console rides on the same module. These run it through the
+// fake engine; `bun run scripts/test-native.ts` runs it through the real one.
+describe("native /sil console", () => {
+  const CLASSIC_EVENTS = [
+    "classic.SessionStart",
+    "classic.UserPromptSubmit",
+    "classic.PreToolUse",
+    "classic.PostToolUse",
+    "classic.Stop",
+    "classic.SessionEnd",
+    "session.end",
+  ];
+
+  function findText(node: unknown, pattern: RegExp): string | undefined {
+    if (typeof node === "string") return pattern.test(node) ? node : undefined;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const hit = findText(child, pattern);
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    }
+    if (typeof node === "object" && node !== null) {
+      const props = (node as { props?: { children?: unknown } }).props;
+      return findText(props?.children, pattern);
+    }
+    return undefined;
+  }
+
+  test("adds session.start, the sil command, its pane and its lifecycle hooks after the classic hooks", () => {
+    const f = fixture();
+    const regs = f.engine.registrations;
+    expect(regs.slice(0, CLASSIC_EVENTS.length).map((r) => r.event)).toEqual(CLASSIC_EVENTS);
+    expect(regs.slice(CLASSIC_EVENTS.length)).toEqual([
+      { event: "session.start", matcher: undefined },
+      { event: "command.run", matcher: { command: "sil" } },
+      { event: "ui.close", matcher: { id: "sil-console" } },
+      { event: "ui.render", matcher: { component: "Pane", requestId: "sil-console" } },
+    ]);
+    cleanup();
+  });
+
+  test("session.start registers /sil, opens nothing and reads no loop state", async () => {
+    const f = fixture();
+    const result = await f.engine.fire("session.start", { cwd: f.cwd, surface: "terminal", isInteractive: true }, { cwd: f.cwd });
+    expect(result).toEqual({ cwd: f.cwd });
+    expect(f.engine.calls).toContain("command.register sil");
+    expect(f.engine.calls.filter((c) => c.startsWith("ui.open"))).toEqual([]);
+    expect(f.engine.calls.filter((c) => c.startsWith("ui.log"))).toEqual([]);
+    expect(f.engine.calls.filter((c) => /^(fs|process|env|state|clock)\./.test(c))).toEqual([]);
+    cleanup();
+  });
+
+  test("/sil opens the pane and reads only through the control bridge", async () => {
+    const f = fixture();
+    const result = await f.engine.answer<{ text?: string }>("command.run", { command: "sil", args: "" });
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(f.engine.calls).toContain("ui.open sil-console");
+    expect(result.text).toBe("Opened the self-improvement loop console.");
+    // One launch, the loaded plugin's own bridge; no loop files or env read.
+    expect(f.engine.runCalls.map((c) => c.argv)).toEqual([["/bin/sh", `${f.pluginRoot}/scripts/sil`, "ops"]]);
+    expect(f.engine.calls.filter((c) => /^(fs|env)\./.test(c))).toEqual([]);
+    // No canned bridge here: the failure is shown, not turned into data.
+    const saved = f.engine.state.get("self-improvement-loop/console")?.value as { error: string | null; results: object };
+    expect(saved.error).toContain("exited with 127");
+    expect(saved.results).toEqual({});
+    cleanup();
+  });
+
+  test("a refused registration is logged to the transcript and the session still starts", async () => {
+    const f = fixture({ fail: { commandRegister: true } });
+    const result = await f.engine.fire("session.start", { cwd: f.cwd, surface: "terminal", isInteractive: true }, { cwd: f.cwd });
+    expect(result).toEqual({ cwd: f.cwd });
+    const logs = f.engine.calls.filter((c) => c.startsWith("ui.log "));
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("/sil is unavailable");
+    expect(logs[0]).toContain("fake command.register refusal");
+    cleanup();
+  });
+
+  test("a refused pane open is reported as a failure, never as success", async () => {
+    const f = fixture({ fail: { uiOpen: true } });
+    const result = await f.engine.answer<{ text?: string }>("command.run", { command: "sil", args: "" });
+    expect(result.text).toContain("Could not open the self-improvement loop console");
+    expect(result.text).toContain("fake ui.open refusal");
+    expect(result.text).not.toContain("Opened the");
+    cleanup();
+  });
+
+  test("the one session.end hook also stops the console's timer", async () => {
+    const f = fixture();
+    await f.engine.answer("command.run", { command: "sil", args: "" });
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(f.engine.liveTimers()).toHaveLength(1);
+    expect(f.engine.registrations.filter((r) => r.event === "session.end")).toHaveLength(1);
+    await f.engine.fire("session.end", { reason: "clear", sessionId: SESSION }, { sessionId: SESSION });
+    expect(f.engine.liveTimers()).toEqual([]);
+    cleanup();
+  });
+
+  test("the pane draws the stored state and writes nothing while drawing", async () => {
+    const f = fixture();
+    f.engine.state.set("self-improvement-loop/console", {
+      version: 2,
+      value: {
+        world: "alpha",
+        section: "overview",
+        generation: 3,
+        selectedPattern: null,
+        loading: false,
+        lastSuccessAt: null,
+        results: {},
+        error: "Refresh failed: The control bridge exited with 1.",
+      },
+    });
+    const tree = await f.engine.answer<unknown>("ui.render", {
+      surface: "terminal",
+      component: "Pane",
+      requestId: "sil-console",
+      props: {},
+    });
+    // No world list was read: the header still names the world shown.
+    expect(findText(tree, /^alpha$/)).toBeDefined();
+    expect(findText(tree, /exited with 1/)).toBeDefined();
+    expect(findText(tree, /Sample status/)).toBeUndefined();
+    expect(f.engine.calls.filter((c) => /^(fs|process|env|state\.set)/.test(c))).toEqual([]);
     cleanup();
   });
 });

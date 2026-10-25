@@ -9,6 +9,7 @@
 // existed to keep two sets of callers apart.
 
 import { DEFAULT_MAX_RULE_CHARS, RULE_END, RULE_START, ruleTag, SECTIONS } from "@sil/core";
+import { SECRET_RE } from "@sil/core/sensitive-text";
 import { nudges } from "./deps.ts";
 
 export const MAX_DESCRIPTION = 500;
@@ -21,9 +22,8 @@ export const MIN_SHARED_TERMS = 4;
 const FRONTMATTER = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 const TRIGGER_RE = /(use when|trigger)/i;
 
-// Coarse secret sniff. High-signal tokens only.
-export const SECRET_RE =
-  /(AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(api[_-]?key|secret|token|password)\s*[:=]\s*['"]?[A-Za-z0-9/+_-]{16,})/i;
+// Coarse secret sniff, shared with lesson curation. Re-exported for callers.
+export { SECRET_RE };
 
 // An unreplaced placeholder from the drafting template. A staged skill once
 // shipped `description: Use when <the situation that should trigger this skill>`
@@ -48,6 +48,7 @@ const SCAFFOLD_MARKERS = [
   "write the first one that applies",
   "summary of every lesson recorded for this pattern",
   "artifacts this world already has",
+  "verbatim excerpts from older reflections",
 ] as const;
 
 const SENTENCE_END = /[.!?](?:\s|$)/g;

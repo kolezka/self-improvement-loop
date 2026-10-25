@@ -10,7 +10,8 @@ Arguments: `$1` is optional, one of `web`, `run`, or empty.
 First check whether the loop has ever been set up:
 
 ```sh
-"${CLAUDE_PLUGIN_ROOT}/scripts/sil" status --json
+sil_root="${CLAUDE_PLUGIN_ROOT}"
+"${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" status --json
 ```
 
 If the JSON's top-level `initialized` is `false`, `sil init` has never run (no
@@ -18,7 +19,8 @@ If the JSON's top-level `initialized` is `false`, `sil init` has never run (no
 status:
 
 ```sh
-"${CLAUDE_PLUGIN_ROOT}/scripts/sil" init
+sil_root="${CLAUDE_PLUGIN_ROOT}"
+"${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" init
 ```
 
 Never run init again once `initialized` is `true`, even if a world's
@@ -29,7 +31,8 @@ output verbatim, as a short summary (not the raw JSON), including whatever
 provider or config error it reports:
 
 ```sh
-"${CLAUDE_PLUGIN_ROOT}/scripts/sil" status
+sil_root="${CLAUDE_PLUGIN_ROOT}"
+"${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" status
 ```
 
 ## `$1` is `web`: start the web UI
@@ -38,23 +41,28 @@ Start it detached, do not wait for it to exit:
 
 ```sh
 out="$(mktemp)"
-nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" web > "$out" 2>&1 &
+sil_root="${CLAUDE_PLUGIN_ROOT}"
+nohup "${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" web > "$out" 2>&1 &
 sleep 1
 cat "$out"
 ```
 
 `sil web` prints its URL on stdout, not to the `web` log, so read it from that
 file. Report the URL. On loopback it has no token; a bind off loopback carries
-the token in the fragment. If the file shows the port is taken, the web service
-is probably already running: say so and give `sil schedule show`. Do not open a
-browser yourself.
+the token in the fragment. When the scheduled web job already holds the port,
+`sil web` prints `web UI already running: <url>` plus the running version and
+exits 0: report that URL as the console to use, it serves every world. Only a
+line saying the port is taken by something that is not the SIL web UI is an
+error; then say so and give `sil schedule show`. Do not open a browser
+yourself.
 
 ## `$1` is `run`: trigger a worker pass
 
 Trigger one worker pass detached, do not wait for it:
 
 ```sh
-nohup "${CLAUDE_PLUGIN_ROOT}/scripts/sil" worker --once > /dev/null 2>&1 &
+sil_root="${CLAUDE_PLUGIN_ROOT}"
+nohup "${sil_root:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop}/scripts/sil" worker --once > /dev/null 2>&1 &
 ```
 
 Report that a worker pass was triggered, not that it finished.

@@ -22,6 +22,7 @@ import { cmdInit } from "./commands/init.ts";
 import { cmdLessons } from "./commands/lessons.ts";
 import { cmdLlmList, cmdLlmSetModel, cmdLlmUse } from "./commands/llm.ts";
 import { cmdLogs } from "./commands/logs.ts";
+import { cmdOps } from "./commands/ops.ts";
 import { cmdOpenclawEnqueue, cmdOpenclawInstall, cmdOpenclawScan, cmdOpenclawStatus, cmdOpenclawSync } from "./commands/openclaw.ts";
 import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
@@ -352,6 +353,11 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .action(wire((name: string, opts) => cmdLogs(name, opts)));
 
   program.command("hook-snapshot").action(wire(() => cmdHookSnapshot()));
+
+  program
+    .command("ops")
+    .description("read one bounded control request on stdin, write one response")
+    .action(wire(() => cmdOps()));
 
   return program;
 }

@@ -23,6 +23,17 @@ resolve_root() {
     return 0
   fi
 
+  # A standalone install remains usable by the shim copied by sil init.
+  local_root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/self-improvement-loop"
+  if [ -L "$local_root" ]; then
+    if [ ! -f "$local_root/scripts/sil" ]; then
+      printf 'sil: broken standalone installation at %s; restore the checkout or reinstall.\n' "$local_root" >&2
+      return 1
+    fi
+    printf '%s\n' "$local_root"
+    return 0
+  fi
+
   installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
   if [ -f "$installed" ]; then
     runner=""

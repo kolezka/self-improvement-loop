@@ -574,9 +574,13 @@ async function chatClaudeCli(endpoint: Endpoint, model: string, messages: ChatMe
   if (endpoint.effort) cmd.push("--effort", endpoint.effort);
   if (systemParts.length > 0) cmd.push("--append-system-prompt", systemParts.join("\n\n"));
 
+  // Labels this run in OTel telemetry so a dashboard can say who launched a headless session.
+  const otelAttrs = [process.env["OTEL_RESOURCE_ATTRIBUTES"], "launcher=self-improvement-loop"].filter(Boolean).join(",");
+  const env = { ...process.env, OTEL_RESOURCE_ATTRIBUTES: otelAttrs };
+
   let result: SpawnSyncResult;
   try {
-    result = spawnSyncImpl.run(cmd, { stdin: Buffer.from(userParts.join("\n\n"), "utf8"), timeout: endpoint.timeout_s * 1000 });
+    result = spawnSyncImpl.run(cmd, { stdin: Buffer.from(userParts.join("\n\n"), "utf8"), timeout: endpoint.timeout_s * 1000, env });
   } catch (e) {
     throw new ProviderError(`failed to run claude -p: ${(e as Error).message}`);
   }

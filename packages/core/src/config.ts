@@ -1,10 +1,11 @@
 // Load and save config.yaml and llm.yaml. Resolve worlds and model roles.
 
 import { realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { ROLES, type Role } from "./consts.ts";
 import { ConfigError, LocalityViolation, ModelNotConfigured } from "./errors.ts";
+import * as fsx from "./fsx.ts";
 import { atomicWrite, exists, readText, writeJson } from "./fsx.ts";
 import * as paths from "./paths.ts";
 import { Config, type Endpoint, type HookSnapshot, LlmConfig, type World } from "./schemas.ts";
@@ -21,12 +22,37 @@ function parseYamlFile(path: string): unknown {
   }
 }
 
-export function loadConfig(path: string = paths.configFile()): Config {
-  if (!exists(path)) return Config.parse({});
-  const raw = parseYamlFile(path);
+/** config.yaml read once: `present` false and the defaults when there is no
+ * file (ENOENT). A file that is there but cannot be read, is not YAML, or does
+ * not match the schema raises ConfigError naming only the file, an error code
+ * or a count: never its path or its content, since the consoles show the
+ * message. Callers that need to know whether the loop is set up read
+ * `present` from this same read, never from a separate exists check. */
+export function readConfig(path: string = paths.configFile()): { present: boolean; config: Config } {
+  let text: string | null;
+  try {
+    text = fsx.readTextIfPresent(path);
+  } catch (err) {
+    throw new ConfigError(`${basename(path)} cannot be read (${fsx.errnoCode(err)})`);
+  }
+  if (text === null) return { present: false, config: Config.parse({}) };
+  const name = basename(path);
+  let raw: unknown;
+  try {
+    raw = YAML.parse(text) ?? {};
+  } catch {
+    throw new ConfigError(`${name} is not valid YAML`);
+  }
   const parsed = Config.safeParse(raw);
-  if (!parsed.success) throw new ConfigError(`invalid ${path}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
-  return parsed.data;
+  if (!parsed.success) {
+    const n = parsed.error.issues.length;
+    throw new ConfigError(`${name} does not match the config schema (${n} ${n === 1 ? "problem" : "problems"})`);
+  }
+  return { present: true, config: parsed.data };
+}
+
+export function loadConfig(path: string = paths.configFile()): Config {
+  return readConfig(path).config;
 }
 
 export function saveConfig(cfg: Config, path: string = paths.configFile()): string {

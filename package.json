@@ -1,6 +1,6 @@
 {
   "name": "self-improvement-loop",
-  "version": "1.2.4",
+  "version": "1.2.11",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build": "bun run scripts/build.ts",
+    "install:local": "bun run build && bun run scripts/install-local.ts",
     "bench": "bun run scripts/bench.ts",
     "bench:hooks": "bun run scripts/bench-hooks.ts",
     "eval:alias-semantic": "bun run scripts/eval-alias-semantic.ts",

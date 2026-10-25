@@ -1,8 +1,8 @@
 // Lessons waiting for delivery to a later session.
 
-import { mkdirSync, readdirSync, renameSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { basename, join } from "node:path";
-import { fsx, Lesson, type Lesson as LessonT, paths } from "@sil/core";
+import { fsx, Lesson, paths, StateReadError, type Lesson as LessonT } from "@sil/core";
 
 /** A lesson leaves the inbox after this many deliveries. Mirrors the hook's
  * own copy in apps/hook/src/lessons.ts, which cannot import this package
@@ -15,23 +15,72 @@ export function putLesson(lesson: LessonT): string {
   return p;
 }
 
-export function listLessons(world: string): LessonT[] {
+export interface LessonScan {
+  lessons: LessonT[];
+  /** Lesson files that exist but cannot be read or parsed, by name. */
+  unreadable: string[];
+}
+
+/** One world's inbox, read strictly: no inbox yet is empty; an inbox that
+ * exists but cannot be listed raises StateReadError; a lesson file gone by
+ * the time it is read was delivered or archived meanwhile and is skipped; any
+ * other lesson that cannot be read or parsed is named in `unreadable`. */
+export function scanLessons(world: string): LessonScan {
   const dir = paths.inboxDir(world);
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith(".json")).sort();
-  } catch {
-    return [];
+  } catch (err) {
+    if (fsx.errnoCode(err) === "ENOENT") return { lessons: [], unreadable: [] };
+    throw new StateReadError(`the lessons inbox of world ${JSON.stringify(world)} cannot be listed (${fsx.errnoCode(err)})`);
   }
-  const out: LessonT[] = [];
+  const lessons: LessonT[] = [];
+  const unreadable: string[] = [];
   for (const name of names) {
-    // A malformed lesson is skipped on purpose; a bug elsewhere still throws.
-    const raw = fsx.readJsonOr<unknown>(join(dir, name), null);
+    let text: string;
+    try {
+      text = readFileSync(join(dir, name), "utf8");
+    } catch (err) {
+      if (fsx.errnoCode(err) !== "ENOENT") unreadable.push(name);
+      continue;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      unreadable.push(name);
+      continue;
+    }
     const parsed = Lesson.safeParse(raw);
-    if (parsed.success) out.push(parsed.data);
+    if (parsed.success) lessons.push(parsed.data);
+    else unreadable.push(name);
   }
-  out.sort((a, b) => (a.created < b.created ? 1 : -1));
-  return out;
+  lessons.sort((a, b) => (a.created < b.created ? 1 : -1));
+  return { lessons, unreadable };
+}
+
+/** The inbox for best-effort callers (openclaw's workspace, the CLI list):
+ * an inbox that cannot be listed reads as empty and a malformed lesson is
+ * skipped, on purpose and as before. Never for a list shown as complete:
+ * that is listLessonsStrict. */
+export function listLessons(world: string): LessonT[] {
+  try {
+    return scanLessons(world).lessons;
+  } catch (err) {
+    if (err instanceof StateReadError) return [];
+    throw err;
+  }
+}
+
+/** Every lesson of the world, or StateReadError naming the ones that cannot
+ * be read. For the lessons list the consoles show. */
+export function listLessonsStrict(world: string): LessonT[] {
+  const scan = scanLessons(world);
+  if (scan.unreadable.length > 0) {
+    const n = scan.unreadable.length;
+    throw new StateReadError(`the lessons inbox of world ${JSON.stringify(world)} has ${n} ${n === 1 ? "lesson" : "lessons"} that cannot be read or parsed: ${scan.unreadable.join(", ")}`);
+  }
+  return scan.lessons;
 }
 
 /** Count one delivery of a lesson and archive it once it reaches the limit.

@@ -1,12 +1,15 @@
 {
   "extends": "./tsconfig.base.json",
+  "compilerOptions": { "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment" },
   "include": [
     "packages/*/src/**/*.ts",
     "packages/*/test/**/*.ts",
     "apps/hook/src/**/*.ts",
     "apps/hook/test/**/*.ts",
     "apps/hook-module/types/**/*.d.ts",
+    "types/**/*.d.ts",
     "apps/hook-module/src/**/*.ts",
+    "apps/hook-module/src/**/*.tsx",
     "apps/hook-module/test/**/*.ts",
     "apps/cli/src/**/*.ts",
     "apps/cli/test/**/*.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@sil/core",
-  "version": "1.2.4",
+  "version": "1.2.11",
   "private": true,
   "type": "module",
   "exports": {
@@ -15,7 +15,17 @@
     "./layout": "./src/layout.ts",
     "./lessons": "./src/lessons.ts",
     "./hook-snapshot": "./src/hook-snapshot.ts",
-    "./spool": "./src/spool.ts"
+    "./spool": "./src/spool.ts",
+    "./lesson-curation": "./src/lesson-curation.ts",
+    "./lesson-curation-schema": "./src/lesson-curation-schema.ts",
+    "./lesson-curation-ui": "./src/lesson-curation-ui.ts",
+    "./curation-read": "./src/curation-read.ts",
+    "./curation-client": "./src/curation-client.ts",
+    "./repo-root": "./src/repo-root.ts",
+    "./sensitive-text": "./src/sensitive-text.ts",
+    "./control-protocol": "./src/control-protocol.ts",
+    "./control-mutation": "./src/control-mutation.ts",
+    "./lesson-curation-wire": "./src/lesson-curation-wire.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1",

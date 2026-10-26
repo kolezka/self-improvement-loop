@@ -84,25 +84,44 @@ function flushGroup(
 
 const GROUPED_KINDS = { "usage-events": "usage_events", "hook-runs": "hook_runs", "nudge-fires": "nudge_fires" } as const;
 
+// Fixed order for the drop summary, so the line reads the same for any spool.
+const DROP_ORDER = ["usage-events", "hook-runs", "nudge-fires", "payload-samples", "session-file (unsafe name)"] as const;
+type DropKind = (typeof DROP_ORDER)[number];
+
+/** One hook.log line for every line this ingest dropped, or none. Each
+ * log() takes the hook.log lock while Stop holds the session lock, so a
+ * damaged spool must not cost one per entry. */
+function logDrops(drops: Map<DropKind, number>, sessionId: string): void {
+  const parts = DROP_ORDER.filter((kind) => (drops.get(kind) ?? 0) > 0).map((kind) => `${kind} ${drops.get(kind)}`);
+  if (parts.length === 0) return;
+  const total = [...drops.values()].reduce((sum, n) => sum + n, 0);
+  log(`spool ingest for session ${sessionId} dropped ${total} invalid line(s): ${parts.join(", ")}`);
+}
+
 /** Applies every append. usage-events, hook-runs and nudge-fires each become
  * one group, payload-samples one group per world, so a Stop pays one write
  * per group inside its session lock instead of one per line. session-file
  * writes stay per line: each can name a different file. Never throws: a
- * write that fails is reported once per call and counted skipped. */
+ * write that fails is reported once per call and counted skipped, and
+ * dropped lines (not a JSON object, unsafe file name) get one summary line. */
 function applyAppends(appends: SpoolAppend[], sessionId: string, reportFailure: (detail: string) => void): GroupCounts {
   let applied = 0;
   let skipped = 0;
 
   const groups: Record<keyof typeof GROUPED_KINDS, Record<string, unknown>[]> = { "usage-events": [], "hook-runs": [], "nudge-fires": [] };
   const samplesByWorld = new Map<string, Record<string, unknown>[]>();
+  const drops = new Map<DropKind, number>();
+  const drop = (kind: DropKind): void => {
+    drops.set(kind, (drops.get(kind) ?? 0) + 1);
+    skipped++;
+  };
 
   for (const a of appends) {
     const target = a.target;
     if (target.kind === "session-file") {
       try {
         if (!isSafeSessionFileName(target.name)) {
-          log(`spool append refused, unsafe session file name "${target.name}" (session ${sessionId})`);
-          skipped++;
+          drop("session-file (unsafe name)");
           continue;
         }
         plainAppend(`${paths.sessionDir(sessionId)}/${target.name}`, a.line);
@@ -115,8 +134,7 @@ function applyAppends(appends: SpoolAppend[], sessionId: string, reportFailure: 
     }
     const obj = tryParseLine(a.line);
     if (!obj) {
-      log(`spool append dropped, invalid JSON for ${target.kind} (session ${sessionId})`);
-      skipped++;
+      drop(target.kind);
       continue;
     }
     if (target.kind === "payload-samples") {
@@ -138,6 +156,7 @@ function applyAppends(appends: SpoolAppend[], sessionId: string, reportFailure: 
     applied += counts.applied;
     skipped += counts.skipped;
   }
+  logDrops(drops, sessionId);
 
   return { applied, skipped };
 }

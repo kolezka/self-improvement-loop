@@ -264,6 +264,57 @@ describe("ingestSpool", () => {
   });
 });
 
+describe("ingestSpool diagnostics", () => {
+  // Every hook.log line takes a directory lock while Stop holds the session
+  // lock, so a damaged spool must cost one line per ingest, not one per entry.
+  const hookLogLines = (): string[] => {
+    const file = paths.logFile("hook");
+    return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter((line) => line.length > 0) : [];
+  };
+
+  test("100 invalid lines cost one hook.log line, and the valid lines still land", () => {
+    const sessionId = "sess-damaged";
+    // Loop state ready, so the only hook.log lines are the ingest's own.
+    createLoopState();
+    writeSpool(sessionId, {
+      appends: [
+        ...Array.from({ length: 50 }, (_, i) => ({ target: { kind: "nudge-fires" as const }, line: i % 2 ? "not json" : "[1, 2]" })),
+        ...Array.from({ length: 50 }, (_, i) => ({ target: { kind: "payload-samples" as const, world: "default" }, line: i % 2 ? "{torn" : "42" })),
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:a" }) },
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:b" }) },
+      ],
+    });
+    const before = hookLogLines().length;
+
+    const result = ingestSpool(sessionId);
+
+    const added = hookLogLines().slice(before);
+    expect(added.length).toBe(1);
+    expect(added[0]).toContain(`spool ingest for session ${sessionId} dropped 100 invalid line(s): nudge-fires 50, payload-samples 50`);
+    expect(result).toEqual({ appends: 2, moves: 0, skipped: 100 });
+    expect(readRecords("usage_events", "strict").records.map((e) => e["ref"])).toEqual(["skill:a", "skill:b"]);
+    expect(existsSync(spoolFile(sessionId))).toBe(false);
+  });
+
+  test("unsafe session file names are folded into the same one line", () => {
+    const sessionId = "sess-unsafe-many";
+    writeSpool(sessionId, {
+      appends: [
+        ...Array.from({ length: 3 }, () => ({ target: { kind: "session-file" as const, name: "../escape.json" }, line: "{}" })),
+        { target: { kind: "hook-runs" }, line: "not json" },
+      ],
+    });
+    const before = hookLogLines().length;
+
+    const result = ingestSpool(sessionId);
+
+    const added = hookLogLines().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toContain("dropped 4 invalid line(s): hook-runs 1, session-file (unsafe name) 3");
+    expect(result).toEqual({ appends: 0, moves: 0, skipped: 4 });
+  });
+});
+
 describe("sweepOrphanSpools", () => {
   function backdateSpool(sessionId: string, ageMs: number): void {
     const file = spoolFile(sessionId);

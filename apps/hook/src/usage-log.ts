@@ -1,8 +1,6 @@
-// Usage-event and hook-run writers, shared by handlers.ts and spool-ingest.ts.
-// Split out of handlers.ts so spool-ingest (which handlers.ts calls into from
-// handleStop/handleSessionEnd) does not import handlers.ts back and create a
-// cycle. Both go through hookWrite: loop state when it is ready, else a spill
-// to the old file (design D5).
+// The handlers' one-record writers for usage events and hook runs. Both go
+// through hookWrite: a loop state row when the database is ready, else a
+// spill to the old file (design D5). Spool ingest writes its groups itself.
 
 import { hookWrite } from "@sil/statedb/hook";
 import { log } from "./log.ts";

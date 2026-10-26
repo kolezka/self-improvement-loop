@@ -1,11 +1,11 @@
 // Deterministic near-duplicate pattern slug suggestions. Never writes: a
 // human runs `sil aliases set` to apply one.
 //
-// A separate file from aliases.ts on purpose: patternCounts() (reflections.ts)
-// already resolves aliases, and reflections.ts imports loadAliases from
+// A separate file from aliases.ts on purpose: patternCounts() (reflection-heads.ts)
+// already resolves aliases, and reflection-heads.ts imports loadAliases from
 // aliases.ts, so suggesting from aliases.ts would be a cycle.
 
-import { patternCounts } from "./reflections.ts";
+import { patternCounts } from "./reflection-heads.ts";
 
 export interface AliasSuggestion {
   alias: string;

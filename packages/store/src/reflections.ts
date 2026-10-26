@@ -5,7 +5,6 @@ import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import YAML from "yaml";
 import { fsx, paths, Reflection, StateReadError, type Reflection as ReflectionT } from "@sil/core";
-import { loadAliases } from "./aliases.ts";
 
 export const PATTERN_RE = /^Pattern:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*$/m;
 
@@ -99,7 +98,7 @@ function reflectionFromParts(path: string, world: string, text: string, meta: Re
   return parsed.success ? parsed.data : null;
 }
 
-function reflectionFromText(path: string, world: string, text: string, mtimeMs: () => number): ReflectionT | null {
+export function reflectionFromText(path: string, world: string, text: string, mtimeMs: () => number): ReflectionT | null {
   const [meta, body] = splitFrontMatter(text);
   return reflectionFromParts(path, world, text, meta, body, mtimeMs);
 }
@@ -120,7 +119,7 @@ export function parseReflection(path: string, world: string): ReflectionT | null
  * is not a reflection (no `Pattern:` line). A file that cannot be read, or a
  * reflection that does not make a valid record, raises StateReadError named
  * by `label`. */
-function readReflectionStrict(path: string, world: string, label: string): ReflectionT | null {
+export function readReflectionStrict(path: string, world: string, label: string): ReflectionT | null {
   let text: string | null;
   try {
     text = fsx.readTextIfPresent(path);
@@ -164,7 +163,7 @@ export function parseReflectionStrict(path: string, world: string): ReflectionT 
   return readReflectionStrict(path, world, basename(path));
 }
 
-/** Markdown under `dir`, each real file once, never through a directory symlink.
+/** Markdown under `dir` with its realpath, each real file once, never through a directory symlink.
  *
  * `lstatSync`, so a symlinked directory is not a directory here. Followed, they
  * were both a multiplier and a door: `reflections/sub/loop -> ..` yielded one
@@ -173,7 +172,7 @@ export function parseReflectionStrict(path: string, world: string): ReflectionT 
  *
  * `seen` carries across the whole walk, including the extra dirs, so a file
  * reachable by two paths still counts once. */
-function* walkMarkdown(dir: string, seen: Set<string>, strict?: WalkProblems): Generator<string> {
+export function* walkMarkdown(dir: string, seen: Set<string>, strict?: WalkProblems): Generator<{ path: string; real: string }> {
   let entries: string[];
   try {
     entries = readdirSync(dir).sort();
@@ -183,6 +182,7 @@ function* walkMarkdown(dir: string, seen: Set<string>, strict?: WalkProblems): G
     if (!strict || fsx.errnoCode(err) === "ENOENT") return;
     throw new StateReadError(`${strict.label(dir)} cannot be listed (${fsx.errnoCode(err)})`);
   }
+  let dirReal: string | undefined;
   for (const name of entries) {
     if (name.startsWith(".") || name === "graphify-out" || name === "vec-index") continue;
     const p = join(dir, name);
@@ -201,20 +201,23 @@ function* walkMarkdown(dir: string, seen: Set<string>, strict?: WalkProblems): G
     if (!name.endsWith(".md")) continue;
     let real: string;
     try {
-      real = realpathSync(p);
+      // Bun's realpathSync opens the file and fails with EACCES on a 000 file;
+      // for a non-link, the dir's realpath plus the name is the same path.
+      if (st.isSymbolicLink()) real = realpathSync(p);
+      else real = join((dirReal ??= realpathSync(dir)), name);
     } catch (err) {
       if (strict && fsx.errnoCode(err) !== "ENOENT") strict.unreadable.push(strict.label(p));
       continue;
     }
     if (seen.has(real)) continue;
     seen.add(real);
-    yield p;
+    yield { path: p, real };
   }
 }
 
 /** What a strict walk reports besides the files: entries it could not stat or
  * resolve, and how to name a path without making it absolute. */
-interface WalkProblems {
+export interface WalkProblems {
   unreadable: string[];
   label: (path: string) => string;
 }
@@ -239,7 +242,7 @@ export function scanReflections(world: string, extraDirs: string[] = []): Reflec
       const rel = relative(d, p);
       return rel === "" ? `the reflections dir of world ${JSON.stringify(world)}` : rel;
     };
-    for (const p of walkMarkdown(d, seen, { unreadable, label })) {
+    for (const { path: p } of walkMarkdown(d, seen, { unreadable, label })) {
       if (relative(d, p).startsWith("..")) continue;
       let r: ReflectionT | null;
       try {
@@ -273,7 +276,7 @@ export function listReflections(world: string, extraDirs: string[] = []): Reflec
   const out: ReflectionT[] = [];
   const seen = new Set<string>();
   for (const d of [paths.reflectionsDir(world), ...extraDirs]) {
-    for (const p of walkMarkdown(d, seen)) {
+    for (const { path: p } of walkMarkdown(d, seen)) {
       if (relative(d, p).startsWith("..")) continue;
       const r = parseReflection(p, world);
       if (r && r.world === world) out.push(r);
@@ -286,7 +289,7 @@ export function listReflections(world: string, extraDirs: string[] = []): Reflec
 /** `created` (date-only) stays the primary key so a hand-edited date wins
  * across days. Same-day ties break on `created_at` (write time), newest
  * first; `id` is only the last resort when both are equal. */
-function sortNewestFirst(out: ReflectionT[]): void {
+export function sortNewestFirst<T extends Pick<ReflectionT, "created" | "created_at" | "id">>(out: T[]): void {
   out.sort((a, b) => {
     if (a.created !== b.created) return a.created < b.created ? 1 : -1;
     const aAt = a.created_at;
@@ -347,40 +350,4 @@ export function writeReflection(world: string, meta: Record<string, unknown>, bo
   const front = YAML.stringify(full).trimEnd();
   fsx.atomicWrite(path, `---\n${front}\n---\n${body.trimEnd()}\n`);
   return path;
-}
-
-/** session id -> when this world's newest reflection of it was written, in ms.
- *
- * The queue is the only guard against a second reflection of one session, and a
- * re-queued or replayed entry passes it. The files on disk are the durable
- * record, so the worker asks them instead.
- *
- * The time matters as much as the id. A resumed session keeps its id and earns
- * new work, so "already reflected" alone would throw that work away for ever; a
- * caller compares against the queue entry's own first stop. An unreadable mtime
- * counts as 0, which reflects again rather than losing a lesson. */
-export function reflectedSessions(world: string, extraDirs: string[] = []): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const r of listReflections(world, extraDirs)) {
-    if (!r.session_id) continue;
-    let at = 0;
-    try {
-      at = statSync(r.path).mtimeMs;
-    } catch {
-      at = 0;
-    }
-    const prev = out.get(r.session_id);
-    if (prev === undefined || at > prev) out.set(r.session_id, at);
-  }
-  return out;
-}
-
-export function patternCounts(world: string, extraDirs: string[] = []): Record<string, number> {
-  const counts: Record<string, number> = {};
-  const aliases = loadAliases(world);
-  for (const r of listReflections(world, extraDirs)) {
-    const p = aliases[r.pattern] ?? r.pattern;
-    counts[p] = (counts[p] ?? 0) + 1;
-  }
-  return counts;
 }

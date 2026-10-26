@@ -6,6 +6,7 @@
 // They say nothing about how well a real model separates two mechanisms; see
 // `scripts/eval-alias-semantic.ts` for that.
 
+import { Database } from "bun:sqlite";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -16,6 +17,7 @@ import {
   type Endpoint,
   fsx,
   ledgerPath,
+  paths,
   type LlmConfig,
   LlmConfig as LlmConfigSchema,
   ProviderError,
@@ -612,19 +614,38 @@ describe("the live evaluation fixture", () => {
 // --- it never writes ---------------------------------------------------------
 
 describe("read only", () => {
-  /** Every file under `dir`, with its bytes. A new file, a changed file and a
-   * deleted file all show up in one comparison. */
+  /** Every file under `dir`, with its bytes, except the loop-state DB files
+   * (compared as rows below). A new file, a changed file and a deleted file
+   * all show up in one comparison. */
   function treeOf(dir: string): Record<string, string> {
     const out: Record<string, string> = {};
+    const db = paths.loopStateDb();
     const walk = (at: string): void => {
       for (const entry of readdirSync(at, { withFileTypes: true })) {
         const full = join(at, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (entry.isFile()) out[relative(dir, full)] = readFileSync(full, "utf8");
+        else if (entry.isFile() && !full.startsWith(db)) out[relative(dir, full)] = readFileSync(full, "utf8");
       }
     };
     walk(dir);
     return out;
+  }
+
+  /** Every loop-state row, per table. The reflections index is a cache the read
+   * may fill, so it is the one table left out; aliases, docs and logs are compared as rows. */
+  function rowsOf(): Record<string, unknown[]> {
+    const db = new Database(paths.loopStateDb(), { readonly: true });
+    try {
+      const tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[];
+      const out: Record<string, unknown[]> = {};
+      for (const { name } of tables) {
+        if (name === "reflection_index" || name === "sqlite_sequence") continue;
+        out[name] = db.query(`SELECT * FROM "${name}" ORDER BY rowid`).all();
+      }
+      return out;
+    } finally {
+      db.close();
+    }
   }
 
   test("no alias is written, no count moves, no ledger appears", async () => {
@@ -634,7 +655,9 @@ describe("read only", () => {
     const aliasesBefore = loadAliases(world.name);
     const countsBefore = patternCounts(world.name);
     const treeBefore = treeOf(env.root);
+    const rowsBefore = rowsOf();
     expect(Object.keys(treeBefore).length).toBeGreaterThan(0);
+    expect(rowsBefore["aliases"]!.length).toBeGreaterThan(0);
     expect(fsx.exists(ledgerPath(world))).toBe(false);
 
     const fake = new FakeDecider({
@@ -649,6 +672,7 @@ describe("read only", () => {
     // The whole temp root is compared, not the three files a write was
     // expected in: a cache, a queue entry or a log would show up here too.
     expect(treeOf(env.root)).toEqual(treeBefore);
+    expect(rowsOf()).toEqual(rowsBefore);
     expect(loadAliases(world.name)).toEqual(aliasesBefore);
     expect(patternCounts(world.name)).toEqual(countsBefore);
     expect(fsx.exists(ledgerPath(world))).toBe(false);

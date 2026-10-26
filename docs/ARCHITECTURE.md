@@ -88,7 +88,8 @@ usage/nudge-fires.jsonl             see "Loop state" below
                                     is unavailable, imported after the sealed segments
 <old log>.spill/<stamp>-<pid>-<seq>.jsonl
                                     a sealed spill segment (at 4 MiB), imported in name order
-loop-state.sqlite                   loop state DB (with -wal and -shm), mode 600; see "Loop state" below
+loop-state.sqlite                   loop state DB (with -wal and -shm), mode 600, and the reflections index;
+                                    see "Loop state" below
 <old file>.imported-<stamp>-<id>    an imported legacy log or document, kept byte for byte as its backup
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions
 sessions/<session_id>/              per-session markers (once_per, delivered, offsets)
@@ -156,9 +157,9 @@ only and keeps `bun:sqlite` out of `@sil/core` and the browser bundles.
 `openState()` is the one opener and the only thing that creates the file. Every
 non-hook connection runs WAL, `synchronous=FULL`, a 2 s busy timeout and foreign
 keys on.
-`PRAGMA user_version` is the schema version (3: version 1 added the logs,
-version 2 the `docs` and `aliases` tables, version 3 the hook streams' index); a
-newer one raises instead of being read.
+`PRAGMA user_version` is the schema version (4: version 1 added the logs,
+version 2 the `docs` and `aliases` tables, version 3 the hook streams' index,
+version 4 the reflections index); a newer one raises instead of being read.
 
 Hooks use their own opener, `@sil/statedb/hook`. `openForHook` opens an existing
 file read-write with a 25 ms busy timeout and `synchronous=NORMAL`, and returns
@@ -193,8 +194,27 @@ come in three kinds: strict (raises on a quarantined line), counted (returns the
 quarantine count, as `history.series` and `readProposalEvents` do) and tolerant
 (reads what the DB has, logs once to `logs/state.log`). `sil state status`
 shows the streams, a `payload samples:` block per world, a `documents:` block
-for the three documents and each aliases world, and every import. `sil state` shows and manages all of this;
-OPERATIONS.md has the commands and the way back to an older plugin.
+for the three documents and each aliases world, a `reflection index:` block,
+and every import. `sil state` shows and manages all of this; OPERATIONS.md has
+the commands and the way back to an older plugin.
+
+The `reflection_index` table (schema 4) is a cache of
+`worlds/<world>/reflections/`: one row per `.md` file, keyed by its realpath,
+tagged with the world the caller named (`dir_world`), holding the
+reflection's front matter without the body and the lesson, plus the file's
+size, mtime and inode. `listReflectionHeads` (and its strict form) walks the
+dir, stats each file and reuses a row whose size, mtime and inode still match,
+so an unchanged file is not opened again. Anything else is parsed, and the row
+is replaced; rows for files that are gone are deleted. Only records the strict
+parser accepts are cached. The readers that need only metadata use it: the
+reflection counts in `sil status` and the consoles, the feedback scorecards, the
+ops history, the queue's reflection links, the critic's recent titles, the
+curriculum's pattern counts and alias candidates, and the review counters.
+Readers that need bodies (`listReflections` and the strict and scan forms) stay
+on the files and never touch the DB. A failure to open or update the index never
+fails a read: the pass reads the files and logs one line per world to
+`logs/state.log`. The files stay the source; delete the rows and the next read
+rebuilds them. The index has no legacy file, no import and no export.
 
 ## Worlds and targets
 

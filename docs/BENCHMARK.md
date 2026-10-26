@@ -264,3 +264,18 @@ The first run of this gate was on a macOS workstation (Apple M4 Pro, macOS
 by 49 ms at p95 on one parallel row. The same commits in the container gave
 +0.5 and +3.0 ms sequential. Those Mac numbers are not a result; they are why
 the gate is run in a container on a quiet host.
+
+## Reflections index, 2026-10-26
+
+`bun scripts/bench-reflection-index.ts <reflections-dir> [n]` copies one
+reflections dir into a temp home and times `listReflections` (reads every file)
+against `listReflectionHeads` once with an empty index and `n` times with a warm
+one (default 3). It prints the file count, then p50 and max in ms per reader and
+the record count each call returned; it never touches the source dir or the real
+home.
+
+| reader | n | p50 ms | max ms | records |
+|---|---|---|---|---|
+| listReflections | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) |
+| listReflectionHeads cold | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) |
+| listReflectionHeads warm | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) |

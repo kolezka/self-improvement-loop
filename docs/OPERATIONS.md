@@ -557,6 +557,7 @@ attempts) and the per-world alias map moved from files into one SQLite file,
 | `worker_status` | `worker-status.json` |
 | `refine_attempts` | `curriculum/refine-attempts/<world>.json`, one per world |
 | `aliases` | `worlds/<world>/aliases.json` in the data dir (`~/.local/share/self-improvement-loop/`), one per world |
+| `reflection_index` | cache of the reflection files, no old file, not exported |
 
 An aliases file's backup stays in the data dir, next to where the file was.
 
@@ -567,7 +568,7 @@ reads or writes one of these imports the old file and renames it to
 for byte. Nothing deletes it.
 
 ```
-sil state status [--json]          # DB path, schema, rows per store, documents, each import and its backup check
+sil state status [--json]          # DB path, schema, rows per store, documents, reflection index rows per world, each import and its backup check
 sil state migrate                  # import any old file now (handy before a first sil web)
 sil state quarantine               # lines and documents that did not import
 sil state quarantine --drop <store> [--world <w>]
@@ -640,6 +641,23 @@ Upgrade with no 1.3.0 session running if you can: close the Claude sessions
 that started before the update, then install 1.4. That avoids the duplicate
 rows above. It is advice, not a requirement: a session left running loses
 nothing it wrote.
+
+The `reflection index:` block lists the cached rows per world, or says `empty`.
+The index is a cache of `worlds/<world>/reflections/*.md` that speeds up counts,
+scorecards and history. The files stay the source: nothing imports into it,
+`sil state export` leaves it out, and deleting its rows is always safe.
+
+If the index looks stale (a count or title that does not match the files),
+delete its rows and the next read rebuilds them:
+
+```sh
+sqlite3 ~/.local/state/self-improvement-loop/loop-state.sqlite "DELETE FROM reflection_index"
+```
+
+A row is reused while the file keeps the same inode, size and mtime. A file
+replaced in place with different content but the same inode, size and mtime
+(for example with `cp -p` over an existing file of the same size) is not
+detected until one of the three changes.
 
 A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
 old JSONL file is also still whole in that file's backup. A line from a bundle

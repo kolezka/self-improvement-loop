@@ -1,6 +1,7 @@
 // The reflections index (design D12): a per-file cache of reflection headers,
 // keyed by realpath. It has no legacy file, so nothing here imports.
 
+import type { Database } from "bun:sqlite";
 import { StateReadError, StateWriteError } from "@sil/core";
 import { reasonOf } from "./import.ts";
 import { openState } from "./open.ts";
@@ -27,6 +28,29 @@ export type ReflectionIndexUpsert = Omit<ReflectionIndexRow, "indexedAt">;
 
 const label = (world: string): string => `the reflections index of world ${JSON.stringify(world)}`;
 
+/** A failed rollback after `primary`, so the message can name both. */
+class RollbackFailed extends Error {
+  constructor(
+    readonly primary: unknown,
+    readonly secondary: unknown,
+  ) {
+    super("rollback failed");
+  }
+}
+
+/** Roll back after `primary` and return the error to throw: `primary`, or both when the rollback fails too. */
+function rollbackAfter(db: Database, primary: unknown): unknown {
+  try {
+    if (db.inTransaction) db.run("ROLLBACK");
+    return primary;
+  } catch (secondary) {
+    return new RollbackFailed(primary, secondary);
+  }
+}
+
+const reasonWithRollback = (error: unknown): string =>
+  error instanceof RollbackFailed ? `${reasonOf(error.primary)}; rollback failed: ${reasonOf(error.secondary)}` : reasonOf(error);
+
 /** Every row of the world, ordered by path, from one read snapshot. Throws StateReadError on any failure. */
 export function readReflectionIndex(dirWorld: string): ReflectionIndexRow[] {
   const key = worldKey(dirWorld);
@@ -43,11 +67,11 @@ export function readReflectionIndex(dirWorld: string): ReflectionIndexRow[] {
         .all(key) as ReflectionIndexRow[];
       db.run("COMMIT");
       return rows;
-    } finally {
-      if (db.inTransaction) db.run("ROLLBACK");
+    } catch (error) {
+      throw rollbackAfter(db, error);
     }
   } catch (error) {
-    throw new StateReadError(`${label(key)} cannot be read (${reasonOf(error)})`);
+    throw new StateReadError(`${label(key)} cannot be read (${reasonWithRollback(error)})`);
   }
 }
 
@@ -76,10 +100,10 @@ export function updateReflectionIndex(dirWorld: string, upserts: ReflectionIndex
       const remove = db.query("DELETE FROM reflection_index WHERE path = ? AND indexed_at = ?");
       for (const d of deletes) remove.run(d.path, d.indexedAt);
       db.run("COMMIT");
-    } finally {
-      if (db.inTransaction) db.run("ROLLBACK");
+    } catch (error) {
+      throw rollbackAfter(db, error);
     }
   } catch (error) {
-    throw new StateWriteError(`${label(key)} cannot be written (${reasonOf(error)})`);
+    throw new StateWriteError(`${label(key)} cannot be written (${reasonWithRollback(error)})`);
   }
 }

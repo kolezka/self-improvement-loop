@@ -83,6 +83,7 @@ describe("reflection index rows", () => {
   test("a delete removes the row only while its indexedAt is unchanged", () => {
     statedb.updateReflectionIndex("w", [row("/r/a.md"), row("/r/b.md")], []);
     const [a, b] = statedb.readReflectionIndex("w");
+    expect([a?.path, b?.path]).toEqual(["/r/a.md", "/r/b.md"]);
     statedb.updateReflectionIndex("w", [], [{ path: b!.path, indexedAt: "2000-01-01T00:00:00.000Z" }]);
     // row still present: a stale indexedAt means another pass rewrote it.
     expect(statedb.readReflectionIndex("w").map((r) => r.path)).toEqual(["/r/a.md", "/r/b.md"]);
@@ -105,7 +106,22 @@ describe("reflection index rows", () => {
   test("a head that is not JSON is refused and nothing of the batch is written", () => {
     const error = caught(() => statedb.updateReflectionIndex("w", [row("/r/a.md"), row("/r/b.md", { head: "not json" })], []));
     expect(error).toBeInstanceOf(StateWriteError);
-    expect((error as Error).message).toStartWith('the reflections index of world "w" cannot be written (');
+    expect((error as Error).message).toBe('the reflections index of world "w" cannot be written (SQLITE_CONSTRAINT_CHECK)');
+    expect(statedb.readReflectionIndex("w")).toEqual([]);
+  });
+
+  test("a rollback that fails after a write error keeps the first reason and adds its own", () => {
+    // Closing the handle mid-transaction makes the cleanup rollback throw too.
+    const closing = row("/r/b.md");
+    Object.defineProperty(closing, "id", {
+      get() {
+        statedb.closeState();
+        throw Object.assign(new Error("boom"), { name: "PrimaryBoom" });
+      },
+    });
+    const error = caught(() => statedb.updateReflectionIndex("w", [row("/r/a.md"), closing], []));
+    expect(error).toBeInstanceOf(StateWriteError);
+    expect((error as Error).message).toBe('the reflections index of world "w" cannot be written (PrimaryBoom; rollback failed: Error)');
     expect(statedb.readReflectionIndex("w")).toEqual([]);
   });
 

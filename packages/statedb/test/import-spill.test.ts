@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
@@ -201,6 +201,53 @@ describe("import of hook-written logs and sealed spill segments", () => {
     expect(second.error).toBeNull();
     expect(second.value!.records).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
     expect(existsSync(segment)).toBe(false);
+  });
+
+  test("bound unlink wins over the segment claim: nothing fails, the rest imports", () => {
+    const P = events();
+    const s1 = join(spill(P), "20260101T000000000Z-1-0.jsonl");
+    const s2 = join(spill(P), "20260102T000000000Z-1-0.jsonl");
+    seed(s1, [{ b: "a" }, { b: "b" }]);
+    seed(s2, [{ b: "c" }]);
+    seed(P, [{ b: "d" }]);
+    let unlinked = false;
+    const io: ImportIo = {
+      stat: (path) => statSync(path),
+      rename: (from, to) => {
+        if (!unlinked && from === s1) {
+          // The hook's bound drops the oldest segment just before the claim.
+          unlinked = true;
+          unlinkSync(s1);
+        }
+        renameSync(from, to);
+      },
+      readFile: (path) => readFileSync(path),
+    };
+    setImportIoForTest(io);
+
+    const read = attempt(() => readRecords("usage_events", "strict"));
+    expect(unlinked).toBe(true);
+    expect(failedRows()).toEqual([]);
+    expect(read.error).toBeNull();
+    const bodies = openState().query("SELECT DISTINCT json_extract(body, '$.b') AS b FROM log_records WHERE stream = 'usage_events' ORDER BY id").all();
+    expect(bodies).toEqual([{ b: "c" }, { b: "d" }]);
+    expect(read.value!.records.map((r) => r["b"])).toEqual(["c", "d"]);
+    expect(importRows("usage_events").map((r) => [r.state, r.original_path])).toEqual([
+      ["verified", s2],
+      ["verified", P],
+    ]);
+    expect(readdirSync(spill(P)).filter((name) => name.endsWith(".jsonl") || name.endsWith(".importing"))).toEqual([]);
+  });
+
+  test("full D5 order: P's leftover claim, a segment claim, a segment, then P", () => {
+    const P = events();
+    openState();
+    seed(`${P}.importing`, [{ b: "x" }]);
+    seed(join(spill(P), "20260101T000000000Z-1-0.jsonl.importing"), [{ b: "y" }]);
+    seed(join(spill(P), "20260102T000000000Z-1-0.jsonl"), [{ b: "z" }]);
+    seed(P, [{ b: "w" }]);
+    expect(readRecords("usage_events", "strict").records.map((r) => r["b"])).toEqual(["x", "y", "z", "w"]);
+    expect(importRows("usage_events").map((r) => r.state)).toEqual(["verified", "verified", "verified", "verified"]);
   });
 
   test("claim wins the race: a line appended after the claim imports on the next read, once", () => {

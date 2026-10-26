@@ -197,30 +197,90 @@ knows M)", and the hook spills. No schema fingerprint: migrations are the only D
 `meta` table: `key TEXT PRIMARY KEY, value TEXT NOT NULL`, holding `created_at`,
 `fs_class`, `fs_dev`, `fs_probed_at`.
 
-### D5. Hook writes: DB when ready, otherwise spill to the old file
+### D5. Hook writes: DB when ready, otherwise spill to segments that are never rewritten
 
-When `openForHook()` returns null, or an insert fails with BUSY or anything else,
-the hook appends the same JSON line to the store's old file path with today's
-append code. No line is dropped for a DB reason, and no hook ever runs DDL. Those
-old paths become spill files: the next `openState()` imports them (D6). This also
-covers a Claude session still running the previous plugin version's hooks after
-an update: their appends land in a spill file and get imported.
+Revised 2026-10-26 for phase 3. The open item from the third builder check (a
+rotating spill rewritten in place can be imported twice, or cut before import)
+is closed by this revision: a spill file is never read or rewritten by a hook,
+and every file the importer reads is one it moved itself.
+
+**Hook side.** `openForHook()` (D4) runs once per hook process. With a handle,
+each record is one `INSERT` in autocommit, and a spool batch is one transaction.
+When the opener returns null, or an insert or commit fails (BUSY or anything
+else), the hook closes the handle, spills that record and every later one in the
+process, and logs the reason once per process to `hook.log`. A failed batch
+spills whole: no half-applied spool. No line is dropped for a DB reason, and no
+hook ever runs DDL. This also covers a Claude session still running the
+previous plugin version's hooks after an update: their appends land in `P` and
+get imported.
+
+**Spill layout**, per store with old path `P`:
+
+- `P` is the open segment. The hook appends to it with one `O_APPEND` write per
+  record or batch and never reads it. A hook of the previous release writes the
+  same path, so one import path covers both.
+- Sealing replaces rotation. Before an append, when `stat(P).size` is at least
+  `SPILL_SEAL_BYTES` (4 MiB), the hook renames `P` to
+  `P.spill/<UTC stamp>-<pid>-<seq>.jsonl` (`seq` counts seals in this process, so two seals in one millisecond cannot rename over each other) and appends to a fresh `P`. The rename is
+  the whole rotation: no read, no rewrite, no lock. A writer whose `open`
+  preceded the rename finishes into the sealed file, which is the late append
+  D6 step 6 re-stats for.
+- Bound. After sealing, the hook lists `P.spill/`; while it holds more than
+  `SPILL_MAX_SEGMENTS` (8) unclaimed segments, the hook unlinks the oldest by
+  name and logs once per process that it dropped one. That is the one place a
+  hook drops data. It is the same oldest-first loss today's rotation has, it
+  needs about 36 MiB of spill for one store, and a spill only grows while the
+  DB is unavailable, so it takes a DB that stays unavailable for weeks. Today's
+  per-store line bounds become row trims in the DB (D11).
+- Claims. The importer claims `P` by `rename(P, P.importing)` as in D6, and a
+  sealed segment `S` by `rename(S, S.importing)`. The hook's seal and the
+  importer's claim are both a rename of `P`, so exactly one succeeds; the other
+  sees ENOENT and does nothing (the importer: nothing pending; the hook: append
+  to a new `P`). The bound unlinks only unclaimed segment names, so an unlink
+  and a claim of the same segment also have one winner. Nothing is read from a
+  path another process may still move: no overlap can be imported twice, and no
+  seal can cut a line that was not imported.
+
+The other option named in the builder check, a hook rotation that renames `P`
+to the importer's claim name `P.importing`, was rejected: two processes would
+then create `P.importing` from different sources, and D6 step 2 could no longer
+tell a crashed import from a hook rotation without a second marker. Segments
+keep one meaning per name.
+
+**Import of spills** (amends D6 for streams). The pending check becomes
+`stat(P)`, `stat(P.importing)` and `stat(P.spill)`; an existing dir is pending
+only when it holds a `*.jsonl` or `*.importing` entry. Import order for a store:
+a leftover `P.importing`; each `P.spill/*.importing` left by a crash; each
+`P.spill/*.jsonl` in name order (the stamp sorts them oldest first), claimed by
+rename, then imported and finalized exactly as `P.importing` is (one
+transaction, inode-matched recovery in step 2, re-stat in step 6, backup rename
+to `P.imported-<stamp>-<id>` next to `P`, `original_path` = the segment's own
+path); then `P`. A claim rename that fails with ENOENT means a hook sealed the
+file or the bound unlinked it first: it is "nothing pending now", not a failed
+import. `P.spill/` is never removed; an empty dir is not pending. Rows reach
+the DB in segment order, then `P`, which is file order for everything one
+process wrote.
+
+**Upgrade window.** Hooks of the previous release (1.3.0) still rotate `P` in
+place when it passes their byte bound, so a session that spans the upgrade can
+duplicate one rotation's overlap if it races the first import. It needs a file
+at the bound at that moment (`hook-runs.jsonl` is 6 MB of 8 on this machine);
+new hooks seal at 4 MiB, so `P` rarely reaches it. Accepted, like the late
+append window in D6; readers order by id, so a duplicate changes counts, not
+order.
 
 The existing never-throw contracts stay: a failed spill logs once per process to
 `hook.log`, as `appendUsageEvent` does today (`apps/hook/src/usage-log.ts:14-28`).
 
-Rotation by the hook goes away for DB writes. Spill files keep today's rotating
-append, so a DB that stays unavailable for weeks still cannot grow a spill file
-without bound.
+**Module boundary.** The hook imports only `@sil/statedb/hook`: `openForHook`,
+the hook writer, the spill writer and its two constants. Its import closure is
+`bun:sqlite`, `@sil/core` subpaths and the pure stream table; never `open.ts`,
+`import.ts` or `status.ts`, so the hook bundle does not carry the opener, the
+probe or the importer. The importer reads the constants from the same module
+for `sil state status`.
 
-Open for phase 3 (third builder check, not phase 1): a rotating spill rewrites
-`P` with an atomic rename (`fsx.ts:130-142`). If a hook reads `P`, the importer
-then claims it, and the hook renames its rotated copy into a new `P`, the overlap
-is imported twice; a long import also keeps hooks spilling long enough for a
-rotation to cut lines never imported. Phase 3 must replace this with spill
-segments that never rotate in place and that an importer claims whole (or a
-rotation that takes the same claim), before its plan is written. Phase 1 writers
-only append and never rotate, so they do not have this race.
+Phase 1 and 2 writers only append or rename whole documents and never rotate, so
+they do not have this race.
 
 ### D6. Import of existing files (and of spill files)
 
@@ -233,7 +293,8 @@ Names, per store: the old path `P`, the claim path `P.importing` (one fixed
 name), and the backup `P.imported-<UTC stamp>-<import_id>`.
 
 **Pending check.** Before every read or write of a store, a non-hook process runs
-`stat(P)` and `stat(P.importing)`. If neither exists, nothing is pending. This
+`stat(P)` and `stat(P.importing)` (hook-written streams add `stat(P.spill)`,
+D5). If none exists, nothing is pending. This
 runs before the read opens its snapshot, so any import that finished before the
 check is in the snapshot, and any spill that appears after it is an append that
 happened after the read began, as with a file today. Two `stat`s per store
@@ -403,6 +464,11 @@ ALTER TABLE quarantine ADD COLUMN world TEXT;
 -- v3 (phase 3): no new table; streams 'usage_events', 'nudge_fires', 'hook_runs',
 -- 'payload_samples' in log_records, plus an index for compaction:
 CREATE INDEX log_records_usage_ref ON log_records (stream, world, json_extract(body, '$.ref'), ts);
+-- payload_samples is the first per-world stream: its rows carry the world of
+-- the file they came from (legacy_imports.world, quarantine.world), and its
+-- legacy path is usage/payloads/<world>.jsonl. A legacy_imports row of a spill
+-- segment (D5) has original_path = P.spill/<stamp>-<pid>-<seq>.jsonl and a backup
+-- next to P; no column is added for it.
 
 -- v4 (phase 4)
 CREATE TABLE reflection_index (
@@ -657,6 +723,13 @@ in `sil state export`; the live file is gone), README.md:272.
   hook writer): `openForHook` returns null for missing, old, newer, fs mismatch;
   insert on BUSY spills and the spill imports later with no loss and no
   duplicate.
+- Spill segments (phase 3, D5): a hook that seals `P` while an importer claims
+  it ends with every line in the DB exactly once, whichever rename wins (driven
+  through the importer's `ImportIo` seam so the seal lands between the pending
+  check and the claim); a crash after a segment claim leaves `S.importing`,
+  which the next open imports once; the segment bound unlinks only the oldest
+  unclaimed names and never a `.importing`; a `P.spill/` with only backups or
+  nothing in it is not pending.
 - Phase 3 regression for the race: concurrent hook inserts during a compaction
   lose nothing (fails on the file implementation, passes on the DB).
 - Equivalence: for each store, records read through the new reader equal the

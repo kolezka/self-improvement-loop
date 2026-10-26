@@ -15,6 +15,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DIST, ROOT, sourceFiles } from "../scripts/build.ts";
 import { copiedTestName, nativeTestFiles } from "../scripts/test-native.ts";
+import { importClosure as closureOf } from "./closure.ts";
 
 const MODULE_BUNDLE = join(DIST, "hook-module.js");
 const built = existsSync(MODULE_BUNDLE) && existsSync(join(DIST, ".srchash"));
@@ -86,33 +87,9 @@ describe("dist/hook-module.js", () => {
   });
 });
 
-const SIL_SUBPATH = /^@sil\/(core|nudges)\/([A-Za-z0-9-]+)$/;
-
-/** Every source file the module bundle pulls in, followed through relative and
- * @sil imports. The closure is what matters, not the module's own six files: a
- * node: import two hops down is just as fatal at load. */
-function importClosure(): { files: string[]; specifiers: Set<string> } {
-  const seen = new Set<string>();
-  const specifiers = new Set<string>();
-  const queue = moduleSources();
-  while (queue.length > 0) {
-    const file = queue.pop();
-    if (file === undefined || seen.has(file)) continue;
-    seen.add(file);
-    for (const match of readFileSync(file, "utf8").matchAll(/from ["']([^"']+)["']/g)) {
-      const specifier = match[1] ?? "";
-      if (specifier.startsWith(".")) {
-        queue.push(join(file, "..", specifier));
-        continue;
-      }
-      if (!specifier.startsWith("@sil/")) continue;
-      specifiers.add(specifier);
-      const parts = SIL_SUBPATH.exec(specifier);
-      if (parts) queue.push(join(ROOT, "packages", parts[1] ?? "", "src", `${parts[2] ?? ""}.ts`));
-    }
-  }
-  return { files: [...seen].sort(), specifiers };
-}
+/** Every source file the module bundle pulls in. The closure is what matters,
+ * not the module's own six files: a node: import two hops down is just as fatal at load. */
+const importClosure = () => closureOf(moduleSources());
 
 describe("apps/hook-module sources", () => {
   test("nothing in the import closure names a node: builtin", () => {

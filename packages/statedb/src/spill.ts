@@ -4,6 +4,12 @@
 
 import { readdirSync } from "node:fs";
 
+/** `P` is sealed into the spill dir before an append once it holds this many bytes. */
+export const SPILL_SEAL_BYTES = 4 * 1024 * 1024;
+
+/** The hook keeps at most this many unclaimed sealed segments per store. */
+export const SPILL_MAX_SEGMENTS = 8;
+
 /** Where the sealed segments of `legacyPath` live. */
 export const spillDir = (legacyPath: string): string => `${legacyPath}.spill`;
 

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Config, type HumanFeedback, loadConfig, StateReadError } from "@sil/core";
+import { Config, type HumanFeedback, loadConfig, StateReadError, World } from "@sil/core";
+import { loadPayloadCorpus } from "@sil/curriculum";
 import { listHuman } from "@sil/feedback";
 import { loadAliases, loadAliasesStrict, saveAliases } from "@sil/store";
 import { appendRecord, closeState, openState, readRecords } from "@sil/statedb";
@@ -376,6 +377,23 @@ describe("usage logs and payload samples in loop state", () => {
     expect(readRecords("payload_samples", "counted", "default")).toEqual({ records: payloads, quarantined: 1 });
     const rows = openState().query("SELECT store, world, source, line_no, reason, raw FROM quarantine").all();
     expect(rows).toEqual([{ store: "payload_samples", world: "default", source: file, line_no: 3, reason: "not JSON", raw: "not json" }]);
+  });
+
+  test("a forced restore keeps a payloads line in its file's world, not the world the line names", async () => {
+    const dest = await exportFromHostA();
+    const crossed = { ts: "2026-10-25T05:00:00Z", world: "other", tool_name: "Bash", tool_input: { command: "crossed" } };
+    writeFileSync(usage(dest, "payloads", "default.jsonl"), lines([crossed]));
+
+    useRoots("hostB");
+    expect(await run(["init"])).toBe(0);
+    const theirs = { ts: "2026-10-24T00:00:00Z", world: "other", tool_name: "Read", tool_input: { file_path: "/other" } };
+    appendRecord("payload_samples", theirs, "other");
+    const other = World.parse({ name: "other" });
+    const before = loadPayloadCorpus(other);
+    importBundle({ src: dest, force: true });
+    expect(loadPayloadCorpus(other)).toEqual(before);
+    expect(readRecords("payload_samples", "strict", "other").records).toEqual([theirs]);
+    expect(readRecords("payload_samples", "strict", "default").records).toEqual([crossed]);
   });
 
   test("export refuses payload samples with quarantined lines and writes no bundle", async () => {

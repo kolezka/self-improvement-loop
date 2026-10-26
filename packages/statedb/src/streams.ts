@@ -47,10 +47,18 @@ function quarantineWhere(ref: StoreRef): { sql: string; args: (string | null)[] 
 }
 
 /** The one insert for rows a process writes itself (not a legacy import). A
- * record's own string `world` wins; else the row gets `fallbackWorld`. */
-function insertRecord(db: Database, stream: Stream, record: Record<string, unknown>, body: string, recordedAt: string, fallbackWorld: string | null): void {
+ * record's own string `world` wins unless `pinWorld`; else the row gets `fallbackWorld`. */
+function insertRecord(
+  db: Database,
+  stream: Stream,
+  record: Record<string, unknown>,
+  body: string,
+  recordedAt: string,
+  fallbackWorld: string | null,
+  pinWorld = false,
+): void {
   const ts = typeof record["ts"] === "string" ? record["ts"] : null;
-  const world = typeof record["world"] === "string" ? record["world"].normalize("NFC") : fallbackWorld;
+  const world = pinWorld || typeof record["world"] !== "string" ? fallbackWorld : record["world"].normalize("NFC");
   db.query("INSERT INTO log_records (stream, ts, world, body, recorded_at, import_id) VALUES (?, ?, ?, ?, ?, NULL)").run(
     stream,
     ts,
@@ -246,7 +254,8 @@ export function replaceStream(stream: Stream, jsonl: string, source: string, for
           value = undefined;
         }
         if (isRecord(value)) {
-          insertRecord(db, stream, value, text, now, ref.world);
+          // A bundle file's world comes from its path, so a per-world line lands there whatever it names.
+          insertRecord(db, stream, value, text, now, ref.world, STREAMS[stream].perWorld);
           result.imported += 1;
         } else {
           quarantine.run(stream, ref.world, source, i + 1, value === undefined ? "not JSON" : "not a JSON object", capRaw(piece), now);

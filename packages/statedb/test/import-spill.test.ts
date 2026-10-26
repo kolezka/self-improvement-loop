@@ -359,6 +359,17 @@ describe("import of hook-written logs and sealed spill segments", () => {
     expect(attempt(() => exportJsonl("payload_samples")).error).toBeInstanceOf(StateReadError);
   });
 
+  test("a forced replaceStream pins every payload line to the target world, whatever its own world field says", () => {
+    appendRecord("payload_samples", { p: 1 }, "default");
+    appendRecord("payload_samples", { p: 2 }, "other");
+    const line = '{"world":"other","p":3}';
+    expect(replaceStream("payload_samples", `${line}\n`, "bundle", true, "default").written).toBe(true);
+    expect(readRecords("payload_samples", "strict", "other").records).toEqual([{ p: 2 }]);
+    expect(readRecords("payload_samples", "strict", "default").records).toEqual([{ world: "other", p: 3 }]);
+    const rows = openState().query("SELECT world, body FROM log_records WHERE stream = 'payload_samples' AND body = ?").all(line);
+    expect(rows).toEqual([{ world: "default", body: line }]);
+  });
+
   test(
     "busy on a per-world stream: strict says the world's payload samples are being imported",
     () => {

@@ -2,17 +2,19 @@
 // cases exercise every target kind and the refusal paths directly; the last
 // case runs a real Stop subprocess to prove the wiring in handlers.ts.
 
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
 import { serializeSpool, SPOOL_FILE_NAME, SPOOL_VERSION } from "@sil/core/spool";
 import type { Spool } from "@sil/core/spool";
+import { closeState, readRecords } from "@sil/statedb";
+import { closeHookDb } from "@sil/statedb/hook";
 import { ingestSpool, ORPHAN_SPOOL_OLDER_THAN_MS, sweepOrphanSpools } from "../src/spool-ingest.ts";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -29,6 +31,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeHookDb();
+  closeState();
   for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -62,8 +66,9 @@ describe("ingestSpool", () => {
     expect(result).toEqual({ appends: 0, moves: 0, skipped: 0 });
   });
 
-  test("one entry of every target kind lands in the right file", () => {
+  test("one entry of every target kind lands in its stream, and the session file", () => {
     const sessionId = "sess-full";
+    createLoopState();
     writeSpool(sessionId, {
       appends: [
         { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:foo" }) },
@@ -77,10 +82,13 @@ describe("ingestSpool", () => {
     const result = ingestSpool(sessionId);
     expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
 
-    expect(readJsonl(paths.usageEventsFile())).toEqual([{ ts: "x", kind: "skill", ref: "skill:foo" }]);
-    expect(readJsonl(paths.hookRunsFile())).toEqual([{ ts: "x", kind: "hook_run", ref: "hook:bar" }]);
-    expect(readJsonl(paths.nudgeFiresFile())).toEqual([{ ts: "x", session_id: sessionId, event: "PreToolUse" }]);
-    expect(readJsonl(paths.payloadSamplesFile("default"))).toEqual([{ ts: "x", tool_name: "Bash" }]);
+    for (const file of [paths.usageEventsFile(), paths.hookRunsFile(), paths.nudgeFiresFile(), paths.payloadSamplesFile("default")]) {
+      expect({ file, exists: existsSync(file) }).toEqual({ file, exists: false });
+    }
+    expect(readRecords("usage_events", "strict").records).toEqual([{ ts: "x", kind: "skill", ref: "skill:foo" }]);
+    expect(readRecords("hook_runs", "strict").records).toEqual([{ ts: "x", kind: "hook_run", ref: "hook:bar" }]);
+    expect(readRecords("nudge_fires", "strict").records).toEqual([{ ts: "x", session_id: sessionId, event: "PreToolUse" }]);
+    expect(readRecords("payload_samples", "strict", "default").records).toEqual([{ ts: "x", tool_name: "Bash" }]);
     expect(readFileSync(`${paths.sessionDir(sessionId)}/module-note.json`, "utf8")).toBe(`${JSON.stringify({ hello: "world" })}\n`);
 
     expect(existsSync(spoolFile(sessionId))).toBe(false);
@@ -209,30 +217,50 @@ describe("ingestSpool", () => {
     expect(readJsonl(paths.usageEventsFile()).length).toBe(1);
   });
 
-  test("50 nudge-fires appends become one locked write, not one per line", () => {
-    const sessionId = "sess-batch";
-    const appends = Array.from({ length: 50 }, (_, i) => ({
-      target: { kind: "nudge-fires" as const },
-      line: JSON.stringify({ ts: "x", session_id: sessionId, event: "PreToolUse", pattern: `p-${i}` }),
-    }));
-    writeSpool(sessionId, { appends });
+  // A spool group is one hookWrite: one transaction in loop state, or one
+  // append to the spill file. Never a half-applied group (design D5).
+  const hookRunsSpool = (sessionId: string): void => {
+    writeSpool(sessionId, {
+      appends: Array.from({ length: 5 }, (_, i) => ({
+        target: { kind: "hook-runs" as const },
+        line: JSON.stringify({ ts: "x", kind: "hook_run", ref: `hook:h${i}` }),
+      })),
+    });
+  };
+  const hookRunRows = (db: Database): number =>
+    (db.query("SELECT count(*) AS n FROM log_records WHERE stream = 'hook_runs'").get() as { n: number }).n;
 
-    const mkdirSpy = spyOn(nodeFs, "mkdirSync");
-    const result = ingestSpool(sessionId);
-    // Every withDirLock acquisition mkdirs a "<file>.lockdir" directory;
-    // counting those (not all mkdirSync calls) isolates lock acquisitions
-    // from unrelated ensureDir calls.
-    const lockAttempts = mkdirSpy.mock.calls.filter((call) => String(call[0]).endsWith(".lockdir")).length;
-    mkdirSpy.mockRestore();
+  test("with the write lock held, a hook-runs group is zero rows and every line in the spill", () => {
+    createLoopState();
+    hookRunsSpool("sess-held");
+    const holder = new Database(paths.loopStateDb());
+    holder.run("BEGIN IMMEDIATE");
+    let result: { appends: number; moves: number; skipped: number } | undefined;
+    try {
+      result = ingestSpool("sess-held");
+    } finally {
+      holder.run("ROLLBACK");
+    }
+    expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
+    // Read the spill before anything imports it.
+    expect(readJsonl(paths.hookRunsFile()).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
+    expect(hookRunRows(holder)).toBe(0);
+    holder.close();
+  });
 
-    expect(result).toEqual({ appends: 50, moves: 0, skipped: 0 });
-    const lines = readFileSync(paths.nudgeFiresFile(), "utf8")
-      .split("\n")
-      .filter((l) => l.length > 0);
-    expect(lines.length).toBe(50);
-    // No contention in this test, so one grouped write acquires the lock
-    // exactly once; the pre-fix code acquired it once per line (50 times).
-    expect(lockAttempts).toBe(1);
+  test("an insert refused mid-group spills the whole hook-runs group, no rows land", () => {
+    createLoopState();
+    hookRunsSpool("sess-mid");
+    // The third insert of the group fails; the first two must not stay.
+    const plain = new Database(paths.loopStateDb());
+    plain.run(
+      "CREATE TRIGGER refuse_h2 BEFORE INSERT ON log_records WHEN json_extract(NEW.body, '$.ref') = 'hook:h2' BEGIN SELECT RAISE(ABORT, 'refused for test'); END",
+    );
+    const result = ingestSpool("sess-mid");
+    expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
+    expect(readJsonl(paths.hookRunsFile()).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
+    expect(hookRunRows(plain)).toBe(0);
+    plain.close();
   });
 });
 

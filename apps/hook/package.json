@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@sil/core": "workspace:*",
-    "@sil/nudges": "workspace:*"
+    "@sil/nudges": "workspace:*",
+    "@sil/statedb": "workspace:*"
   }
 }

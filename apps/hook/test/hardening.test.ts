@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as paths from "@sil/core/paths";
-import { readJsonl } from "@sil/core/fsx";
 import { getHandler } from "../src/handlers.ts";
 import { loadSnapshot, DEFAULT_WORKER } from "../src/snapshot.ts";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { closeState, readRecords } from "@sil/statedb";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -31,6 +31,7 @@ afterEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  closeState();
   cleanupHookEnv(hookEnv);
 });
 
@@ -156,6 +157,7 @@ describe("an unlintable nudge planted in nudges_dir", () => {
       }),
     );
     writeSnapshotRaw(goodSnapshot({ worlds: [{ name: "default", repos: [], nudges_dir: nudgesDir, rules_file: "", rules_inject: false }] }));
+    createLoopState();
 
     const payload = { session_id: "sess-evil", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git status" } };
     const first = runHook(MAIN_TS, hookEnv, payload);
@@ -163,7 +165,7 @@ describe("an unlintable nudge planted in nudges_dir", () => {
     expect(first.stdout.trim()).toBe("");
     expect(second.stdout.trim()).toBe("");
 
-    const fires = readJsonl(paths.nudgeFiresFile());
+    const fires = readRecords("nudge_fires", "strict").records;
     expect(fires.some((f) => f["pattern"] === "evil-nudge")).toBe(false);
     const invalid = fires.filter((f) => f["kind"] === "nudge_invalid");
     expect(invalid.length).toBe(1);

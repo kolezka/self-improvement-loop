@@ -31,15 +31,13 @@ describe("apps/hook import closure", () => {
     expect(specifiers.has("@sil/core/paths")).toBe(true);
   });
 
-  // Task 4 wires the hook's writes through @sil/statedb/hook. Until then the
-  // hook does not import it and the first assertion fails; flip to test() there.
-  test.todo("reaches @sil/statedb/hook and none of the opener, importer or status modules", () => {
+  test("reaches @sil/statedb/hook and none of the opener, importer or status modules", () => {
     const { files } = importClosure([HOOK_ENTRY], { dynamic: true });
     expect(files).toContain(join(STATEDB, "hook.ts"));
     expect(files.filter((file) => FORBIDDEN.includes(file))).toEqual([]);
   });
 
-  test.todo("names @sil/statedb only as @sil/statedb/hook", () => {
+  test("names @sil/statedb only as @sil/statedb/hook", () => {
     const { specifiers } = importClosure([HOOK_ENTRY], { dynamic: true });
     expect([...specifiers].filter((s) => s === "@sil/statedb" || s.startsWith("@sil/statedb/"))).toEqual(["@sil/statedb/hook"]);
   });

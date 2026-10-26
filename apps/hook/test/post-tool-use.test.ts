@@ -5,8 +5,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
-import { readJsonl } from "@sil/core/fsx";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { closeState, readRecords } from "@sil/statedb";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -18,9 +18,11 @@ beforeEach(() => {
   for (const key of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_PLUGIN_ROOT"]) {
     process.env[key] = hookEnv.env[key];
   }
+  createLoopState();
 });
 
 afterEach(() => {
+  closeState();
   cleanupHookEnv(hookEnv);
 });
 
@@ -49,7 +51,7 @@ describe("PostToolUse", () => {
     const result = runHook(MAIN_TS, hookEnv, payload);
     expect(result.exitCode).toBe(0);
 
-    const events = readJsonl(paths.usageEventsFile());
+    const events = readRecords("usage_events", "strict").records;
     expect(events.length).toBe(1);
     expect(events[0]?.["kind"]).toBe("skill");
     expect(events[0]?.["ref"]).toBe("skill:some-skill");
@@ -68,7 +70,7 @@ describe("PostToolUse", () => {
     };
     runHook(MAIN_TS, hookEnv, payload);
 
-    const events = readJsonl(paths.usageEventsFile());
+    const events = readRecords("usage_events", "strict").records;
     expect(events.length).toBe(1);
     expect(events[0]?.["kind"]).toBe("agent");
     expect(events[0]?.["ref"]).toBe("agent:critic");
@@ -83,6 +85,6 @@ describe("PostToolUse", () => {
     writeSnapshot();
     const payload = { session_id: "sess-ptu-3", hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: "x.ts" } };
     runHook(MAIN_TS, hookEnv, payload);
-    expect(readJsonl(paths.usageEventsFile()).length).toBe(0);
+    expect(readRecords("usage_events", "strict").records.length).toBe(0);
   });
 });

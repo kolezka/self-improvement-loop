@@ -8,13 +8,10 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import * as paths from "@sil/core/paths";
-import { appendLine as appendLineRotated } from "@sil/core/fsx";
-import { SAMPLES_KEEP_LINES, SAMPLES_ROTATE_AT_BYTES } from "@sil/core/samples";
-import { appendLine as appendLineLocked, ROTATE_AT_BYTES, ROTATE_KEEP_LINES } from "@sil/nudges";
 import { parseSpool, SPOOL_FILE_NAME } from "@sil/core/spool";
 import type { SpoolAppend, SpoolMove } from "@sil/core/spool";
+import { hookWrite } from "@sil/statedb/hook";
 import { log } from "./log.ts";
-import { appendUsageEvent, HOOK_RUNS_KEEP_LINES, HOOK_RUNS_ROTATE_AT_BYTES } from "./usage-log.ts";
 import { sessionLock } from "./queue.ts";
 
 function spoolPath(sessionId: string): string {
@@ -65,113 +62,81 @@ interface GroupCounts {
   skipped: number;
 }
 
-/** Rotates and appends one already-joined block of lines in a single call,
- * instead of once per line: a nudge-fires line paid a whole `withDirLock`
- * (mkdir, pid write, rmdir) and a hook-runs or payload-samples line paid a
- * stat call, both inside the Stop session lock and ahead of a transcript
- * scan that can run to 20 MB. Never throws past this point: a write failure
- * fails the whole group, which is reported once and counted skipped rather
- * than left to duplicate lines already applied. */
+type Stream = Parameters<typeof hookWrite>[0];
+
+/** Writes one group in a single hookWrite: one transaction in loop state, or
+ * one append to the spill file. Either all of it lands or none of it does
+ * (design D5: no half-applied spool). A group that is lost is reported once
+ * and counted skipped. */
 function flushGroup(
-  path: string,
-  lines: string[],
-  writer: (path: string, line: string, rotateAt: number, keep: number) => void,
-  rotateAt: number,
-  keep: number,
+  stream: Stream,
+  records: Record<string, unknown>[],
+  world: string | undefined,
   reportFailure: (detail: string) => void,
 ): GroupCounts {
-  if (lines.length === 0) return { applied: 0, skipped: 0 };
-  try {
-    writer(path, lines.join("\n"), rotateAt, keep);
-    return { applied: lines.length, skipped: 0 };
-  } catch (e) {
-    reportFailure((e as Error).message);
-    return { applied: 0, skipped: lines.length };
+  if (records.length === 0) return { applied: 0, skipped: 0 };
+  if (hookWrite(stream, records, world) === "lost") {
+    reportFailure(`${records.length} ${stream} record(s) lost, see the loop state lines in this log`);
+    return { applied: 0, skipped: records.length };
   }
+  return { applied: records.length, skipped: 0 };
 }
 
-/** Applies every append, grouping nudge-fires/hook-runs/payload-samples by
- * their resolved target file so each gets one locked, rotated write for the
- * whole buffered batch. usage-events and session-file writes stay per line:
- * neither carries the lock or stat cost the grouping is for, and
- * session-file lines can each name a different file. Never throws: a write
- * that fails is reported once per call and counted skipped. */
+const GROUPED_KINDS = { "usage-events": "usage_events", "hook-runs": "hook_runs", "nudge-fires": "nudge_fires" } as const;
+
+/** Applies every append. usage-events, hook-runs and nudge-fires each become
+ * one group, payload-samples one group per world, so a Stop pays one write
+ * per group inside its session lock instead of one per line. session-file
+ * writes stay per line: each can name a different file. Never throws: a
+ * write that fails is reported once per call and counted skipped. */
 function applyAppends(appends: SpoolAppend[], sessionId: string, reportFailure: (detail: string) => void): GroupCounts {
   let applied = 0;
   let skipped = 0;
 
-  const nudgeFiresLines: string[] = [];
-  const hookRunsLines: string[] = [];
-  const samplesByWorld = new Map<string, string[]>();
+  const groups: Record<keyof typeof GROUPED_KINDS, Record<string, unknown>[]> = { "usage-events": [], "hook-runs": [], "nudge-fires": [] };
+  const samplesByWorld = new Map<string, Record<string, unknown>[]>();
 
   for (const a of appends) {
     const target = a.target;
-    switch (target.kind) {
-      case "nudge-fires":
-        nudgeFiresLines.push(a.line);
-        break;
-      case "hook-runs": {
-        const obj = tryParseLine(a.line);
-        if (!obj) {
-          log(`spool append dropped, invalid JSON for hook-runs (session ${sessionId})`);
+    if (target.kind === "session-file") {
+      try {
+        if (!isSafeSessionFileName(target.name)) {
+          log(`spool append refused, unsafe session file name "${target.name}" (session ${sessionId})`);
           skipped++;
-          break;
+          continue;
         }
-        hookRunsLines.push(JSON.stringify(obj));
-        break;
+        plainAppend(`${paths.sessionDir(sessionId)}/${target.name}`, a.line);
+        applied++;
+      } catch (e) {
+        reportFailure((e as Error).message);
+        skipped++;
       }
-      case "payload-samples": {
-        const bucket = samplesByWorld.get(target.world) ?? [];
-        bucket.push(a.line);
-        samplesByWorld.set(target.world, bucket);
-        break;
-      }
-      case "usage-events": {
-        try {
-          const obj = tryParseLine(a.line);
-          if (!obj) {
-            log(`spool append dropped, invalid JSON for usage-events (session ${sessionId})`);
-            skipped++;
-            break;
-          }
-          appendUsageEvent(paths.usageEventsFile(), obj);
-          applied++;
-        } catch (e) {
-          reportFailure((e as Error).message);
-          skipped++;
-        }
-        break;
-      }
-      case "session-file": {
-        try {
-          if (!isSafeSessionFileName(target.name)) {
-            log(`spool append refused, unsafe session file name "${target.name}" (session ${sessionId})`);
-            skipped++;
-            break;
-          }
-          plainAppend(`${paths.sessionDir(sessionId)}/${target.name}`, a.line);
-          applied++;
-        } catch (e) {
-          reportFailure((e as Error).message);
-          skipped++;
-        }
-        break;
-      }
+      continue;
+    }
+    const obj = tryParseLine(a.line);
+    if (!obj) {
+      log(`spool append dropped, invalid JSON for ${target.kind} (session ${sessionId})`);
+      skipped++;
+      continue;
+    }
+    if (target.kind === "payload-samples") {
+      const bucket = samplesByWorld.get(target.world) ?? [];
+      bucket.push(obj);
+      samplesByWorld.set(target.world, bucket);
+    } else {
+      groups[target.kind].push(obj);
     }
   }
 
-  const nudgeFires = flushGroup(paths.nudgeFiresFile(), nudgeFiresLines, appendLineLocked, ROTATE_AT_BYTES, ROTATE_KEEP_LINES, reportFailure);
-  applied += nudgeFires.applied;
-  skipped += nudgeFires.skipped;
-
-  const hookRuns = flushGroup(paths.hookRunsFile(), hookRunsLines, appendLineRotated, HOOK_RUNS_ROTATE_AT_BYTES, HOOK_RUNS_KEEP_LINES, reportFailure);
-  applied += hookRuns.applied;
-  skipped += hookRuns.skipped;
-
-  for (const [world, lines] of samplesByWorld) {
-    const samples = flushGroup(paths.payloadSamplesFile(world), lines, appendLineRotated, SAMPLES_ROTATE_AT_BYTES, SAMPLES_KEEP_LINES, reportFailure);
-    applied += samples.applied;
-    skipped += samples.skipped;
+  for (const kind of Object.keys(GROUPED_KINDS) as (keyof typeof GROUPED_KINDS)[]) {
+    const counts = flushGroup(GROUPED_KINDS[kind], groups[kind], undefined, reportFailure);
+    applied += counts.applied;
+    skipped += counts.skipped;
+  }
+  for (const [world, records] of samplesByWorld) {
+    const counts = flushGroup("payload_samples", records, world, reportFailure);
+    applied += counts.applied;
+    skipped += counts.skipped;
   }
 
   return { applied, skipped };

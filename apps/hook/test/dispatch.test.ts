@@ -131,6 +131,8 @@ describe("PreToolUse nudge dispatch", () => {
     expect(proc.exitCode).toBe(0);
     expect((proc.stdout ?? Buffer.alloc(0)).toString("utf8").trim()).toBe("");
 
+    // No loop state in this file: the breadcrumb spills to the old path
+    // (statedb-write.test.ts covers the row in loop state).
     const fires = readJsonl(paths.nudgeFiresFile());
     expect(fires.some((f) => f["kind"] === "nudge_dir_missing")).toBe(true);
     cleanupHookEnv(bareEnv);

@@ -28,7 +28,7 @@ import * as review from "@sil/review";
 import * as store from "@sil/store";
 import * as transcript from "@sil/transcript";
 import * as worker from "@sil/worker";
-import { dispatch, loadNudges } from "@sil/nudges";
+import { appendLine, dispatch, loadNudges } from "@sil/nudges";
 import type { ChatFn } from "@sil/providers";
 
 const REPO = join(import.meta.dir, "..");
@@ -736,7 +736,7 @@ const nudgeScenario: Scenario = {
       const payload = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push origin main" } };
       const n = quick ? 200 : 1000;
       const durations = await timedRuns(n, () => {
-        dispatch(payload, nudges, { sessionDir, fireLog });
+        dispatch(payload, nudges, { sessionDir, fire: (record) => appendLine(fireLog, JSON.stringify(record)) });
       });
       return [row("nudge: dispatch", durations, `${nudgeCount} loaded nudges, steady state (once_per session already claimed)`)];
     } finally {

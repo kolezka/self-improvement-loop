@@ -1,14 +1,15 @@
-// Per-event handlers plus the usage event log. Ported from sil/hook.py's
+// Per-event handlers plus the usage event writes. Ported from sil/hook.py's
 // _dispatch_nudge, _handle_*, HANDLERS, and sil/usage.py's append_event /
-// read_events / artifact_ref (folded in here: only handlers need them).
+// artifact_ref (folded in here: only handlers need them).
 
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import * as paths from "@sil/core/paths";
-import { appendLine, atomicWrite } from "@sil/core/fsx";
+import { atomicWrite } from "@sil/core/fsx";
 import { sessionStartStatusLine } from "@sil/core/hook-snapshot";
-import { SAMPLES_KEEP_LINES, SAMPLES_ROTATE_AT_BYTES, sampleRecord } from "@sil/core/samples";
+import { sampleRecord } from "@sil/core/samples";
 import type { HookEvent } from "@sil/core/consts";
 import { claimMarker, dispatch, loadNudgesDetailed, writeBreadcrumb } from "@sil/nudges";
+import { hookWrite } from "@sil/statedb/hook";
 import { log, nowIso } from "./log.ts";
 import { snapshotPresent as hookSnapshotWasRead } from "./snapshot.ts";
 import type { HookSnapshot, HookWorld } from "./snapshot.ts";
@@ -18,17 +19,13 @@ import { maybeKickWorker } from "./kick.ts";
 import { hasTranscript, markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
 import { scanTranscript } from "./scan.ts";
 import { ingestSpool, ORPHAN_SPOOL_OLDER_THAN_MS, ORPHAN_SPOOL_SWEEP_LIMIT, sweepOrphanSpools } from "./spool-ingest.ts";
-import { appendHookRun, appendUsageEvent, HOOK_RUNS_KEEP_LINES, HOOK_RUNS_ROTATE_AT_BYTES } from "./usage-log.ts";
+import { appendHookRun, appendUsageEvent } from "./usage-log.ts";
 
 // --- usage event log ------------------------------------------------------
 
 export function artifactRef(kind: string, name: string): string {
   return `${kind}:${name}`;
 }
-
-// Re-exported from usage-log.ts: this used to be where they lived, kept
-// visible from here so nothing importing handlers.ts breaks.
-export { appendHookRun, appendUsageEvent, HOOK_RUNS_KEEP_LINES, HOOK_RUNS_ROTATE_AT_BYTES };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -39,16 +36,16 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // The record shape lives in @sil/core/samples: `sil import payloads` writes the
 // same file from old transcripts and has to agree byte for byte. Re-exported
 // here so importers of the old names keep working.
-export {
-  SAMPLED_INPUT_KEYS,
-  SAMPLE_VALUE_MAX_CHARS,
-  SAMPLES_ROTATE_AT_BYTES,
-  SAMPLES_KEEP_LINES,
-  redactCredentials,
-} from "@sil/core/samples";
+export { SAMPLED_INPUT_KEYS, SAMPLE_VALUE_MAX_CHARS, redactCredentials } from "@sil/core/samples";
 
-// Same reason as usageFailureLogged: one line per process, not one per hook.
+// One hook.log line per process when a sample is lost, not one per hook.
 let sampleFailureLogged = false;
+
+function reportSampleLost(worldName: string, detail: string): void {
+  if (sampleFailureLogged) return;
+  sampleFailureLogged = true;
+  log(`usage.record_payload_sample failed for world ${worldName}: ${detail}`);
+}
 
 /** One line per PreToolUse call, allowlisted keys only, string values truncated. Never throws.
  *
@@ -60,11 +57,9 @@ export function recordPayloadSample(payload: Record<string, unknown>, worldName:
   try {
     const record = sampleRecord(payload, nowIso());
     if (!record) return;
-    appendLine(paths.payloadSamplesFile(worldName), JSON.stringify(record), SAMPLES_ROTATE_AT_BYTES, SAMPLES_KEEP_LINES);
+    if (hookWrite("payload_samples", [{ ...record }], worldName) === "lost") reportSampleLost(worldName, "record lost, see the loop state lines above");
   } catch (e) {
-    if (sampleFailureLogged) return;
-    sampleFailureLogged = true;
-    log(`usage.record_payload_sample failed for world ${worldName}: ${(e as Error).message}`);
+    reportSampleLost(worldName, (e as Error).message);
   }
 }
 
@@ -85,7 +80,7 @@ function recordRuleUses(rulesText: string, worldName: string, sessionId: string)
   const sessionDir = paths.sessionDir(sessionId);
   for (const match of new Set([...rulesText.matchAll(RULE_TAG_RE)].map((m) => m[1] ?? ""))) {
     if (!match || !claimMarker(sessionDir, `rule-use-${match}`)) continue;
-    appendUsageEvent(paths.usageEventsFile(), {
+    appendUsageEvent({
       ts: nowIso(),
       session_id: sessionId,
       world: worldName,
@@ -94,32 +89,6 @@ function recordRuleUses(rulesText: string, worldName: string, sessionId: string)
       detail: {},
     });
   }
-}
-
-/** All events in `path`, optionally filtered to `ts > sinceTs`. Tolerant of
- * bad lines: a line that is not valid JSON or not an object is skipped. */
-export function readUsageEvents(path: string, sinceTs?: string): Record<string, unknown>[] {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return [];
-  }
-  const out: Record<string, unknown>[] = [];
-  for (const line of text.split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
-    let obj: unknown;
-    try {
-      obj = JSON.parse(t);
-    } catch {
-      continue;
-    }
-    if (!isRecord(obj)) continue;
-    if (sinceTs && String(obj["ts"] ?? "") <= sinceTs) continue;
-    out.push(obj);
-  }
-  return out;
 }
 
 // --- nudge dispatch ---------------------------------------------------
@@ -132,6 +101,22 @@ function isDir(path: string): boolean {
   }
 }
 
+// One hook.log line per process when a fire record is lost. Never throws:
+// the nudges sink calls this from inside dispatch.
+let fireFailureLogged = false;
+
+function writeFire(record: Record<string, unknown>): void {
+  try {
+    if (hookWrite("nudge_fires", [record]) !== "lost" || fireFailureLogged) return;
+    fireFailureLogged = true;
+    log("nudges.fire failed: record lost, see the loop state lines above");
+  } catch (e) {
+    if (fireFailureLogged) return;
+    fireFailureLogged = true;
+    log(`nudges.fire failed: ${(e as Error).message}`);
+  }
+}
+
 function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessionId: string): string {
   const event = typeof payload["hook_event_name"] === "string" ? payload["hook_event_name"] : "";
   const sdir = paths.sessionDir(sessionId);
@@ -140,7 +125,7 @@ function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessi
   dirs.push(paths.builtinNudgesDir());
 
   if (!dirs.some(isDir)) {
-    writeBreadcrumb(paths.nudgeFiresFile(), sdir, "nudge_dir_missing", sessionId, event);
+    writeBreadcrumb(writeFire, sdir, "nudge_dir_missing", sessionId, event);
   }
   const { nudges, rejected } = loadNudgesDetailed(dirs);
   // One breadcrumb per rejected file per session, not per (kind, event):
@@ -148,7 +133,7 @@ function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessi
   // about it is how a nudge appears to be installed but never fires.
   for (const r of rejected) {
     writeBreadcrumb(
-      paths.nudgeFiresFile(),
+      writeFire,
       sdir,
       "nudge_invalid",
       sessionId,
@@ -157,7 +142,7 @@ function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessi
       `nudge_invalid-${r.file}`,
     );
   }
-  return dispatch(payload, nudges, { sessionDir: sdir, fireLog: paths.nudgeFiresFile() }) ?? "";
+  return dispatch(payload, nudges, { sessionDir: sdir, fire: writeFire }) ?? "";
 }
 
 // --- per-event handlers ------------------------------------------------
@@ -249,7 +234,7 @@ function handlePostToolUse(payload: Record<string, unknown>, world: HookWorld): 
   if (toolName === "Skill") {
     // No "args": it is free text and can carry secrets. The ref already
     // names the skill; that is what usage counting needs.
-    appendUsageEvent(paths.usageEventsFile(), {
+    appendUsageEvent({
       ts: nowIso(),
       session_id: sessionId,
       world: worldName,
@@ -262,7 +247,7 @@ function handlePostToolUse(payload: Record<string, unknown>, world: HookWorld): 
     // text the model wrote and can carry anything it was reasoning about.
     // The ref names the agent and detail names the model; that is what
     // usage counting needs.
-    appendUsageEvent(paths.usageEventsFile(), {
+    appendUsageEvent({
       ts: nowIso(),
       session_id: sessionId,
       world: worldName,
@@ -297,7 +282,7 @@ function handleStop(payload: Record<string, unknown>, world: HookWorld): string 
       scanTranscript(payload, sessionId, (kind, ref, detail) => {
         const event = { ts: nowIso(), session_id: sessionId, world: worldName, kind, ref, detail };
         if (kind === "hook_run") appendHookRun(event);
-        else appendUsageEvent(paths.usageEventsFile(), event);
+        else appendUsageEvent(event);
       });
     });
   }
@@ -320,7 +305,7 @@ function handleSubagentStop(payload: Record<string, unknown>, world: HookWorld):
   // Allowlisted to subagent_type only: the full payload carries the
   // subagent's prompt, result, last assistant message and transcript path,
   // none of which belong in a usage log.
-  appendUsageEvent(paths.usageEventsFile(), {
+  appendUsageEvent({
     ts: nowIso(),
     session_id: sessionId,
     world: worldName,

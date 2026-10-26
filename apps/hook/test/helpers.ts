@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closeState, openState } from "@sil/statedb";
 
 export const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 export const MAIN_TS = join(REPO_ROOT, "apps/hook/src/main.ts");
@@ -47,6 +48,14 @@ export function makeHookEnv(pluginRoot: string = REPO_ROOT): HookEnv {
       CLAUDE_PLUGIN_ROOT: pluginRoot,
     },
   };
+}
+
+/** Create loop state for the current SIL_STATE_DIR, the way a non-hook
+ * process does on first open, so the hook writes rows instead of spilling.
+ * Call after process.env points at the test's dirs. */
+export function createLoopState(): void {
+  openState();
+  closeState();
 }
 
 export function cleanupHookEnv(hookEnv: HookEnv): void {

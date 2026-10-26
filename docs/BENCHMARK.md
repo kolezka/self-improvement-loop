@@ -267,14 +267,16 @@ the gate is run in a container on a quiet host.
 
 ## Reflections index, 2026-10-26
 
-`bun scripts/bench-reflection-index.ts <reflections-dir> [n]` copies one
-reflections dir into a temp home and times `listReflections` (reads every file)
+`bun scripts/bench-reflection-index.ts <reflections-dir> [n] [world]` copies one
+reflections dir into `world`'s dir (default `default`) in a temp home and times `listReflections` (reads every file)
 against `listReflectionHeads` once with an empty index and `n` times with a warm
 one (default 3). The cold row is first-call cost: it also opens the DB for the
 first time, runs the schema migrations, probes the filesystem and checks for
 legacy imports, besides filling the index. It prints the top-level `.md` file
 count, then p50 and max in ms per reader and the record count each call
-returned; it never touches the source dir or the real home.
+returned; it never touches the source dir or the real home. Pass the world the
+files name in their headers: both readers filter on it, and the script exits 2
+when it finds no reflections of that world.
 
 | reader | n | p50 ms | max ms | records |
 |---|---|---|---|---|

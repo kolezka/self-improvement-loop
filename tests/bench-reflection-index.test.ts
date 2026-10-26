@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { run } from "../scripts/bench-reflection-index.ts";
 
 // The shape writeReflection writes, so the strict reader accepts it.
-const reflection = (id: string): string =>
-  `---\nid: ${id}\nworld: default\npattern: bench-${id}\ncreated: 2026-10-26\ncreated_at: 2026-10-26T00:00:00.000Z\n---\nPattern: bench-${id}\n\n## Reusable lesson\nx\n`;
+const reflection = (id: string, world = "default"): string =>
+  `---\nid: ${id}\nworld: ${world}\npattern: bench-${id}\ncreated: 2026-10-26\ncreated_at: 2026-10-26T00:00:00.000Z\n---\nPattern: bench-${id}\n\n## Reusable lesson\nx\n`;
 
 let src: string;
 
@@ -37,5 +37,18 @@ describe("reflections index bench", () => {
       expect(row.max).toBeGreaterThanOrEqual(row.p50);
     }
     expect(readdirSync(src).sort().map((f) => [f, readFileSync(join(src, f), "utf8")])).toEqual(before);
+  }, 30_000);
+
+  test("a world other than default is read when it is named, and is not there when it is not", async () => {
+    const inkitt = mkdtempSync(join(tmpdir(), "sil-bench-index-inkitt-"));
+    try {
+      for (const id of ["a1", "b2", "c3"]) writeFileSync(join(inkitt, `${id}.md`), reflection(id, "inkitt"));
+      const named = await run(inkitt, 1, "inkitt");
+      expect(named.map((r) => r.name)).toEqual(["listReflections", "listReflectionHeads cold", "listReflectionHeads warm"]);
+      for (const row of named) expect(row.records).toBe(3);
+      for (const row of await run(inkitt, 1, "default")) expect(row.records).toBe(0);
+    } finally {
+      rmSync(inkitt, { recursive: true, force: true });
+    }
   }, 30_000);
 });

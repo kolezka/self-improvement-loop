@@ -3,8 +3,9 @@
 // copy of one reflections dir. Runs against temp SIL_CONFIG_DIR, SIL_STATE_DIR
 // and SIL_DATA_DIR, so the source dir and the real home are never touched.
 //
-// Run: bun scripts/bench-reflection-index.ts <reflections-dir> [n]
-//      n is the warm repeat count, default 3.
+// Run: bun scripts/bench-reflection-index.ts <reflections-dir> [n] [world]
+//      n is the warm repeat count, default 3. world is the one the files
+//      name in their headers, default `default`.
 //
 // See docs/BENCHMARK.md, "Reflections index".
 
@@ -12,7 +13,7 @@ import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadConfig, paths, saveConfig, worldNamed } from "@sil/core";
+import { loadConfig, paths, saveConfig, World, worldNamed } from "@sil/core";
 import { closeState } from "@sil/statedb";
 import { listReflectionHeads, listReflections } from "@sil/store";
 
@@ -26,7 +27,6 @@ export interface BenchRow {
 }
 
 const ENV_KEYS = ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"] as const;
-const WORLD = "default";
 
 function timed(name: string, n: number, fn: () => unknown[]): BenchRow {
   const durations: number[] = [];
@@ -40,8 +40,8 @@ function timed(name: string, n: number, fn: () => unknown[]): BenchRow {
   return { name, n, p50: sorted[Math.floor(sorted.length / 2)]!, max: sorted[sorted.length - 1]!, records };
 }
 
-/** Copies `dir` into a fresh temp home and times both readers there. */
-export async function run(dir: string, n: number): Promise<BenchRow[]> {
+/** Copies `dir` into `world`'s reflections dir in a fresh temp home and times both readers there. */
+export async function run(dir: string, n: number, world = "default"): Promise<BenchRow[]> {
   const tmp = mkdtempSync(join(tmpdir(), "sil-bench-index-"));
   const saved: Record<string, string | undefined> = {};
   for (const k of ENV_KEYS) {
@@ -50,13 +50,15 @@ export async function run(dir: string, n: number): Promise<BenchRow[]> {
   }
   try {
     const cfg = loadConfig();
-    worldNamed(cfg, WORLD);
+    // A fresh config knows only `default`; worldNamed looks up, it does not add.
+    if (!cfg.worlds.some((w) => w.name === world)) cfg.worlds.push(World.parse({ name: world }));
+    worldNamed(cfg, world);
     saveConfig(cfg);
-    cpSync(dir, paths.reflectionsDir(WORLD), { recursive: true });
+    cpSync(dir, paths.reflectionsDir(world), { recursive: true });
     return [
-      timed("listReflections", n, () => listReflections(WORLD)),
-      timed("listReflectionHeads cold", 1, () => listReflectionHeads(WORLD)),
-      timed("listReflectionHeads warm", n, () => listReflectionHeads(WORLD)),
+      timed("listReflections", n, () => listReflections(world)),
+      timed("listReflectionHeads cold", 1, () => listReflectionHeads(world)),
+      timed("listReflectionHeads warm", n, () => listReflectionHeads(world)),
     ];
   } finally {
     // Restore the env and remove the temp tree even if closing the DB throws.
@@ -73,9 +75,9 @@ export async function run(dir: string, n: number): Promise<BenchRow[]> {
 }
 
 async function main(): Promise<void> {
-  const [dir, nArg] = process.argv.slice(2);
+  const [dir, nArg, world = "default"] = process.argv.slice(2);
   if (!dir) {
-    console.error("usage: bun scripts/bench-reflection-index.ts <reflections-dir> [n]");
+    console.error("usage: bun scripts/bench-reflection-index.ts <reflections-dir> [n] [world]");
     process.exit(2);
   }
   const n = nArg === undefined ? 3 : Number(nArg);
@@ -84,7 +86,12 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const files = readdirSync(dir).filter((f) => f.endsWith(".md")).length;
-  const rows = await run(dir, n);
+  const rows = await run(dir, n, world);
+  // Both readers filter on the header's world, so a wrong world times an empty read.
+  if (rows[0]!.records === 0) {
+    console.error(`error: no reflections of world ${JSON.stringify(world)} in ${dir}; pass the world the files name in their headers`);
+    process.exit(2);
+  }
   console.log(`top-level .md files: ${files}`);
   console.log("| reader | n | p50 ms | max ms | records |");
   console.log("|---|---|---|---|---|");

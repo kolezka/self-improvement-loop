@@ -95,6 +95,21 @@ describe("sil state", () => {
     expect(readFileSync(invalid, "utf8")).toBe('{"wrong":"target"}\n');
   });
 
+  test("status prints a payload samples block, one line per world, or none", () => {
+    expect(sil("state", "status").out).toContain("\npayload samples: none\n");
+    const legacy = paths.payloadSamplesFile("inkitt");
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, '{"n":1}\n');
+    writeFileSync(join(dirname(legacy), "a b.jsonl"), '{"n":1}\n');
+    const text = sil("state", "status");
+    expect(text.code).toBe(0);
+    expect(text.out).toContain(
+      '\npayload samples:\n  inkitt                 0 rows  (legacy file waiting)\n  invalid world name, not imported: payload_samples "a b"\n',
+    );
+    // The per-world stream is not a line of the stores block.
+    expect(text.out).not.toContain("\n  payload_samples");
+  });
+
   test("quarantine --world rejects invalid names as a usage error", () => {
     const result = sil("state", "quarantine", "--drop", "aliases", "--world", "a b");
     expect(result.code).toBe(2);
@@ -123,7 +138,7 @@ describe("sil state", () => {
     const first = status();
     // Positive control: the child used the tmp state dir, not the real one.
     expect(first.dbPath).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
-    expect(first.schemaVersion).toBe(2);
+    expect(first.schemaVersion).toBe(3);
     expect(first.streams["critic"]).toEqual({ rows: 2, quarantined: 0, pending: false });
     expect(first.imports).toHaveLength(1);
     expect(first.imports[0]).toMatchObject({ store: "critic", state: "verified", lines: 2, failure: null, backupCheck: "ok" });
@@ -272,7 +287,8 @@ describe("sil state", () => {
       [
         `import { paths } from ${JSON.stringify(join(import.meta.dir, "..", "..", "..", "packages", "core", "src", "index.ts"))};`,
         `import { readRecords, STREAMS } from ${JSON.stringify(join(import.meta.dir, "..", "..", "..", "packages", "statedb", "src", "index.ts"))};`,
-        `const counts = Object.fromEntries(Object.keys(STREAMS).map((s) => [s, readRecords(s, "strict").records.length]));`,
+        `const global = Object.keys(STREAMS).filter((s) => !STREAMS[s].perWorld);`,
+        `const counts = Object.fromEntries(global.map((s) => [s, readRecords(s, "strict").records.length]));`,
         `console.log(JSON.stringify({ db: paths.loopStateDb(), counts }));`,
       ].join("\n"),
     );
@@ -282,7 +298,7 @@ describe("sil state", () => {
     const out = JSON.parse(p.stdout.toString()) as { db: string; counts: Record<string, number> };
     // Positive control: the child read the tmp DB.
     expect(out.db).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
-    expect(out.counts).toEqual({ reflect_runs: 0, critic: 2, human: 1, proposal_events: 0 });
+    expect(out.counts).toEqual({ reflect_runs: 0, critic: 2, human: 1, proposal_events: 0, usage_events: 0, nudge_fires: 0, hook_runs: 0 });
     expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(critic);
     expect(readFileSync(paths.humanFeedbackFile(), "utf8")).toBe(human);
   });

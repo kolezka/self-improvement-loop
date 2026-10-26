@@ -83,7 +83,7 @@ const caught = (fn: () => unknown): unknown => {
   return null;
 };
 
-const critic = (): string => STREAMS.critic.legacyPath();
+const critic = (): string => STREAMS.critic.legacyPath(null);
 
 /** A completed import of two lines, then the backup renamed back to the claim
  * name: the state a crash between COMMIT and the backup rename leaves. */
@@ -102,13 +102,13 @@ function crashAfterCommit(): { claim: string; backup: string; seeded: Buffer } {
 
 describe("legacy import", () => {
   test("the first open imports all four streams", () => {
-    const counts: Record<Stream, number> = { reflect_runs: 1, critic: 2, human: 3, proposal_events: 4 };
+    const counts: Partial<Record<Stream, number>> = { reflect_runs: 1, critic: 2, human: 3, proposal_events: 4 };
     for (const [stream, n] of Object.entries(counts) as [Stream, number][]) {
-      for (let i = 0; i < n; i++) fsx.appendJsonl(STREAMS[stream].legacyPath(), { stream, i });
+      for (let i = 0; i < n; i++) fsx.appendJsonl(STREAMS[stream].legacyPath(null), { stream, i });
     }
     const db = openState();
     for (const [stream, n] of Object.entries(counts) as [Stream, number][]) {
-      const p = STREAMS[stream].legacyPath();
+      const p = STREAMS[stream].legacyPath(null);
       expect(existsSync(p)).toBe(false);
       expect(existsSync(`${p}.importing`)).toBe(false);
       expect(backups(p)).toHaveLength(1);
@@ -364,16 +364,16 @@ function failingIo(call: "stat" | "readFile", matches: (path: string) => boolean
 
 describe("importAll", () => {
   test("a first call on seeded files returns the outcomes of the import its open ran", () => {
-    fsx.appendJsonl(STREAMS.critic.legacyPath(), { n: 1 });
-    fsx.appendJsonl(STREAMS.human.legacyPath(), { n: 1 });
-    fsx.appendJsonl(STREAMS.human.legacyPath(), { n: 2 });
+    fsx.appendJsonl(STREAMS.critic.legacyPath(null), { n: 1 });
+    fsx.appendJsonl(STREAMS.human.legacyPath(null), { n: 1 });
+    fsx.appendJsonl(STREAMS.human.legacyPath(null), { n: 2 });
     const result = importAll();
     expect(result.failures).toEqual([]);
     expect(result.outcomes.map((o) => [o.store, o.imported, o.quarantined, o.blank])).toEqual([
       ["critic", 1, 0, 0],
       ["human", 2, 0, 0],
     ]);
-    expect(result.outcomes.map((o) => o.backupPath)).toEqual([...backups(critic()), ...backups(STREAMS.human.legacyPath())]);
+    expect(result.outcomes.map((o) => o.backupPath)).toEqual([...backups(critic()), ...backups(STREAMS.human.legacyPath(null))]);
     // Nothing left: a second call reports nothing.
     expect(importAll()).toEqual({ outcomes: [], failures: [] });
   });
@@ -387,19 +387,20 @@ describe("importAll", () => {
   });
 
   test("one failing stream is listed and every other stream is still imported", () => {
-    for (const stream of Object.keys(STREAMS) as Stream[]) fsx.appendJsonl(STREAMS[stream].legacyPath(), { stream });
-    const failingClaim = `${STREAMS.reflect_runs.legacyPath()}.importing`;
+    for (const stream of (Object.keys(STREAMS) as Stream[]).filter((s) => !STREAMS[s].perWorld)) fsx.appendJsonl(STREAMS[stream].legacyPath(null), { stream });
+    const failingClaim = `${STREAMS.reflect_runs.legacyPath(null)}.importing`;
     setImportIoForTest(failingIo("readFile", (path) => path === failingClaim, "EIO"));
     let result = { outcomes: [] as { store: Stream }[], failures: [] as unknown[] };
     expect(caught(() => (result = importAll() as unknown as typeof result))).toBeNull();
     expect(result.failures).toEqual([{ store: "reflect_runs", world: null, message: "the reflect runs log cannot be imported (EIO)" }]);
-    expect(result.outcomes.map((o) => o.store)).toEqual(["critic", "human", "proposal_events"]);
-    for (const stream of ["critic", "human", "proposal_events"] as Stream[]) expect(rowCount(stream)).toBe(1);
+    const others: Stream[] = ["critic", "human", "proposal_events", "usage_events", "nudge_fires", "hook_runs"];
+    expect(result.outcomes.map((o) => o.store)).toEqual(others);
+    for (const stream of others) expect(rowCount(stream)).toBe(1);
     expect(importRows("reflect_runs").map((r) => [r.state, r.failure])).toEqual([["failed", "EIO"]]);
   });
 
   test("a pending check that cannot stat at first open records failed and the open goes on", () => {
-    fsx.appendJsonl(STREAMS.human.legacyPath(), { n: 1 });
+    fsx.appendJsonl(STREAMS.human.legacyPath(null), { n: 1 });
     setImportIoForTest(failingIo("stat", (path) => path === critic(), "EIO"));
     const db = openState();
     const failed = importRows("critic");

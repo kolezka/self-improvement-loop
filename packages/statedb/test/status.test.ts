@@ -205,3 +205,32 @@ describe("documents and aliases in status and quarantine", () => {
     expect((error as Error).message).toContain("the legacy aliases files cannot be listed (");
   });
 });
+
+describe("payload samples in status", () => {
+  test("worldStreams lists each world from rows and legacy files, with counts and pending", () => {
+    const db = openState();
+    db.run(
+      `INSERT INTO log_records (stream, ts, world, body, recorded_at) VALUES ('payload_samples', 't', 'beta', '{"world":"beta"}', 'r'), ('critic', 't', 'gamma', '{"world":"gamma"}', 'r')`,
+    );
+    db.run("INSERT INTO quarantine (store, source, reason, raw, quarantined_at, world) VALUES ('payload_samples', '/x', 'not JSON', 'oops', 'q', 'beta')");
+    const legacy = paths.payloadSamplesFile("alpha");
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, '{"n":1}\n');
+    writeFileSync(join(dirname(legacy), "a b.jsonl"), '{"n":1}\n');
+    const status = stateStatus();
+    expect(status.worldStreams).toEqual([
+      { store: "payload_samples", world: "alpha", rows: 0, quarantined: 0, pending: true },
+      { store: "payload_samples", world: "beta", rows: 1, quarantined: 1, pending: false },
+    ]);
+    expect(status.invalidWorldEntries).toContainEqual({ store: "payload_samples", name: "a b" });
+    expect(Object.keys(status.streams)).not.toContain("payload_samples");
+    expect(status.streams.usage_events).toEqual({ rows: 0, quarantined: 0, pending: false });
+  });
+
+  test("a claim alone is pending", () => {
+    const claim = `${paths.payloadSamplesFile("alpha")}.importing`;
+    mkdirSync(dirname(claim), { recursive: true });
+    writeFileSync(claim, '{"n":1}\n');
+    expect(stateStatus().worldStreams).toEqual([{ store: "payload_samples", world: "alpha", rows: 0, quarantined: 0, pending: true }]);
+  });
+});

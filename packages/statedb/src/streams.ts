@@ -6,13 +6,45 @@ import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
 import { capRaw, ensureImported, ImportError, reasonOf } from "./import.ts";
 import { openState } from "./open.ts";
 
-export type Stream = "reflect_runs" | "critic" | "human" | "proposal_events";
+export type Stream =
+  | "reflect_runs"
+  | "critic"
+  | "human"
+  | "proposal_events"
+  | "usage_events"
+  | "nudge_fires"
+  | "hook_runs"
+  | "payload_samples";
 
-export const STREAMS: Readonly<Record<Stream, { legacyPath(): string; label: string }>> = {
-  reflect_runs: { legacyPath: () => paths.reflectRunsFile(), label: "the reflect runs log" },
-  critic: { legacyPath: () => paths.criticFeedbackFile(), label: "the critic feedback log" },
-  human: { legacyPath: () => paths.humanFeedbackFile(), label: "the human feedback log" },
-  proposal_events: { legacyPath: () => paths.proposalEventsFile(), label: "the proposal events log" },
+export interface StreamSpec {
+  perWorld: boolean;
+  legacyPath(world: string | null): string;
+  label(world: string | null): string;
+}
+
+/** A per-world store called without its world is a programming error. */
+export function needWorld(world: string | null): string {
+  if (world === null) throw new Error("per-world store used without a world");
+  return world;
+}
+
+function globalStream(legacyPath: () => string, label: string): StreamSpec {
+  return { perWorld: false, legacyPath: () => legacyPath(), label: () => label };
+}
+
+export const STREAMS: Readonly<Record<Stream, StreamSpec>> = {
+  reflect_runs: globalStream(() => paths.reflectRunsFile(), "the reflect runs log"),
+  critic: globalStream(() => paths.criticFeedbackFile(), "the critic feedback log"),
+  human: globalStream(() => paths.humanFeedbackFile(), "the human feedback log"),
+  proposal_events: globalStream(() => paths.proposalEventsFile(), "the proposal events log"),
+  usage_events: globalStream(() => paths.usageEventsFile(), "the usage log"),
+  nudge_fires: globalStream(() => paths.nudgeFiresFile(), "the nudge fires log"),
+  hook_runs: globalStream(() => paths.hookRunsFile(), "the hook runs log"),
+  payload_samples: {
+    perWorld: true,
+    legacyPath: (world) => paths.payloadSamplesFile(needWorld(world)),
+    label: (world) => `the payload samples of world ${JSON.stringify(needWorld(world))}`,
+  },
 };
 
 export type ReadMode = "strict" | "counted" | "tolerant";
@@ -37,7 +69,7 @@ function insertRecord(db: Database, stream: Stream, record: Record<string, unkno
 
 /** Append one record. Any failure throws StateWriteError starting with the stream's label. */
 export function appendRecord(stream: Stream, record: Record<string, unknown>): void {
-  const { label } = STREAMS[stream];
+  const label = STREAMS[stream].label(null);
   try {
     if (record === null || typeof record !== "object" || Array.isArray(record)) throw new StateWriteError(`${label} cannot be written (not a JSON object)`);
     ensureImported({ store: stream, world: null });
@@ -65,11 +97,11 @@ export function logStateOnce(key: string, label: string, reason: string): void {
   }
 }
 
-const logOnce = (stream: Stream, reason: string): void => logStateOnce(stream, STREAMS[stream].label, reason);
+const logOnce = (stream: Stream, reason: string): void => logStateOnce(stream, STREAMS[stream].label(null), reason);
 
 /** What a strict reader throws when the import before its read fails. */
 export function strictImportError(stream: Stream, error: unknown): StateReadError {
-  const { label } = STREAMS[stream];
+  const label = STREAMS[stream].label(null);
   if (error instanceof ImportError && error.busy) return new StateReadError(`${label} is being imported`);
   return new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
 }
@@ -79,7 +111,7 @@ const EMPTY = (): ReadResult => ({ records: [], quarantined: 0 });
 /** Read a stream in append order. The pending check and import run before the
  * read's snapshot; the rows and the quarantine count come from one snapshot. */
 export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
-  const { label } = STREAMS[stream];
+  const label = STREAMS[stream].label(null);
   try {
     ensureImported({ store: stream, world: null });
   } catch (error) {
@@ -119,7 +151,7 @@ const plural = (n: number, word: string): string => `${n} ${n === 1 ? word : `${
 /** A stream's bodies in id order, read on `db` inside the caller's transaction.
  * Throws StateReadError when the stream has quarantined lines (design D13). */
 export function exportBodiesOn(db: Database, stream: Stream): string[] {
-  const { label } = STREAMS[stream];
+  const label = STREAMS[stream].label(null);
   let bodies: string[];
   let bad: number;
   try {
@@ -136,7 +168,7 @@ export function exportBodiesOn(db: Database, stream: Stream): string[] {
  * when it has no rows. Refuses a stream with quarantined lines (design D13), so
  * an export is never silently short. */
 export function exportJsonl(stream: Stream): string | null {
-  const { label } = STREAMS[stream];
+  const label = STREAMS[stream].label(null);
   try {
     ensureImported({ store: stream, world: null });
   } catch (error) {
@@ -173,7 +205,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * which replaces both in one transaction. Bad lines are quarantined under
  * `source`. Any failure throws StateWriteError starting with the stream's label. */
 export function replaceStream(stream: Stream, jsonl: string, source: string, force: boolean): ReplaceResult {
-  const { label } = STREAMS[stream];
+  const label = STREAMS[stream].label(null);
   try {
     // A legacy file still waiting at the old path is host data too.
     ensureImported({ store: stream, world: null });

@@ -58,12 +58,15 @@ function sil(args: string[]): { exitCode: number; stdout: string; stderr: string
   return { exitCode: proc.exitCode ?? -1, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
 }
 
+// The four logs phase 1 moved; the hook-written streams have their own tests.
+type LogStream = Extract<Stream, "reflect_runs" | "critic" | "human" | "proposal_events">;
+
 const WORLD = "default";
 const PATTERN = "verify-callsites";
 const REF = `skill:${PATTERN}`;
 
 /** The four legacy logs as the previous release wrote them, one compact JSON object per line. */
-function seeds(): Record<Stream, Record<string, unknown>[]> {
+function seeds(): Record<LogStream, Record<string, unknown>[]> {
   const ts = new Date().toISOString();
   return {
     reflect_runs: [1, 2, 3].map((i) => ({ ts, world: WORLD, session_id: `s-${i}`, recorded: i !== 2 })),
@@ -85,18 +88,18 @@ function seeds(): Record<Stream, Record<string, unknown>[]> {
   };
 }
 
-const LEGACY: Record<Stream, () => string> = {
+const LEGACY: Record<LogStream, () => string> = {
   reflect_runs: () => paths.reflectRunsFile(),
   critic: () => paths.criticFeedbackFile(),
   human: () => paths.humanFeedbackFile(),
   proposal_events: () => paths.proposalEventsFile(),
 };
-const STREAM_NAMES = Object.keys(LEGACY) as Stream[];
+const STREAM_NAMES = Object.keys(LEGACY) as LogStream[];
 
 /** Writes every legacy file and returns its exact text. */
-function seedLegacy(): Record<Stream, string> {
+function seedLegacy(): Record<LogStream, string> {
   const s = seeds();
-  const text = {} as Record<Stream, string>;
+  const text = {} as Record<LogStream, string>;
   for (const stream of STREAM_NAMES) {
     text[stream] = s[stream].map((r) => JSON.stringify(r)).join("\n") + "\n";
     mkdirSync(dirname(LEGACY[stream]()), { recursive: true });
@@ -156,7 +159,7 @@ describe("loop state end to end", () => {
     // control that the child ran against the tmp home, not the real one.
     const status = statusJson();
     expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
-    expect(status.schemaVersion).toBe(2);
+    expect(status.schemaVersion).toBe(3);
     expect(status.suspended).toBeNull();
     const counts = { reflect_runs: 3, critic: 4, human: 2, proposal_events: 3 };
     for (const stream of STREAM_NAMES) {
@@ -164,7 +167,7 @@ describe("loop state end to end", () => {
     }
     expect(status.imports).toHaveLength(4);
     for (const imp of status.imports) {
-      const stream = imp.store as Stream;
+      const stream = imp.store as LogStream;
       expect(imp.state).toBe("verified");
       expect(imp.backupCheck).toBe("ok");
       expect(imp.lines).toBe(counts[stream]);
@@ -315,7 +318,7 @@ describe("documents end to end", () => {
 
     const status = statusJson();
     expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
-    expect(status.schemaVersion).toBe(2);
+    expect(status.schemaVersion).toBe(3);
     expectDocs(status);
     expect(status.imports).toHaveLength(8);
     for (const imp of status.imports) {

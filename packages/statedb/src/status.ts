@@ -9,7 +9,7 @@ import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
 import { ensureImported, importAll, type ImportAllResult, importAllOn, importSuspendedAt, legacyIo, reasonOf, SUSPENDED_KEY } from "./import.ts";
 import { quarantineCountOn, quarantinedMessage, storeRef, strictStoreImportError } from "./docs.ts";
 import { openState, openStateReporting } from "./open.ts";
-import { type DocName, legacyWorldsReport, type StoreName, type StoreRef, STORES } from "./stores.ts";
+import { type DocName, legacyWorldsReport, type PerWorldStore, type StoreName, type StoreRef, STORES } from "./stores.ts";
 import { exportBodiesOn, type Stream, STREAMS, strictImportError } from "./streams.ts";
 
 export type BackupCheck = "ok" | "missing" | "grew" | "changed";
@@ -34,11 +34,13 @@ export interface StateStatus {
   fsClass: string | null;
   /** The export time while `sil state export` has suspended legacy imports, else null. */
   suspended: string | null;
-  streams: Record<Stream, { rows: number; quarantined: number; pending: boolean }>;
+  streams: Record<GlobalStream, { rows: number; quarantined: number; pending: boolean }>;
+  /** Every world of a per-world stream seen, sorted by world. */
+  worldStreams: StatusStream[];
   /** Every document and aliases world seen, sorted by store then world. */
   docs: StatusDoc[];
   /** Legacy files whose raw on-disk world names cannot be imported safely. */
-  invalidWorldEntries: { store: "refine_attempts" | "aliases"; name: string }[];
+  invalidWorldEntries: { store: PerWorldStore; name: string }[];
   imports: StatusImport[];
 }
 
@@ -51,12 +53,24 @@ export interface StatusDoc {
   pending: boolean;
 }
 
-const STREAM_NAMES = Object.keys(STREAMS) as Stream[];
+export type GlobalStream = Exclude<Stream, "payload_samples">;
+
+/** One world of a per-world stream. */
+export interface StatusStream {
+  store: "payload_samples";
+  world: string;
+  rows: number;
+  quarantined: number;
+  pending: boolean;
+}
+
+const STREAM_NAMES = (Object.keys(STREAMS) as Stream[]).filter((stream) => !STREAMS[stream].perWorld) as GlobalStream[];
 type DocStore = DocName | "aliases";
 const DOC_STORES = (Object.keys(STORES) as StoreName[]).filter((store) => STORES[store].kind !== "stream") as DocStore[];
 const isDocStore = (store: string): store is DocStore => (DOC_STORES as string[]).includes(store);
 const PER_WORLD_DOC_STORES = DOC_STORES.filter((store) => STORES[store].perWorld) as ("refine_attempts" | "aliases")[];
 const GLOBAL_DOC_STORES = DOC_STORES.filter((store) => !STORES[store].perWorld);
+const PER_WORLD_STORES: readonly PerWorldStore[] = [...PER_WORLD_DOC_STORES, "payload_samples"];
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -75,12 +89,29 @@ function pendingAt(ref: StoreRef): boolean {
 }
 
 /** Per-world legacy files, as StateReadError when they cannot be listed. */
-function legacyWorldsReportOrThrow(store: "refine_attempts" | "aliases"): { worlds: string[]; invalid: string[] } {
+function legacyWorldsReportOrThrow(store: PerWorldStore): { worlds: string[]; invalid: string[] } {
   try {
     return legacyWorldsReport(store);
   } catch (error) {
     throw new StateReadError(`the legacy ${store} files cannot be listed (${fsx.errnoCode(error) || reasonOf(error)})`);
   }
+}
+
+/** Every world of the payload samples stream: rows in the database, plus each
+ * legacyWorlds() world. Sorted and unique. Throws StateReadError when the
+ * legacy files cannot be listed. Read on `db` inside the caller's snapshot. */
+function payloadWorldsOn(db: Database): string[] {
+  const rows = db.query("SELECT DISTINCT world FROM log_records WHERE stream = 'payload_samples' AND world IS NOT NULL").all() as { world: string }[];
+  return [...new Set([...rows.map((row) => row.world), ...legacyWorldsReportOrThrow("payload_samples").worlds])].sort(cmp);
+}
+
+/** Row and quarantine counts of one world of a per-world stream, on `db`. */
+function streamWorldCountsOn(db: Database, stream: Stream, world: string): { rows: number; quarantined: number } {
+  return db
+    .query(
+      "SELECT (SELECT count(*) FROM log_records WHERE stream = ?1 AND world = ?2) AS rows, (SELECT count(*) FROM quarantine WHERE store = ?1 AND world IS ?2) AS quarantined",
+    )
+    .get(stream, world) as { rows: number; quarantined: number };
 }
 
 /** Every document and aliases world the database has seen: rows, quarantine
@@ -215,6 +246,7 @@ export function stateStatus(): StateStatus {
     suspended: string | null;
     counts: Map<string, { rows: number; quarantined: number }>;
     docs: (StoreRef & { rows: number; quarantined: number })[];
+    payloadWorlds: { world: string; rows: number; quarantined: number }[];
     rows: ImportRowFull[];
   };
   try {
@@ -237,6 +269,7 @@ export function stateStatus(): StateStatus {
         ) as { n: number };
         return { ...ref, rows: n, quarantined: quarantineCountOn(db, ref) };
       });
+      const payloadWorlds = payloadWorldsOn(db).map((world) => ({ world, ...streamWorldCountsOn(db, "payload_samples", world) }));
       // A failed row is history once a later verified import of the same file (store, dev, ino) succeeded.
       const rows = db
         .query(
@@ -248,7 +281,7 @@ export function stateStatus(): StateStatus {
            ORDER BY id`,
         )
         .all() as ImportRowFull[];
-      return { version, fsClass: fs?.value ?? null, suspended: importSuspendedAt(db), counts, docs, rows };
+      return { version, fsClass: fs?.value ?? null, suspended: importSuspendedAt(db), counts, docs, payloadWorlds, rows };
     });
   } catch (error) {
     // A legacy path that cannot be checked already names its store.
@@ -261,11 +294,15 @@ export function stateStatus(): StateStatus {
     streams[stream] = { ...read.counts.get(stream)!, pending: pendingAt({ store: stream, world: null }) };
   }
 
+  const worldStreams = read.payloadWorlds.map(
+    (w): StatusStream => ({ store: "payload_samples", ...w, pending: pendingAt({ store: "payload_samples", world: w.world }) }),
+  );
+
   const docs = read.docs.map(
     (d): StatusDoc => ({ store: d.store as DocStore, world: d.world, rows: d.rows, quarantined: d.quarantined, pending: pendingAt(d) }),
   );
 
-  const invalidWorldEntries = PER_WORLD_DOC_STORES.flatMap((store) =>
+  const invalidWorldEntries = PER_WORLD_STORES.flatMap((store) =>
     legacyWorldsReportOrThrow(store).invalid.map((name) => ({ store, name })),
   );
 
@@ -284,7 +321,7 @@ export function stateStatus(): StateStatus {
     };
   });
 
-  return { dbPath: resolve(paths.loopStateDb()), schemaVersion: read.version, fsClass: read.fsClass, suspended: read.suspended, streams, docs, invalidWorldEntries, imports };
+  return { dbPath: resolve(paths.loopStateDb()), schemaVersion: read.version, fsClass: read.fsClass, suspended: read.suspended, streams, worldStreams, docs, invalidWorldEntries, imports };
 }
 
 export interface QuarantineEntry {
@@ -444,7 +481,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
 
     for (const stream of ready) {
       const ref: StoreRef = { store: stream, world: null };
-      const target = STREAMS[stream].legacyPath();
+      const target = STREAMS[stream].legacyPath(null);
       let bodies: string[];
       try {
         bodies = exportBodiesOn(db, stream);

@@ -16,6 +16,7 @@ export {
   dropQuarantine,
   exportLegacy,
   type ExportLegacyResult,
+  type GlobalStream,
   listQuarantine,
   type QuarantineEntry,
   migrateLegacy,
@@ -23,6 +24,7 @@ export {
   type StateStatus,
   type StatusDoc,
   type StatusImport,
+  type StatusStream,
 } from "./status.ts";
 export {
   appendRecord,
@@ -38,6 +40,8 @@ export {
 export {
   type DocName,
   legacyWorlds,
+  legacyWorldsReport,
+  type PerWorldStore,
   type StoreKind,
   type StoreName,
   type StoreRef,

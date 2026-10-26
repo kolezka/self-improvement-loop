@@ -546,7 +546,8 @@ function claimByRename(target: Claimable): boolean {
 const globalStores = (): StoreName[] => (Object.keys(STORES) as StoreName[]).filter((store) => !STORES[store].perWorld);
 const PER_WORLD_STORES = ["refine_attempts", "aliases", "payload_samples"] as const;
 
-// The payload corpus reader (curriculum loadPayloadCorpus) and the bundle still read the file until the next task removes this last entry.
+// The payload corpus (loadPayloadCorpus) and the bundle still read payloads/<w>.jsonl until the next task,
+// so first open and sil state migrate skip it; ensureImported stays ungated.
 export const FIRST_OPEN_DEFERRED: ReadonlySet<StoreName> = new Set(["payload_samples"]);
 
 /** Import one store into `result`, collecting its failure instead of throwing. */

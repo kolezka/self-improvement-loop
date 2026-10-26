@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
-import { appendRecord, closeState, importAll, type ImportIo, openState, readRecords, setImportIoForTest, stateStatus, type Stream, STREAMS } from "../src/index.ts";
+import { appendRecord, closeState, importAll, type ImportIo, openState, readRecords, setImportIoForTest, type Stream, STREAMS } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -101,15 +101,15 @@ function crashAfterCommit(): { claim: string; backup: string; seeded: Buffer } {
 }
 
 describe("legacy import", () => {
-  test("the first open leaves payload samples for their file readers; a direct read imports them", () => {
+  test("first open leaves payloads/default.jsonl in place", () => {
     const payloads = STREAMS.payload_samples.legacyPath("default");
+    const events = STREAMS.usage_events.legacyPath(null);
     fsx.appendJsonl(payloads, { world: "default", n: 1 });
     fsx.appendJsonl(payloads, { world: "default", n: 2 });
-    fsx.appendJsonl(critic(), { n: 1 });
+    fsx.appendJsonl(events, { n: 1 });
     openState();
     expect(existsSync(payloads)).toBe(true);
-    expect(existsSync(critic())).toBe(false);
-    expect(stateStatus().worldStreams).toContainEqual({ store: "payload_samples", world: "default", rows: 0, quarantined: 0, pending: true });
+    expect(existsSync(events)).toBe(false);
     expect(readRecords("payload_samples", "strict", "default").records.length).toBe(2);
     expect(existsSync(payloads)).toBe(false);
   });

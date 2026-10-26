@@ -392,3 +392,36 @@ describe("a reused row is checked before it is trusted", () => {
     });
   }
 });
+
+describe("a reused row walked under another path", () => {
+  test("a path-derived id follows a renamed symlink", () => {
+    const dir = paths.reflectionsDir(W);
+    const outside = join(tmp, "outside");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(outside, "target.md"), "Pattern: p\n\nx\n");
+    symlinkSync(join(outside, "target.md"), join(dir, "a.md"));
+    expect(ids(listReflectionHeads(W))).toEqual(["a"]);
+    renameSync(join(dir, "a.md"), join(dir, "b.md"));
+    for (let pass = 0; pass < 2; pass++) {
+      expect(listReflectionHeads(W).map(pick)).toEqual(listReflections(W).map(pick));
+      expect(listReflectionHeadsStrict(W).map(pick)).toEqual(listReflectionsStrict(W).map(pick));
+      expect(ids(listReflectionHeads(W))).toEqual(["b"]);
+    }
+  });
+
+  test("the same file walked under another extra dir gets the full reader's id and path", () => {
+    const first = join(tmp, "mirror-1");
+    const second = join(tmp, "mirror-2");
+    mkdirSync(first);
+    mkdirSync(second);
+    writeFileSync(join(first, "x.md"), "Pattern: p\n\nx\n");
+    symlinkSync(join(first, "x.md"), join(second, "y.md"));
+    expect(ids(listReflectionHeads(W, [first]))).toEqual(["x"]);
+    for (let pass = 0; pass < 2; pass++) {
+      expect(listReflectionHeads(W, [second]).map(pick)).toEqual(listReflections(W, [second]).map(pick));
+      expect(listReflectionHeadsStrict(W, [second]).map(pick)).toEqual(listReflectionsStrict(W, [second]).map(pick));
+      expect(listReflectionHeads(W, [second]).map((h) => [h.id, h.path])).toEqual([["y", join(second, "y.md")]]);
+    }
+  });
+});

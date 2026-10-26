@@ -100,9 +100,11 @@ function headsPass(world: string, extraDirs: string[], mode: Mode): ReflectionHe
       const row = rows?.get(real);
       if (row && row.size === st.size && row.mtimeMs === st.mtimeMs && row.ino === st.ino) {
         const stored = storedHead(row);
-        if (stored) {
+        // A headerless file takes its id from the walked name, so a head
+        // stored under another walked path is stale.
+        if (stored && stored.path === p) {
           kept.add(real);
-          heads.push({ ...stored, path: p, mtime_ms: st.mtimeMs });
+          heads.push({ ...stored, mtime_ms: st.mtimeMs });
           continue;
         }
       }

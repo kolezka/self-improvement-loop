@@ -659,6 +659,11 @@ replaced in place with different content but the same inode, size and mtime
 (for example with `cp -p` over an existing file of the same size) is not
 detected until one of the three changes.
 
+A regular reflection file that is unchanged since it was indexed is counted and
+listed without being opened, even if it has since become unreadable. A
+symlinked reflection file is still opened through the link, so an unreadable
+target fails the read as before.
+
 A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
 old JSONL file is also still whole in that file's backup. A line from a bundle
 (`sil import bundle`) has no backup: the DB copy is all the loop keeps. While a

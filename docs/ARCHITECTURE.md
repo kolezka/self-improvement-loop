@@ -206,7 +206,10 @@ size, mtime and inode. `listReflectionHeads` (and its strict form) walks the
 dir, stats each file and reuses a row whose size, mtime and inode still match,
 so an unchanged file is not opened again. Anything else is parsed, and the row
 is replaced; rows for files that are gone are deleted. Only records the strict
-parser accepts are cached. The readers that need only metadata use it: the
+and the tolerant parser both accept, with the same metadata, are cached. A
+regular file that is unchanged since it was indexed is counted and listed
+without being opened, even if it has since become unreadable; a symlinked file
+is still opened through the link, so it fails like before. The readers that need only metadata use it: the
 reflection counts in `sil status` and the consoles, the feedback scorecards, the
 ops history, the queue's reflection links, the critic's recent titles, the
 curriculum's pattern counts and alias candidates, and the review counters.

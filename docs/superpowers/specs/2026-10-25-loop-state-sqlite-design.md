@@ -792,6 +792,8 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
   - An unchanged file is served from the index without being opened. A file made
     unreadable after it was indexed still reads, in both modes, until it
     changes; a changed unreadable file still raises in strict mode.
+  - Exception: a symlinked file is still opened through the link by
+    `realpathSync`, so an unreadable target fails the read as before.
   - The full readers (`listReflections`, `scanReflections`,
     `listReflectionsStrict`) stay on the files and never touch the DB. Only
     `listReflectionHeads` and its strict form maintain the index.
@@ -807,7 +809,8 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
     dropped before the index was consulted.
   - Only records the strict parser accepts are cached, in both modes, so a
     tolerant pass never stores a defaulted record a later strict pass would
-    reuse.
+    reuse. A record is cached only when the tolerant parser gives the same
+    metadata, so each mode returns its own file reader's record.
   - A caller whose world name is not NFC bypasses the index and reads the files.
     A header without `world` takes the caller's own spelling, so a row parsed for
     the NFC name would be filtered out for another spelling.

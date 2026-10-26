@@ -228,6 +228,8 @@ describe("payload samples in status", () => {
   });
 
   test("a claim alone is pending", () => {
+    // Opened first: the first open imports a claim it finds.
+    openState();
     const claim = `${paths.payloadSamplesFile("alpha")}.importing`;
     mkdirSync(dirname(claim), { recursive: true });
     writeFileSync(claim, '{"n":1}\n');

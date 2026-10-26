@@ -181,28 +181,44 @@ function runTar(args: string[]): void {
   }
 }
 
-// --- feedback logs --------------------------------------------------------
+// --- logs ---------------------------------------------------------------
 
-/** The loop-state streams a bundle carries, at their bundle paths. */
-const FEEDBACK_LOGS: readonly { stream: Stream; rel: string }[] = [
-  { stream: "human", rel: join("state", "feedback", "human.jsonl") },
-  { stream: "critic", rel: join("state", "feedback", "critic.jsonl") },
-];
+/** A loop-state stream at its bundle path, with the world for a per-world one. */
+interface BundleLog {
+  stream: Stream;
+  world?: string;
+  rel: string;
+}
+
+/** The streams a bundle carries for these worlds, at the paths and in the line
+ * format older bundles used. hook-runs.jsonl is left out on purpose: about 90%
+ * of the volume and no scorecard reads it. */
+function bundleLogs(worlds: string[]): BundleLog[] {
+  return [
+    { stream: "human", rel: join("state", "feedback", "human.jsonl") },
+    { stream: "critic", rel: join("state", "feedback", "critic.jsonl") },
+    { stream: "usage_events", rel: join("state", "usage", "events.jsonl") },
+    { stream: "nudge_fires", rel: join("state", "usage", "nudge-fires.jsonl") },
+    ...worlds.map((world): BundleLog => ({ stream: "payload_samples", world, rel: join("state", "usage", "payloads", `${paths.safeComponent(world)}.jsonl`) })),
+  ];
+}
 
 /** Load one bundle log into loop state. Same counts as copyOne: a stream the
- * host already has rows in is skipped unless `force`. Quarantined lines become a warning. */
-function restoreLog(file: string, source: string, stream: Stream, force: boolean, warnings: string[]): CopyStats {
+ * host already has rows in is skipped unless `force`, since appending would
+ * double every event the host already counted. Quarantined lines become a warning. */
+function restoreLog(file: string, source: string, log: BundleLog, force: boolean, warnings: string[]): CopyStats {
   const out = blank();
   if (!existsSync(file)) return out;
   const text = readFileSync(file, "utf8");
-  const result = replaceStream(stream, text, source, force);
+  const result = replaceStream(log.stream, text, source, force, log.world);
   if (!result.written) out.skipped = 1;
   else {
     out.files = 1;
     out.bytes = Buffer.byteLength(text);
   }
   const bad = result.quarantined;
-  if (bad > 0) warnings.push(`${basename(file)}: ${bad} ${bad === 1 ? "line" : "lines"} could not be imported; see sil state quarantine`);
+  const name = log.world === undefined ? basename(file) : `${basename(file)} (world ${log.world})`;
+  if (bad > 0) warnings.push(`${name}: ${bad} ${bad === 1 ? "line" : "lines"} could not be imported; see sil state quarantine`);
   return out;
 }
 
@@ -320,7 +336,6 @@ function stageExport(
     if (world.llm_config !== null) warnings.push(`world ${world.name}: llm_config ${world.llm_config} is not in the bundle; copy it yourself`);
 
     if (history) copyTree(paths.inboxDir(world.name), join(work, "state", "inbox", paths.safeComponent(world.name)));
-    if (history) copyOne(paths.payloadSamplesFile(world.name), join(work, "state", "usage", "payloads", `${paths.safeComponent(world.name)}.jsonl`));
 
     worlds.push(BundleWorld.parse({
       name: world.name,
@@ -331,10 +346,6 @@ function stageExport(
   }
 
   if (history) {
-    // hook-runs.jsonl is left out on purpose: about 90% of the volume and no
-    // scorecard reads it.
-    copyOne(paths.usageEventsFile(), join(work, "state", "usage", "events.jsonl"));
-    copyOne(paths.nudgeFiresFile(), join(work, "state", "usage", "nudge-fires.jsonl"));
     for (const [rel, text] of logs) {
       mkdirSync(dirname(join(work, rel)), { recursive: true });
       writeFileSync(join(work, rel), text);
@@ -369,8 +380,9 @@ export function exportBundle(opts: ExportOptions): ExportResult {
   let logs: Map<string, string> | null = null;
   if (history) {
     logs = new Map();
-    for (const log of FEEDBACK_LOGS) {
-      const text = exportJsonl(log.stream);
+    // A stream with no rows writes no file, as an absent log file did before.
+    for (const log of bundleLogs(cfg.worlds.map((w) => w.name))) {
+      const text = exportJsonl(log.stream, log.world);
       if (text !== null) logs.set(log.rel, text);
     }
   }
@@ -479,19 +491,12 @@ function restore(root: string, source: string, manifest: BundleManifest, opts: I
     if (world.llm_config !== null) warnings.push(`world ${world.name}: llm_config ${world.llm_config} is not in the bundle; copy it yourself`);
 
     add(stats, copyTree(join(root, "state", "inbox", paths.safeComponent(world.name)), paths.inboxDir(world.name), false));
-    add(stats, copyOne(join(root, "state", "usage", "payloads", `${paths.safeComponent(world.name)}.jsonl`), paths.payloadSamplesFile(world.name), opts.force === true));
   }
 
-  // Whole-file copies, never appends: appending would double every usage event
-  // the host already counted.
-  const pairs: [string, string][] = [
-    [join(root, "state", "usage", "events.jsonl"), paths.usageEventsFile()],
-    [join(root, "state", "usage", "nudge-fires.jsonl"), paths.nudgeFiresFile()],
-  ];
-  for (const [from, to] of pairs) add(stats, copyOne(from, to, opts.force === true));
-  for (const log of FEEDBACK_LOGS) {
+  // A bundle payloads/<w>.jsonl restores into world <w> of the bundle's world list.
+  for (const log of bundleLogs(worlds.map((w) => w.name))) {
     const where = root === source ? join(source, log.rel) : `${source}:${log.rel}`;
-    add(stats, restoreLog(join(root, log.rel), where, log.stream, opts.force === true, warnings));
+    add(stats, restoreLog(join(root, log.rel), where, log, opts.force === true, warnings));
   }
 
   saveConfig(cfg);

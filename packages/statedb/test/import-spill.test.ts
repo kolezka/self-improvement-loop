@@ -74,7 +74,7 @@ const attempt = <T>(fn: () => T): { value: T | null; error: unknown } => {
 };
 
 describe("import of hook-written logs and sealed spill segments", () => {
-  test("the first open imports the three global hook streams; the first read imports payload samples per world", () => {
+  test("the first open imports all four hook streams, per world for payload samples", () => {
     const seeds: { path: string; records: Record<string, unknown>[] }[] = [
       { path: events(), records: [{ e: 1 }, { e: 2 }, { e: 3 }] },
       { path: legacy("nudge_fires"), records: [{ f: 1 }, { f: 2 }] },
@@ -92,11 +92,9 @@ describe("import of hook-written logs and sealed spill segments", () => {
     const folds = existsSync(legacy("payload_samples", KOLEZKA));
 
     openState();
-    // The open claims the global streams before any read; payload files wait
-    // for their first read (FIRST_OPEN_DEFERRED, until the corpus reader switches).
+    // The open claims every hook stream before any read, payload files included.
     const imported = folds ? [...seeds, nfd] : seeds;
-    for (const s of seeds.slice(0, 3)) expect(existsSync(s.path)).toBe(false);
-    expect(existsSync(legacy("payload_samples", "default"))).toBe(true);
+    for (const s of imported) expect(existsSync(s.path)).toBe(false);
     expect(readRecords("usage_events", "strict").records.length).toBe(3);
     expect(readRecords("nudge_fires", "strict").records).toEqual([{ f: 1 }, { f: 2 }]);
     expect(readRecords("hook_runs", "strict").records).toEqual([{ h: 1 }, { h: 2 }]);

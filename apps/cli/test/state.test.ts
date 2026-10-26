@@ -60,6 +60,13 @@ function seedDocs(): { cleared: string } {
   return { cleared: readFileSync(paths.queueClearedFile(), "utf8") };
 }
 
+/** Two samples of world default at the legacy path, plus `extra` raw text. */
+function seedPayloads(extra = ""): void {
+  const file = paths.payloadSamplesFile("default");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `{"world":"default","tool_name":"Bash"}\n{"world":"default","tool_name":"Edit"}\n${extra}`);
+}
+
 const backupsOf = (file: string): string[] =>
   readdirSync(dirname(file))
     .filter((name) => name.startsWith(`${basename(file)}.imported-`))
@@ -71,6 +78,7 @@ interface StatusJson {
   schemaVersion: number;
   streams: Record<string, { rows: number; quarantined: number; pending: boolean }>;
   docs: { store: string; world: string | null; rows: number; quarantined: number; pending: boolean }[];
+  worldStreams: { store: string; world: string; rows: number; quarantined: number; pending: boolean }[];
   invalidWorldEntries: { store: string; name: string }[];
   imports: { store: string; world: string | null; state: string; backupPath: string | null; failure: string | null; lines: number; backupCheck: string | null }[];
 }
@@ -103,11 +111,43 @@ describe("sil state", () => {
     writeFileSync(join(dirname(legacy), "a b.jsonl"), '{"n":1}\n');
     const text = sil("state", "status");
     expect(text.code).toBe(0);
-    expect(text.out).toContain(
-      '\npayload samples:\n  inkitt                 0 rows  (legacy file waiting)\n  invalid world name, not imported: payload_samples "a b"\n',
-    );
+    // The open imports a valid world's file and leaves an invalid name alone.
+    expect(text.out).toContain('\npayload samples:\n  inkitt                 1 rows\n  invalid world name, not imported: payload_samples "a b"\n');
+    expect(readFileSync(join(dirname(legacy), "a b.jsonl"), "utf8")).toBe('{"n":1}\n');
     // The per-world stream is not a line of the stores block.
-    expect(text.out).not.toContain("\n  payload_samples");
+    const stores = text.out.slice(text.out.indexOf("\nstores:\n"), text.out.indexOf("\ndocuments:"));
+    expect(stores).toContain("\n  usage_events");
+    expect(stores).not.toContain("\n  payload_samples");
+  });
+
+  test("the first open imports a seeded payloads file: status --json counts its rows per world", () => {
+    seedPayloads();
+    const s = status();
+    expect(s.worldStreams).toEqual([{ store: "payload_samples", world: "default", rows: 2, quarantined: 0, pending: false }]);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
+    const text = sil("state", "status");
+    expect(text.out).toMatch(/\npayload samples:\n {2}default\s+2 rows\n/);
+  });
+
+  test("migrate imports a seeded payloads file and prints it with its world", () => {
+    seedPayloads();
+    const r = sil("state", "migrate");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const lines = r.out.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("payload_samples (default): 2 imported, 0 quarantined");
+  });
+
+  test("quarantine --drop payload_samples --world default drops that world's bad line", () => {
+    seedPayloads("not json\n");
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "quarantine").out).toContain("payload_samples (default)");
+    const dropped = sil("state", "quarantine", "--drop", "payload_samples", "--world", "default");
+    expect(dropped.err).toBe("");
+    expect(dropped.code).toBe(0);
+    expect(dropped.out).toContain("dropped 1");
+    expect(status().worldStreams).toEqual([{ store: "payload_samples", world: "default", rows: 2, quarantined: 0, pending: false }]);
   });
 
   test("quarantine --world rejects invalid names as a usage error", () => {

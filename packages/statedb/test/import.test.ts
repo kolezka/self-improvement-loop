@@ -101,19 +101,6 @@ function crashAfterCommit(): { claim: string; backup: string; seeded: Buffer } {
 }
 
 describe("legacy import", () => {
-  test("first open leaves payloads/default.jsonl in place", () => {
-    const payloads = STREAMS.payload_samples.legacyPath("default");
-    const events = STREAMS.usage_events.legacyPath(null);
-    fsx.appendJsonl(payloads, { world: "default", n: 1 });
-    fsx.appendJsonl(payloads, { world: "default", n: 2 });
-    fsx.appendJsonl(events, { n: 1 });
-    openState();
-    expect(existsSync(payloads)).toBe(true);
-    expect(existsSync(events)).toBe(false);
-    expect(readRecords("payload_samples", "strict", "default").records.length).toBe(2);
-    expect(existsSync(payloads)).toBe(false);
-  });
-
   test("the first open imports all four streams", () => {
     const counts: Partial<Record<Stream, number>> = { reflect_runs: 1, critic: 2, human: 3, proposal_events: 4 };
     for (const [stream, n] of Object.entries(counts) as [Stream, number][]) {

@@ -16,6 +16,7 @@ import {
   Scorecard as ScorecardSchema,
   targetRoot,
   type World,
+  worldNamed,
 } from "@sil/core";
 import {
   artifactRel,
@@ -42,6 +43,7 @@ import {
   workedSections,
 } from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
+import { appendRecord } from "@sil/statedb";
 import { loadLedger, saveAliases, saveLedger, writeReflection } from "@sil/store";
 import { redraftPolicy } from "../src/plan.ts";
 import {
@@ -601,6 +603,27 @@ describe("the payload corpus", () => {
     for (let i = 0; i < 5; i++) expect(commands.has(`sample-cmd-${i}`)).toBe(false);
     expect(commands.has("sample-cmd-5")).toBe(true);
     expect(commands.has(`sample-cmd-${MAX_SAMPLED_PAYLOADS + 4}`)).toBe(true);
+  });
+
+  test("a world named in NFD finds the samples the hook stored under the NFC key", () => {
+    const recorded = sample("git push --no-verify");
+    appendRecord("payload_samples", recorded, "koleżka");
+    // Built by hand: the config schema refuses a decomposed name, a path or a caller may not.
+    const nfd = "koleżka".normalize("NFD");
+    const cfg = makeCfg({ worlds: [makeWorld()] });
+    cfg.worlds.push({ ...makeWorld({ name: "koleżka" }), name: nfd });
+    expect(loadPayloadCorpus(worldNamed(cfg, nfd))).toContainEqual(recorded);
+  });
+
+  test("a legacy samples file of 2001 distinct shapes yields the newest 2000", () => {
+    expect(MAX_SAMPLED_PAYLOADS).toBe(2000);
+    writeSampleLines(Array.from({ length: 2001 }, (_, i) => sample(`legacy-cmd-${i}`)));
+    const commands = loadPayloadCorpus(world)
+      .map((p) => (p["tool_input"] as Record<string, unknown> | undefined)?.["command"])
+      .filter((c): c is string => typeof c === "string" && c.startsWith("legacy-cmd-"));
+    expect(commands.length).toBe(2000);
+    expect(commands[0]).toBe("legacy-cmd-1");
+    expect(commands.at(-1)).toBe("legacy-cmd-2000");
   });
 
   test("a record with no tool_name is dropped", () => {

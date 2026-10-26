@@ -291,6 +291,104 @@ describe("feedback logs in loop state", () => {
   });
 });
 
+describe("usage logs and payload samples in loop state", () => {
+  const events = [
+    { ts: "2026-10-25T10:00:00Z", world: "default", ref: "skill:a", kind: "use" },
+    { ts: "2026-10-25T09:00:00Z", world: "default", ref: "skill:b", kind: "use" },
+  ];
+  const fires = [{ ts: "2026-10-25T08:00:00Z", world: "default", nudge: "n1" }];
+  const payloads = [
+    { ts: "2026-10-25T07:00:00Z", world: "default", tool_name: "Bash", tool_input: { command: "git push" } },
+    { ts: "2026-10-25T06:00:00Z", world: "default", tool_name: "Edit", tool_input: { file_path: "/a" } },
+  ];
+  const lines = (records: object[]): string => records.map((r) => `${JSON.stringify(r)}\n`).join("");
+  const usage = (dest: string, ...rel: string[]): string => join(dest, "state", "usage", ...rel);
+  const textOf = (file: string): string | null => (existsSync(file) ? readFileSync(file, "utf8") : null);
+  const read = () => ({
+    events: readRecords("usage_events", "strict").records,
+    fires: readRecords("nudge_fires", "strict").records,
+    payloads: readRecords("payload_samples", "strict", "default").records,
+  });
+
+  async function exportFromHostA(): Promise<string> {
+    expect(await run(["init"])).toBe(0);
+    for (const r of events) appendRecord("usage_events", r);
+    for (const r of fires) appendRecord("nudge_fires", r);
+    for (const r of payloads) appendRecord("payload_samples", r, "default");
+    const dest = join(tmp, "bundle");
+    exportBundle({ dest });
+    return dest;
+  }
+
+  test("export writes the three logs from loop state, bodies in append order, at the old paths", async () => {
+    const dest = await exportFromHostA();
+    expect(textOf(usage(dest, "events.jsonl"))).toBe(lines(events));
+    expect(textOf(usage(dest, "nudge-fires.jsonl"))).toBe(lines(fires));
+    expect(textOf(usage(dest, "payloads", "default.jsonl"))).toBe(lines(payloads));
+    // Still no hook runs in a bundle (D13).
+    expect(existsSync(usage(dest, "hook-runs.jsonl"))).toBe(false);
+  });
+
+  test("import onto an empty host loads all three into loop state", async () => {
+    const dest = await exportFromHostA();
+    useRoots("hostB");
+    const result = importBundle({ src: dest });
+    expect(result.warnings.filter((w) => w.includes("could not be imported"))).toEqual([]);
+    expect(read()).toEqual({ events, fires, payloads });
+  });
+
+  test("a host that has rows keeps them and reports a skip for each, unless --force", async () => {
+    const dest = await exportFromHostA();
+    useRoots("hostC");
+    expect(await run(["init"])).toBe(0);
+    const baseline = importBundle({ src: dest });
+
+    useRoots("hostB");
+    expect(await run(["init"])).toBe(0);
+    const own = {
+      events: [{ ts: "2026-10-24T00:00:00Z", world: "default", ref: "skill:host", kind: "use" }],
+      fires: [{ ts: "2026-10-24T00:00:00Z", world: "default", nudge: "host" }],
+      payloads: [{ ts: "2026-10-24T00:00:00Z", world: "default", tool_name: "Read", tool_input: { file_path: "/host" } }],
+    };
+    appendRecord("usage_events", own.events[0]!);
+    appendRecord("nudge_fires", own.fires[0]!);
+    appendRecord("payload_samples", own.payloads[0]!, "default");
+    const kept = importBundle({ src: dest });
+    expect(read()).toEqual(own);
+    expect(kept.skipped - baseline.skipped).toBe(3);
+    expect(baseline.files - kept.files).toBe(3);
+
+    importBundle({ src: dest, force: true });
+    expect(read()).toEqual({ events, fires, payloads });
+  });
+
+  test("a bad line in a bundle payloads file is quarantined under its world, with a warning", async () => {
+    const dest = await exportFromHostA();
+    const file = usage(dest, "payloads", "default.jsonl");
+    mkdirSync(usage(dest, "payloads"), { recursive: true });
+    writeFileSync(file, `${lines(payloads)}not json\n`);
+
+    useRoots("hostB");
+    const result = importBundle({ src: dest });
+    expect(result.warnings.filter((w) => w.includes("could not be imported"))).toEqual([
+      "default.jsonl (world default): 1 line could not be imported; see sil state quarantine",
+    ]);
+    expect(readRecords("payload_samples", "counted", "default")).toEqual({ records: payloads, quarantined: 1 });
+    const rows = openState().query("SELECT store, world, source, line_no, reason, raw FROM quarantine").all();
+    expect(rows).toEqual([{ store: "payload_samples", world: "default", source: file, line_no: 3, reason: "not JSON", raw: "not json" }]);
+  });
+
+  test("export refuses payload samples with quarantined lines and writes no bundle", async () => {
+    expect(await run(["init"])).toBe(0);
+    const { paths } = await import("@sil/core");
+    mkdirSync(join(paths.stateDir(), "usage", "payloads"), { recursive: true });
+    writeFileSync(paths.payloadSamplesFile("default"), `${lines(payloads)}garbage\n`);
+    const dir = join(tmp, "bundle");
+    expect(() => exportBundle({ dest: dir })).toThrow('the payload samples of world "default" has 1 quarantined line; see sil state quarantine');
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
 describe("aliases in loop state", () => {
   async function exportAliasesFromHostA(): Promise<string> {
     expect(await run(["init"])).toBe(0);

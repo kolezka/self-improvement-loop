@@ -59,12 +59,16 @@ export async function run(dir: string, n: number): Promise<BenchRow[]> {
       timed("listReflectionHeads warm", n, () => listReflectionHeads(WORLD)),
     ];
   } finally {
-    closeState();
-    for (const k of ENV_KEYS) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
+    // Restore the env and remove the temp tree even if closing the DB throws.
+    try {
+      closeState();
+    } finally {
+      for (const k of ENV_KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+      rmSync(tmp, { recursive: true, force: true });
     }
-    rmSync(tmp, { recursive: true, force: true });
   }
 }
 
@@ -81,7 +85,7 @@ async function main(): Promise<void> {
   }
   const files = readdirSync(dir).filter((f) => f.endsWith(".md")).length;
   const rows = await run(dir, n);
-  console.log(`files: ${files}`);
+  console.log(`top-level .md files: ${files}`);
   console.log("| reader | n | p50 ms | max ms | records |");
   console.log("|---|---|---|---|---|");
   for (const r of rows) console.log(`| ${r.name} | ${r.n} | ${r.p50.toFixed(1)} | ${r.max.toFixed(1)} | ${r.records} |`);

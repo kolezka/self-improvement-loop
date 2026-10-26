@@ -766,10 +766,12 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
 ### D12. Phase 4 specifics
 
 - `reflection_index` is a cache of the `.md` files. It is never a source.
-- `scanReflections` keeps walking the dirs with the same rules (dot names,
-  `graphify-out`, `vec-index`, no dir symlinks, realpath de-dupe). For each file it
-  stats; a row with the same `size`, `mtime_ms` and `ino` is reused, anything else
-  is parsed and upserted, and rows for files no longer found are deleted.
+- `listReflectionHeads` maintains the index. It walks the dirs with the same
+  rules as the full readers (dot names, `graphify-out`, `vec-index`, no dir
+  symlinks, realpath de-dupe). For each file it stats; a row with the same `size`,
+  `mtime_ms` and `ino` is reused, anything else is parsed and upserted, and rows
+  for files no longer found are deleted. The full readers (`listReflections`,
+  `scanReflections`, `listReflectionsStrict`) stay on the files.
 - New reader `listReflectionHeads(world, extraDirs)`: the `Reflection` record
   without `body` and `lesson`, same sort and same world filter. Strict and tolerant
   forms, same rules as the full readers (an unreadable changed file still raises in
@@ -782,7 +784,9 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
   keep using files.
 - As built in phase 4 (schema 4, table `reflection_index` as in D7):
   - A row is reused when `statSync` of the file gives the same `size`,
-    `mtime_ms` and `ino`. The key is the file's realpath and `dir_world`. A file
+    `mtime_ms` and `ino`. The key is the file's realpath (`path`, the primary
+    key); `dir_world` tags the row with the world whose read found it and
+    filters it, but is not part of the key. A file
     rewritten in place with the same inode, size and mtime (`cp -p` over a file
     of the same size) is not detected until one of them changes.
   - An unchanged file is served from the index without being opened. A file made

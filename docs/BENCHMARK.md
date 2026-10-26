@@ -270,12 +270,14 @@ the gate is run in a container on a quiet host.
 `bun scripts/bench-reflection-index.ts <reflections-dir> [n]` copies one
 reflections dir into a temp home and times `listReflections` (reads every file)
 against `listReflectionHeads` once with an empty index and `n` times with a warm
-one (default 3). It prints the file count, then p50 and max in ms per reader and
-the record count each call returned; it never touches the source dir or the real
-home.
+one (default 3). The cold row is first-call cost: it also opens the DB for the
+first time, runs the schema migrations, probes the filesystem and checks for
+legacy imports, besides filling the index. It prints the top-level `.md` file
+count, then p50 and max in ms per reader and the record count each call
+returned; it never touches the source dir or the real home.
 
 | reader | n | p50 ms | max ms | records |
 |---|---|---|---|---|
 | listReflections | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) |
-| listReflectionHeads cold | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) |
+| listReflectionHeads cold (first call) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) |
 | listReflectionHeads warm | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) | (to be measured by the lead) |

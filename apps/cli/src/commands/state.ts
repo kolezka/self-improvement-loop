@@ -65,6 +65,11 @@ export function cmdStateStatus(opts: { json?: boolean }): number {
   printWorldBlock("documents", status.docs, invalidDocs);
   // One line per world, named by the world alone.
   printWorldBlock("payload samples", status.worldStreams.map((w) => ({ ...w, store: w.world, world: null })), invalidPayloads);
+  if (status.reflectionIndex.length === 0) console.log("reflection index: empty");
+  else {
+    console.log("reflection index:");
+    for (const r of status.reflectionIndex) console.log(`  ${r.world.padEnd(16)} ${String(r.rows).padStart(7)} rows`);
+  }
   if (status.imports.length === 0) {
     console.log("imports: none");
     return 0;

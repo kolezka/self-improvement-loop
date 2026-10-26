@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
 import { appendRecord, closeState, readRecords, replaceStream } from "@sil/statedb";
+import { writeReflection } from "@sil/store";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 
@@ -81,6 +82,7 @@ interface StatusJson {
   worldStreams: { store: string; world: string; rows: number; quarantined: number; pending: boolean }[];
   invalidWorldEntries: { store: string; name: string }[];
   imports: { store: string; world: string | null; state: string; backupPath: string | null; failure: string | null; lines: number; backupCheck: string | null }[];
+  reflectionIndex: { world: string; rows: number }[];
 }
 
 function status(): StatusJson {
@@ -647,6 +649,30 @@ describe("sil state", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith("error: ");
     expect(lines[0]).toContain("--world");
+  });
+
+  test("status shows the reflections index rows per world after sil status built it", () => {
+    writeReflection("default", { id: "r1" }, "Pattern: p-one\n\n## Reusable lesson\nx\n");
+    writeReflection("default", { id: "r2" }, "Pattern: p-two\n\n## Reusable lesson\nx\n");
+    // sil status counts through listReflectionHeads, which fills the index.
+    const built = sil("status", "--json");
+    expect(built.code).toBe(0);
+    expect(status().reflectionIndex).toEqual([{ world: "default", rows: 2 }]);
+    const text = sil("state", "status");
+    expect(text.err).toBe("");
+    expect(text.code).toBe(0);
+    const lines = text.out.split("\n");
+    const at = lines.indexOf("reflection index:");
+    expect(at).toBeGreaterThan(lines.findIndex((l) => l.startsWith("documents")));
+    expect(lines[at + 1]).toMatch(/^  default\s+2 rows$/);
+    expect(lines.findIndex((l) => l.startsWith("imports"))).toBeGreaterThan(at + 1);
+  });
+
+  test("status text says the reflections index is empty on a fresh database", () => {
+    const text = sil("state", "status");
+    expect(text.err).toBe("");
+    expect(text.code).toBe(0);
+    expect(text.out.split("\n")).toContain("reflection index: empty");
   });
 
   test("a broken database fails status with one error line and no stack", () => {

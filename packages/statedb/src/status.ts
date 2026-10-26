@@ -80,11 +80,11 @@ const byStoreThenWorld = (a: StoreRef, b: StoreRef): number =>
   cmp(a.store, b.store) || (a.world === b.world ? 0 : a.world === null ? -1 : b.world === null ? 1 : cmp(a.world, b.world));
 
 /** The D6 pending check for one store and world: its legacy path or its claim
- * exists, or, for payload samples, a segment or claim waits in its spill dir. */
+ * exists, or, for a stream, a segment or claim waits in its spill dir (D5). */
 function pendingAt(ref: StoreRef): boolean {
   const legacy = STORES[ref.store].legacyPath(ref.world);
   try {
-    return present(legacy) || present(`${legacy}.importing`) || (ref.store === "payload_samples" && spillPending(legacy));
+    return present(legacy) || present(`${legacy}.importing`) || (STORES[ref.store].kind === "stream" && spillPending(legacy));
   } catch (error) {
     throw new StateReadError(`${STORES[ref.store].label(ref.world)} cannot be checked (${fsx.errnoCode(error) || reasonOf(error)})`);
   }

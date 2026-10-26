@@ -7,7 +7,7 @@
 // `scripts/eval-alias-semantic.ts` for that.
 
 import { Database } from "bun:sqlite";
-import { chmodSync, readdirSync, readFileSync } from "node:fs";
+import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
@@ -240,6 +240,44 @@ describe("evidence from the index", () => {
       reads.mockRestore();
       readsIfPresent.mockRestore();
     }
+  });
+
+  test("a file moved to another world between the head read and the body read sends nothing of it", async () => {
+    const world = makeWorld();
+    seedTwoPairs(world);
+    const target = join(paths.reflectionsDir(world.name), "2026-09-05-stale-cached-env-02.md");
+    const semantic = cfg(world, { enabled: true, max_reflections_per_pattern: 2 });
+    const answers = { "stale-env~stale-cached-env": answer("same_mechanism", 0.9), "verify-callsites~verify-callsites-before-fix": answer("distinct", 0.9) };
+    const canonicalIds = (fake: FakeDecider) => fake.calls.find((c) => c.state.pattern_a.name === "stale-env")!.state.pattern_b.reflections.map((r) => r.id);
+
+    // Positive control: unchanged, the target is evidence. This pass also fills the index.
+    const control = new FakeDecider(answers);
+    await assessAliasSuggestions(semantic, world, { llm: systemOneLlm(), decideChoice: control.fn });
+    expect(canonicalIds(control)).toContain("2026-09-05-stale-cached-env-02");
+
+    const original = readFileSync(target, "utf8");
+    const moved = original.replace(`world: ${world.name}\n`, "world: other\n").replace("The cached env copy is read before the refresh lands.", "OTHER WORLD MARKER");
+    expect(moved).toContain("world: other\n");
+    expect(moved).toContain("OTHER WORLD MARKER");
+    const readText = fsx.readText.bind(fsx);
+    let rewritten = false;
+    const reads = spyOn(fsx, "readText").mockImplementation((p: string) => {
+      if (p === target && !rewritten) {
+        rewritten = true;
+        writeFileSync(target, moved);
+      }
+      return readText(p);
+    });
+    const fake = new FakeDecider(answers);
+    try {
+      await assessAliasSuggestions(semantic, world, { llm: systemOneLlm(), decideChoice: fake.fn });
+    } finally {
+      reads.mockRestore();
+    }
+    expect(rewritten).toBe(true);
+    expect(JSON.stringify(fake.calls.map((c) => c.state))).not.toContain("OTHER WORLD MARKER");
+    // The slot goes to the next reflection of the same world, not to nothing.
+    expect(canonicalIds(fake)).toEqual(["2026-09-04-stale-cached-env-01", "2026-09-03-stale-cached-env-00"]);
   });
 });
 

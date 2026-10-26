@@ -145,7 +145,10 @@ function evidenceByPattern(world: World, cfg: AliasSemanticConfig): Map<string, 
     if (bucket.length >= cfg.max_reflections_per_pattern) continue;
     // Only a candidate under the cap is opened for its lesson.
     const r = parseReflection(head.path, world.name);
-    const excerpt = r === null ? "" : excerptOf(r, cfg.max_excerpt_chars);
+    // The file may have changed since its head was read. A body that no
+    // longer matches the head's world and identity is not this candidate's.
+    if (r === null || r.world !== head.world || r.id !== head.id || r.pattern !== head.pattern) continue;
+    const excerpt = excerptOf(r, cfg.max_excerpt_chars);
     // An empty excerpt is not evidence. Kept, it would send the model a blank
     // string and print the id below the verdict as if it grounded the answer.
     if (excerpt === "") continue;

@@ -369,3 +369,26 @@ describe("patternCounts and reflectedSessions", () => {
     expect(reflectedSessions(W).get("s")).toBe(Date.parse("2026-04-01T00:00:00Z"));
   });
 });
+
+describe("a reused row is checked before it is trusted", () => {
+  function replaceHead(head: string): void {
+    closeState();
+    const db = new Database(paths.loopStateDb());
+    db.run("UPDATE reflection_index SET head = ?", [head]);
+    db.close();
+  }
+
+  for (const [mode, read] of [
+    ["strict", listReflectionHeadsStrict],
+    ["tolerant", listReflectionHeads],
+  ] as const) {
+    test(`a malformed stored head is a stale row: ${mode} parses the file again and rewrites it`, () => {
+      seedThree();
+      expect(ids(read(W))).toEqual(["r3", "r2", "r1"]);
+      replaceHead("{}");
+      expect(read(W).map(pick)).toEqual((mode === "strict" ? listReflectionsStrict(W) : listReflections(W)).map(pick));
+      expect(ids(read(W))).toEqual(["r3", "r2", "r1"]);
+      for (const row of readReflectionIndex(W)) expect(JSON.parse(row.head).id).toBe(row.id);
+    });
+  }
+});

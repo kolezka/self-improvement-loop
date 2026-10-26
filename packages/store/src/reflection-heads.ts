@@ -5,7 +5,7 @@
 
 import { statSync } from "node:fs";
 import { relative } from "node:path";
-import { fsx, paths, StateReadError, type Reflection as ReflectionT } from "@sil/core";
+import { fsx, paths, Reflection, StateReadError, type Reflection as ReflectionT } from "@sil/core";
 import { logStateLineOnce, reasonOf, readReflectionIndex, type ReflectionIndexRow, type ReflectionIndexUpsert, updateReflectionIndex, worldKey } from "@sil/statedb";
 import { loadAliases } from "./aliases.ts";
 import { readReflectionStrict, reflectionFromText, sortNewestFirst, walkMarkdown } from "./reflections.ts";
@@ -28,14 +28,19 @@ function logIndexUnused(world: string, error: unknown): void {
   );
 }
 
-/** The stored head of a row, or null when it is not a JSON object (a stale row). */
+/** The stored head of a row, or null when it is not a valid reflection head (a stale row). */
 function storedHead(row: ReflectionIndexRow): Omit<ReflectionHead, "mtime_ms"> | null {
+  let v: unknown;
   try {
-    const v: unknown = JSON.parse(row.head);
-    return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Omit<ReflectionHead, "mtime_ms">) : null;
+    v = JSON.parse(row.head);
   } catch {
     return null;
   }
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const parsed = Reflection.safeParse({ ...v, body: "", lesson: "" });
+  if (!parsed.success) return null;
+  const { body: _body, lesson: _lesson, ...head } = parsed.data;
+  return head;
 }
 
 /** A changed file parsed the strict way, so a row only ever holds a record

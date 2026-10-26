@@ -43,12 +43,18 @@ function storedHead(row: ReflectionIndexRow): Omit<ReflectionHead, "mtime_ms"> |
   return head;
 }
 
-/** A changed file parsed the strict way, so a row only ever holds a record
- * the strict reader accepts. Tolerant mode falls back to the file reader's
- * own parse for what it returns, but does not store it. */
+const headJson = (r: ReflectionT): string => {
+  const { body: _body, lesson: _lesson, ...head } = r;
+  return JSON.stringify(head);
+};
+
+/** A changed file parsed by both file readers' parsers. Each mode returns its
+ * own reader's record, and a row is stored only when both agree, so a cached
+ * head is right for either mode. */
 function parseChanged(p: string, world: string, label: string, mode: Mode, mtimeMs: number, unreadable: string[]): { r: ReflectionT | null; store: boolean } {
+  let strict: ReflectionT | null = null;
   try {
-    return { r: readReflectionStrict(p, world, label), store: true };
+    strict = readReflectionStrict(p, world, label);
   } catch (err) {
     if (!(err instanceof StateReadError)) throw err;
     if (mode === "strict") {
@@ -56,13 +62,14 @@ function parseChanged(p: string, world: string, label: string, mode: Mode, mtime
       return { r: null, store: false };
     }
   }
-  let text: string;
+  let tolerant: ReflectionT | null = null;
   try {
-    text = fsx.readText(p);
+    tolerant = reflectionFromText(p, world, fsx.readText(p), () => mtimeMs);
   } catch {
-    return { r: null, store: false };
+    // Unreadable to the tolerant reader: nothing it returns, nothing stored.
   }
-  return { r: reflectionFromText(p, world, text, () => mtimeMs), store: false };
+  const store = strict !== null && tolerant !== null && headJson(strict) === headJson(tolerant);
+  return { r: mode === "strict" ? strict : tolerant, store };
 }
 
 function headsPass(world: string, extraDirs: string[], mode: Mode): ReflectionHeadScan {

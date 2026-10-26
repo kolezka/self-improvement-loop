@@ -425,3 +425,34 @@ describe("a reused row walked under another path", () => {
     }
   });
 });
+
+describe("a file the strict and tolerant parsers read differently", () => {
+  // An empty header followed by a second `---`: the strict parser takes the
+  // first Pattern line, the tolerant one the second.
+  const split = "---\n---\nPattern: alpha\n\n---\nPattern: beta\n";
+
+  function seedSplit(): void {
+    const dir = paths.reflectionsDir(W);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "s.md"), split);
+  }
+
+  test("each mode returns its own file reader's metadata, cold and warm, and nothing is cached", () => {
+    seedSplit();
+    // Positive control: the two file readers really disagree on this file.
+    expect(listReflections(W).map((r) => r.pattern)).toEqual(["beta"]);
+    expect(listReflectionsStrict(W).map((r) => r.pattern)).toEqual(["alpha"]);
+    for (let pass = 0; pass < 2; pass++) {
+      expect(listReflectionHeads(W).map(pick)).toEqual(listReflections(W).map(pick));
+      expect(listReflectionHeadsStrict(W).map(pick)).toEqual(listReflectionsStrict(W).map(pick));
+    }
+    expect(readReflectionIndex(W)).toEqual([]);
+  });
+
+  test("strict first, then tolerant: the tolerant pass still sees the tolerant pattern", () => {
+    seedSplit();
+    expect(listReflectionHeadsStrict(W).map((h) => h.pattern)).toEqual(["alpha"]);
+    expect(listReflectionHeads(W).map((h) => h.pattern)).toEqual(["beta"]);
+    expect(readReflectionIndex(W)).toEqual([]);
+  });
+});

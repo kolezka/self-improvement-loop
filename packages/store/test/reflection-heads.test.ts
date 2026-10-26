@@ -252,8 +252,28 @@ describe("strict and tolerant on a changed file", () => {
   });
 });
 
+describe("a reused row that goes stale", () => {
+  test("an indexed file rewritten with an unclosed header: strict names it and its row is gone", () => {
+    seedThree();
+    const file = join(paths.reflectionsDir(W), "c.md");
+    writeFileSync(file, raw("c"));
+    listReflectionHeads(W);
+    expect(ids(readReflectionIndex(W))).toContain("c");
+    writeFileSync(file, "---\nid: c\nPattern: p\n\nx and more\n");
+    expect(scanReflectionHeads(W).unreadable).toEqual(["c.md"]);
+    expect(ids(readReflectionIndex(W)).sort()).toEqual(["r1", "r2", "r3"]);
+  });
+});
+
 describe("index unavailable", () => {
   const needle = 'the reflections index of world "w" was not used';
+  // One timestamp from logStateLineOnce, then the text.
+  const LINE = /^\d{4}-\d{2}-\d{2}T[^ ]+Z the reflections index of world "w" was not used \(.+\); reflections were read from their files$/;
+  function expectOneFallbackLine(): void {
+    const lines = stateLogLines(needle);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(LINE);
+  }
 
   test("a newer schema: reads come from the files, one log line, the DB untouched", () => {
     seedThree();
@@ -266,7 +286,7 @@ describe("index unavailable", () => {
     writeFileSync(join(paths.reflectionsDir(W), "c.md"), raw("c"));
     expect(ids(listReflectionHeads(W))).toEqual(["c", "r3", "r2", "r1"]);
     expect(ids(listReflectionHeadsStrict(W))).toEqual(["c", "r3", "r2", "r1"]);
-    expect(stateLogLines(needle)).toHaveLength(1);
+    expectOneFallbackLine();
     const check = new Database(paths.loopStateDb(), { readonly: true });
     expect(check.query("PRAGMA user_version").get()).toEqual({ user_version: 5 });
     expect(check.query("SELECT count(*) AS n FROM reflection_index").get()).toEqual({ n: 3 });
@@ -281,7 +301,7 @@ describe("index unavailable", () => {
     mkdirSync(dbPath);
     expect(ids(listReflectionHeads(W))).toEqual(["r3", "r2", "r1"]);
     expect(ids(listReflectionHeadsStrict(W))).toEqual(["r3", "r2", "r1"]);
-    expect(stateLogLines(needle)).toHaveLength(1);
+    expectOneFallbackLine();
   });
 
   test("the write lock held: the pass still returns every file, the next pass stores the row", () => {

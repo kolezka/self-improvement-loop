@@ -24,7 +24,7 @@ type Mode = "strict" | "tolerant";
 function logIndexUnused(world: string, error: unknown): void {
   logStateLineOnce(
     `reflection_index\0${worldKey(world)}`,
-    `${new Date().toISOString()} the reflections index of world ${JSON.stringify(world)} was not used (${reasonOf(error)}); reflections were read from their files`,
+    `the reflections index of world ${JSON.stringify(world)} was not used (${reasonOf(error)}); reflections were read from their files`,
   );
 }
 

@@ -16,18 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
-import {
-  appendRecord,
-  closeState,
-  importAll,
-  type ImportIo,
-  openState,
-  readRecords,
-  setImportIoForTest,
-  stateStatus,
-  type Stream,
-  STREAMS,
-} from "../src/index.ts";
+import { appendRecord, closeState, importAll, type ImportIo, openState, readRecords, setImportIoForTest, stateStatus, type Stream, STREAMS } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -112,17 +101,17 @@ function crashAfterCommit(): { claim: string; backup: string; seeded: Buffer } {
 }
 
 describe("legacy import", () => {
-  test("the first open leaves the hook-written logs for their file readers; a direct read imports them", () => {
-    const events = paths.usageEventsFile();
-    fsx.appendJsonl(events, { n: 1 });
-    fsx.appendJsonl(events, { n: 2 });
+  test("the first open leaves payload samples for their file readers; a direct read imports them", () => {
+    const payloads = STREAMS.payload_samples.legacyPath("default");
+    fsx.appendJsonl(payloads, { world: "default", n: 1 });
+    fsx.appendJsonl(payloads, { world: "default", n: 2 });
     fsx.appendJsonl(critic(), { n: 1 });
     openState();
-    expect(existsSync(events)).toBe(true);
+    expect(existsSync(payloads)).toBe(true);
     expect(existsSync(critic())).toBe(false);
-    expect(stateStatus().streams.usage_events.pending).toBe(true);
-    expect(readRecords("usage_events", "strict").records.length).toBe(2);
-    expect(existsSync(events)).toBe(false);
+    expect(stateStatus().worldStreams).toContainEqual({ store: "payload_samples", world: "default", rows: 0, quarantined: 0, pending: true });
+    expect(readRecords("payload_samples", "strict", "default").records.length).toBe(2);
+    expect(existsSync(payloads)).toBe(false);
   });
 
   test("the first open imports all four streams", () => {
@@ -417,8 +406,9 @@ describe("importAll", () => {
     let result = { outcomes: [] as { store: Stream }[], failures: [] as unknown[] };
     expect(caught(() => (result = importAll() as unknown as typeof result))).toBeNull();
     expect(result.failures).toEqual([{ store: "reflect_runs", world: null, message: "the reflect runs log cannot be imported (EIO)" }]);
-    expect(result.outcomes.map((o) => o.store)).toEqual(["critic", "human", "proposal_events"]);
-    for (const stream of ["critic", "human", "proposal_events"] as Stream[]) expect(rowCount(stream)).toBe(1);
+    const others: Stream[] = ["critic", "human", "proposal_events", "usage_events", "nudge_fires", "hook_runs"];
+    expect(result.outcomes.map((o) => o.store)).toEqual(others);
+    for (const stream of others) expect(rowCount(stream)).toBe(1);
     expect(importRows("reflect_runs").map((r) => [r.state, r.failure])).toEqual([["failed", "EIO"]]);
   });
 

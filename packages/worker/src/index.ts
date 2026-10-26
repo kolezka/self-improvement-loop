@@ -21,7 +21,7 @@ import {
 } from "@sil/core";
 import type { ChatFn } from "@sil/providers";
 import { reflectSession } from "@sil/critic";
-import { compactUsageEvents, rebuild as rebuildScorecards, recordReflectRun } from "@sil/feedback";
+import { compactUsageEvents, rebuild as rebuildScorecards, recordReflectRun, trimStreams } from "@sil/feedback";
 import { entryPath, listQueue, listQueueStrict, loadEntry, moveEntry, reflectedSessions, writeEntry, type Bucket } from "@sil/store";
 import { readDoc, saveDoc } from "@sil/statedb";
 import { countToolUses } from "@sil/transcript";
@@ -358,8 +358,21 @@ export async function runOnce(cfg?: Config, opts: RunOnceOptions = {}): Promise<
       reapStaleSessionDirs(now);
       pruneQueueBucket("done");
       pruneQueueBucket("failed");
-      const droppedEvents = compactUsageEvents(config, now);
-      if (droppedEvents) log({ action: "compact_usage_events", result: `dropped ${droppedEvents}` });
+      // Row deletes in loop state; a failure is logged and the run goes on.
+      try {
+        const droppedEvents = compactUsageEvents(config, now);
+        if (droppedEvents) log({ action: "compact_usage_events", result: `dropped ${droppedEvents}` });
+      } catch (e) {
+        log({ action: "compact_usage_events", result: `failed: ${(e as Error).message}` });
+      }
+      try {
+        const trimmed = trimStreams();
+        if (trimmed.hook_runs + trimmed.nudge_fires + Object.values(trimmed.payload_samples).reduce((a, b) => a + b, 0) > 0) {
+          log({ action: "trim_streams", result: JSON.stringify(trimmed) });
+        }
+      } catch (e) {
+        log({ action: "trim_streams", result: `failed: ${(e as Error).message}` });
+      }
 
       for (const world of worlds) {
         await runCurriculumIfDue(world, config, opts.curriculum ?? true, now, summary);

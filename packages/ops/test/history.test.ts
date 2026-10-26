@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { QueueEntry } from "@sil/core";
 import { paths, StateReadError, ValidationError } from "@sil/core";
-import { closeState } from "@sil/statedb";
+import { appendRecord, closeState } from "@sil/statedb";
 import { appendProposalEvent, writeEntry } from "@sil/store";
 import type { HistorySeries } from "../src/handlers/history.ts";
 import { invoke } from "../src/index.ts";
@@ -108,6 +108,20 @@ describe("history.series", () => {
     expect(out.series.critic_verdicts[0]!.count).toBe(1);
     expect(out.skipped.critic_verdicts).toBe(1);
     expect(out.skipped.votes_good).toBe(0);
+  });
+
+  test("artifact_uses reads the usage log from loop state: deliveries only, this world, quarantine as skipped", async () => {
+    const ts = new Date().toISOString();
+    appendRecord("usage_events", { ts, session_id: "s1", world: "default", kind: "skill", ref: "skill:a" });
+    appendRecord("usage_events", { ts, session_id: "s1", world: "default", kind: "hook_run", ref: "hook:PreToolUse" });
+    appendRecord("usage_events", { ts, session_id: "s2", world: "other", kind: "rule", ref: "rule:b" });
+    // A legacy line from an older hook is imported first; its bad line is quarantined.
+    appendLine(paths.usageEventsFile(), { ts, session_id: "s3", world: "default", kind: "agent", ref: "agent:c" });
+    appendRaw(paths.usageEventsFile(), "{torn\n");
+
+    const out = (await invoke("history.series", { world: "default", days: 1 })) as HistorySeries;
+    expect(out.series.artifact_uses[0]!.count).toBe(2);
+    expect(out.skipped.artifact_uses).toBe(1);
   });
 
   test("sessions_done excludes another world and a session queue.clear hid", async () => {

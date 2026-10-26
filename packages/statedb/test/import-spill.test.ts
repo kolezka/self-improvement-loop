@@ -74,7 +74,7 @@ const attempt = <T>(fn: () => T): { value: T | null; error: unknown } => {
 };
 
 describe("import of hook-written logs and sealed spill segments", () => {
-  test("the first read of each hook stream imports it, per world for payload samples", () => {
+  test("the first open imports the three global hook streams; the first read imports payload samples per world", () => {
     const seeds: { path: string; records: Record<string, unknown>[] }[] = [
       { path: events(), records: [{ e: 1 }, { e: 2 }, { e: 3 }] },
       { path: legacy("nudge_fires"), records: [{ f: 1 }, { f: 2 }] },
@@ -91,6 +91,12 @@ describe("import of hook-written logs and sealed spill segments", () => {
     // Platform split (D9): APFS folds the NFD name onto the NFC path; ext4 (CI) does not.
     const folds = existsSync(legacy("payload_samples", KOLEZKA));
 
+    openState();
+    // The open claims the global streams before any read; payload files wait
+    // for their first read (FIRST_OPEN_DEFERRED, until the corpus reader switches).
+    const imported = folds ? [...seeds, nfd] : seeds;
+    for (const s of seeds.slice(0, 3)) expect(existsSync(s.path)).toBe(false);
+    expect(existsSync(legacy("payload_samples", "default"))).toBe(true);
     expect(readRecords("usage_events", "strict").records.length).toBe(3);
     expect(readRecords("nudge_fires", "strict").records).toEqual([{ f: 1 }, { f: 2 }]);
     expect(readRecords("hook_runs", "strict").records).toEqual([{ h: 1 }, { h: 2 }]);
@@ -100,7 +106,6 @@ describe("import of hook-written logs and sealed spill segments", () => {
     ]);
     expect(readRecords("payload_samples", "strict", KOLEZKA).records).toEqual(folds ? [{ k: 1 }] : []);
 
-    const imported = folds ? [...seeds, nfd] : seeds;
     for (const s of imported) {
       expect(existsSync(s.path)).toBe(false);
       expect(existsSync(`${s.path}.importing`)).toBe(false);
@@ -252,6 +257,8 @@ describe("import of hook-written logs and sealed spill segments", () => {
 
   test("claim wins the race: a line appended after the claim imports on the next read, once", () => {
     const P = events();
+    // Opened first, so the claim below is the read's and not the first open's.
+    openState();
     seed(P, [{ n: 1 }, { n: 2 }]);
     let appended = false;
     const io: ImportIo = {

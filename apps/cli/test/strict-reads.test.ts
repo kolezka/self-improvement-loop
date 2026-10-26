@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeControlResponse, type ControlResult } from "@sil/core/control-protocol";
@@ -338,10 +338,20 @@ describe("ledger, artifacts and aliases", () => {
     writeFileSync(usage, `${JSON.stringify({ ts: new Date().toISOString(), world: W, kind: "skill", ref: "skill:probe-skill" })}\n`);
     const rows = value<{ pattern: string; scorecard: { uses_30d?: number } | null }[]>(ops(artifactReads)["i"]);
     expect(JSON.stringify(rows)).toContain("probe-skill");
-    lock(usage);
-    const r = ops(artifactReads);
-    failed(r["i"], ["StateReadError"]);
-    failed(r["p"], ["StateReadError"]);
+    // That read imported the file; an old hook's later append at the old path
+    // is imported before the next read, and an unreadable one fails it.
+    expect(existsSync(usage)).toBe(false);
+    writeFileSync(usage, `${JSON.stringify({ ts: new Date().toISOString(), world: W, kind: "skill", ref: "skill:probe-skill" })}\n`);
+    chmodSync(usage, 0o000);
+    let r: Record<string, ControlResult>;
+    try {
+      r = ops(artifactReads);
+    } finally {
+      // The import claims the file (a rename) before it fails to read it.
+      for (const p of [usage, `${usage}.importing`]) if (existsSync(p)) chmodSync(p, 0o600);
+    }
+    failed(r["i"], ["StateReadError"], "the usage log");
+    failed(r["p"], ["StateReadError"], "the usage log");
   });
 
   test("a malformed aliases file fails the artifact reads instead of skipping aliases", () => {

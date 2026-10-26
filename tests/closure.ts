@@ -20,7 +20,8 @@ export function resolveSil(specifier: string): string | null {
 /** Every source file reachable from `entries`, and every @sil specifier seen.
  * `dynamic` also follows `import("literal")`, which the bundler inlines too. */
 export function importClosure(entries: string[], { dynamic = false } = {}): { files: string[]; specifiers: Set<string> } {
-  const pattern = dynamic ? /(?:from |import\()["']([^"']+)["']/g : /from ["']([^"']+)["']/g;
+  // `from "x"` covers imports and re-exports; `import "x"` is a bare side-effect import.
+  const pattern = dynamic ? /(?:from |^\s*import\s*|import\()["']([^"']+)["']/gm : /(?:from |^\s*import\s*)["']([^"']+)["']/gm;
   const seen = new Set<string>();
   const specifiers = new Set<string>();
   const queue = [...entries];

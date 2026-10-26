@@ -116,6 +116,25 @@ describe("openForHook and hookWrite on a ready database", () => {
     expect(worlds.map((r) => r.world)).toEqual(["koleżka".normalize("NFC"), "other"]);
   });
 
+  test("payload samples without a world are refused: lost, no row, one log line", () => {
+    fresh();
+    expect(hookWrite("payload_samples", [{ ts: "2026-10-26T10:00:00.000Z", tool: "Bash" }])).toBe("lost");
+    closeHookDb();
+    expect(rowBodies("payload_samples")).toEqual([]);
+    expect(hookLogLines().filter((l) => l.endsWith("payload samples written without a world: dropped 1 record(s)"))).toHaveLength(1);
+  });
+
+  test("payload samples without a world and no database: lost, no spill file, one log line", () => {
+    const payloads = join(paths.stateDir(), "usage", "payloads");
+    // Positive control: a payload spill with a world lands in this dir.
+    expect(spillWrite("payload_samples", ['{"n":0}'], "w")).toBe(true);
+    expect(readdirSync(payloads)).toEqual(["w.jsonl"]);
+    expect(hookWrite("payload_samples", [{ ts: "2026-10-26T10:00:00.000Z" }, { ts: "2026-10-26T10:00:01.000Z" }])).toBe("lost");
+    expect(readdirSync(payloads)).toEqual(["w.jsonl"]);
+    expect(readFileSync(join(payloads, "w.jsonl"), "utf8")).toBe('{"n":0}\n');
+    expect(hookLogLines().filter((l) => l.endsWith("payload samples written without a world: dropped 2 record(s)"))).toHaveLength(1);
+  });
+
   test("a record that is not a JSON object is dropped with one log line, never spilled", () => {
     fresh();
     const bad = [1, "x", null, [1]] as unknown as Record<string, unknown>[];

@@ -125,6 +125,11 @@ function insertAll(db: Database, stream: Stream, records: Record<string, unknown
  * for more than one. Any database failure spills all of them and every later
  * call in this process. A record that is not a JSON object is dropped. Never throws. */
 export function hookWrite(stream: Stream, records: Record<string, unknown>[], world?: string): HookOutcome {
+  // A per-world stream without its world is a caller bug: no row, no spill file to invent.
+  if (STREAMS[stream].perWorld && world === undefined) {
+    hookLog(`${stream.replace(/_/g, " ")} written without a world: dropped ${records.length} record(s)`);
+    return "lost";
+  }
   const good: Record<string, unknown>[] = [];
   const bodies: string[] = [];
   for (const record of records) {

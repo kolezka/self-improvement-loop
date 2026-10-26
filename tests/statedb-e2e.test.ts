@@ -4,16 +4,17 @@
 // worker ops, the aliases reader and the real `sil state` CLI. Then the way back: export to the
 // legacy paths and migrate again without doubling a row.
 
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type Config, fsx, Ledger, ledgerPath, loadConfig, paths, type QueueEntry, type Scorecard, worldNamed, writeHookSnapshot } from "@sil/core";
+import { Config, fsx, Ledger, ledgerPath, loadConfig, paths, type QueueEntry, saveConfig, type Scorecard, StateReadError, worldNamed, writeHookSnapshot } from "@sil/core";
 import { serializeSpool, SPOOL_FILE_NAME, SPOOL_VERSION, type SpoolAppend } from "@sil/core/spool";
 import * as feedback from "@sil/feedback";
 import { invoke } from "@sil/ops";
 import { closeState, openSpillPath, openState, readRecords, type StateStatus, type Stream } from "@sil/statedb";
-import { loadAliases, loadQueueCleared, readProposalEvents, saveLedger, writeEntry } from "@sil/store";
+import { listReflectionHeadsStrict, loadAliases, loadQueueCleared, readProposalEvents, saveLedger, writeEntry, writeReflection } from "@sil/store";
 import type { HistorySeries } from "../packages/ops/src/handlers/history.ts";
 import { type HookEnv, MAIN_TS, runHook } from "../apps/hook/test/helpers.ts";
 
@@ -605,5 +606,136 @@ describe("hook-written logs end to end", () => {
     expect(after).toEqual(kept.map((r) => JSON.stringify(r)).sort());
     const oldKept = after.filter((b) => (JSON.parse(b) as { ts: string }).ts < cutoff).map((b) => (JSON.parse(b) as { ref: string }).ref);
     expect(oldKept.sort()).toEqual(["skill:old-0", "skill:old-1", "skill:old-2", "skill:old-3", "skill:old-4"]);
+  });
+});
+
+// Phase 4: the reflections index, a cache built by listReflectionHeads and read
+// back through the CLI, the ops, scorecards and `sil state status`.
+const KOLEZKA = "koleżka".normalize("NFC");
+const DAYS = ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"];
+const HEADS: Record<string, number> = { [WORLD]: 20, [KOLEZKA]: 10 };
+// default also holds two files whose header says `world: other`: rows, not heads.
+const ROWS = [
+  { world: WORLD, rows: 22 },
+  { world: KOLEZKA, rows: 10 },
+];
+
+function writeTwoWorldConfig(): void {
+  saveConfig(Config.parse({ worlds: [{ name: WORLD }, { name: KOLEZKA }] }));
+}
+
+/** 30 reflections across two worlds over four days, ten of them without created_at, plus two `world: other`. */
+function seedReflections(): void {
+  const write = (world: string, i: number, extra: Record<string, unknown>): void => {
+    const day = DAYS[i % DAYS.length]!;
+    const pattern = i % 2 === 0 ? PATTERN : "other-lesson";
+    const id = `${day}-${pattern}-${world === WORLD ? "d" : "k"}${String(i).padStart(2, "0")}`;
+    const at = `${day}T${String(10 + (i % 10)).padStart(2, "0")}:00:00.000Z`;
+    // created_at: undefined drops the key, so the reader falls back to the mtime set below.
+    const meta = { id, created: day, created_at: at, ...extra };
+    const p = writeReflection(world, meta, `Pattern: ${pattern}\n\n## Reusable lesson\n\nLesson ${id}.\n`);
+    utimesSync(p, new Date(at), new Date(at));
+  };
+  for (let i = 0; i < 20; i++) write(WORLD, i, i >= 10 ? { created_at: undefined } : {});
+  for (let i = 0; i < 10; i++) write(KOLEZKA, i, {});
+  for (let i = 0; i < 2; i++) write(WORLD, 40 + i, { world: "other" });
+}
+
+function reflectionFiles(): string[] {
+  const out: string[] = [];
+  for (const w of [WORLD, KOLEZKA]) {
+    const dir = paths.reflectionsDir(w);
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir)) if (name.endsWith(".md")) out.push(join(dir, name));
+  }
+  return out;
+}
+
+/** The reflections column of `sil status` for one world. */
+function statusCount(stdout: string, world: string): number {
+  const m = new RegExp(`^${world}\\s+\\S+\\s+(\\d+)\\s`, "m").exec(stdout);
+  expect(m).not.toBeNull();
+  return Number(m![1]);
+}
+
+function silStatusCounts(): Record<string, number> {
+  const out = sil(["status"]);
+  expect(out.exitCode).toBe(0);
+  return { [WORLD]: statusCount(out.stdout, WORLD), [KOLEZKA]: statusCount(out.stdout, KOLEZKA) };
+}
+
+async function opCounts(): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  for (const w of [WORLD, KOLEZKA]) out[w] = ((await invoke("reflections.count", { world: w })) as { total: number }).total;
+  return out;
+}
+
+describe("reflections index end to end", () => {
+  afterEach(() => {
+    for (const f of reflectionFiles()) chmodSync(f, 0o644);
+  });
+
+  test("the CLI builds the index, every reader counts from it, and the phase 1 and 2 imports stay verified", async () => {
+    writeTwoWorldConfig();
+    seedLegacy();
+    seedDocs();
+    seedReflections();
+    expect(reflectionFiles()).toHaveLength(32);
+    const noCreatedAt = reflectionFiles().filter((f) => !readFileSync(f, "utf8").includes("created_at:"));
+    expect(noCreatedAt).toHaveLength(10);
+    expect(existsSync(paths.loopStateDb())).toBe(false);
+
+    // The real `sil status` in a child builds the index through its count.
+    expect(silStatusCounts()).toEqual(HEADS);
+    const status = statusJson();
+    expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
+    expect(status.schemaVersion).toBe(4);
+    expect(status.reflectionIndex).toEqual(ROWS);
+    expect(status.imports).toHaveLength(8);
+    for (const imp of status.imports) {
+      expect(imp.state).toBe("verified");
+      expect(imp.backupCheck).toBe("ok");
+    }
+
+    expect(await opCounts()).toEqual(HEADS);
+    const cfg = loadConfig();
+    for (const w of [WORLD, KOLEZKA]) {
+      const cards = feedback.scorecards(worldNamed(cfg, w), cfg, { strict: true });
+      expect(Array.isArray(cards)).toBe(true);
+    }
+    expect(feedback.scorecards(worldNamed(cfg, WORLD), cfg, { strict: true }).find((c) => c.ref === REF)).toBeDefined();
+
+    // Heads served from the index sort the same as the file reader.
+    const fromIndex = listReflectionHeadsStrict(WORLD).map((h) => h.id);
+    const fromFiles = ((await invoke("reflections.list", { world: WORLD })) as { id: string }[]).map((r) => r.id);
+    expect(fromIndex).toHaveLength(20);
+    expect(fromIndex).toEqual(fromFiles);
+    expect(fromIndex).not.toEqual([...fromIndex].sort());
+  });
+
+  test.skipIf(process.getuid?.() === 0)("unreadable files still count from the index; a cleared index rebuilds on the next read", async () => {
+    writeTwoWorldConfig();
+    seedReflections();
+    expect(silStatusCounts()).toEqual(HEADS);
+    expect(statusJson().reflectionIndex).toEqual(ROWS);
+
+    for (const f of reflectionFiles()) chmodSync(f, 0o000);
+    expect(await opCounts()).toEqual(HEADS);
+    expect(silStatusCounts()).toEqual(HEADS);
+    for (const w of [WORLD, KOLEZKA]) {
+      await expect(invoke("reflections.list", { world: w })).rejects.toBeInstanceOf(StateReadError);
+    }
+
+    // The index is a cache: drop every row, restore the modes, the next count rebuilds it.
+    const db = new Database(paths.loopStateDb());
+    try {
+      expect(db.run("DELETE FROM reflection_index").changes).toBe(32);
+    } finally {
+      db.close();
+    }
+    for (const f of reflectionFiles()) chmodSync(f, 0o644);
+    expect(statusJson().reflectionIndex).toEqual([]);
+    expect(await opCounts()).toEqual(HEADS);
+    expect(statusJson().reflectionIndex).toEqual(ROWS);
   });
 });

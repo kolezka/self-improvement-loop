@@ -346,7 +346,7 @@ describe("runOnce usage events", () => {
 
     expect((openState().query("SELECT count(*) AS n FROM log_records WHERE stream = 'hook_runs'").get() as { n: number }).n).toBe(40000);
     const trim = workerLines().find((l) => l["action"] === "trim_streams");
-    expect(JSON.parse(String(trim?.["result"]))).toEqual({ hook_runs: 2, nudge_fires: 0, payload_samples: {} });
+    expect(trim?.["result"]).toEqual({ hook_runs: 2, nudge_fires: 0, payload_samples: {} });
   });
 
   test("a compaction that fails is logged and the run goes on", async () => {

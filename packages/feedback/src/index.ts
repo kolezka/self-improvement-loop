@@ -17,7 +17,7 @@ import {
   type World,
 } from "@sil/core";
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import { appendRecord, ensureImported, openState, readRecords, type Stream, STREAMS } from "@sil/statedb";
+import { appendRecord, ensureImported, legacyWorlds, openState, readRecords, type Stream, STREAMS } from "@sil/statedb";
 import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger } from "@sil/store";
 import { installedArtifacts } from "@sil/critic";
 import { patternRates, type SessionDayRow } from "./rates.ts";
@@ -478,7 +478,9 @@ export function compactUsageEvents(cfg: Config, now: Date = new Date()): number 
     // Chosen once, outside the write lock: recomputing the newest per ref in
     // every chunk held the lock for 36 ms a chunk at 60k rows and grew with
     // the table. A candidate stays one: other writers only add rows, so the
-    // newest of its (world, ref) can only get newer.
+    // newest of its (world, ref) can only get newer. replaceStream --force
+    // deletes and reinserts the rows under new AUTOINCREMENT ids, so a stale
+    // candidate id can only miss a row, never hit a replacement.
     const ids = (db.query(COMPACT_CANDIDATES_SQL).all(cutoff) as { id: number }[]).map((r) => r.id);
     return deleteUsageIds(db, ids);
   } catch (error) {
@@ -505,13 +507,15 @@ DELETE FROM log_records WHERE id IN (
 )`;
 };
 
-/** Keep each hook-written stream inside its TRIM_BOUNDS row count. Rows only:
- * a legacy file still waiting is trimmed after the next read imports it. Any
- * failure throws StateWriteError starting with that stream's label. Call this
- * from the worker, inside the worker lock, after compaction. */
+/** Keep each hook-written stream inside its TRIM_BOUNDS row count. Like any
+ * store access (D4), each trim first imports a legacy or spill file waiting at
+ * the old path, so its lines are trimmed with the rows. Any failure throws
+ * StateWriteError starting with that stream's label. Call this from the
+ * worker, inside the worker lock, after compaction. */
 export function trimStreams(): TrimResult {
   const trimOne = (stream: "hook_runs" | "nudge_fires" | "payload_samples", world: string | null): number => {
     try {
+      ensureImported({ store: stream, world });
       return deleteInChunks(openState(), trimSql(world !== null), [stream, world, TRIM_BOUNDS[stream]]);
     } catch (error) {
       throw new StateWriteError(`${STREAMS[stream].label(world)} cannot be trimmed (${reasonOf(error)})`);
@@ -520,7 +524,9 @@ export function trimStreams(): TrimResult {
   const result: TrimResult = { hook_runs: trimOne("hook_runs", null), nudge_fires: trimOne("nudge_fires", null), payload_samples: {} };
   let worlds: string[];
   try {
-    worlds = (openState().query("SELECT DISTINCT world FROM log_records WHERE stream = 'payload_samples' AND world IS NOT NULL ORDER BY world").all() as { world: string }[]).map((r) => r.world);
+    // Worlds with rows, and worlds whose payload file still waits to be imported.
+    const withRows = (openState().query("SELECT DISTINCT world FROM log_records WHERE stream = 'payload_samples' AND world IS NOT NULL").all() as { world: string }[]).map((r) => r.world);
+    worlds = [...new Set([...withRows, ...legacyWorlds("payload_samples")])].sort();
   } catch (error) {
     throw new StateWriteError(`the payload samples cannot be trimmed (${reasonOf(error)})`);
   }

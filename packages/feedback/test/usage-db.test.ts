@@ -158,6 +158,29 @@ describe("scorecards read the usage log from loop state", () => {
     15_000,
   );
 
+  const fire = (pattern: string, days: number): Record<string, unknown> => ({ ts: ago(days), pattern, session: "s1", event: "PreToolUse" });
+  const seedFires = (lines: string[]): void => {
+    mkdirSync(join(paths.nudgeFiresFile(), ".."), { recursive: true });
+    writeFileSync(paths.nudgeFiresFile(), lines.map((l) => `${l}\n`).join(""));
+  };
+
+  test("strict: a valid nudge fires log counts its fires (control)", () => {
+    seedFires([JSON.stringify(fire("probe", 1)), JSON.stringify(fire("probe", 2))]);
+    const card = scorecards(DEFAULT, cfg(), { now: NOW, strict: true }).find((c) => c.ref === "hook:probe");
+    expect(card?.fires_30d).toBe(2);
+  });
+
+  test("strict: a nudge fires line that is not JSON raises StateReadError; tolerant counts the good line", () => {
+    seedFires([JSON.stringify(fire("probe", 1)), "not json"]);
+    const error = caught(() => scorecards(DEFAULT, cfg(), { now: NOW, strict: true }));
+    expect(error).toBeInstanceOf(StateReadError);
+    expect((error as Error).message).toContain("the nudge fires log has 1 line that could not be imported");
+    const card = scorecards(DEFAULT, cfg(), { now: NOW }).find((c) => c.ref === "hook:probe");
+    expect(card?.fires_30d).toBe(1);
+    // D8: a tolerant read ignores quarantine rows without a log line.
+    expect(existsSync(paths.logFile("state"))).toBe(false);
+  });
+
   // Literals from origin/main 51fa4c4 (scorecards over the same legacy files,
   // usage-fixture.ts, in its own worktree and bun install). The switch to loop
   // state must not move uses_30d, fires_30d or last_used.
@@ -320,6 +343,47 @@ describe("trimStreams", () => {
     expect(rowCount("payload_samples", "a")).toBe(2000);
     expect(result.payload_samples).toEqual({ a: 1, b: 0 });
     expect(readRecords("payload_samples", "strict", "a").records[0]).toEqual({ world: "a", i: 1 });
+  });
+
+  // D4: every store write runs the pending check first, so a legacy or spill
+  // file at the old path is imported and then trimmed with the rows.
+  const writeLines = (path: string, n: number, line: (i: number) => Record<string, unknown>): void => {
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, Array.from({ length: n }, (_, i) => JSON.stringify(line(i))).join("\n") + "\n");
+  };
+  const backupsOf = (path: string): string[] => readdirSync(join(path, "..")).filter((n) => n.startsWith(`${path.split("/").at(-1)}.imported-`));
+
+  test("a pending hook runs file is imported before the trim", () => {
+    const trim = trimStreamsFn();
+    openState();
+    appendRecord("hook_runs", { control: true });
+    writeLines(paths.hookRunsFile(), 40001, (i) => ({ i }));
+    expect(trim().hook_runs).toBe(2);
+    expect(rowCount("hook_runs")).toBe(40000);
+    expect(existsSync(paths.hookRunsFile())).toBe(false);
+    expect(backupsOf(paths.hookRunsFile())).toHaveLength(1);
+  });
+
+  test("a pending nudge fires file is imported before the trim", () => {
+    const trim = trimStreamsFn();
+    openState();
+    appendRecord("nudge_fires", { control: true });
+    writeLines(paths.nudgeFiresFile(), 5000, (i) => ({ ts: NOW.toISOString(), pattern: `p${i}` }));
+    expect(trim().nudge_fires).toBe(1);
+    expect(rowCount("nudge_fires")).toBe(5000);
+    expect(existsSync(paths.nudgeFiresFile())).toBe(false);
+    expect(backupsOf(paths.nudgeFiresFile())).toHaveLength(1);
+  });
+
+  test("a legacy payload file of a world with no rows is imported before the trim", () => {
+    const trim = trimStreamsFn();
+    openState();
+    // First open defers payload files, so this one waits for an explicit store access.
+    writeLines(paths.payloadSamplesFile("w"), 2001, (i) => ({ world: "w", i }));
+    expect(existsSync(paths.payloadSamplesFile("w"))).toBe(true);
+    expect(trim().payload_samples).toEqual({ w: 1 });
+    expect(rowCount("payload_samples", "w")).toBe(2000);
+    expect(existsSync(paths.payloadSamplesFile("w"))).toBe(false);
   });
 
   test("bounds and chunk size are the D11 values", () => {

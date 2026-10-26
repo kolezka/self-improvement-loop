@@ -368,7 +368,7 @@ export async function runOnce(cfg?: Config, opts: RunOnceOptions = {}): Promise<
       try {
         const trimmed = trimStreams();
         if (trimmed.hook_runs + trimmed.nudge_fires + Object.values(trimmed.payload_samples).reduce((a, b) => a + b, 0) > 0) {
-          log({ action: "trim_streams", result: JSON.stringify(trimmed) });
+          log({ action: "trim_streams", result: trimmed });
         }
       } catch (e) {
         log({ action: "trim_streams", result: `failed: ${(e as Error).message}` });

@@ -354,6 +354,20 @@ describe("ledger, artifacts and aliases", () => {
     failed(r["p"], ["StateReadError"], "the usage log");
   });
 
+  test("a nudge fires line that cannot be imported fails the artifact reads instead of dropping fires", () => {
+    seedLedger();
+    const fires = join(state(), "usage", "nudge-fires.jsonl");
+    mkdirSync(join(fires, ".."), { recursive: true });
+    const good = `${JSON.stringify({ ts: new Date().toISOString(), pattern: "probe-hook", session: "s1", event: "PreToolUse" })}\n`;
+    // Control: a valid log reads.
+    writeFileSync(fires, good);
+    expect(value<{ total: number }>(ops(artifactReads)["p"]).total).toBeGreaterThan(0);
+    writeFileSync(fires, `${good}not json\n`);
+    const r = ops(artifactReads);
+    failed(r["i"], ["StateReadError"], "the nudge fires log has 1 line that could not be imported");
+    failed(r["p"], ["StateReadError"], "the nudge fires log has 1 line that could not be imported");
+  });
+
   test("a malformed aliases file fails the artifact reads instead of skipping aliases", () => {
     seedLedger();
     const aliases = join(data(), "worlds", W, "aliases.json");

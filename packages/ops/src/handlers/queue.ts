@@ -1,6 +1,6 @@
 import { fsx, ValidationError } from "@sil/core";
 import { SECRET_RE } from "@sil/curriculum";
-import { isHidden, listQueueStrict, listReflectionsStrict, loadEntryStrict, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
+import { isHidden, listQueueStrict, listReflectionHeadsStrict, loadEntryStrict, loadQueueCleared, setQueueCleared, type Bucket } from "@sil/store";
 import { readEvidenceRecordsStrict } from "@sil/transcript";
 import type { ClearArgs, NoArgs, SessionArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
@@ -126,7 +126,7 @@ export function queueDetail(args: SessionArgs) {
   for (const bucket of DETAIL_BUCKETS) {
     const entry = loadEntryStrict(bucket, args.session_id);
     if (!entry) continue;
-    const reflectionIds = listReflectionsStrict(entry.world)
+    const reflectionIds = listReflectionHeadsStrict(entry.world)
       .filter((r) => r.session_id === entry.session_id)
       .map((r) => r.id);
     // One read supplies both the messages and, when it fails, the reason:

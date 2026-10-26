@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_ERROR_RESULT_PREFIX, fsx, loadConfig, paths } from "@sil/core";
 import type { ProviderStatus } from "@sil/providers";
-import { listQueue, listReflections } from "@sil/store";
+import { listQueue, listReflectionHeads } from "@sil/store";
 import { defaultDeps, type Deps } from "../deps.ts";
 import * as schedule from "../schedule.ts";
 
@@ -185,7 +185,7 @@ export async function cmdStatus(opts: StatusOptions, deps: Deps = defaultDeps): 
       config_error: null,
     };
     try {
-      info.reflections = listReflections(w.name).length;
+      info.reflections = listReflectionHeads(w.name).length;
     } catch {
       // reflections dir unreadable: leave at 0
     }

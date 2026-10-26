@@ -70,6 +70,8 @@ export {
   MAX_SAMPLED_PAYLOADS,
   plan,
   type PlanOptions,
+  reflectionHeads,
+  reflectionHeadsStrict,
   reflections,
   reflectionsStrict,
   scorecardByPattern,

@@ -7,9 +7,9 @@
 // `scripts/eval-alias-semantic.ts` for that.
 
 import { Database } from "bun:sqlite";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { chmodSync, readdirSync, readFileSync } from "node:fs";
+import { basename, join, relative } from "node:path";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   type AliasSemanticConfig,
   Config as ConfigSchema,
@@ -31,6 +31,8 @@ import { addReflections, cleanupEnv, LESSON, makeWorld, silEnv, type TestEnv } f
 
 let env: TestEnv;
 const originalFetch = globalThis.fetch;
+// Reflection files a test made unreadable; restored before the tmp dir goes.
+const lockedFiles: string[] = [];
 
 beforeEach(() => {
   env = silEnv();
@@ -43,6 +45,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  for (const p of lockedFiles.splice(0)) chmodSync(p, 0o644);
   cleanupEnv(env);
 });
 
@@ -203,6 +206,40 @@ describe("evidence", () => {
 
     const first = fake.calls.find((c) => c.state.pattern_a.name === "stale-env")!;
     expect(first.state.pattern_b.reflections[0]!.id).toBe("2026-09-15-old-env-00");
+  });
+});
+
+describe("evidence from the index", () => {
+  test.skipIf(process.getuid?.() === 0)("under a cap of one, only the newest reflection of a pattern is opened", async () => {
+    const world = makeWorld();
+    addReflections(world, "stale-env", 1, { startDay: 1 });
+    const older = addReflections(world, "stale-cached-env", 4, { startDay: 3, lesson: "An older lesson." });
+    addReflections(world, "stale-cached-env", 1, { startDay: 9, lesson: "The newest lesson." });
+    const semantic = cfg(world, { enabled: true, max_reflections_per_pattern: 1 });
+    const run = async () => {
+      const fake = new FakeDecider({ "stale-env~stale-cached-env": answer("same_mechanism", 0.9) });
+      await assessAliasSuggestions(semantic, world, { llm: systemOneLlm(), decideChoice: fake.fn });
+      return fake.calls.find((c) => c.state.pattern_a.name === "stale-env")!.state.pattern_b.reflections;
+    };
+    // The first pass indexes every file.
+    expect(await run()).toEqual([{ id: "2026-09-09-stale-cached-env-00", excerpt: "The newest lesson." }]);
+
+    for (const p of older) {
+      chmodSync(p, 0o000);
+      lockedFiles.push(p);
+    }
+    const reads = spyOn(fsx, "readText");
+    const readsIfPresent = spyOn(fsx, "readTextIfPresent");
+    try {
+      expect(await run()).toEqual([{ id: "2026-09-09-stale-cached-env-00", excerpt: "The newest lesson." }]);
+      const opened = [...reads.mock.calls, ...readsIfPresent.mock.calls].map((c) => basename(String(c[0])));
+      // Positive control: the spy does see the reflection reads.
+      expect(opened).toContain("2026-09-09-stale-cached-env-00.md");
+      for (const p of older) expect(opened).not.toContain(basename(p));
+    } finally {
+      reads.mockRestore();
+      readsIfPresent.mockRestore();
+    }
   });
 });
 

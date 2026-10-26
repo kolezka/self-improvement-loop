@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, SECTIONS, type Config, type LlmConfig, type QueueEntry, type World } from "@sil/core";
-import { listLessons, listReflections } from "@sil/store";
+import { listLessons, listReflections, writeReflection } from "@sil/store";
 import type { ChatMessage } from "@sil/providers";
 import { closeState, readRecords } from "@sil/statedb";
 import { installedArtifacts, parseAnswer, reflectSession } from "../src/index.ts";
@@ -11,6 +11,8 @@ import { setSilDirs, restoreEnv, writeSampleTranscript } from "../../transcript/
 
 let tmpDir: string;
 let savedEnv: Record<string, string | undefined>;
+// Reflection files a test made unreadable; restored before the tmp dir goes.
+const lockedFiles: string[] = [];
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "sil-critic-"));
@@ -21,6 +23,7 @@ afterEach(() => {
   try {
     closeState();
   } finally {
+    for (const p of lockedFiles.splice(0)) chmodSync(p, 0o644);
     restoreEnv(savedEnv);
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -235,6 +238,40 @@ describe("reflectSession never leaks secrets", () => {
     expect(serialized).not.toContain("LITELLM_API_KEY");
     expect(serialized).not.toContain(e.transcript_path);
     delete process.env["LITELLM_API_KEY"];
+  });
+});
+
+describe("reflectSession recent reflection ids", () => {
+  test.skipIf(process.getuid?.() === 0)("hold the 25 newest ids once the indexed files turn unreadable", async () => {
+    const w = world();
+    const c = cfg(w);
+    const ids = Array.from({ length: 30 }, (_, i) => `2026-08-${String(i + 1).padStart(2, "0")}-verify-callsites`);
+    const files = ids.map((id) =>
+      writeReflection("default", { id, created: id.slice(0, 10), created_at: `${id.slice(0, 10)}T10:00:00.000Z` }, "Pattern: verify-callsites\n\n## Reusable lesson\nx\n"),
+    );
+    const newest = ids.slice(5).reverse();
+
+    let captured: ChatMessage[] = [];
+    // record: false, so a run writes no reflection of its own.
+    const fakeChat = async (_role: string, messages: ChatMessage[]) => {
+      captured = messages;
+      return JSON.stringify({ record: false, pattern: null });
+    };
+    const recentIds = (): unknown => {
+      const user = String(captured[1]!.content);
+      const marker = "Evidence pack (JSON):\n";
+      return (JSON.parse(user.slice(user.indexOf(marker) + marker.length)) as { recent_reflection_ids: unknown }).recent_reflection_ids;
+    };
+
+    await reflectSession(entry(), { cfg: c, world: w, llm: llm(), chat: fakeChat });
+    expect(recentIds()).toEqual(newest);
+
+    for (const p of files) {
+      chmodSync(p, 0o000);
+      lockedFiles.push(p);
+    }
+    await reflectSession(entry("sess-2"), { cfg: c, world: w, llm: llm(), chat: fakeChat });
+    expect(recentIds()).toEqual(newest);
   });
 });
 

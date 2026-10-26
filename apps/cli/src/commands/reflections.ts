@@ -1,7 +1,7 @@
 // sil reflections: list and show reflection docs.
 
 import { loadConfig, worldNamed } from "@sil/core";
-import { listReflections } from "@sil/store";
+import { listReflectionHeads, listReflections } from "@sil/store";
 import { resolveWorld } from "../common.ts";
 
 export interface ReflectionsListOptions {
@@ -13,7 +13,7 @@ export interface ReflectionsListOptions {
 export function cmdReflectionsList(opts: ReflectionsListOptions): number {
   const cfg = loadConfig();
   const world = resolveWorld(cfg, opts.world);
-  let items = listReflections(world.name);
+  let items = listReflectionHeads(world.name);
   if (opts.pattern) items = items.filter((r) => r.pattern === opts.pattern);
   if (opts.limit) items = items.slice(0, opts.limit);
   if (items.length === 0) {

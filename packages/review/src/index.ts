@@ -34,7 +34,7 @@ import {
   worldClaudeConfigDir,
 } from "@sil/core";
 import { isWithin } from "@sil/core/layout";
-import { artifacts, branchName, git, loadLedger, reflections, reflectionsStrict, scorecardByPattern } from "@sil/curriculum";
+import { artifacts, branchName, git, loadLedger, reflectionHeads, reflectionHeadsStrict, scorecardByPattern } from "@sil/curriculum";
 import { loadLedger as loadLedgerFile, parseLedger, recordProposalEvent, saveLedger } from "@sil/store";
 import * as feedback from "@sil/feedback";
 import * as worker from "@sil/worker";
@@ -334,7 +334,7 @@ export function detail(world: World, _cfg: Config, pattern: string, opts: Review
     blocked = foreignProblem(world, repo, snap, pattern, atype);
   }
 
-  const sources = reflectionsStrict(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).map((r) => r.id);
+  const sources = reflectionHeadsStrict(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).map((r) => r.id);
   return {
     world: world.name,
     pattern,
@@ -386,7 +386,7 @@ export function diff(world: World, _cfg: Config, pattern: string): ReviewDiff {
 export function inventory(world: World, cfg: Config, opts: ReviewOptions = {}): RouterRow[] {
   const ledger = loadLedger(world);
   const counts = new Map<string, number>();
-  for (const reflection of reflectionsStrict(world, opts.extraDirs ?? [])) {
+  for (const reflection of reflectionHeadsStrict(world, opts.extraDirs ?? [])) {
     counts.set(reflection.pattern, (counts.get(reflection.pattern) ?? 0) + 1);
   }
   // feedback.scorecards in strict mode, not the planner's catch-all wrapper:
@@ -713,7 +713,7 @@ function rejectInner(world: World, cfg: Config, pattern: string, opts: ReviewOpt
   requireLiveReady(world, repo, defaultRef);
 
   const branchRow = branchEntry(world, repo, snap.branch_sha, pattern);
-  const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
+  const at = reflectionHeads(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   const rel = ledgerRel(world);
   // The complaints this refusal answered; only new ones may propose a refine
   // again. Computed fresh, since the scorecards file is only as new as the last rebuild.
@@ -922,7 +922,7 @@ function retireInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
   // mark stands where the artifact was first staged, so without this the very
   // next tick reads the reflections already on disk as new evidence and stages
   // the retired artifact again.
-  const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
+  const at = reflectionHeads(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   let removed = "";
   // The live row first: an existing branch carries the loop's older row.
   refuseInline(loadLedger(world).entries[pattern], pattern, "retire");
@@ -982,7 +982,7 @@ function removeInner(world: World, _cfg: Config, pattern: string, opts: ReviewOp
     refuseDeleted(live, pattern, "delete");
   }
   const branchRow = hasBranch ? branchEntry(world, repo, branch, pattern) : null;
-  const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
+  const at = reflectionHeads(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
   let removed = "";
   let row: PromotionEntry | null = null;
 

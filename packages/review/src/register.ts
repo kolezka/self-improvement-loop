@@ -4,7 +4,7 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Config, fsx, isSlug, type PromotionEntry, ReviewError, targetRoot, type World } from "@sil/core";
-import { artifacts, branchName, git, lintHook, reflections } from "@sil/curriculum";
+import { artifacts, branchName, git, lintHook, reflectionHeads } from "@sil/curriculum";
 import { loadLedger as loadLedgerFile, saveLedger } from "@sil/store";
 import { commitOnDefault, requireLiveReady, withWorkerLock } from "./index.ts";
 import { ledgerRel } from "./snapshot.ts";
@@ -65,7 +65,7 @@ export function register(
     }
     const rel = ledgerRel(world);
     const copied = nudge ? artifacts.artifactRel(world, "hook", pattern) : null;
-    const at = reflections(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
+    const at = reflectionHeads(world, opts.extraDirs ?? []).filter((r) => r.pattern === pattern).length;
     const build = (prior: PromotionEntry | undefined): PromotionEntry => buildRow(prior, pattern, type, resolved, note, copied, at);
 
     if (opts.dryRun) {

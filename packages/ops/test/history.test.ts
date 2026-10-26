@@ -4,18 +4,20 @@
 // a zero, never missing from the array.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { QueueEntry } from "@sil/core";
 import { paths, StateReadError, ValidationError } from "@sil/core";
 import { appendRecord, closeState } from "@sil/statedb";
-import { appendProposalEvent, writeEntry } from "@sil/store";
+import { appendProposalEvent, writeEntry, writeReflection } from "@sil/store";
 import type { HistorySeries } from "../src/handlers/history.ts";
 import { invoke } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
+// Reflection files a test made unreadable; restored before the tmp dir goes.
+const lockedFiles: string[] = [];
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sil-ops-history-"));
@@ -27,6 +29,7 @@ beforeEach(() => {
 
 afterEach(() => {
   closeState();
+  for (const p of lockedFiles.splice(0)) chmodSync(p, 0o644);
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -71,6 +74,24 @@ describe("history.series", () => {
     expect(out.series.reflections).toHaveLength(3);
     // Zero-count days are zeros, not missing.
     expect(out.series.votes_good.map((p) => p.day)).toHaveLength(3);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("the reflections series still reads once the indexed files turn unreadable", async () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+    const files = [
+      writeReflection("default", { id: "r-today-1" }, "Pattern: some-pattern\n\n## Reusable lesson\nx\n"),
+      writeReflection("default", { id: "r-today-2" }, "Pattern: some-pattern\n\n## Reusable lesson\nx\n"),
+      writeReflection("default", { id: "r-old", created: twoDaysAgo }, "Pattern: some-pattern\n\n## Reusable lesson\nx\n"),
+    ];
+    const before = (await invoke("history.series", { world: "default", days: 3 })) as HistorySeries;
+    // Positive control: the series does count these reflections.
+    expect(before.series.reflections.map((p) => p.count)).toEqual([1, 0, 2]);
+    for (const p of files) {
+      chmodSync(p, 0o000);
+      lockedFiles.push(p);
+    }
+    const after = (await invoke("history.series", { world: "default", days: 3 })) as HistorySeries;
+    expect(after.series.reflections).toEqual(before.series.reflections);
   });
 
   test("rejects days out of range", async () => {

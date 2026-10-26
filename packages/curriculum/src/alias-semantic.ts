@@ -12,7 +12,7 @@
 
 import { apiKey, type AliasSemanticConfig, type Config, loadLlm, type LlmConfig, resolveRole, type Reflection, type World } from "@sil/core";
 import { type ChoiceAnswer, type ChoiceQuestion, decideChoice as defaultDecideChoice, type DecideChoiceFn } from "@sil/providers";
-import { type AliasSuggestion, listReflections, loadAliases, suggestAliases } from "@sil/store";
+import { type AliasSuggestion, listReflectionHeads, loadAliases, parseReflection, suggestAliases } from "@sil/store";
 
 /** The three answers a human sees. `unsure` is never a model option: it is
  * what a pick below the confidence bar becomes. */
@@ -137,17 +137,19 @@ export function pairQuestion(
 function evidenceByPattern(world: World, cfg: AliasSemanticConfig): Map<string, EvidenceExcerpt[]> {
   const aliases = loadAliases(world.name);
   const out = new Map<string, EvidenceExcerpt[]>();
-  // listReflections is newest first and world scoped: nothing from another
+  // listReflectionHeads is newest first and world scoped: nothing from another
   // world, and no V1 mirror dir, can reach the request body.
-  for (const r of listReflections(world.name)) {
-    const pattern = aliases[r.pattern] ?? r.pattern;
+  for (const head of listReflectionHeads(world.name)) {
+    const pattern = aliases[head.pattern] ?? head.pattern;
     const bucket = out.get(pattern) ?? [];
     if (bucket.length >= cfg.max_reflections_per_pattern) continue;
-    const excerpt = excerptOf(r, cfg.max_excerpt_chars);
+    // Only a candidate under the cap is opened for its lesson.
+    const r = parseReflection(head.path, world.name);
+    const excerpt = r === null ? "" : excerptOf(r, cfg.max_excerpt_chars);
     // An empty excerpt is not evidence. Kept, it would send the model a blank
     // string and print the id below the verdict as if it grounded the answer.
     if (excerpt === "") continue;
-    bucket.push({ id: r.id, excerpt });
+    bucket.push({ id: head.id, excerpt });
     out.set(pattern, bucket);
   }
   return out;

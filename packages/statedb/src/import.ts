@@ -486,6 +486,10 @@ function importPasses(db: Database, ref: StoreRef, outcomes: ImportOutcome[]): v
 const globalStores = (): StoreName[] => (Object.keys(STORES) as StoreName[]).filter((store) => !STORES[store].perWorld);
 const PER_WORLD_STORES = ["refine_attempts", "aliases"] as const;
 
+// These streams' readers and writers still use the files until the phase 3 reader switch lands;
+// importing them at first open would hide the files from those readers.
+export const FIRST_OPEN_DEFERRED: ReadonlySet<StoreName> = new Set(["usage_events", "nudge_fires", "hook_runs", "payload_samples"]);
+
 /** Import one store into `result`, collecting its failure instead of throwing. */
 function importInto(db: Database, ref: StoreRef, result: ImportAllResult): void {
   try {
@@ -513,7 +517,7 @@ function importInto(db: Database, ref: StoreRef, result: ImportAllResult): void 
 export function importAllOn(db: Database): ImportAllResult {
   const result: ImportAllResult = { outcomes: [], failures: [] };
   if (importSuspendedAt(db) !== null) return result;
-  for (const store of globalStores()) importInto(db, { store, world: null }, result);
+  for (const store of globalStores()) if (!FIRST_OPEN_DEFERRED.has(store)) importInto(db, { store, world: null }, result);
   for (const store of PER_WORLD_STORES) {
     let worlds: string[];
     try {

@@ -16,7 +16,18 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
-import { appendRecord, closeState, importAll, type ImportIo, openState, readRecords, setImportIoForTest, type Stream, STREAMS } from "../src/index.ts";
+import {
+  appendRecord,
+  closeState,
+  importAll,
+  type ImportIo,
+  openState,
+  readRecords,
+  setImportIoForTest,
+  stateStatus,
+  type Stream,
+  STREAMS,
+} from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -101,6 +112,19 @@ function crashAfterCommit(): { claim: string; backup: string; seeded: Buffer } {
 }
 
 describe("legacy import", () => {
+  test("the first open leaves the hook-written logs for their file readers; a direct read imports them", () => {
+    const events = paths.usageEventsFile();
+    fsx.appendJsonl(events, { n: 1 });
+    fsx.appendJsonl(events, { n: 2 });
+    fsx.appendJsonl(critic(), { n: 1 });
+    openState();
+    expect(existsSync(events)).toBe(true);
+    expect(existsSync(critic())).toBe(false);
+    expect(stateStatus().streams.usage_events.pending).toBe(true);
+    expect(readRecords("usage_events", "strict").records.length).toBe(2);
+    expect(existsSync(events)).toBe(false);
+  });
+
   test("the first open imports all four streams", () => {
     const counts: Partial<Record<Stream, number>> = { reflect_runs: 1, critic: 2, human: 3, proposal_events: 4 };
     for (const [stream, n] of Object.entries(counts) as [Stream, number][]) {
@@ -393,9 +417,8 @@ describe("importAll", () => {
     let result = { outcomes: [] as { store: Stream }[], failures: [] as unknown[] };
     expect(caught(() => (result = importAll() as unknown as typeof result))).toBeNull();
     expect(result.failures).toEqual([{ store: "reflect_runs", world: null, message: "the reflect runs log cannot be imported (EIO)" }]);
-    const others: Stream[] = ["critic", "human", "proposal_events", "usage_events", "nudge_fires", "hook_runs"];
-    expect(result.outcomes.map((o) => o.store)).toEqual(others);
-    for (const stream of others) expect(rowCount(stream)).toBe(1);
+    expect(result.outcomes.map((o) => o.store)).toEqual(["critic", "human", "proposal_events"]);
+    for (const stream of ["critic", "human", "proposal_events"] as Stream[]) expect(rowCount(stream)).toBe(1);
     expect(importRows("reflect_runs").map((r) => [r.state, r.failure])).toEqual([["failed", "EIO"]]);
   });
 

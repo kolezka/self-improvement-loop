@@ -158,9 +158,9 @@ describe("openForHook returns null and the hook spills", () => {
       fresh();
       withRaw((db) => db.run("PRAGMA user_version = 2"));
     }],
-    ["user_version 4", () => {
+    ["user_version 5", () => {
       fresh();
-      withRaw((db) => db.run("PRAGMA user_version = 4"));
+      withRaw((db) => db.run("PRAGMA user_version = 5"));
     }],
     ["meta.fs_dev is another device", () => {
       fresh();

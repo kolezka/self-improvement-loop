@@ -45,6 +45,8 @@ export interface StateStatus {
   /** Legacy files whose raw on-disk world names cannot be imported safely. */
   invalidWorldEntries: { store: PerWorldStore; name: string }[];
   imports: StatusImport[];
+  /** Reflection index rows per dir_world, sorted by world. */
+  reflectionIndex: { world: string; rows: number }[];
 }
 
 /** `rows` is 0 or 1 for a document and the pair count for aliases. */
@@ -260,6 +262,7 @@ export function stateStatus(): StateStatus {
     docs: (StoreRef & { rows: number; quarantined: number })[];
     payloadWorlds: { world: string; rows: number; quarantined: number }[];
     rows: ImportRowFull[];
+    reflectionIndex: { world: string; rows: number }[];
   };
   try {
     read = inSnapshot(db, () => {
@@ -293,7 +296,10 @@ export function stateStatus(): StateStatus {
            ORDER BY id`,
         )
         .all() as ImportRowFull[];
-      return { version, fsClass: fs?.value ?? null, suspended: importSuspendedAt(db), counts, docs, payloadWorlds, rows };
+      const reflectionIndex = db
+        .query("SELECT dir_world AS world, count(*) AS rows FROM reflection_index GROUP BY dir_world ORDER BY dir_world")
+        .all() as { world: string; rows: number }[];
+      return { version, fsClass: fs?.value ?? null, suspended: importSuspendedAt(db), counts, docs, payloadWorlds, rows, reflectionIndex };
     });
   } catch (error) {
     // A legacy path that cannot be checked already names its store.
@@ -334,7 +340,18 @@ export function stateStatus(): StateStatus {
     };
   });
 
-  return { dbPath: resolve(paths.loopStateDb()), schemaVersion: read.version, fsClass: read.fsClass, suspended: read.suspended, streams, worldStreams, docs, invalidWorldEntries, imports };
+  return {
+    dbPath: resolve(paths.loopStateDb()),
+    schemaVersion: read.version,
+    fsClass: read.fsClass,
+    suspended: read.suspended,
+    streams,
+    worldStreams,
+    docs,
+    invalidWorldEntries,
+    imports,
+    reflectionIndex: read.reflectionIndex,
+  };
 }
 
 export interface QuarantineEntry {

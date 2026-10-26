@@ -7,10 +7,12 @@ export {
   type ImportFailure,
   type ImportIo,
   type ImportOutcome,
+  reasonOf,
   setImportIoForTest,
 } from "./import.ts";
 export { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 export { closeState, openState } from "./open.ts";
+export { readReflectionIndex, type ReflectionIndexRow, type ReflectionIndexUpsert, updateReflectionIndex } from "./reflection-index.ts";
 export { listSpillSegments, openSpillPath, SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES } from "./spill.ts";
 export {
   type BackupCheck,
@@ -30,6 +32,7 @@ export {
 export {
   appendRecord,
   exportJsonl,
+  logStateLineOnce,
   type ReadMode,
   type ReadResult,
   readRecords,

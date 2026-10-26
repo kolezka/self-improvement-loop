@@ -161,7 +161,7 @@ describe("loop state end to end", () => {
     // control that the child ran against the tmp home, not the real one.
     const status = statusJson();
     expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
-    expect(status.schemaVersion).toBe(3);
+    expect(status.schemaVersion).toBe(4);
     expect(status.suspended).toBeNull();
     const counts = { reflect_runs: 3, critic: 4, human: 2, proposal_events: 3 };
     for (const stream of STREAM_NAMES) {
@@ -320,7 +320,7 @@ describe("documents end to end", () => {
 
     const status = statusJson();
     expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
-    expect(status.schemaVersion).toBe(3);
+    expect(status.schemaVersion).toBe(4);
     expectDocs(status);
     expect(status.imports).toHaveLength(8);
     for (const imp of status.imports) {
@@ -534,7 +534,7 @@ describe("hook-written logs end to end", () => {
     // The real CLI in a child; its dbPath is the positive control for the tmp home.
     const status = statusJson();
     expect(status.dbPath).toBe(resolve(join(tmp, "state", "loop-state.sqlite")));
-    expect(status.schemaVersion).toBe(3);
+    expect(status.schemaVersion).toBe(4);
     expect(status.suspended).toBeNull();
     expect(status.streams.usage_events).toEqual({ rows: 343, quarantined: 0, pending: false });
     expect(status.streams.hook_runs).toEqual({ rows: 50 + 20 + 20, quarantined: 0, pending: false });

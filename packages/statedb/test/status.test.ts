@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths, StateReadError } from "@sil/core";
 import { appendRecord, closeState, dropQuarantine, exportLegacy, listQuarantine, openState, replaceAliases, saveDoc, stateStatus } from "../src/index.ts";
+// A namespace import, so a missing export fails the test, not the module link.
+import * as statedb from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -342,5 +344,35 @@ describe("payload samples status edge worlds", () => {
     rmSync(join(spill, "20261026T000000000Z-1-1.jsonl.importing"));
     writeFileSync(join(spill, "20261026T000000000Z-1-2.jsonl"), "{}\n");
     expect(pending()).toBe(true);
+  });
+});
+
+describe("reflection index in status", () => {
+  const indexRow = (path: string, world: string): statedb.ReflectionIndexUpsert => ({
+    path,
+    dirWorld: world,
+    id: path,
+    world,
+    pattern: "p",
+    sessionId: null,
+    created: "2026-10-26",
+    createdAt: null,
+    head: "{}",
+    size: 1,
+    mtimeMs: 1,
+    ino: 1,
+  });
+
+  test("rows are counted per world, sorted by world", () => {
+    statedb.updateReflectionIndex("inkitt", [indexRow("/i/1.md", "inkitt")], []);
+    statedb.updateReflectionIndex("default", [indexRow("/d/1.md", "default"), indexRow("/d/2.md", "default")], []);
+    expect(stateStatus().reflectionIndex).toEqual([
+      { world: "default", rows: 2 },
+      { world: "inkitt", rows: 1 },
+    ]);
+  });
+
+  test("an empty index is an empty list", () => {
+    expect(stateStatus().reflectionIndex).toEqual([]);
   });
 });

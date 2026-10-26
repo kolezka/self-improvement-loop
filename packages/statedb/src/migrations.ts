@@ -63,10 +63,25 @@ const V3 = `
 CREATE INDEX log_records_usage_ref ON log_records (stream, world, json_extract(body, '$.ref'), ts);
 `;
 
+// Phase 4, copied from the D7 "v4 (phase 4)" block.
+const V4 = `
+-- v4 (phase 4)
+CREATE TABLE reflection_index (
+  path TEXT PRIMARY KEY,          -- realpath of the .md file
+  dir_world TEXT NOT NULL,        -- world whose dir (or extraDir) it was found under
+  id TEXT NOT NULL, world TEXT NOT NULL, pattern TEXT NOT NULL,
+  session_id TEXT, created TEXT NOT NULL, created_at TEXT,
+  head TEXT NOT NULL CHECK (json_valid(head)),  -- the Reflection record minus body and lesson
+  size INTEGER NOT NULL, mtime_ms REAL NOT NULL, ino INTEGER NOT NULL,
+  indexed_at TEXT NOT NULL);
+CREATE INDEX reflection_index_world ON reflection_index (dir_world, world, pattern);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, up: (db) => db.run(V1) },
   { version: 2, up: (db) => db.run(V2) },
   { version: 3, up: (db) => db.run(V3) },
+  { version: 4, up: (db) => db.run(V4) },
 ];
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;

@@ -93,17 +93,35 @@ function present(path: string): boolean {
   }
 }
 
-/** Per-world stores whose legacy files sit in one directory, one entry per
- * world: each pattern's first group is the world's on-disk name. */
-const NAMED_ENTRIES: Readonly<Record<"refine_attempts" | "payload_samples", { dir(): string; patterns: readonly RegExp[] }>> = {
+/** Whether `path` is a directory. Only "not there" (ENOENT, ENOTDIR) is
+ * false; a path that cannot be inspected throws. */
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+/** One kind of entry naming a world: the pattern's first group is the world's
+ * on-disk name; `dirOnly` entries count only when they are directories. */
+interface NamedEntry {
+  pattern: RegExp;
+  dirOnly?: boolean;
+}
+
+/** Per-world stores whose legacy files sit in one directory, one entry per world. */
+const NAMED_ENTRIES: Readonly<Record<"refine_attempts" | "payload_samples", { dir(): string; entries: readonly NamedEntry[] }>> = {
   refine_attempts: {
     dir: () => join(paths.stateDir(), "curriculum", "refine-attempts"),
-    patterns: [/^(.+)\.json$/, /^(.+)\.json\.importing$/],
+    entries: [{ pattern: /^(.+)\.json$/ }, { pattern: /^(.+)\.json\.importing$/ }],
   },
   payload_samples: {
     dir: () => join(paths.stateDir(), "usage", "payloads"),
     // A sealed spill segment dir (D5) names its world too; a backup does not.
-    patterns: [/^(.+)\.jsonl$/, /^(.+)\.jsonl\.importing$/, /^(.+)\.jsonl\.spill$/],
+    entries: [{ pattern: /^(.+)\.jsonl$/ }, { pattern: /^(.+)\.jsonl\.importing$/ }, { pattern: /^(.+)\.jsonl\.spill$/, dirOnly: true }],
   },
 };
 
@@ -123,11 +141,15 @@ export function legacyWorldsReport(store: PerWorldStore): { worlds: string[]; in
       if (present(join(dir, name, "aliases.json")) || present(join(dir, name, "aliases.json.importing"))) record(name);
     }
   } else {
-    const { dir, patterns } = NAMED_ENTRIES[store];
-    for (const name of listNames(dir())) {
-      let stem: string | undefined;
-      for (const pattern of patterns) stem ??= pattern.exec(name)?.[1];
-      if (stem !== undefined) record(stem);
+    const { dir, entries } = NAMED_ENTRIES[store];
+    const base = dir();
+    for (const name of listNames(base)) {
+      for (const { pattern, dirOnly } of entries) {
+        const stem = pattern.exec(name)?.[1];
+        if (stem === undefined) continue;
+        if (!dirOnly || isDir(join(base, name))) record(stem);
+        break;
+      }
     }
   }
   return { worlds: [...worlds].sort(), invalid: [...invalid].sort() };

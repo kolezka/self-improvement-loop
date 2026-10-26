@@ -234,3 +234,42 @@ describe("payload samples in status", () => {
     expect(stateStatus().worldStreams).toEqual([{ store: "payload_samples", world: "alpha", rows: 0, quarantined: 0, pending: true }]);
   });
 });
+
+describe("payload samples status edge worlds", () => {
+  test("a world with only quarantine rows is listed with its count", () => {
+    openState().run(
+      "INSERT INTO quarantine (store, source, reason, raw, quarantined_at, world) VALUES ('payload_samples', '/x', 'not JSON', 'oops', 'q', 'orphan')",
+    );
+    expect(stateStatus().worldStreams).toEqual([{ store: "payload_samples", world: "orphan", rows: 0, quarantined: 1, pending: false }]);
+  });
+
+  test("a world with only an import row is listed", () => {
+    openState().run(
+      "INSERT INTO legacy_imports (store, world, original_path, state, failure, started_at) VALUES ('payload_samples', 'gone', '/x', 'failed', 'EIO', 's')",
+    );
+    expect(stateStatus().worldStreams).toEqual([{ store: "payload_samples", world: "gone", rows: 0, quarantined: 0, pending: false }]);
+  });
+
+  test("a spill path that cannot be listed fails status as StateReadError", () => {
+    openState().run(`INSERT INTO log_records (stream, ts, world, body, recorded_at) VALUES ('payload_samples', 't', 'sp', '{"world":"sp"}', 'r')`);
+    const spill = `${paths.payloadSamplesFile("sp")}.spill`;
+    mkdirSync(dirname(spill), { recursive: true });
+    writeFileSync(spill, "not a dir");
+    expect(() => stateStatus()).toThrow(new StateReadError('the payload samples of world "sp" cannot be checked (ENOTDIR)'));
+  });
+
+  test("a spill dir with a segment or a claim is pending; empty or backups only is not", () => {
+    const spill = `${paths.payloadSamplesFile("sp")}.spill`;
+    mkdirSync(spill, { recursive: true });
+    const pending = (): boolean | undefined => stateStatus().worldStreams.find((w) => w.world === "sp")?.pending;
+    // No-spill control: the world is known by its dir, nothing waits in it.
+    expect(pending()).toBe(false);
+    writeFileSync(join(spill, "x.jsonl.imported-1"), "{}\n");
+    expect(pending()).toBe(false);
+    writeFileSync(join(spill, "20261026T000000000Z-1-1.jsonl.importing"), "{}\n");
+    expect(pending()).toBe(true);
+    rmSync(join(spill, "20261026T000000000Z-1-1.jsonl.importing"));
+    writeFileSync(join(spill, "20261026T000000000Z-1-2.jsonl"), "{}\n");
+    expect(pending()).toBe(true);
+  });
+});

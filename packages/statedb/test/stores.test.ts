@@ -149,3 +149,13 @@ describe("module load order", () => {
     expect(p.exitCode).toBe(0);
   });
 });
+
+describe("payload spill entries", () => {
+  test("a .jsonl.spill entry names a world only when it is a directory", () => {
+    const dir = join(paths.stateDir(), "usage", "payloads");
+    mkdirSync(join(dir, "real.jsonl.spill"), { recursive: true });
+    touch(join(dir, "stray.jsonl.spill"));
+    touch(join(dir, "a b.jsonl"));
+    expect(legacyWorldsReport("payload_samples")).toEqual({ worlds: ["real"], invalid: ["a b"] });
+  });
+});

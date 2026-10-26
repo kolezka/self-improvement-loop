@@ -9,6 +9,7 @@ import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
 import { ensureImported, importAll, type ImportAllResult, importAllOn, importSuspendedAt, legacyIo, reasonOf, SUSPENDED_KEY } from "./import.ts";
 import { quarantineCountOn, quarantinedMessage, storeRef, strictStoreImportError } from "./docs.ts";
 import { openState, openStateReporting } from "./open.ts";
+import { spillPending } from "./spill.ts";
 import { type DocName, legacyWorldsReport, type PerWorldStore, type StoreName, type StoreRef, STORES } from "./stores.ts";
 import { exportBodiesOn, type Stream, STREAMS, strictImportError } from "./streams.ts";
 
@@ -78,11 +79,12 @@ const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const byStoreThenWorld = (a: StoreRef, b: StoreRef): number =>
   cmp(a.store, b.store) || (a.world === b.world ? 0 : a.world === null ? -1 : b.world === null ? 1 : cmp(a.world, b.world));
 
-/** The D6 pending check for one store and world: its legacy path or its claim exists. */
+/** The D6 pending check for one store and world: its legacy path or its claim
+ * exists, or, for payload samples, a segment or claim waits in its spill dir. */
 function pendingAt(ref: StoreRef): boolean {
   const legacy = STORES[ref.store].legacyPath(ref.world);
   try {
-    return present(legacy) || present(`${legacy}.importing`);
+    return present(legacy) || present(`${legacy}.importing`) || (ref.store === "payload_samples" && spillPending(legacy));
   } catch (error) {
     throw new StateReadError(`${STORES[ref.store].label(ref.world)} cannot be checked (${fsx.errnoCode(error) || reasonOf(error)})`);
   }
@@ -97,11 +99,18 @@ function legacyWorldsReportOrThrow(store: PerWorldStore): { worlds: string[]; in
   }
 }
 
-/** Every world of the payload samples stream: rows in the database, plus each
- * legacyWorlds() world. Sorted and unique. Throws StateReadError when the
- * legacy files cannot be listed. Read on `db` inside the caller's snapshot. */
+/** Every world of the payload samples stream: rows, quarantine rows and import
+ * rows in the database, plus each legacyWorlds() world. Sorted and unique.
+ * Throws StateReadError when the legacy files cannot be listed. Read on `db`
+ * inside the caller's snapshot. */
 function payloadWorldsOn(db: Database): string[] {
-  const rows = db.query("SELECT DISTINCT world FROM log_records WHERE stream = 'payload_samples' AND world IS NOT NULL").all() as { world: string }[];
+  const rows = db
+    .query(
+      `SELECT world FROM log_records WHERE stream = 'payload_samples' AND world IS NOT NULL
+       UNION SELECT world FROM quarantine WHERE store = 'payload_samples' AND world IS NOT NULL
+       UNION SELECT world FROM legacy_imports WHERE store = 'payload_samples' AND world IS NOT NULL`,
+    )
+    .all() as { world: string }[];
   return [...new Set([...rows.map((row) => row.world), ...legacyWorldsReportOrThrow("payload_samples").worlds])].sort(cmp);
 }
 

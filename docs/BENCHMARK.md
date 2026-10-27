@@ -241,7 +241,20 @@ pairs, all imported later by design. Thirty concurrent Stops serialize on the
 SQLite write lock; they wait up to the 25 ms busy timeout, then spill. The
 baseline's four O_APPEND writes do not contend.
 
-Decision on the parallel Stop row: pending the owner.
+Decision on the parallel Stop row (owner, 2026-10-27): accepted as a bounded
+cost of the design, recorded here and in D11 as an exception to the 20 ms
+parallel threshold. Thirty Stops in the same instant means thirty sessions or
+subagents ending together; each still completes in about 290 ms p50 against the
+5 s hook deadline, and nothing is lost. The sequential thresholds stay binding.
+
+The lock wait is not the cause. An experiment (`cb97be5`, reverted in
+`c28e308`) set `busy_timeout` to 0 for a multi-group batch so a Stop tried the
+lock once and spilled at once. Two container runs (6 pairs) gave parallel Stop
+added p95 +20.9 ms and p50 +54.1 ms, with 25050 spilled lines against 7050 for
+the same number of pairs before: the p50 did not move and spills grew 3.5 times.
+The cost is thirty `bun` processes each opening SQLite and checkpointing the WAL
+at exit, not the 25 ms wait, so the experiment was reverted and one busy
+timeout applies to every hook write.
 
 ### Why the protocol asks for a quiet host
 

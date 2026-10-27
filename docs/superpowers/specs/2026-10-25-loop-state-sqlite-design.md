@@ -752,7 +752,16 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
   concurrent Stops serialize on the SQLite write lock, wait up to the 25 ms
   busy timeout, then spill; the baseline's four O_APPEND writes do not contend.
 
-  Decision on the parallel Stop row: pending the owner.
+  Decision on the parallel Stop row (owner, 2026-10-27): accepted as a bounded
+  exception to the 20 ms parallel threshold, with the numbers above as the
+  recorded baseline. A Stop under 30 concurrent Stops completes in about 290 ms
+  p50 against the 5 s hook deadline, and no row is lost; about 8 percent of the
+  lines spill and import on the next open. The parallel PostToolUse row cannot be
+  measured at 20 ms (the baseline's own p95 spread is 103 ms over 9 pairs). The
+  sequential thresholds stay binding and pass. A no-wait batch (`busy_timeout`
+  0 for a multi-group write, `cb97be5`) was measured and reverted (`c28e308`):
+  p50 unchanged at +54 ms, spills 3.5 times higher; the cost is the per-process
+  open and the WAL checkpoint at exit, not the lock wait.
 
 ### D12. Phase 4 specifics
 

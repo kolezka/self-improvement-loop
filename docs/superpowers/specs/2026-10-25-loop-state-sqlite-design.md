@@ -745,11 +745,12 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
   | Stop sequential | 2.45 | 3.03 | 1.73 | 2.1 |
   | Stop 30 parallel | 66.08 | 58.85 | 53.78 | 58.8 |
 
-  The raw files and requested pooled script give +58.8 ms for Stop 30 parallel,
-  not the earlier +55 ms estimate. Lost rows were 0 in every run. The branch
-  spilled 7050 Stop lines, imported later by design. Thirty concurrent Stops
-  serialize on the SQLite write lock, wait up to the 25 ms busy timeout, then
-  spill; the baseline's four O_APPEND writes do not contend.
+  The per-run Stop 30 parallel added p50 medians were +66.1 ms for B, +58.8
+  ms for C and +53.8 ms for C2. The pooled p50 for this row is the median of
+  the nine branch-minus-baseline p50 differences. Lost rows were 0 in every
+  run. The branch spilled 7050 Stop lines, imported later by design. Thirty
+  concurrent Stops serialize on the SQLite write lock, wait up to the 25 ms
+  busy timeout, then spill; the baseline's four O_APPEND writes do not contend.
 
   Decision on the parallel Stop row: pending the owner.
 

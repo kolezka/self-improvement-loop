@@ -232,9 +232,9 @@ Pooled added p95 over the 9 pairs in B, C, C2 order:
 
 The pooled median added p50 values are +1.7 ms for PostToolUse sequential,
 +15.0 ms for PostToolUse 30 parallel, +2.1 ms for Stop sequential, and +58.8 ms
-for Stop 30 parallel. The last value is the median of the nine branch-minus-
-baseline p50 differences from the raw files. It differs from the earlier +55 ms
-estimate; the requested pooled script gives +58.8 ms on these inputs.
+for Stop 30 parallel. Each pooled value is the median of the nine branch-minus-
+baseline p50 differences. The per-run Stop 30 parallel p50 medians were +66.1 ms
+for B, +58.8 ms for C and +53.8 ms for C2.
 
 Lost rows are 0 in every run. The branch spilled 7050 Stop lines across the 9
 pairs, all imported later by design. Thirty concurrent Stops serialize on the

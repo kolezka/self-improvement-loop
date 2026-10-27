@@ -121,10 +121,30 @@ function insertAll(db: Database, stream: Stream, records: Record<string, unknown
   });
 }
 
-/** Write the records of one call: one autocommit insert, or one transaction
- * for more than one. Any database failure spills all of them and every later
- * call in this process. A record that is not a JSON object is dropped. Never throws. */
+/** Write the records of one call. Same rules as `hookWriteBatch` with one group. */
 export function hookWrite(stream: Stream, records: Record<string, unknown>[], world?: string): HookOutcome {
+  return hookWriteBatch([{ stream, records, world }]);
+}
+
+export interface HookWriteGroup {
+  stream: Stream;
+  records: Record<string, unknown>[];
+  world?: string;
+}
+
+interface PreparedGroup {
+  index: number;
+  stream: Stream;
+  records: Record<string, unknown>[];
+  bodies: string[];
+  world?: string;
+}
+
+/** Drop what cannot be written, with one log line each: a per-world group
+ * without its world, and records that are not JSON objects. */
+function prepareGroup(group: HookWriteGroup, index: number): PreparedGroup | "lost" | "empty" {
+  const { stream, records, world } = group;
+  if (records.length === 0) return "empty";
   // A per-world stream without its world is a caller bug: no row, no spill file to invent.
   if (STREAMS[stream].perWorld && world === undefined) {
     hookLog(`${stream.replace(/_/g, " ")} written without a world: dropped ${records.length} record(s)`);
@@ -144,22 +164,48 @@ export function hookWrite(stream: Stream, records: Record<string, unknown>[], wo
     bodies.push(body);
   }
   if (good.length < records.length) hookLog(`dropped a ${stream} record that is not a JSON object`);
-  if (good.length === 0) return records.length === 0 ? "db" : "lost";
+  if (good.length === 0) return "lost";
+  return { index, stream, records: good, bodies, world };
+}
+
+/** Write every group in one transaction: all rows land or none do. A single
+ * record is one autocommit insert. Any database failure spills every group to
+ * its own `P`, and every later call in this process. A dropped group (see
+ * `prepareGroup`) does not stop the others. "lost" when any group was dropped
+ * or could not be spilled; `onLostGroup` names each such group by its index.
+ * Never throws. */
+export function hookWriteBatch(groups: HookWriteGroup[], onLostGroup?: (index: number) => void): HookOutcome {
+  let anyLost = false;
+  const lose = (index: number): void => {
+    anyLost = true;
+    onLostGroup?.(index);
+  };
+  const prepared: PreparedGroup[] = [];
+  groups.forEach((group, index) => {
+    const result = prepareGroup(group, index);
+    if (result === "lost") lose(index);
+    else if (result !== "empty") prepared.push(result);
+  });
+  if (prepared.length === 0) return anyLost ? "lost" : "db";
+
+  const spillAll = (): HookOutcome => {
+    for (const group of prepared) if (!spillWrite(group.stream, group.bodies, group.world)) lose(group.index);
+    return anyLost ? "lost" : "spilled";
+  };
 
   const handle = openForHook();
-  if (handle === null) return spillWrite(stream, bodies, world) ? "spilled" : "lost";
+  if (handle === null) return spillAll();
 
   const { db } = handle;
   try {
-    const fallbackWorld = STREAMS[stream].perWorld && world !== undefined ? world.normalize("NFC") : null;
-    if (good.length === 1) {
-      insertAll(db, stream, good, bodies, fallbackWorld);
-    } else {
-      db.run("BEGIN IMMEDIATE");
-      insertAll(db, stream, good, bodies, fallbackWorld);
-      db.run("COMMIT");
+    const single = prepared.length === 1 && prepared[0]!.records.length === 1;
+    if (!single) db.run("BEGIN IMMEDIATE");
+    for (const group of prepared) {
+      const fallbackWorld = STREAMS[group.stream].perWorld && group.world !== undefined ? group.world.normalize("NFC") : null;
+      insertAll(db, group.stream, group.records, group.bodies, fallbackWorld);
     }
-    return "db";
+    if (!single) db.run("COMMIT");
+    return anyLost ? "lost" : "db";
   } catch (error) {
     try {
       if (db.inTransaction) db.run("ROLLBACK");
@@ -172,7 +218,7 @@ export function hookWrite(stream: Stream, records: Record<string, unknown>[], wo
     dropHandle(db);
     handles.set(path, null); // mark spilling: no reopen in this process
     hookLog(`loop state write failed, spilling (${reasonOf(error)})`);
-    return spillWrite(stream, bodies, world) ? "spilled" : "lost";
+    return spillAll();
   }
 }
 

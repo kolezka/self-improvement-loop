@@ -248,18 +248,34 @@ describe("ingestSpool", () => {
     holder.close();
   });
 
-  test("an insert refused mid-group spills the whole hook-runs group, no rows land", () => {
+  test("an insert refused mid-batch spills every group, no rows of any group land", () => {
     createLoopState();
-    hookRunsSpool("sess-mid");
-    // The third insert of the group fails; the first two must not stay.
+    // usage-events is written before hook-runs, so a per-group commit would leave it behind.
+    writeSpool("sess-mid", {
+      appends: [
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:u0" }) },
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:u1" }) },
+        ...Array.from({ length: 5 }, (_, i) => ({
+          target: { kind: "hook-runs" as const },
+          line: JSON.stringify({ ts: "x", kind: "hook_run", ref: `hook:h${i}` }),
+        })),
+        { target: { kind: "nudge-fires" }, line: JSON.stringify({ ts: "x", nudge: "n0" }) },
+        { target: { kind: "payload-samples", world: "default" }, line: JSON.stringify({ ts: "x", tool: "Bash" }) },
+      ],
+    });
+    // The third hook-runs insert fails; nothing before it may stay.
     const plain = new Database(paths.loopStateDb());
     plain.run(
       "CREATE TRIGGER refuse_h2 BEFORE INSERT ON log_records WHEN json_extract(NEW.body, '$.ref') = 'hook:h2' BEGIN SELECT RAISE(ABORT, 'refused for test'); END",
     );
     const result = ingestSpool("sess-mid");
-    expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
+    expect(result).toEqual({ appends: 9, moves: 0, skipped: 0 });
+    const rowsOfAnyGroup = (plain.query("SELECT stream, count(*) AS n FROM log_records GROUP BY stream").all() as { stream: string; n: number }[]);
+    expect(rowsOfAnyGroup).toEqual([]);
+    expect(readJsonl(paths.usageEventsFile()).map((r) => r["ref"])).toEqual(["skill:u0", "skill:u1"]);
     expect(readJsonl(paths.hookRunsFile()).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
-    expect(hookRunRows(plain)).toBe(0);
+    expect(readJsonl(paths.nudgeFiresFile()).map((r) => r["nudge"])).toEqual(["n0"]);
+    expect(readJsonl(paths.payloadSamplesFile("default")).map((r) => r["tool"])).toEqual(["Bash"]);
     plain.close();
   });
 });

@@ -8,6 +8,7 @@ import {
   closeHookDb,
   type HookIo,
   hookWrite,
+  hookWriteBatch,
   openForHook,
   REAL_HOOK_IO,
   setHookIoForTest,
@@ -227,6 +228,78 @@ describe("busy database", () => {
     closeHookDb();
     expect(rowBodies("hook_runs")).toEqual([]);
     expect(lines(legacy("hook_runs"))).toEqual([ev(1), ev(2), ev(3)].map((r) => JSON.stringify(r)));
+  });
+});
+
+describe("hookWriteBatch", () => {
+  const allRows = (): { stream: string; n: number }[] =>
+    withRaw((db) => db.query("SELECT stream, count(*) AS n FROM log_records GROUP BY stream ORDER BY stream").all() as { stream: string; n: number }[]);
+  const bodiesOf = (records: Record<string, unknown>[]): string[] => records.map((r) => JSON.stringify(r));
+
+  test("a batch of three streams under a held lock is zero rows and every line in its own spill file", () => {
+    fresh();
+    const locker = lockDb();
+    let outcome: string;
+    try {
+      outcome = hookWriteBatch([
+        { stream: "usage_events", records: [ev(1), ev(2)] },
+        { stream: "hook_runs", records: [ev(3)] },
+        { stream: "payload_samples", records: [ev(4), ev(5)], world: "default" },
+      ]);
+    } finally {
+      locker.run("ROLLBACK");
+      locker.close();
+    }
+    expect(outcome).toBe("spilled");
+    expect(allRows()).toEqual([]);
+    expect(lines(legacy("usage_events"))).toEqual(bodiesOf([ev(1), ev(2)]));
+    expect(lines(legacy("hook_runs"))).toEqual(bodiesOf([ev(3)]));
+    expect(lines(legacy("payload_samples", "default"))).toEqual(bodiesOf([ev(4), ev(5)]));
+  });
+
+  test("an insert that fails in the second group leaves no row of any group", () => {
+    fresh();
+    // Test-only trigger: the first insert of the second group aborts.
+    withRaw((db) =>
+      db.run("CREATE TRIGGER boom BEFORE INSERT ON log_records WHEN json_extract(NEW.body, '$.n') = 3 BEGIN SELECT RAISE(ABORT, 'boom'); END"),
+    );
+    const outcome = hookWriteBatch([
+      { stream: "usage_events", records: [ev(1), ev(2)] },
+      { stream: "nudge_fires", records: [ev(3), ev(4)] },
+    ]);
+    closeHookDb();
+    expect(outcome).toBe("spilled");
+    expect(allRows()).toEqual([]);
+    expect(lines(legacy("usage_events"))).toEqual(bodiesOf([ev(1), ev(2)]));
+    expect(lines(legacy("nudge_fires"))).toEqual(bodiesOf([ev(3), ev(4)]));
+  });
+
+  test("a per-world group without a world is dropped with one log line, and the other groups commit", () => {
+    fresh();
+    const lostGroups: number[] = [];
+    const outcome = hookWriteBatch(
+      [
+        { stream: "usage_events", records: [ev(1)] },
+        { stream: "payload_samples", records: [ev(2), ev(3)] },
+        { stream: "hook_runs", records: [ev(4)] },
+      ],
+      (index) => lostGroups.push(index),
+    );
+    closeHookDb();
+    expect(outcome).toBe("lost");
+    expect(lostGroups).toEqual([1]);
+    expect(rowBodies("usage_events")).toEqual(bodiesOf([ev(1)]));
+    expect(rowBodies("hook_runs")).toEqual(bodiesOf([ev(4)]));
+    expect(rowBodies("payload_samples")).toEqual([]);
+    expect(existsSync(spillDirOf(legacy("payload_samples", "default")))).toBe(false);
+    expect(hookLogLines().filter((l) => l.includes("written without a world"))).toHaveLength(1);
+  });
+
+  test("an empty batch is db and opens nothing", () => {
+    expect(hookWriteBatch([])).toBe("db");
+    expect(hookWriteBatch([{ stream: "usage_events", records: [] }])).toBe("db");
+    expect(existsSync(dbPath())).toBe(false);
+    expect(hookLogLines()).toEqual([]);
   });
 });
 

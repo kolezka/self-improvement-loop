@@ -10,7 +10,7 @@ import { dirname, resolve, sep } from "node:path";
 import * as paths from "@sil/core/paths";
 import { parseSpool, SPOOL_FILE_NAME } from "@sil/core/spool";
 import type { SpoolAppend, SpoolMove } from "@sil/core/spool";
-import { hookWrite } from "@sil/statedb/hook";
+import { hookWriteBatch, type HookWriteGroup } from "@sil/statedb/hook";
 import { log } from "./log.ts";
 import { sessionLock } from "./queue.ts";
 
@@ -57,31 +57,6 @@ function makeFailureReporter(sessionId: string): (detail: string) => void {
   };
 }
 
-interface GroupCounts {
-  applied: number;
-  skipped: number;
-}
-
-type Stream = Parameters<typeof hookWrite>[0];
-
-/** Writes one group in a single hookWrite: one transaction in loop state, or
- * one append to the spill file. Either all of it lands or none of it does
- * (design D5: no half-applied spool). A group that is lost is reported once
- * and counted skipped. */
-function flushGroup(
-  stream: Stream,
-  records: Record<string, unknown>[],
-  world: string | undefined,
-  reportFailure: (detail: string) => void,
-): GroupCounts {
-  if (records.length === 0) return { applied: 0, skipped: 0 };
-  if (hookWrite(stream, records, world) === "lost") {
-    reportFailure(`${records.length} ${stream} record(s) lost, see the loop state lines in this log`);
-    return { applied: 0, skipped: records.length };
-  }
-  return { applied: records.length, skipped: 0 };
-}
-
 const GROUPED_KINDS = { "usage-events": "usage_events", "hook-runs": "hook_runs", "nudge-fires": "nudge_fires" } as const;
 
 // Fixed order for the drop summary, so the line reads the same for any spool.
@@ -99,12 +74,17 @@ function logDrops(drops: Map<DropKind, number>, sessionId: string): void {
 }
 
 /** Applies every append. usage-events, hook-runs and nudge-fires each become
- * one group, payload-samples one group per world, so a Stop pays one write
- * per group inside its session lock instead of one per line. session-file
+ * one group, payload-samples one group per world, and all groups go in one
+ * hookWriteBatch: one loop state transaction per Stop inside its session lock,
+ * all rows or none (design D5, no half-applied spool). session-file
  * writes stay per line: each can name a different file. Never throws: a
  * write that fails is reported once per call and counted skipped, and
  * dropped lines (not a JSON object, unsafe file name) get one summary line. */
-function applyAppends(appends: SpoolAppend[], sessionId: string, reportFailure: (detail: string) => void): GroupCounts {
+function applyAppends(
+  appends: SpoolAppend[],
+  sessionId: string,
+  reportFailure: (detail: string) => void,
+): { applied: number; skipped: number } {
   let applied = 0;
   let skipped = 0;
 
@@ -146,16 +126,20 @@ function applyAppends(appends: SpoolAppend[], sessionId: string, reportFailure: 
     }
   }
 
-  for (const kind of Object.keys(GROUPED_KINDS) as (keyof typeof GROUPED_KINDS)[]) {
-    const counts = flushGroup(GROUPED_KINDS[kind], groups[kind], undefined, reportFailure);
-    applied += counts.applied;
-    skipped += counts.skipped;
-  }
-  for (const [world, records] of samplesByWorld) {
-    const counts = flushGroup("payload_samples", records, world, reportFailure);
-    applied += counts.applied;
-    skipped += counts.skipped;
-  }
+  const batch: HookWriteGroup[] = (Object.keys(GROUPED_KINDS) as (keyof typeof GROUPED_KINDS)[]).map((kind) => ({
+    stream: GROUPED_KINDS[kind],
+    records: groups[kind],
+  }));
+  for (const [world, records] of samplesByWorld) batch.push({ stream: "payload_samples", records, world });
+  const grouped = batch.reduce((sum, group) => sum + group.records.length, 0);
+  let lost = 0;
+  hookWriteBatch(batch, (index) => {
+    const group = batch[index]!;
+    lost += group.records.length;
+    reportFailure(`${group.records.length} ${group.stream} record(s) lost, see the loop state lines in this log`);
+  });
+  applied += grouped - lost;
+  skipped += lost;
   logDrops(drops, sessionId);
 
   return { applied, skipped };

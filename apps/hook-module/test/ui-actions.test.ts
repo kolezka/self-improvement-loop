@@ -27,11 +27,14 @@ afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 });
 
-function controller(over: { boot?: Boot; artifacts?: unknown[]; fail?: FakeEngineOptions["fail"]; hold?: FakeEngineOptions["hold"] } = {}) {
+function controller(
+  over: { boot?: Boot; artifacts?: unknown[]; reflectionsByWorld?: Record<string, unknown[]>; fail?: FakeEngineOptions["fail"]; hold?: FakeEngineOptions["hold"] } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "sil-ui-actions-"));
   roots.push(root);
   let boot = over.boot ?? SESSION_DEFAULT;
   const artifacts = over.artifacts ?? [{ pattern: "verify-callsites", artifact_type: "skill", status: "active", reflections: 3, served_by: null }];
+  const reflectionsByWorld = over.reflectionsByWorld ?? {};
   const requests: ControlRequest[] = [];
   const answer = (request: ControlRequest): ControlResponse["results"] => {
     const results: ControlResponse["results"] = {};
@@ -40,7 +43,10 @@ function controller(over: { boot?: Boot; artifacts?: unknown[]; fail?: FakeEngin
       if (read.op === "console.bootstrap") results[read.id] = ok(boot);
       else if (read.op === "worker.status") results[read.id] = ok(WORKER);
       else if (read.op === "console.page" && args.kind === "artifacts") results[read.id] = ok({ world: args.world, total: artifacts.length, offset: 0, limit: 10, items: artifacts });
-      else if (read.op === "console.page") results[read.id] = ok({ world: args.world, total: 0, offset: 0, limit: args.limit, items: [] });
+      else if (read.op === "console.page" && args.kind === "reflections" && Object.hasOwn(reflectionsByWorld, String(args.world))) {
+        const items = reflectionsByWorld[String(args.world)]!;
+        results[read.id] = ok({ world: args.world, total: items.length, offset: 0, limit: args.limit, items });
+      } else if (read.op === "console.page") results[read.id] = ok({ world: args.world, total: 0, offset: 0, limit: args.limit, items: [] });
       else results[read.id] = { ok: false, error: { code: "OpNotAllowed", message: "not in this test", retryable: false } };
     }
     return results;
@@ -158,6 +164,35 @@ async function open(c: Ctl): Promise<void> {
 function queued(command: string, args: string): string {
   return `Queued /${command}${args === "" ? "" : ` ${args}`}. It runs in the chat once Claude is idle.`;
 }
+
+describe("console world switch", () => {
+  test("Activity > Reflections reads and shows the world the pane switched to", async () => {
+    const reflection = (world: string, id: string) => ({ id, pattern: "p", created: "2026-10-27", created_at: "2026-10-27T06:00:00.000Z", lesson: `lesson of ${world}` });
+    const c = controller({
+      reflectionsByWorld: {
+        default: [reflection("default", "d1"), reflection("default", "d2")],
+        inkitt: [reflection("inkitt", "i1"), reflection("inkitt", "i2"), reflection("inkitt", "i3"), reflection("inkitt", "i4"), reflection("inkitt", "i5")],
+      },
+    });
+    await open(c);
+    await press(c, "section-activity");
+    await press(c, "activity-tab-reflections");
+    const onDefault = allText(cardOf(await c.render(), "Reflections"));
+    expect(onDefault).toContain("of 2 in default");
+    expect(onDefault).toContain("lesson of default");
+
+    await press(c, "world-inkitt");
+    expect(c.state().world).toBe("inkitt");
+    // The read that followed the switch asked for inkitt, not default.
+    const lastPage = c.requests.at(-1)!.reads.find((r) => r.op === "console.page" && (r.args as { kind: string }).kind === "reflections");
+    expect((lastPage?.args as { world: string }).world).toBe("inkitt");
+    const onInkitt = allText(cardOf(await c.render(), "Reflections"));
+    expect(onInkitt).toContain("of 5 in inkitt");
+    expect(onInkitt).toContain("lesson of inkitt");
+    expect(onInkitt).not.toContain("lesson of default");
+    expect(c.runs()).toEqual([]);
+  });
+});
 
 describe("console actions", () => {
   test("each Actions button queues its exact command", async () => {

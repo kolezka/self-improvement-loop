@@ -164,6 +164,9 @@ Hooks use their own opener, `@sil/statedb/hook`. `openForHook` opens an existing
 file read-write with a 25 ms busy timeout and `synchronous=NORMAL`, and returns
 null instead of creating, migrating or importing: on a missing file, another
 schema version, a STATE dir that changed device since the probe, or any error.
+A batch of more than one stream group (a Stop ingest) does not wait for the
+lock: it tries `BEGIN IMMEDIATE` once with no busy timeout and spills if the
+lock is held.
 `hookWrite` and `hookWriteBatch` write one record as one insert and anything
 more as one `BEGIN IMMEDIATE` transaction (a Stop's whole spool ingest is one
 transaction across all its streams). On any database failure the hook rolls

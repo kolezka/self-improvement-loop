@@ -205,29 +205,43 @@ export function hookWriteBatch(groups: HookWriteGroup[], onLostGroup?: (index: n
   if (handle === null) return spillAll();
 
   const { db } = handle;
+  // A Stop ingest tries the lock once: 30 Stops waiting 25 ms each broke the latency gate (D11).
+  const noWait = prepared.length > 1;
+  let failure: { error: unknown } | null = null;
   try {
     const single = prepared.length === 1 && prepared[0]!.records.length === 1;
+    if (noWait) db.run("PRAGMA busy_timeout = 0");
     if (!single) db.run("BEGIN IMMEDIATE");
     for (const group of prepared) {
       const fallbackWorld = STREAMS[group.stream].perWorld && group.world !== undefined ? group.world.normalize("NFC") : null;
       insertAll(db, group.stream, group.records, group.bodies, fallbackWorld);
     }
     if (!single) db.run("COMMIT");
-    return anyLost ? "lost" : "db";
   } catch (error) {
+    failure = { error };
     try {
       if (db.inTransaction) db.run("ROLLBACK");
     } catch {
       // Closing the handle next rolls back what is left.
     }
-    let path = "";
-    for (const [at, cached] of handles) if (cached === handle) path = at;
-    handles.delete(path);
-    dropHandle(db);
-    handles.set(path, null); // mark spilling: no reopen in this process
-    hookLog(`loop state write failed, spilling (${reasonOf(error)})`);
-    return spillAll();
+  } finally {
+    // After COMMIT or ROLLBACK. A failed restore must not spill a committed batch.
+    if (noWait) {
+      try {
+        db.run(`PRAGMA busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
+      } catch (error) {
+        hookLog(`could not restore the hook busy timeout (${reasonOf(error)})`);
+      }
+    }
   }
+  if (failure === null) return anyLost ? "lost" : "db";
+  let path = "";
+  for (const [at, cached] of handles) if (cached === handle) path = at;
+  handles.delete(path);
+  dropHandle(db);
+  handles.set(path, null); // mark spilling: no reopen in this process
+  hookLog(`loop state write failed, spilling (${reasonOf(failure.error)})`);
+  return spillAll();
 }
 
 let sealSeq = 0;

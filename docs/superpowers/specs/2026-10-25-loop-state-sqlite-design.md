@@ -213,6 +213,9 @@ hook touches. A 1.4 hook never writes `P`; only 1.3.0 hooks do.
 
 **Hook side.** `openForHook()` (D4) runs once per hook process. With a handle,
 each record is one `INSERT` in autocommit, and a spool batch is one transaction.
+A batch of more than one stream group (a Stop ingest) does not wait for the
+lock: it sets `busy_timeout = 0` for its `BEGIN IMMEDIATE`, restores 25 ms after
+COMMIT or ROLLBACK, and spills at once when the lock is held (D11).
 When the opener returns null, or an insert or commit fails (BUSY or anything
 else), the hook closes the handle, spills that record and every later one in the
 process, and logs the reason once per process to `hook.log`. A failed batch

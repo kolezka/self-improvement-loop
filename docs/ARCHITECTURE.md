@@ -127,8 +127,11 @@ Each log is a stream of rows in one table, `log_records`:
 
 The last four are written by hooks and arrived in 1.4 (schema 3, which also
 adds the index `log_records_usage_ref` on `(stream, world, json_extract(body,
-'$.ref'), ts)`). `payload_samples` is the one per-world stream: a row's `world`
-is the record's own `world` field, else the world of the file it came from.
+'$.ref'), ts)`). `payload_samples` is the one per-world stream: for hook writes and legacy file
+imports a row's `world` is the record's own `world` field, else the world of the
+file it came from. A bundle restore of `payloads/<w>.jsonl` is the exception: it
+sets the row's `world` to `w` whatever the body says, because the file's path
+names the world (D13 of the design).
 
 The three documents live one row each in the `docs` table, keyed by name and
 world. The alias maps live in the `aliases` table, one row per pair and world.
@@ -149,7 +152,8 @@ quarantined whole).
 The code is `@sil/statedb` (`packages/statedb`), which depends on `@sil/core`
 only and keeps `bun:sqlite` out of `@sil/core` and the browser bundles.
 `openState()` is the one opener and the only thing that creates the file. Every
-connection runs WAL, `synchronous=FULL`, a 2 s busy timeout and foreign keys on.
+non-hook connection runs WAL, `synchronous=FULL`, a 2 s busy timeout and foreign
+keys on.
 `PRAGMA user_version` is the schema version (3: version 1 added the logs,
 version 2 the `docs` and `aliases` tables, version 3 the hook streams' index); a
 newer one raises instead of being read.

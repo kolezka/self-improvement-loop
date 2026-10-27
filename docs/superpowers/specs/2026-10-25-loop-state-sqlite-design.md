@@ -600,14 +600,17 @@ hook runs log`, `the payload samples of world "<w>"`.
 |---|---|---|---|
 | scorecards strict (`usage_events`, `nudge_fires`) | empty | `StateReadError`: `<label> cannot be read (<reason>)` or `<label> is being imported` | `StateReadError("<label> has N line(s) that could not be imported")` |
 | scorecards tolerant (worker rebuild) | empty | the rows the DB has, or empty when it cannot be read; one `state.log` line | ignored, no `state.log` line |
-| ops history `artifact_uses` (`usage_events`) | empty | thrown as `StateReadError`, never empty | `skipped` = the stream's quarantine count |
+| ops history `artifact_uses` (`usage_events`) | empty | thrown as `StateReadError`, never empty | `skipped` = the stream's quarantine count plus every selected usage row whose `ts` is missing or not a valid time (today's `fold`, unchanged) |
 | curriculum payload corpus (`payload_samples`, per world, newest 2000) | empty | as scorecards tolerant | ignored, no `state.log` line |
 | `hook_runs` | no reader in the loop; `sqlite3` or `sil state export --legacy-paths` | | |
 
 `readFires(path)` in `@sil/nudges` still reads a file and has no production
-caller; the scorecards read `nudge_fires` rows. A `payload_samples` row's world
-is the record's own `world` field, else the world of the file it was imported
-from; `legacy_imports.world` and `quarantine.world` are the file's world.
+caller; the scorecards read `nudge_fires` rows. For hook writes and legacy file
+imports, a `payload_samples` row's world is the record's own `world` field, else
+the world of the file it was imported from; `legacy_imports.world` and
+`quarantine.world` are the file's world. A bundle restore (`replaceStream` for
+`payloads/<w>.jsonl`, D13) is the exception: it pins the row's `world` to `w`
+whatever the body says, since the file's path names the world.
 
 ### D9. Ids and world names
 

@@ -598,9 +598,9 @@ samples) are written by hooks, and a hook never waits more than 25 ms for the
 database. When the DB is missing, on another schema version, moved, or busy
 past that, the hook appends the record to the store's old path `P`
 (`usage/events.jsonl` and the others above) instead, and keeps doing so for
-the rest of that hook process. Nothing is lost: the next `sil` command, worker
-pass or `sil web` imports the file as it imports any old file, and renames it
-to a backup. A hook of 1.3.0 still running in an open session writes the same
+the rest of that hook process. A record whose append to `P` succeeds is not
+lost: the next `sil` command, worker pass or `sil web` imports the file as it
+imports any old file, and renames it to a backup. A hook of 1.3.0 still running in an open session writes the same
 path the same way.
 
 `P` is append only. When it reaches 4 MiB the hook seals it by renaming it to
@@ -608,9 +608,12 @@ path the same way.
 sealed segments in name order (oldest first), then `P`, and claims each by a
 rename before reading it, so a line is never imported twice. If the DB stays
 unavailable long enough for a store to hold more than 8 sealed segments
-(about 36 MiB), the hook deletes the oldest one. That is the one place a hook
-drops data. `hook.log` (`sil logs hook`) says so, once per hook process, for
-each case:
+(about 36 MiB), the hook deletes the oldest one.
+
+A hook loses records in two cases only: that bound, the one place a hook drops
+data on purpose, and a spill append that fails (an unwritable `P` or a full
+disk), which the hook reports as lost. `hook.log` (`sil logs hook`) says what
+happened, once per hook process, for each case:
 
 - `loop state not opened, spilling (<reason>)`: the hook could not use the DB
   and wrote to `P`.
@@ -619,7 +622,7 @@ each case:
 - `dropped a spill segment of <label>`: the 8-segment bound deleted the oldest
   sealed segment.
 - `could not spill <label> (<reason>)`: the append to `P` failed too; those
-  records are lost.
+  records are lost (the second loss case above).
 
 Under heavy parallel load (thirty hooks at once) some records spill by
 design and reach the DB on the next import.
@@ -644,6 +647,10 @@ and a problem found after this release is fixed in a newer release, not by
 downgrading. If you must run 1.2.12 anyway, stop here and ask for help; the
 schema 2 database must not be deleted, and restoring it over data a 1.2.12
 build has written would lose that data.
+
+The same forward-only rule holds for 1.3.0 and the schema 3 file 1.4 writes:
+1.3.0 refuses it with `loop state was written by a newer sil (schema 3, this
+build knows 2)`, so there is no supported way back from 1.4 to 1.3.0 either.
 
 To downgrade:
 

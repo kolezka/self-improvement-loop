@@ -520,6 +520,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
     };
 
     for (const stream of ready) stageStream(stream, null);
+    const payloadGroups = new Map<string, { world: string; target: string }[]>();
     for (const world of payloadWorldsOn(db)) {
       const ref: StoreRef = { store: "payload_samples", world };
       const target = STREAMS.payload_samples.legacyPath(world);
@@ -527,7 +528,24 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
         refuse(ref, target, `${labelOf(ref.store, ref.world)}: world name is not path-safe`);
         continue;
       }
-      if (!notImported.has(refKey(ref))) stageStream("payload_samples", world);
+      const pathKey = target.toLowerCase();
+      const group = payloadGroups.get(pathKey) ?? [];
+      group.push({ world, target });
+      payloadGroups.set(pathKey, group);
+    }
+    for (const group of payloadGroups.values()) {
+      if (group.length > 1) {
+        const names = group.map(({ world }) => world).join(", ");
+        for (const { world, target } of group) {
+          const ref: StoreRef = { store: "payload_samples", world };
+          refuse(ref, target, `${labelOf(ref.store, ref.world)}: world names collide on a case-insensitive filesystem: ${names}`);
+        }
+        continue;
+      }
+      const [payload] = group;
+      if (payload && !notImported.has(refKey({ store: "payload_samples", world: payload.world }))) {
+        stageStream("payload_samples", payload.world);
+      }
     }
 
     for (const ref of allDocRefs(db)) {

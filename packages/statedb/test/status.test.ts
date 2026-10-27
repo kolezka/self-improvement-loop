@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -159,6 +159,34 @@ describe("documents and aliases in status and quarantine", () => {
     ]);
     expect(result.written).toEqual([target]);
     expect(readFileSync(target, "utf8")).toBe('{"world":"a_b","marker":"safe"}\n');
+  });
+
+  test("exportLegacy refuses every payload world whose path collides by case", () => {
+    appendRecord("payload_samples", { world: "A", marker: "upper" }, "default");
+    appendRecord("payload_samples", { world: "a", marker: "lower" }, "default");
+
+    const upperPath = paths.payloadSamplesFile("A");
+    const lowerPath = paths.payloadSamplesFile("a");
+    const result = exportLegacy(false);
+
+    expect(result.failures).toEqual([]);
+    expect(result.refused).toEqual([
+      {
+        store: "payload_samples",
+        world: "A",
+        path: upperPath,
+        message: 'the payload samples of world "A": world names collide on a case-insensitive filesystem: A, a',
+      },
+      {
+        store: "payload_samples",
+        world: "a",
+        path: lowerPath,
+        message: 'the payload samples of world "a": world names collide on a case-insensitive filesystem: A, a',
+      },
+    ]);
+    expect(result.written).toEqual([]);
+    expect(existsSync(upperPath)).toBe(false);
+    expect(existsSync(lowerPath)).toBe(false);
   });
 
   test("exportLegacy refuses a quarantined document world and still exports the others", () => {

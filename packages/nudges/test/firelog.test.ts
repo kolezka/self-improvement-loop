@@ -68,8 +68,9 @@ describe("claimMarker", () => {
 describe("writeBreadcrumb", () => {
   test("writes once per (session dir, kind, event)", () => {
     const fireLog = join(dir, "fires.jsonl");
-    writeBreadcrumb(fireLog, dir, "nudge_dir_missing", "sess-1", "PreToolUse");
-    writeBreadcrumb(fireLog, dir, "nudge_dir_missing", "sess-1", "PreToolUse");
+    const fire = (record: Record<string, unknown>): void => appendLine(fireLog, JSON.stringify(record));
+    writeBreadcrumb(fire, dir, "nudge_dir_missing", "sess-1", "PreToolUse");
+    writeBreadcrumb(fire, dir, "nudge_dir_missing", "sess-1", "PreToolUse");
     const fires = readFires(fireLog);
     expect(fires.length).toBe(1);
     expect(fires[0]?.kind).toBe("nudge_dir_missing");

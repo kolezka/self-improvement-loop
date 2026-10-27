@@ -30,6 +30,7 @@ import {
   type World,
 } from "@sil/core";
 import * as feedback from "@sil/feedback";
+import { readRecords } from "@sil/statedb";
 import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger as loadLedgerFile, parseLedger } from "@sil/store";
 import * as artifacts from "./artifacts.ts";
 import * as git from "./git.ts";
@@ -204,9 +205,9 @@ export const MAX_SAMPLED_PAYLOADS = 2000;
  *
  * A world's target repo may add to it. A payload that exists but does not parse
  * is loud: throwing out of a bare map named no file and took down a scheduled
- * run that had nothing else wrong with it. The sample log is the one exception.
- * It is append-only and the hook may be writing to it right now, so a torn line
- * costs that line and nothing else. */
+ * run that had nothing else wrong with it. The samples are the one exception:
+ * a tolerant loop-state read returns the rows it has (a bad line sits in the
+ * quarantine, a failed read is logged once), so they never take down a run. */
 export function loadPayloadCorpus(world?: World | null): Record<string, unknown>[] {
   const roots = [paths.pluginRoot()];
   if (world) roots.push(targetRoot(world));
@@ -240,7 +241,7 @@ export function loadPayloadCorpus(world?: World | null): Record<string, unknown>
     // Deduped by shape: a thousand `git status` calls say the same thing about
     // a gate, and a corpus of them would make any gate look like a broadcast.
     const shapes = new Set<string>();
-    for (const record of fsx.readJsonl(paths.payloadSamplesFile(world.name)).slice(-MAX_SAMPLED_PAYLOADS)) {
+    for (const record of readRecords("payload_samples", "tolerant", world.name).records.slice(-MAX_SAMPLED_PAYLOADS)) {
       if (typeof record["tool_name"] !== "string") continue;
       const shape = JSON.stringify({ tool_name: record["tool_name"], tool_input: record["tool_input"] });
       if (shapes.has(shape)) continue;

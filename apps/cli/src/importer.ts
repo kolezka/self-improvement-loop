@@ -13,6 +13,7 @@ import { join, relative } from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { type Config, type World, Layout, World as WorldSchema, fsx, ledgerPath, paths, samples, worldForCwd } from "@sil/core";
+import { appendRecord } from "@sil/statedb";
 import { parseLedger, reflectionPattern, saveLedger } from "@sil/store";
 import { iterRecords } from "@sil/transcript";
 
@@ -145,11 +146,11 @@ function stringOr(v: unknown, fallback: string): string {
   return typeof v === "string" && v ? v : fallback;
 }
 
-/** Backfill the hook's payload sample file from Claude Code session
- * transcripts under `~/.claude/projects`.
+/** Backfill the hook's payload samples (loop-state rows per world) from Claude
+ * Code session transcripts under `~/.claude/projects`.
  *
  * The router proves a drafted gate by running it over recorded payloads, so on
- * a machine that ran the loop before the sampler existed the file is empty and
+ * a machine that ran the loop before the sampler existed there are none and
  * every drafted hook is downgraded to a rule. The transcripts already hold the
  * same tool_use blocks, so one pass over them rebuilds the corpus. Records are
  * written through `samples.sampleRecord`, the same allowlist and redaction the
@@ -164,13 +165,13 @@ export function importPayloadSamples(cfg: Config, opts: ImportPayloadsOptions): 
     if (mtimeMs === null || mtimeMs < cutoff) continue;
     recent.push({ path, mtimeMs });
   }
-  // Oldest first so the newest samples land at the end of the file: rotation
-  // keeps the tail, and the router reads the newest lines.
+  // Oldest first so the newest samples get the highest row ids: the trim
+  // keeps the newest rows, and the router reads the newest ones.
   recent.sort((a, b) => a.mtimeMs - b.mtimeMs);
 
   const result: ImportPayloadsResult = { files: recent.length, records: 0, written: {}, skippedNoWorld: 0 };
   // Buffered per world and written once at the end. Appending as we go cost
-  // 24k writes on one machine for a file that rotation then cut to 2k lines.
+  // 24k writes on one machine for a log that was then cut to 2k lines.
   const recordsByWorld = new Map<string, samples.PayloadSample[]>();
   // worldForCwd calls realpath per configured repo, and one transcript repeats
   // the same cwd on every record.
@@ -230,9 +231,8 @@ export function importPayloadSamples(cfg: Config, opts: ImportPayloadsOptions): 
 
   for (const [world, bucket] of recordsByWorld) {
     const kept = newestDistinct(bucket, samples.SAMPLES_KEEP_LINES);
-    for (const record of kept) {
-      fsx.appendLine(paths.payloadSamplesFile(world), JSON.stringify(record), samples.SAMPLES_ROTATE_AT_BYTES, samples.SAMPLES_KEEP_LINES);
-    }
+    // Rows in loop state, where the hook writes; the worker trims each world to its bound.
+    for (const record of kept) appendRecord("payload_samples", { ...record }, world);
     result.written[world] = kept.length;
   }
   return result;

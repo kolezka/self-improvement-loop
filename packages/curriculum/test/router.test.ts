@@ -2,9 +2,9 @@
 // Covers INVARIANTS 4 (total), 5 (verbatim evidence), 6 (the gate is executed).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { paths } from "@sil/core";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { appendRecord } from "@sil/statedb";
 import {
   emptyAnswer,
   loadPayloadCorpus,
@@ -651,18 +651,17 @@ describe("the payload corpus", () => {
         "rule",
       );
 
-      const path = paths.payloadSamplesFile(world.name);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(
-        path,
-        JSON.stringify({
+      // Where the hook records it: a payload_samples row of the world.
+      appendRecord(
+        "payload_samples",
+        {
           ts: "2026-09-19T10:00:00.000Z",
           session_id: "sess-1",
           hook_event_name: "PreToolUse",
           tool_name: "Bash",
           tool_input: { command: "git push --no-verify" },
-        }) + "\n",
-        "utf8",
+        },
+        world.name,
       );
 
       const withSamples = loadPayloadCorpus(world);

@@ -11,7 +11,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { openSpillPath } from "@sil/statedb/hook";
+import { closeState, readRecords } from "@sil/statedb";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -27,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeState();
   cleanupHookEnv(hookEnv);
 });
 
@@ -120,22 +123,23 @@ describe("Stop", () => {
       { type: "assistant", message: { content: [{ type: "tool_use", name: "Edit" }] } },
     ];
     writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    createLoopState();
 
     const payload = { session_id: "sess-stop-4", hook_event_name: "Stop", stop_hook_active: false, transcript_path: transcript, cwd: hookEnv.root };
     runHook(MAIN_TS, hookEnv, payload);
 
-    let events = readJsonl(paths.hookRunsFile());
+    let events = readRecords("hook_runs", "strict").records;
     const hookRunEvents = events.filter((e) => e["kind"] === "hook_run");
     expect(hookRunEvents.length).toBe(3);
     // hook_run is diagnostics: it must stay out of the scorecard event log,
     // which every scorecard rebuild parses end to end.
-    expect(readJsonl(paths.usageEventsFile()).some((e) => e["kind"] === "hook_run")).toBe(false);
+    expect(readRecords("usage_events", "strict").records.some((e) => e["kind"] === "hook_run")).toBe(false);
     let entry = queueEntry("sess-stop-4");
     expect(entry["tool_uses"]).toBe(2);
 
     // A second identical Stop must not re-scan the same bytes.
     runHook(MAIN_TS, hookEnv, payload);
-    events = readJsonl(paths.hookRunsFile());
+    events = readRecords("hook_runs", "strict").records;
     expect(events.filter((e) => e["kind"] === "hook_run").length).toBe(3);
     entry = queueEntry("sess-stop-4");
     expect(entry["stops"]).toBe(2);
@@ -148,15 +152,16 @@ describe("Stop", () => {
     const hugeLine = "x".repeat(MAX_TRANSCRIPT_SCAN_BYTES + 1024 * 1024);
     const normal = JSON.stringify({ type: "attachment", attachment: { type: "hook_success", hookName: "hook-after", exitCode: 0, durationMs: 1, hookEvent: "PreToolUse" } });
     writeFileSync(transcript, `${hugeLine}\n${normal}\n`);
+    // No loop state here: the spill proof for hook runs, read from the open spill file.
 
     const payload = { session_id: "sess-stop-5", hook_event_name: "Stop", stop_hook_active: false, transcript_path: transcript, cwd: hookEnv.root };
 
     runHook(MAIN_TS, hookEnv, payload);
-    let events = readJsonl(paths.hookRunsFile());
+    let events = readJsonl(openSpillPath(paths.hookRunsFile()));
     expect(events.some((e) => e["kind"] === "hook_run")).toBe(false);
 
     runHook(MAIN_TS, hookEnv, payload);
-    events = readJsonl(paths.hookRunsFile());
+    events = readJsonl(openSpillPath(paths.hookRunsFile()));
     const hookRunEvents = events.filter((e) => e["kind"] === "hook_run");
     expect(hookRunEvents.length).toBe(1);
     expect(hookRunEvents[0]?.["ref"]).toBe("hook:hook-after");
@@ -172,6 +177,7 @@ describe("Stop", () => {
       { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } },
     ];
     writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    createLoopState();
 
     const payload = JSON.stringify({ session_id: "sess-stop-concurrent", hook_event_name: "Stop", stop_hook_active: false, transcript_path: transcript, cwd: hookEnv.root });
 
@@ -184,7 +190,7 @@ describe("Stop", () => {
     expect(entry["stops"]).toBe(4);
     expect(entry["tool_uses"]).toBe(1);
 
-    const events = readJsonl(paths.hookRunsFile());
+    const events = readRecords("hook_runs", "strict").records;
     expect(events.filter((e) => e["kind"] === "hook_run").length).toBe(3);
   }, 30000);
 });

@@ -191,9 +191,9 @@ export function historySeries(args: HistoryArgs): HistorySeries {
   const critic = readStream("critic", world.name);
   set("critic_verdicts", fold(critic.records, "ts", days, now, critic.skipped));
 
-  // artifact_uses: usage/events.jsonl, skill/agent/rule kinds only (agent_stop
+  // artifact_uses: the usage log, skill/agent/rule kinds only (agent_stop
   // and hook_run are diagnostics, not deliveries; same filter scorecards use).
-  const usage = readJsonl(paths.usageEventsFile(), world.name);
+  const usage = readStream("usage_events", world.name);
   const uses = usage.records.filter((r) => r["kind"] === "skill" || r["kind"] === "agent" || r["kind"] === "rule");
   set("artifact_uses", fold(uses, "ts", days, now, usage.skipped));
 

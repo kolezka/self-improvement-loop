@@ -2,17 +2,19 @@
 // cases exercise every target kind and the refusal paths directly; the last
 // case runs a real Stop subprocess to prove the wiring in handlers.ts.
 
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
 import { serializeSpool, SPOOL_FILE_NAME, SPOOL_VERSION } from "@sil/core/spool";
 import type { Spool } from "@sil/core/spool";
+import { closeState, readRecords } from "@sil/statedb";
+import { closeHookDb, openSpillPath } from "@sil/statedb/hook";
 import { ingestSpool, ORPHAN_SPOOL_OLDER_THAN_MS, sweepOrphanSpools } from "../src/spool-ingest.ts";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -29,6 +31,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeHookDb();
+  closeState();
   for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -62,8 +66,9 @@ describe("ingestSpool", () => {
     expect(result).toEqual({ appends: 0, moves: 0, skipped: 0 });
   });
 
-  test("one entry of every target kind lands in the right file", () => {
+  test("one entry of every target kind lands in its stream, and the session file", () => {
     const sessionId = "sess-full";
+    createLoopState();
     writeSpool(sessionId, {
       appends: [
         { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:foo" }) },
@@ -77,10 +82,13 @@ describe("ingestSpool", () => {
     const result = ingestSpool(sessionId);
     expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
 
-    expect(readJsonl(paths.usageEventsFile())).toEqual([{ ts: "x", kind: "skill", ref: "skill:foo" }]);
-    expect(readJsonl(paths.hookRunsFile())).toEqual([{ ts: "x", kind: "hook_run", ref: "hook:bar" }]);
-    expect(readJsonl(paths.nudgeFiresFile())).toEqual([{ ts: "x", session_id: sessionId, event: "PreToolUse" }]);
-    expect(readJsonl(paths.payloadSamplesFile("default"))).toEqual([{ ts: "x", tool_name: "Bash" }]);
+    for (const file of [paths.usageEventsFile(), paths.hookRunsFile(), paths.nudgeFiresFile(), paths.payloadSamplesFile("default")]) {
+      expect({ file, exists: existsSync(file) || existsSync(openSpillPath(file)) }).toEqual({ file, exists: false });
+    }
+    expect(readRecords("usage_events", "strict").records).toEqual([{ ts: "x", kind: "skill", ref: "skill:foo" }]);
+    expect(readRecords("hook_runs", "strict").records).toEqual([{ ts: "x", kind: "hook_run", ref: "hook:bar" }]);
+    expect(readRecords("nudge_fires", "strict").records).toEqual([{ ts: "x", session_id: sessionId, event: "PreToolUse" }]);
+    expect(readRecords("payload_samples", "strict", "default").records).toEqual([{ ts: "x", tool_name: "Bash" }]);
     expect(readFileSync(`${paths.sessionDir(sessionId)}/module-note.json`, "utf8")).toBe(`${JSON.stringify({ hello: "world" })}\n`);
 
     expect(existsSync(spoolFile(sessionId))).toBe(false);
@@ -159,7 +167,7 @@ describe("ingestSpool", () => {
     const result = ingestSpool(sessionId);
     expect(result).toEqual({ appends: 0, moves: 0, skipped: 1 });
     expect(existsSync(spoolFile(sessionId))).toBe(false);
-    expect(existsSync(paths.usageEventsFile())).toBe(false);
+    expect([existsSync(paths.usageEventsFile()), existsSync(openSpillPath(paths.usageEventsFile()))]).toEqual([false, false]);
   });
 
   test("calling twice is a no-op the second time", () => {
@@ -173,7 +181,7 @@ describe("ingestSpool", () => {
 
     const second = ingestSpool(sessionId);
     expect(second).toEqual({ appends: 0, moves: 0, skipped: 0 });
-    expect(readJsonl(paths.usageEventsFile()).length).toBe(1);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).length).toBe(1);
   });
 
   test("a blocked payload-samples or session-file write never throws, and is counted skipped", () => {
@@ -206,33 +214,120 @@ describe("ingestSpool", () => {
 
     const second = ingestSpool(sessionId);
     expect(second).toEqual({ appends: 0, moves: 0, skipped: 0 });
-    expect(readJsonl(paths.usageEventsFile()).length).toBe(1);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).length).toBe(1);
   });
 
-  test("50 nudge-fires appends become one locked write, not one per line", () => {
-    const sessionId = "sess-batch";
-    const appends = Array.from({ length: 50 }, (_, i) => ({
-      target: { kind: "nudge-fires" as const },
-      line: JSON.stringify({ ts: "x", session_id: sessionId, event: "PreToolUse", pattern: `p-${i}` }),
-    }));
-    writeSpool(sessionId, { appends });
+  // A spool group is one hookWrite: one transaction in loop state, or one
+  // append to the spill file. Never a half-applied group (design D5).
+  const hookRunsSpool = (sessionId: string): void => {
+    writeSpool(sessionId, {
+      appends: Array.from({ length: 5 }, (_, i) => ({
+        target: { kind: "hook-runs" as const },
+        line: JSON.stringify({ ts: "x", kind: "hook_run", ref: `hook:h${i}` }),
+      })),
+    });
+  };
+  const hookRunRows = (db: Database): number =>
+    (db.query("SELECT count(*) AS n FROM log_records WHERE stream = 'hook_runs'").get() as { n: number }).n;
 
-    const mkdirSpy = spyOn(nodeFs, "mkdirSync");
+  test("with the write lock held, a hook-runs group is zero rows and every line in the spill", () => {
+    createLoopState();
+    hookRunsSpool("sess-held");
+    const holder = new Database(paths.loopStateDb());
+    holder.run("BEGIN IMMEDIATE");
+    let result: { appends: number; moves: number; skipped: number } | undefined;
+    try {
+      result = ingestSpool("sess-held");
+    } finally {
+      holder.run("ROLLBACK");
+    }
+    expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
+    // Read the spill before anything imports it.
+    expect(readJsonl(openSpillPath(paths.hookRunsFile())).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
+    expect(hookRunRows(holder)).toBe(0);
+    holder.close();
+  });
+
+  test("an insert refused mid-batch spills every group, no rows of any group land", () => {
+    createLoopState();
+    // usage-events is written before hook-runs, so a per-group commit would leave it behind.
+    writeSpool("sess-mid", {
+      appends: [
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:u0" }) },
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:u1" }) },
+        ...Array.from({ length: 5 }, (_, i) => ({
+          target: { kind: "hook-runs" as const },
+          line: JSON.stringify({ ts: "x", kind: "hook_run", ref: `hook:h${i}` }),
+        })),
+        { target: { kind: "nudge-fires" }, line: JSON.stringify({ ts: "x", nudge: "n0" }) },
+        { target: { kind: "payload-samples", world: "default" }, line: JSON.stringify({ ts: "x", tool: "Bash" }) },
+      ],
+    });
+    // The third hook-runs insert fails; nothing before it may stay.
+    const plain = new Database(paths.loopStateDb());
+    plain.run(
+      "CREATE TRIGGER refuse_h2 BEFORE INSERT ON log_records WHEN json_extract(NEW.body, '$.ref') = 'hook:h2' BEGIN SELECT RAISE(ABORT, 'refused for test'); END",
+    );
+    const result = ingestSpool("sess-mid");
+    expect(result).toEqual({ appends: 9, moves: 0, skipped: 0 });
+    const rowsOfAnyGroup = (plain.query("SELECT stream, count(*) AS n FROM log_records GROUP BY stream").all() as { stream: string; n: number }[]);
+    expect(rowsOfAnyGroup).toEqual([]);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).map((r) => r["ref"])).toEqual(["skill:u0", "skill:u1"]);
+    expect(readJsonl(openSpillPath(paths.hookRunsFile())).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
+    expect(readJsonl(openSpillPath(paths.nudgeFiresFile())).map((r) => r["nudge"])).toEqual(["n0"]);
+    expect(readJsonl(openSpillPath(paths.payloadSamplesFile("default"))).map((r) => r["tool"])).toEqual(["Bash"]);
+    plain.close();
+  });
+});
+
+describe("ingestSpool diagnostics", () => {
+  // Every hook.log line takes a directory lock while Stop holds the session
+  // lock, so a damaged spool must cost one line per ingest, not one per entry.
+  const hookLogLines = (): string[] => {
+    const file = paths.logFile("hook");
+    return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter((line) => line.length > 0) : [];
+  };
+
+  test("100 invalid lines cost one hook.log line, and the valid lines still land", () => {
+    const sessionId = "sess-damaged";
+    // Loop state ready, so the only hook.log lines are the ingest's own.
+    createLoopState();
+    writeSpool(sessionId, {
+      appends: [
+        ...Array.from({ length: 50 }, (_, i) => ({ target: { kind: "nudge-fires" as const }, line: i % 2 ? "not json" : "[1, 2]" })),
+        ...Array.from({ length: 50 }, (_, i) => ({ target: { kind: "payload-samples" as const, world: "default" }, line: i % 2 ? "{torn" : "42" })),
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:a" }) },
+        { target: { kind: "usage-events" }, line: JSON.stringify({ ts: "x", kind: "skill", ref: "skill:b" }) },
+      ],
+    });
+    const before = hookLogLines().length;
+
     const result = ingestSpool(sessionId);
-    // Every withDirLock acquisition mkdirs a "<file>.lockdir" directory;
-    // counting those (not all mkdirSync calls) isolates lock acquisitions
-    // from unrelated ensureDir calls.
-    const lockAttempts = mkdirSpy.mock.calls.filter((call) => String(call[0]).endsWith(".lockdir")).length;
-    mkdirSpy.mockRestore();
 
-    expect(result).toEqual({ appends: 50, moves: 0, skipped: 0 });
-    const lines = readFileSync(paths.nudgeFiresFile(), "utf8")
-      .split("\n")
-      .filter((l) => l.length > 0);
-    expect(lines.length).toBe(50);
-    // No contention in this test, so one grouped write acquires the lock
-    // exactly once; the pre-fix code acquired it once per line (50 times).
-    expect(lockAttempts).toBe(1);
+    const added = hookLogLines().slice(before);
+    expect(added.length).toBe(1);
+    expect(added[0]).toContain(`spool ingest for session ${sessionId} dropped 100 invalid line(s): nudge-fires 50, payload-samples 50`);
+    expect(result).toEqual({ appends: 2, moves: 0, skipped: 100 });
+    expect(readRecords("usage_events", "strict").records.map((e) => e["ref"])).toEqual(["skill:a", "skill:b"]);
+    expect(existsSync(spoolFile(sessionId))).toBe(false);
+  });
+
+  test("unsafe session file names are folded into the same one line", () => {
+    const sessionId = "sess-unsafe-many";
+    writeSpool(sessionId, {
+      appends: [
+        ...Array.from({ length: 3 }, () => ({ target: { kind: "session-file" as const, name: "../escape.json" }, line: "{}" })),
+        { target: { kind: "hook-runs" }, line: "not json" },
+      ],
+    });
+    const before = hookLogLines().length;
+
+    const result = ingestSpool(sessionId);
+
+    const added = hookLogLines().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toContain("dropped 4 invalid line(s): hook-runs 1, session-file (unsafe name) 3");
+    expect(result).toEqual({ appends: 0, moves: 0, skipped: 4 });
   });
 });
 
@@ -262,7 +357,7 @@ describe("sweepOrphanSpools", () => {
     expect(existsSync(spoolFile(stale2))).toBe(false);
     expect(existsSync(spoolFile(fresh))).toBe(true);
 
-    const events = readJsonl(paths.usageEventsFile());
+    const events = readJsonl(openSpillPath(paths.usageEventsFile()));
     expect(events.map((e) => e["ref"]).sort()).toEqual([stale1, stale2].sort());
   });
 
@@ -320,6 +415,6 @@ describe("ingestSpool through a real Stop event", () => {
     expect(result.exitCode).toBe(0);
 
     expect(existsSync(spoolFile(sessionId))).toBe(false);
-    expect(readJsonl(paths.usageEventsFile())).toEqual([{ kind: "skill", ref: "skill:from-module" }]);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile()))).toEqual([{ kind: "skill", ref: "skill:from-module" }]);
   });
 });

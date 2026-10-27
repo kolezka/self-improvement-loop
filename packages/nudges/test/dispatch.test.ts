@@ -3,18 +3,21 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dispatch, loadNudges } from "../src/dispatch.ts";
-import { readFires } from "../src/firelog.ts";
+import { appendLine, readFires } from "../src/firelog.ts";
 import type { Nudge } from "../src/dispatch.ts";
 
 let dir: string;
 let sessionDir: string;
 let fireLog: string;
+// The hook writes fires into loop state; here they go to a file readFires reads back.
+let fire: (record: Record<string, unknown>) => void;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "sil-dispatch-"));
   sessionDir = join(dir, "session");
   mkdirSync(sessionDir, { recursive: true });
   fireLog = join(dir, "fires.jsonl");
+  fire = (record) => appendLine(fireLog, JSON.stringify(record));
 });
 
 afterEach(() => {
@@ -53,7 +56,7 @@ describe("loadNudges", () => {
 describe("dispatch", () => {
   test("fires the first matching nudge and logs one fire", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git commit -m wip" } };
-    const text = dispatch(payload, [nudge()], { sessionDir, fireLog });
+    const text = dispatch(payload, [nudge()], { sessionDir, fire });
     expect(text).toBe("Write a good commit message.");
     const fires = readFires(fireLog);
     expect(fires.length).toBe(1);
@@ -62,8 +65,8 @@ describe("dispatch", () => {
 
   test("once_per session fires once per session, marker claimed only by the winner", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git commit -m wip" } };
-    const first = dispatch(payload, [nudge()], { sessionDir, fireLog });
-    const second = dispatch(payload, [nudge()], { sessionDir, fireLog });
+    const first = dispatch(payload, [nudge()], { sessionDir, fire });
+    const second = dispatch(payload, [nudge()], { sessionDir, fire });
     expect(first).toBe("Write a good commit message.");
     expect(second).toBeNull();
     expect(readFires(fireLog).length).toBe(1);
@@ -71,24 +74,24 @@ describe("dispatch", () => {
 
   test("a nudge that matches event/matcher but fails its gate never claims the marker", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git status" } };
-    const missed = dispatch(payload, [nudge()], { sessionDir, fireLog });
+    const missed = dispatch(payload, [nudge()], { sessionDir, fire });
     expect(missed).toBeNull();
     // Now the command matches: the marker must still be free.
     const hitPayload = { ...payload, tool_input: { command: "git commit -m wip" } };
-    const hit = dispatch(hitPayload, [nudge()], { sessionDir, fireLog });
+    const hit = dispatch(hitPayload, [nudge()], { sessionDir, fire });
     expect(hit).toBe("Write a good commit message.");
   });
 
   test("event mismatch never matches", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "git commit -m wip" } };
-    expect(dispatch(payload, [nudge()], { sessionDir, fireLog })).toBeNull();
+    expect(dispatch(payload, [nudge()], { sessionDir, fire })).toBeNull();
   });
 
   test("once_per always can fire repeatedly", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git commit -m wip" } };
     const always = nudge({ once_per: "always" });
-    expect(dispatch(payload, [always], { sessionDir, fireLog })).toBe("Write a good commit message.");
-    expect(dispatch(payload, [always], { sessionDir, fireLog })).toBe("Write a good commit message.");
+    expect(dispatch(payload, [always], { sessionDir, fire })).toBe("Write a good commit message.");
+    expect(dispatch(payload, [always], { sessionDir, fire })).toBe("Write a good commit message.");
   });
 
   test("budget exhaustion writes a breadcrumb and stops scanning", () => {
@@ -96,7 +99,7 @@ describe("dispatch", () => {
     // Every nudge matches event/matcher (so it reaches a gate) but never
     // matches the gate itself, forcing the whole list to be scanned.
     const many: Nudge[] = Array.from({ length: 5000 }, (_, i) => nudge({ pattern: `n-${i}`, gate: { command_matches: "will-not-match" } }));
-    const result = dispatch(payload, many, { sessionDir, fireLog, budgetMs: 1 });
+    const result = dispatch(payload, many, { sessionDir, fire, budgetMs: 1 });
     expect(result).toBeNull();
     const fires = readFires(fireLog);
     expect(fires.some((f) => f.kind === "gate_budget_exhausted")).toBe(true);
@@ -105,7 +108,7 @@ describe("dispatch", () => {
   test("never throws on a malformed nudge list", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PreToolUse" };
     const broken = [null, 42, "nope"] as unknown as Nudge[];
-    expect(() => dispatch(payload, broken, { sessionDir, fireLog })).not.toThrow();
+    expect(() => dispatch(payload, broken, { sessionDir, fire })).not.toThrow();
   });
 });
 
@@ -165,7 +168,7 @@ describe("loadNudges lints before it loads", () => {
 describe("gate_overrun", () => {
   test("a gate that runs past gateTimeoutMs logs one breadcrumb", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "x".repeat(4000) } };
-    dispatch(payload, [nudge({ gate: { command_matches: "will-not-match" } })], { sessionDir, fireLog, gateTimeoutMs: 0 });
+    dispatch(payload, [nudge({ gate: { command_matches: "will-not-match" } })], { sessionDir, fire, gateTimeoutMs: 0 });
     const fires = readFires(fireLog);
     const overrun = fires.filter((f) => f.kind === "gate_overrun");
     expect(overrun.length).toBe(1);
@@ -174,7 +177,7 @@ describe("gate_overrun", () => {
 
   test("a normal gate under the default timeout logs nothing", () => {
     const payload = { session_id: "sess-1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git status" } };
-    dispatch(payload, [nudge()], { sessionDir, fireLog });
+    dispatch(payload, [nudge()], { sessionDir, fire });
     expect(readFires(fireLog).some((f) => f.kind === "gate_overrun")).toBe(false);
   });
 });

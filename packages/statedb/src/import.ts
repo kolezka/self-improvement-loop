@@ -5,8 +5,10 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync, renameSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { assertOneHop, fsx, isSlug, StateReadError, StateWriteError, ValidationError } from "@sil/core";
 import { openState, openStateReporting } from "./open.ts";
+import { listSpillSegments, openSpillPath, spillDir, spillPending } from "./spill.ts";
 import { legacyWorlds, type StoreName, type StoreRef, STORES } from "./stores.ts";
 import type { Stream } from "./streams.ts";
 
@@ -130,6 +132,23 @@ export function importSuspendedAt(db: Database): string | null {
 const originalPath = (ref: StoreRef): string => STORES[ref.store].legacyPath(ref.world);
 const claimPath = (ref: StoreRef): string => `${originalPath(ref)}.importing`;
 
+/** One file the importer claims: the old path `P`, a sealed segment of it or
+ * its open spill file (D5). `original` is the row's `original_path`; backups always sit next to `P`. */
+interface Claimable {
+  original: string;
+  claim: string;
+  backupBase: string;
+}
+
+const mainClaimable = (ref: StoreRef): Claimable => ({ original: originalPath(ref), claim: claimPath(ref), backupBase: originalPath(ref) });
+
+/** A segment or the open spill file of `P`, by its path inside the spill dir, without `.importing`. */
+const segmentClaimable = (ref: StoreRef, segment: string): Claimable => ({
+  original: segment,
+  claim: `${segment}.importing`,
+  backupBase: originalPath(ref),
+});
+
 /** Only a JSONL stream grows by appends. Every writer renames a document into
  * place whole, so a claimed document of another size is a changed file. */
 const growsByAppend = (ref: StoreRef): boolean => STORES[ref.store].kind === "stream";
@@ -137,10 +156,11 @@ const growsByAppend = (ref: StoreRef): boolean => STORES[ref.store].kind === "st
 /** The `world` key of a `docs` or `aliases` row: '' for a global document. */
 const rowWorld = (ref: StoreRef): string => ref.world ?? "";
 
-/** The D6 pending check: two stats, no database access. */
+/** The D6 pending check: two stats, plus the spill dir for a stream (D5). No database access. */
 function isPending(ref: StoreRef): boolean {
   try {
-    return statOrNull(originalPath(ref)) !== null || statOrNull(claimPath(ref)) !== null;
+    if (statOrNull(originalPath(ref)) !== null || statOrNull(claimPath(ref)) !== null) return true;
+    return growsByAppend(ref) && spillPending(originalPath(ref), statOrNull);
   } catch (error) {
     throw new ImportError(ref, reasonOf(error), false);
   }
@@ -179,18 +199,20 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 /** Steps 4 and 5 for the bytes from `offset` on: every nonempty line becomes a
  * row in file order or a quarantine row. `firstLineNo` is the number of lines before `offset`. */
-function importLines(db: Database, stream: Stream, importId: number, source: string, bytes: Buffer, offset: number, firstLineNo: number): Counts {
+function importLines(db: Database, ref: StoreRef, importId: number, source: string, bytes: Buffer, offset: number, firstLineNo: number): Counts {
+  const stream = ref.store as Stream;
   const pieces = bytes.subarray(offset).toString("utf8").split("\n");
   if (pieces.at(-1) === "") pieces.pop();
   const now = new Date().toISOString();
   const insert = db.query("INSERT INTO log_records (stream, ts, world, body, recorded_at, import_id) VALUES (?, ?, ?, ?, ?, ?)");
-  // A bad line has no trusted world, so its quarantine row has none.
+  // A bad line has no trusted world of its own: a global stream's quarantine row
+  // has none, a per-world stream's gets the world of the file.
   const quarantine = db.query(
-    "INSERT INTO quarantine (store, world, source, import_id, line_no, reason, raw, quarantined_at) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO quarantine (store, world, source, import_id, line_no, reason, raw, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const counts: Counts = { imported: 0, quarantined: 0, blank: 0 };
   const reject = (piece: string, lineNo: number, reason: string): void => {
-    quarantine.run(stream, source, importId, lineNo, reason, capRaw(piece), now);
+    quarantine.run(stream, ref.world, source, importId, lineNo, reason, capRaw(piece), now);
     counts.quarantined += 1;
   };
   for (let i = 0; i < pieces.length; i++) {
@@ -213,7 +235,7 @@ function importLines(db: Database, stream: Stream, importId: number, source: str
       continue;
     }
     const ts = typeof value["ts"] === "string" ? value["ts"] : null;
-    const world = typeof value["world"] === "string" ? value["world"].normalize("NFC") : null;
+    const world = typeof value["world"] === "string" ? value["world"].normalize("NFC") : ref.world;
     try {
       insert.run(stream, ts, world, text, now, importId);
       counts.imported += 1;
@@ -295,7 +317,7 @@ function importAliases(db: Database, ref: StoreRef, importId: number, source: st
 function importBody(db: Database, ref: StoreRef, importId: number, source: string, bytes: Buffer): Counts {
   switch (STORES[ref.store].kind) {
     case "stream":
-      return importLines(db, ref.store as Stream, importId, source, bytes, 0, 0);
+      return importLines(db, ref, importId, source, bytes, 0, 0);
     case "doc":
       return importDoc(db, ref, importId, source, bytes);
     case "aliases":
@@ -313,7 +335,7 @@ function countNewlines(bytes: Buffer, end: number): number {
 function importTail(db: Database, ref: StoreRef, row: ImportRow, bytes: Buffer): Counts {
   if (!row.backup_path) throw new Refused("verified import has no backup name");
   if (sha256(bytes.subarray(0, row.size)) !== row.sha256) throw new Refused(CHANGED);
-  const counts = importLines(db, ref.store as Stream, row.id, row.backup_path, bytes, row.size, countNewlines(bytes, row.size));
+  const counts = importLines(db, ref, row.id, row.backup_path, bytes, row.size, countNewlines(bytes, row.size));
   db.query(
     `UPDATE legacy_imports SET size = ?, sha256 = ?, lines_imported = lines_imported + ?,
        lines_quarantined = lines_quarantined + ?, lines_blank = lines_blank + ?, verified_at = ? WHERE id = ?`,
@@ -322,9 +344,10 @@ function importTail(db: Database, ref: StoreRef, row: ImportRow, bytes: Buffer):
 }
 
 /** Step 2 for a claim left by a crash, or steps 4 and 5 for a fresh claim. */
-function importClaim(db: Database, ref: StoreRef, claim: ImportStat, startedAt: string): { row: ImportRow; counts: Counts } {
-  const bytes = importIo.readFile(claimPath(ref));
-  const original = originalPath(ref);
+function importClaim(db: Database, ref: StoreRef, target: Claimable, claim: ImportStat, startedAt: string): { row: ImportRow; counts: Counts } {
+  const bytes = importIo.readFile(target.claim);
+  const original = target.original;
+  const backupName = (id: number): string => `${target.backupBase}.imported-${stampNow()}-${id}`;
   const known = db
     .query(
       `SELECT id, backup_path, size, sha256, dev, ino FROM legacy_imports
@@ -334,7 +357,7 @@ function importClaim(db: Database, ref: StoreRef, claim: ImportStat, startedAt: 
   if (known) {
     // An export row (D14) has no backup yet; it gets one the way a fresh import does.
     if (!known.backup_path) {
-      known.backup_path = `${original}.imported-${stampNow()}-${known.id}`;
+      known.backup_path = backupName(known.id);
       db.query("UPDATE legacy_imports SET backup_path = ? WHERE id = ?").run(known.backup_path, known.id);
     }
     if (known.size === bytes.length && known.sha256 === sha256(bytes)) return { row: known, counts: { imported: 0, quarantined: 0, blank: 0 } };
@@ -346,7 +369,7 @@ function importClaim(db: Database, ref: StoreRef, claim: ImportStat, startedAt: 
       "INSERT INTO legacy_imports (store, world, original_path, state, dev, ino, started_at) VALUES (?, ?, ?, 'verified', ?, ?, ?) RETURNING id",
     )
     .get(ref.store, ref.world, original, claim.dev, claim.ino, startedAt) as { id: number };
-  const backupPath = `${original}.imported-${stampNow()}-${id}`;
+  const backupPath = backupName(id);
   const counts = importBody(db, ref, id, backupPath, bytes);
   const digest = sha256(bytes);
   db.query(
@@ -357,22 +380,22 @@ function importClaim(db: Database, ref: StoreRef, claim: ImportStat, startedAt: 
 }
 
 /** Roll back, record a `failed` row in its own transaction, and throw. */
-function fail(db: Database, ref: StoreRef, error: unknown, claim: ImportStat | null, startedAt: string): never {
+function fail(db: Database, ref: StoreRef, error: unknown, claim: ImportStat | null, startedAt: string, original = originalPath(ref)): never {
   rollback(db);
   if (error instanceof ImportError) throw error;
   if (isBusy(error)) throw new ImportError(ref, "busy", true);
   const reason = reasonOf(error);
-  recordFailure(db, ref, reason, claim, startedAt);
+  recordFailure(db, ref, reason, claim, startedAt, original);
   throw new ImportError(ref, reason, false);
 }
 
 /** A `failed` row in its own transaction. */
-function recordFailure(db: Database, ref: StoreRef, reason: string, claim: ImportStat | null, startedAt: string): void {
+function recordFailure(db: Database, ref: StoreRef, reason: string, claim: ImportStat | null, startedAt: string, original = originalPath(ref)): void {
   try {
     db.run("BEGIN IMMEDIATE");
     db.query(
       "INSERT INTO legacy_imports (store, world, original_path, state, failure, dev, ino, started_at) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?)",
-    ).run(ref.store, ref.world, originalPath(ref), reason, claim?.dev ?? null, claim?.ino ?? null, startedAt);
+    ).run(ref.store, ref.world, original, reason, claim?.dev ?? null, claim?.ino ?? null, startedAt);
     db.run("COMMIT");
   } catch {
     // The row is only history for `sil state status`; the import failure the caller throws is what it sees.
@@ -382,8 +405,8 @@ function recordFailure(db: Database, ref: StoreRef, reason: string, claim: Impor
 
 /** Step 6: under the lock, import whatever a stream grew past the row, else
  * rename the claim to its backup. */
-function finalize(db: Database, ref: StoreRef, rowId: number, counts: Counts): string {
-  const claim = claimPath(ref);
+function finalize(db: Database, ref: StoreRef, target: Claimable, rowId: number, counts: Counts): string {
+  const claim = target.claim;
   for (;;) {
     const startedAt = new Date().toISOString();
     begin(db, ref);
@@ -416,13 +439,14 @@ function finalize(db: Database, ref: StoreRef, rowId: number, counts: Counts): s
       db.run("COMMIT");
       return row.backup_path;
     } catch (error) {
-      fail(db, ref, error, current, startedAt);
+      fail(db, ref, error, current, startedAt, target.original);
     }
   }
 }
 
 /** Run the D6 import for one store on `db`. Handles a claim left by a crash
- * first, then the old path once; a spill created after that waits for the next check. */
+ * first, then a stream's sealed segments and open spill file, then the old
+ * path once; a spill created after that waits for the next check. */
 export function importStoreOn(db: Database, ref: StoreRef): ImportOutcome[] {
   const { outcomes, error } = importCollecting(db, ref);
   if (error) throw error;
@@ -447,44 +471,81 @@ function importCollecting(db: Database, ref: StoreRef): { outcomes: ImportOutcom
   }
 }
 
+/** D5 import order for one store: a leftover claim of `P`; for a stream, each
+ * segment or open-file claim a crash left, then each sealed segment in name
+ * order (oldest first), then the open spill file; then `P`. Stops early when
+ * legacy imports are suspended. */
 function importPasses(db: Database, ref: StoreRef, outcomes: ImportOutcome[]): void {
-  const original = originalPath(ref);
-  const claimName = claimPath(ref);
-  for (let pass = 0; pass < 2; pass++) {
-    const startedAt = new Date().toISOString();
-    begin(db, ref);
-    let claim: ImportStat | null = null;
-    let result: { row: ImportRow; counts: Counts };
+  const main = mainClaimable(ref);
+  if (!importOne(db, ref, main, true, outcomes)) return;
+  if (growsByAppend(ref)) {
+    const dir = spillDir(main.original);
+    let listed: { segments: string[]; claims: string[] };
     try {
-      // Checked under the write lock, so an export that commits first always wins.
-      if (importSuspendedAt(db) !== null) {
-        db.run("COMMIT");
-        return;
-      }
-      claim = statOrNull(claimName);
-      if (!claim) {
-        if (!statOrNull(original)) {
-          db.run("COMMIT");
-          return;
-        }
-        importIo.rename(original, claimName);
-        claim = importIo.stat(claimName);
-        pass = 1;
-      }
-      result = importClaim(db, ref, claim, startedAt);
-      db.run("COMMIT");
+      listed = listSpillSegments(main.original);
     } catch (error) {
-      fail(db, ref, error, claim, startedAt);
+      fail(db, ref, error, null, new Date().toISOString());
     }
-    const backupPath = finalize(db, ref, result.row.id, result.counts);
-    outcomes.push({ store: ref.store, world: ref.world, ...result.counts, backupPath });
+    for (const name of listed.claims) {
+      if (!importOne(db, ref, segmentClaimable(ref, join(dir, name.slice(0, -".importing".length))), true, outcomes)) return;
+    }
+    for (const name of listed.segments) {
+      if (!importOne(db, ref, segmentClaimable(ref, join(dir, name)), false, outcomes)) return;
+    }
+    if (!importOne(db, ref, segmentClaimable(ref, openSpillPath(main.original)), false, outcomes)) return;
+  }
+  importOne(db, ref, main, false, outcomes);
+}
+
+/** Import one file: a claim already in place (a crash left it, or another
+ * importer is finalizing it), else, unless `claimOnly`, the file claimed by
+ * rename. False when legacy imports are suspended. */
+function importOne(db: Database, ref: StoreRef, target: Claimable, claimOnly: boolean, outcomes: ImportOutcome[]): boolean {
+  const startedAt = new Date().toISOString();
+  begin(db, ref);
+  let claim: ImportStat | null = null;
+  let result: { row: ImportRow; counts: Counts };
+  try {
+    // Checked under the write lock, so an export that commits first always wins.
+    if (importSuspendedAt(db) !== null) {
+      db.run("COMMIT");
+      return false;
+    }
+    claim = statOrNull(target.claim);
+    if (!claim) {
+      if (claimOnly || !claimByRename(target)) {
+        db.run("COMMIT");
+        return true;
+      }
+      claim = importIo.stat(target.claim);
+    }
+    result = importClaim(db, ref, target, claim, startedAt);
+    db.run("COMMIT");
+  } catch (error) {
+    fail(db, ref, error, claim, startedAt, target.original);
+  }
+  const backupPath = finalize(db, ref, target, result.row.id, result.counts);
+  outcomes.push({ store: ref.store, world: ref.world, ...result.counts, backupPath });
+  return true;
+}
+
+/** Claim a file by rename. ENOENT means it is gone (a hook sealed the open
+ * spill file, the spill bound unlinked a segment, or there was nothing):
+ * nothing pending now. */
+function claimByRename(target: Claimable): boolean {
+  try {
+    importIo.rename(target.original, target.claim);
+    return true;
+  } catch (error) {
+    if (fsx.errnoCode(error) === "ENOENT") return false;
+    throw error;
   }
 }
 
 /** Global stores in import order: the streams, then the global documents.
  * A function, not a constant: stores.ts and this module import each other. */
 const globalStores = (): StoreName[] => (Object.keys(STORES) as StoreName[]).filter((store) => !STORES[store].perWorld);
-const PER_WORLD_STORES = ["refine_attempts", "aliases"] as const;
+const PER_WORLD_STORES = ["refine_attempts", "aliases", "payload_samples"] as const;
 
 /** Import one store into `result`, collecting its failure instead of throwing. */
 function importInto(db: Database, ref: StoreRef, result: ImportAllResult): void {
@@ -508,7 +569,7 @@ function importInto(db: Database, ref: StoreRef, result: ImportAllResult): void 
 }
 
 /** The first-open import (design D4): streams, then global documents, then
- * every world with a legacy refine attempts or aliases file. A failure here
+ * every world with a legacy refine attempts, aliases or payload samples file. A failure here
  * never fails the open: it is recorded, and the next store access retries. */
 export function importAllOn(db: Database): ImportAllResult {
   const result: ImportAllResult = { outcomes: [], failures: [] };

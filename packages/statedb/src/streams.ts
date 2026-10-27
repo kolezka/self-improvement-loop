@@ -5,15 +5,10 @@ import type { Database } from "bun:sqlite";
 import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
 import { capRaw, ensureImported, ImportError, reasonOf } from "./import.ts";
 import { openState } from "./open.ts";
+import type { StoreRef } from "./stores.ts";
+import { type Stream, STREAMS } from "./stream-table.ts";
 
-export type Stream = "reflect_runs" | "critic" | "human" | "proposal_events";
-
-export const STREAMS: Readonly<Record<Stream, { legacyPath(): string; label: string }>> = {
-  reflect_runs: { legacyPath: () => paths.reflectRunsFile(), label: "the reflect runs log" },
-  critic: { legacyPath: () => paths.criticFeedbackFile(), label: "the critic feedback log" },
-  human: { legacyPath: () => paths.humanFeedbackFile(), label: "the human feedback log" },
-  proposal_events: { legacyPath: () => paths.proposalEventsFile(), label: "the proposal events log" },
-};
+export { needWorld, type Stream, type StreamSpec, STREAMS } from "./stream-table.ts";
 
 export type ReadMode = "strict" | "counted" | "tolerant";
 
@@ -22,10 +17,48 @@ export interface ReadResult {
   quarantined: number;
 }
 
-/** The one insert for rows a process writes itself (not a legacy import). */
-function insertRecord(db: Database, stream: Stream, record: Record<string, unknown>, body: string, recordedAt: string): void {
+/** Where one call of a stream reads or writes: the store ref and its label.
+ * A per-world stream needs `world` (NFC here); a global one ignores it. Null
+ * when a per-world stream got no world. */
+function streamTarget(stream: Stream, world: string | undefined): { ref: StoreRef; label: string } | null {
+  if (!STREAMS[stream].perWorld) return { ref: { store: stream, world: null }, label: STREAMS[stream].label(null) };
+  if (world === undefined) return null;
+  const key = world.normalize("NFC");
+  return { ref: { store: stream, world: key }, label: STREAMS[stream].label(key) };
+}
+
+/** What a per-world stream called without a world says. */
+const worldMissing = (stream: Stream, verb: string): string => `${stream.replace(/_/g, " ")} cannot be ${verb} (world missing)`;
+
+function readTarget(stream: Stream, world: string | undefined): { ref: StoreRef; label: string } {
+  const target = streamTarget(stream, world);
+  if (!target) throw new StateReadError(worldMissing(stream, "read"));
+  return target;
+}
+
+/** The rows of one stream, and of one world for a per-world stream. */
+function rowsWhere(ref: StoreRef): { sql: string; args: (string | null)[] } {
+  return ref.world === null ? { sql: "stream = ?", args: [ref.store] } : { sql: "stream = ? AND world = ?", args: [ref.store, ref.world] };
+}
+
+/** The quarantine rows of one stream, and of one world for a per-world stream. */
+function quarantineWhere(ref: StoreRef): { sql: string; args: (string | null)[] } {
+  return ref.world === null ? { sql: "store = ?", args: [ref.store] } : { sql: "store = ? AND world IS ?", args: [ref.store, ref.world] };
+}
+
+/** The one insert for rows a process writes itself (not a legacy import). A
+ * record's own string `world` wins unless `pinWorld`; else the row gets `fallbackWorld`. */
+function insertRecord(
+  db: Database,
+  stream: Stream,
+  record: Record<string, unknown>,
+  body: string,
+  recordedAt: string,
+  fallbackWorld: string | null,
+  pinWorld = false,
+): void {
   const ts = typeof record["ts"] === "string" ? record["ts"] : null;
-  const world = typeof record["world"] === "string" ? record["world"].normalize("NFC") : null;
+  const world = pinWorld || typeof record["world"] !== "string" ? fallbackWorld : record["world"].normalize("NFC");
   db.query("INSERT INTO log_records (stream, ts, world, body, recorded_at, import_id) VALUES (?, ?, ?, ?, ?, NULL)").run(
     stream,
     ts,
@@ -35,13 +68,16 @@ function insertRecord(db: Database, stream: Stream, record: Record<string, unkno
   );
 }
 
-/** Append one record. Any failure throws StateWriteError starting with the stream's label. */
-export function appendRecord(stream: Stream, record: Record<string, unknown>): void {
-  const { label } = STREAMS[stream];
+/** Append one record. `world` is required for a per-world stream and ignored
+ * otherwise. Any failure throws StateWriteError starting with the stream's label. */
+export function appendRecord(stream: Stream, record: Record<string, unknown>, world?: string): void {
+  const target = streamTarget(stream, world);
+  if (!target) throw new StateWriteError(worldMissing(stream, "written"));
+  const { ref, label } = target;
   try {
     if (record === null || typeof record !== "object" || Array.isArray(record)) throw new StateWriteError(`${label} cannot be written (not a JSON object)`);
-    ensureImported({ store: stream, world: null });
-    insertRecord(openState(), stream, record, JSON.stringify(record), new Date().toISOString());
+    ensureImported(ref);
+    insertRecord(openState(), stream, record, JSON.stringify(record), new Date().toISOString(), ref.world);
   } catch (error) {
     if (error instanceof StateWriteError && error.message.startsWith(label)) throw error;
     throw new StateWriteError(`${label} cannot be written (${reasonOf(error)})`);
@@ -65,26 +101,28 @@ export function logStateOnce(key: string, label: string, reason: string): void {
   }
 }
 
-const logOnce = (stream: Stream, reason: string): void => logStateOnce(stream, STREAMS[stream].label, reason);
+const logOnce = (ref: StoreRef, label: string, reason: string): void =>
+  logStateOnce(ref.world === null ? ref.store : `${ref.store}\0${ref.world}`, label, reason);
 
 /** What a strict reader throws when the import before its read fails. */
-export function strictImportError(stream: Stream, error: unknown): StateReadError {
-  const { label } = STREAMS[stream];
+export function strictImportError(stream: Stream, error: unknown, world: string | null = null): StateReadError {
+  const label = STREAMS[stream].label(world);
   if (error instanceof ImportError && error.busy) return new StateReadError(`${label} is being imported`);
   return new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
 }
 
 const EMPTY = (): ReadResult => ({ records: [], quarantined: 0 });
 
-/** Read a stream in append order. The pending check and import run before the
- * read's snapshot; the rows and the quarantine count come from one snapshot. */
-export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
-  const { label } = STREAMS[stream];
+/** Read a stream in append order; a per-world stream reads the rows of
+ * `world`. The pending check and import run before the read's snapshot; the
+ * rows and the quarantine count come from one snapshot. */
+export function readRecords(stream: Stream, mode: ReadMode, world?: string): ReadResult {
+  const { ref, label } = readTarget(stream, world);
   try {
-    ensureImported({ store: stream, world: null });
+    ensureImported(ref);
   } catch (error) {
-    if (mode !== "tolerant") throw strictImportError(stream, error);
-    logOnce(stream, reasonOf(error));
+    if (mode !== "tolerant") throw strictImportError(stream, error, ref.world);
+    logOnce(ref, label, reasonOf(error));
     // An import failure alone still leaves the database readable.
     if (!(error instanceof ImportError)) return EMPTY();
   }
@@ -94,8 +132,10 @@ export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
     const db = openState();
     db.run("BEGIN");
     try {
-      const rows = db.query("SELECT body FROM log_records WHERE stream = ? ORDER BY id").all(stream) as { body: string }[];
-      const { n } = db.query("SELECT count(*) AS n FROM quarantine WHERE store = ?").get(stream) as { n: number };
+      const rowsAt = rowsWhere(ref);
+      const quarantineAt = quarantineWhere(ref);
+      const rows = db.query(`SELECT body FROM log_records WHERE ${rowsAt.sql} ORDER BY id`).all(...rowsAt.args) as { body: string }[];
+      const { n } = db.query(`SELECT count(*) AS n FROM quarantine WHERE ${quarantineAt.sql}`).get(...quarantineAt.args) as { n: number };
       db.run("COMMIT");
       result = { records: rows.map((row) => JSON.parse(row.body) as Record<string, unknown>), quarantined: n };
     } finally {
@@ -103,7 +143,7 @@ export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
     }
   } catch (error) {
     if (mode === "tolerant") {
-      logOnce(stream, reasonOf(error));
+      logOnce(ref, label, reasonOf(error));
       return EMPTY();
     }
     throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
@@ -116,15 +156,18 @@ export function readRecords(stream: Stream, mode: ReadMode): ReadResult {
 
 const plural = (n: number, word: string): string => `${n} ${n === 1 ? word : `${word}s`}`;
 
-/** A stream's bodies in id order, read on `db` inside the caller's transaction.
- * Throws StateReadError when the stream has quarantined lines (design D13). */
-export function exportBodiesOn(db: Database, stream: Stream): string[] {
-  const { label } = STREAMS[stream];
+/** A stream's bodies in id order (of one world for a per-world stream), read
+ * on `db` inside the caller's transaction. Throws StateReadError when the
+ * stream has quarantined lines (design D13). */
+export function exportBodiesOn(db: Database, stream: Stream, world?: string): string[] {
+  const { ref, label } = readTarget(stream, world);
+  const rowsAt = rowsWhere(ref);
+  const quarantineAt = quarantineWhere(ref);
   let bodies: string[];
   let bad: number;
   try {
-    bodies = (db.query("SELECT body FROM log_records WHERE stream = ? ORDER BY id").all(stream) as { body: string }[]).map((r) => r.body);
-    bad = (db.query("SELECT count(*) AS n FROM quarantine WHERE store = ?").get(stream) as { n: number }).n;
+    bodies = (db.query(`SELECT body FROM log_records WHERE ${rowsAt.sql} ORDER BY id`).all(...rowsAt.args) as { body: string }[]).map((r) => r.body);
+    bad = (db.query(`SELECT count(*) AS n FROM quarantine WHERE ${quarantineAt.sql}`).get(...quarantineAt.args) as { n: number }).n;
   } catch (error) {
     throw new StateReadError(`${label} cannot be read (${reasonOf(error)})`);
   }
@@ -135,19 +178,19 @@ export function exportBodiesOn(db: Database, stream: Stream): string[] {
 /** The stream as JSONL for a bundle: bodies in id order, one per line, or null
  * when it has no rows. Refuses a stream with quarantined lines (design D13), so
  * an export is never silently short. */
-export function exportJsonl(stream: Stream): string | null {
-  const { label } = STREAMS[stream];
+export function exportJsonl(stream: Stream, world?: string): string | null {
+  const { ref, label } = readTarget(stream, world);
   try {
-    ensureImported({ store: stream, world: null });
+    ensureImported(ref);
   } catch (error) {
-    throw strictImportError(stream, error);
+    throw strictImportError(stream, error, ref.world);
   }
   let bodies: string[];
   try {
     const db = openState();
     db.run("BEGIN");
     try {
-      bodies = exportBodiesOn(db, stream);
+      bodies = exportBodiesOn(db, stream, ref.world ?? undefined);
       db.run("COMMIT");
     } finally {
       if (db.inTransaction) db.run("ROLLBACK");
@@ -168,31 +211,35 @@ export interface ReplaceResult {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** Load a bundle's JSONL as the whole stream, never appended to host rows. A
- * stream that already has rows or quarantine rows is left alone unless `force`,
- * which replaces both in one transaction. Bad lines are quarantined under
- * `source`. Any failure throws StateWriteError starting with the stream's label. */
-export function replaceStream(stream: Stream, jsonl: string, source: string, force: boolean): ReplaceResult {
-  const { label } = STREAMS[stream];
+/** Load a bundle's JSONL as the whole stream (one world of a per-world
+ * stream), never appended to host rows. A stream that already has rows or
+ * quarantine rows is left alone unless `force`, which replaces both in one
+ * transaction. Bad lines are quarantined under `source`. Any failure throws
+ * StateWriteError starting with the stream's label. */
+export function replaceStream(stream: Stream, jsonl: string, source: string, force: boolean, world?: string): ReplaceResult {
+  const target = streamTarget(stream, world);
+  if (!target) throw new StateWriteError(worldMissing(stream, "written"));
+  const { ref, label } = target;
   try {
     // A legacy file still waiting at the old path is host data too.
-    ensureImported({ store: stream, world: null });
+    ensureImported(ref);
     const db = openState();
     db.run("BEGIN IMMEDIATE");
     try {
+      const rowsAt = rowsWhere(ref);
+      const quarantineAt = quarantineWhere(ref);
       // Quarantine rows count as host data: a bundle's bad lines may have no backup file.
-      const { n } = db
-        .query("SELECT (SELECT count(*) FROM log_records WHERE stream = ?1) + (SELECT count(*) FROM quarantine WHERE store = ?1) AS n")
-        .get(stream) as { n: number };
-      if (n > 0 && !force) {
+      const rows = (db.query(`SELECT count(*) AS n FROM log_records WHERE ${rowsAt.sql}`).get(...rowsAt.args) as { n: number }).n;
+      const bad = (db.query(`SELECT count(*) AS n FROM quarantine WHERE ${quarantineAt.sql}`).get(...quarantineAt.args) as { n: number }).n;
+      if (rows + bad > 0 && !force) {
         db.run("ROLLBACK");
         return { written: false, imported: 0, quarantined: 0 };
       }
-      db.query("DELETE FROM log_records WHERE stream = ?").run(stream);
-      db.query("DELETE FROM quarantine WHERE store = ?").run(stream);
+      db.query(`DELETE FROM log_records WHERE ${rowsAt.sql}`).run(...rowsAt.args);
+      db.query(`DELETE FROM quarantine WHERE ${quarantineAt.sql}`).run(...quarantineAt.args);
       const now = new Date().toISOString();
       const quarantine = db.query(
-        "INSERT INTO quarantine (store, source, import_id, line_no, reason, raw, quarantined_at) VALUES (?, ?, NULL, ?, ?, ?, ?)",
+        "INSERT INTO quarantine (store, world, source, import_id, line_no, reason, raw, quarantined_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
       );
       const result: ReplaceResult = { written: true, imported: 0, quarantined: 0 };
       const pieces = jsonl.split("\n");
@@ -207,10 +254,11 @@ export function replaceStream(stream: Stream, jsonl: string, source: string, for
           value = undefined;
         }
         if (isRecord(value)) {
-          insertRecord(db, stream, value, text, now);
+          // A bundle file's world comes from its path, so a per-world line lands there whatever it names.
+          insertRecord(db, stream, value, text, now, ref.world, STREAMS[stream].perWorld);
           result.imported += 1;
         } else {
-          quarantine.run(stream, source, i + 1, value === undefined ? "not JSON" : "not a JSON object", capRaw(piece), now);
+          quarantine.run(stream, ref.world, source, i + 1, value === undefined ? "not JSON" : "not a JSON object", capRaw(piece), now);
           result.quarantined += 1;
         }
       }

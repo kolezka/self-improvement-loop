@@ -4,10 +4,11 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { paths, WORLD_NAME_RE } from "@sil/core";
-import { type Stream, STREAMS } from "./streams.ts";
+import { needWorld, type Stream, STREAMS } from "./streams.ts";
 
 export type DocName = "queue_cleared" | "worker_status" | "refine_attempts";
 export type StoreName = Stream | DocName | "aliases";
+export type PerWorldStore = "refine_attempts" | "aliases" | "payload_samples";
 export type StoreKind = "stream" | "doc" | "aliases";
 
 /** `world` is already NFC; null for global stores. */
@@ -25,14 +26,17 @@ export interface StoreSpec {
 
 export const worldKey = (world: string): string => world.normalize("NFC");
 
-/** A per-world store called without its world is a programming error. */
-function needWorld(world: string | null): string {
-  if (world === null) throw new Error("per-world store used without a world");
-  return world;
-}
-
+/** STREAMS is the one table of a stream's world scope, legacy path and label.
+ * Read lazily: streams.ts and this module import each other (through import.ts). */
 function streamSpec(stream: Stream): StoreSpec {
-  return { kind: "stream", perWorld: false, legacyPath: () => STREAMS[stream].legacyPath(), label: () => STREAMS[stream].label };
+  return {
+    kind: "stream",
+    get perWorld() {
+      return STREAMS[stream].perWorld;
+    },
+    legacyPath: (world) => STREAMS[stream].legacyPath(world),
+    label: (world) => STREAMS[stream].label(world),
+  };
 }
 
 export const STORES: Readonly<Record<StoreName, StoreSpec>> = {
@@ -40,6 +44,10 @@ export const STORES: Readonly<Record<StoreName, StoreSpec>> = {
   critic: streamSpec("critic"),
   human: streamSpec("human"),
   proposal_events: streamSpec("proposal_events"),
+  usage_events: streamSpec("usage_events"),
+  nudge_fires: streamSpec("nudge_fires"),
+  hook_runs: streamSpec("hook_runs"),
+  payload_samples: streamSpec("payload_samples"),
   queue_cleared: { kind: "doc", perWorld: false, legacyPath: () => paths.queueClearedFile(), label: () => "the queue cutoffs" },
   worker_status: {
     kind: "doc",
@@ -85,12 +93,41 @@ function present(path: string): boolean {
   }
 }
 
-const REFINE_FILE = /^(.+)\.json$/;
-const REFINE_CLAIM = /^(.+)\.json\.importing$/;
+/** Whether `path` is a directory. Only "not there" (ENOENT, ENOTDIR) is
+ * false; a path that cannot be inspected throws. */
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+/** One kind of entry naming a world: the pattern's first group is the world's
+ * on-disk name; `dirOnly` entries count only when they are directories. */
+interface NamedEntry {
+  pattern: RegExp;
+  dirOnly?: boolean;
+}
+
+/** Per-world stores whose legacy files sit in one directory, one entry per world. */
+const NAMED_ENTRIES: Readonly<Record<"refine_attempts" | "payload_samples", { dir(): string; entries: readonly NamedEntry[] }>> = {
+  refine_attempts: {
+    dir: () => join(paths.stateDir(), "curriculum", "refine-attempts"),
+    entries: [{ pattern: /^(.+)\.json$/ }, { pattern: /^(.+)\.json\.importing$/ }],
+  },
+  payload_samples: {
+    dir: () => join(paths.stateDir(), "usage", "payloads"),
+    // A sealed spill segment dir (D5) names its world too; a backup does not.
+    entries: [{ pattern: /^(.+)\.jsonl$/ }, { pattern: /^(.+)\.jsonl\.importing$/ }, { pattern: /^(.+)\.jsonl\.spill$/, dirOnly: true }],
+  },
+};
 
 /** The path-safe worlds with a legacy file or claim, and invalid on-disk names
  * whose files must stay untouched. Valid names are NFC; invalid names are raw. */
-export function legacyWorldsReport(store: "refine_attempts" | "aliases"): { worlds: string[]; invalid: string[] } {
+export function legacyWorldsReport(store: PerWorldStore): { worlds: string[]; invalid: string[] } {
   const worlds = new Set<string>();
   const invalid = new Set<string>();
   const record = (raw: string): void => {
@@ -98,20 +135,26 @@ export function legacyWorldsReport(store: "refine_attempts" | "aliases"): { worl
     if (WORLD_NAME_RE.test(name) && paths.safeComponent(name) === name) worlds.add(name);
     else invalid.add(raw);
   };
-  if (store === "refine_attempts") {
-    for (const name of listNames(join(paths.stateDir(), "curriculum", "refine-attempts"))) {
-      const stem = REFINE_FILE.exec(name)?.[1] ?? REFINE_CLAIM.exec(name)?.[1];
-      if (stem !== undefined) record(stem);
-    }
-  } else {
+  if (store === "aliases") {
     const dir = join(paths.dataDir(), "worlds");
     for (const name of listNames(dir)) {
       if (present(join(dir, name, "aliases.json")) || present(join(dir, name, "aliases.json.importing"))) record(name);
+    }
+  } else {
+    const { dir, entries } = NAMED_ENTRIES[store];
+    const base = dir();
+    for (const name of listNames(base)) {
+      for (const { pattern, dirOnly } of entries) {
+        const stem = pattern.exec(name)?.[1];
+        if (stem === undefined) continue;
+        if (!dirOnly || isDir(join(base, name))) record(stem);
+        break;
+      }
     }
   }
   return { worlds: [...worlds].sort(), invalid: [...invalid].sort() };
 }
 
-export function legacyWorlds(store: "refine_attempts" | "aliases"): string[] {
+export function legacyWorlds(store: PerWorldStore): string[] {
   return legacyWorldsReport(store).worlds;
 }

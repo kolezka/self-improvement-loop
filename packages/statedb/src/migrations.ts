@@ -58,9 +58,15 @@ CREATE TABLE aliases (world TEXT NOT NULL, alias TEXT NOT NULL, canonical TEXT N
 ALTER TABLE quarantine ADD COLUMN world TEXT;
 `;
 
+// Phase 3: the hook-written streams need no table, only an index for compaction.
+const V3 = `
+CREATE INDEX log_records_usage_ref ON log_records (stream, world, json_extract(body, '$.ref'), ts);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, up: (db) => db.run(V1) },
   { version: 2, up: (db) => db.run(V2) },
+  { version: 3, up: (db) => db.run(V3) },
 ];
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;

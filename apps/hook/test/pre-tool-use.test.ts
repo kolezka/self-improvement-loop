@@ -6,8 +6,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
-import { readJsonl } from "@sil/core/fsx";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { closeState, readRecords } from "@sil/statedb";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -19,9 +19,11 @@ beforeEach(() => {
   for (const key of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_PLUGIN_ROOT"]) {
     process.env[key] = hookEnv.env[key];
   }
+  createLoopState();
 });
 
 afterEach(() => {
+  closeState();
   cleanupHookEnv(hookEnv);
 });
 
@@ -38,7 +40,7 @@ function writeSnapshot(): void {
   );
 }
 
-const samples = (): Record<string, unknown>[] => readJsonl(paths.payloadSamplesFile("default"));
+const samples = (): Record<string, unknown>[] => readRecords("payload_samples", "strict", "default").records;
 
 describe("PreToolUse payload samples", () => {
   test("a Bash call is recorded with its command and nothing else from tool_input", () => {

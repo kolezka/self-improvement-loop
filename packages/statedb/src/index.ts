@@ -11,11 +11,13 @@ export {
 } from "./import.ts";
 export { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 export { closeState, openState } from "./open.ts";
+export { listSpillSegments, openSpillPath, SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES } from "./spill.ts";
 export {
   type BackupCheck,
   dropQuarantine,
   exportLegacy,
   type ExportLegacyResult,
+  type GlobalStream,
   listQuarantine,
   type QuarantineEntry,
   migrateLegacy,
@@ -23,6 +25,7 @@ export {
   type StateStatus,
   type StatusDoc,
   type StatusImport,
+  type StatusStream,
 } from "./status.ts";
 export {
   appendRecord,
@@ -38,6 +41,8 @@ export {
 export {
   type DocName,
   legacyWorlds,
+  legacyWorldsReport,
+  type PerWorldStore,
   type StoreKind,
   type StoreName,
   type StoreRef,

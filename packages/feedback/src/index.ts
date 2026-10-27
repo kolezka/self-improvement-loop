@@ -6,6 +6,7 @@ import {
   ledgerPath,
   paths,
   servedType,
+  StateWriteError,
   type Config,
   type HumanFeedback,
   type Ledger,
@@ -15,7 +16,8 @@ import {
   type UsageEvent,
   type World,
 } from "@sil/core";
-import { appendRecord, readRecords, type Stream } from "@sil/statedb";
+import type { Database, SQLQueryBindings } from "bun:sqlite";
+import { appendRecord, ensureImported, legacyWorlds, openState, readRecords, type Stream, STREAMS } from "@sil/statedb";
 import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger } from "@sil/store";
 import { installedArtifacts } from "@sil/critic";
 import { patternRates, type SessionDayRow } from "./rates.ts";
@@ -69,7 +71,7 @@ function refsByName(refs: Iterable<string>): Map<string, string[]> {
 export const REFINE_COOLDOWN_DAYS = 7;
 
 export function appendUsage(event: UsageEvent): void {
-  fsx.appendJsonl(paths.usageEventsFile(), event);
+  appendRecord("usage_events", event as unknown as Record<string, unknown>);
 }
 
 /** One line per critic run that finished, recorded or not. The worker calls
@@ -127,11 +129,8 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   const retireCutoff = new Date(now.getTime() - cfg.promotion.retire_after_days * 86_400_000);
 
   const strict = opts.strict === true;
-  // One reader per input, chosen once: strict for the consoles, tolerant for
-  // the worker's rebuild and the planner.
-  const readLog = (path: string, label: string): Record<string, unknown>[] =>
-    strict ? fsx.readJsonlStrict<Record<string, unknown>>(path, label) : fsx.readJsonl<Record<string, unknown>>(path);
-  // The critic, human and reflect-run logs live in loop state; the labels are STREAMS'.
+  // Every log lives in loop state, read strict for the consoles and tolerant
+  // for the worker's rebuild and the planner; the labels are STREAMS'.
   const readStream = (stream: Stream): Record<string, unknown>[] => readRecords(stream, strict ? "strict" : "tolerant").records;
   const ledger = strict ? loadLedger(ledgerPath(world)) : loadLedgerSafe(world);
   // Frozen before usage, fires or human feedback add anything: a bare critic
@@ -160,7 +159,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     if (cur === undefined || str > cur) lastTsByRef.set(ref, str);
   };
 
-  for (const ev of readLog(paths.usageEventsFile(), "the usage log")) {
+  for (const ev of readStream("usage_events")) {
     if (ev["world"] !== world.name) continue;
     const kind = ev["kind"];
     // agent_stop repeats an agent event already counted, hook_run counts
@@ -174,7 +173,8 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     if (within(ev["ts"], windowStart, now)) bump(usesByRef, r);
   }
 
-  for (const line of readLog(paths.nudgeFiresFile(), "the nudge fires log")) {
+  // Fires carry no world field, so every world reads all of them.
+  for (const line of readStream("nudge_fires")) {
     const pattern = line["pattern"];
     if (!pattern) continue;
     const ref = `hook:${String(pattern)}`;
@@ -396,64 +396,142 @@ function propose(
 // looks back 30 days, the retire clock looks back `retire_after_days`.
 const COMPACT_SLACK_DAYS = 30;
 
-// The rewrite reads the file and renames a new one over it, so a hook that
-// appends in between loses its line. Wait until enough dead lines are there
-// for the rewrite to be worth that risk.
-export const COMPACT_MIN_DROP = 500;
+/** Rows each worker run keeps per hook-written stream (per world for payload
+ * samples), oldest dropped first. Today's line bounds, as rows (design D11). */
+export const TRIM_BOUNDS = { hook_runs: 40000, nudge_fires: 5000, payload_samples: 2000 } as const;
 
-function parseEvent(line: string): Record<string, unknown> | null {
-  try {
-    const ev: unknown = JSON.parse(line);
-    return typeof ev === "object" && ev !== null && !Array.isArray(ev) ? (ev as Record<string, unknown>) : null;
-  } catch {
-    return null;
+/** Most rows one DELETE removes, so a hook waits on one chunk, never a whole pass. */
+export const TRIM_CHUNK_ROWS = 1000;
+
+/** Run a chunked DELETE until it deletes nothing, each run in its own
+ * BEGIN IMMEDIATE. Returns the rows deleted. */
+function deleteInChunks(db: Database, sql: string, args: SQLQueryBindings[]): number {
+  const statement = db.query(sql);
+  let total = 0;
+  for (;;) {
+    db.run("BEGIN IMMEDIATE");
+    let deleted: number;
+    try {
+      deleted = statement.run(...args).changes;
+      db.run("COMMIT");
+    } finally {
+      if (db.inTransaction) db.run("ROLLBACK");
+    }
+    if (deleted === 0) return total;
+    total += deleted;
   }
 }
 
-function refKey(ev: Record<string, unknown>): string {
-  return `${String(ev["world"])}\u0000${String(ev["ref"])}`;
+// Rows compaction deletes: hook_run rows, rows with no string ts, and rows
+// past the cutoff that are not the newest of their (world, ref) by ts (ties to
+// the higher id). Scorecards read that newest ts as last_used, so it stays
+// whatever its age.
+const COMPACT_CANDIDATES_SQL = `
+SELECT id FROM log_records WHERE stream = 'usage_events' AND (
+  json_extract(body, '$.kind') = 'hook_run'
+  OR ts IS NULL
+  OR (ts < ?1 AND id NOT IN (
+    SELECT id FROM (
+      SELECT id, row_number() OVER (PARTITION BY world, json_extract(body, '$.ref') ORDER BY ts DESC, id DESC) AS rank
+      FROM log_records
+      WHERE stream = 'usage_events' AND ts IS NOT NULL AND json_extract(body, '$.kind') IS NOT 'hook_run'
+    ) WHERE rank = 1
+  ))
+)
+ORDER BY id`;
+
+/** Delete usage event rows by id, TRIM_CHUNK_ROWS per BEGIN IMMEDIATE. */
+function deleteUsageIds(db: Database, ids: number[]): number {
+  const statement = db.query("DELETE FROM log_records WHERE stream = 'usage_events' AND id IN (SELECT value FROM json_each(?1))");
+  let total = 0;
+  for (let at = 0; at < ids.length; at += TRIM_CHUNK_ROWS) {
+    db.run("BEGIN IMMEDIATE");
+    try {
+      total += statement.run(JSON.stringify(ids.slice(at, at + TRIM_CHUNK_ROWS))).changes;
+      db.run("COMMIT");
+    } finally {
+      if (db.inTransaction) db.run("ROLLBACK");
+    }
+  }
+  return total;
 }
 
-/** Drop usage events no scorecard can use any more and return how many went,
- * 0 when the file was left alone. events.jsonl is append only; here it reached
- * 15 MB, and every rebuild parsed all of it. Three classes go: hook_run
- * diagnostics, which have their own rotated file now, unreadable lines, and
- * events past the retire clock.
- *
- * The newest event per ref stays whatever its age: `scorecards` reads it as
+const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** Delete usage events no scorecard can use any more and return how many
+ * went. Three classes go: hook_run diagnostics, which have their own stream,
+ * rows with no string ts, and events past the retire clock. The newest event
+ * per (world, ref) stays whatever its age: `scorecards` reads it as
  * `last_used`, and that is what the retire proposal runs on.
  *
+ * A legacy or spill file is imported first, so its rows are compacted too.
+ * Deletes commit TRIM_CHUNK_ROWS at a time, so a hook waits on one chunk.
+ * Any failure throws StateWriteError starting with the usage log's label.
  * Call this from the worker, inside the worker lock. */
-export function compactUsageEvents(cfg: Config, now: Date = new Date(), minDrop: number = COMPACT_MIN_DROP): number {
-  const path = paths.usageEventsFile();
-  const text = fsx.readTextOr(path, "");
-  if (!text) return 0;
-
-  const keepDays = cfg.promotion.retire_after_days + COMPACT_SLACK_DAYS;
-  const cutoff = new Date(now.getTime() - keepDays * 86_400_000).toISOString();
-  const lines = text.split("\n").filter((l) => l.length > 0);
-  const events = lines.map(parseEvent);
-
-  const newestByRef = new Map<string, string>();
-  for (const ev of events) {
-    if (ev === null || ev["kind"] === "hook_run") continue;
-    const ts = ev["ts"];
-    if (typeof ts !== "string") continue;
-    const cur = newestByRef.get(refKey(ev));
-    if (cur === undefined || ts > cur) newestByRef.set(refKey(ev), ts);
+export function compactUsageEvents(cfg: Config, now: Date = new Date()): number {
+  const label = STREAMS.usage_events.label(null);
+  try {
+    ensureImported({ store: "usage_events", world: null });
+    const keepDays = cfg.promotion.retire_after_days + COMPACT_SLACK_DAYS;
+    const cutoff = new Date(now.getTime() - keepDays * 86_400_000).toISOString();
+    const db = openState();
+    // Chosen once, outside the write lock: recomputing the newest per ref in
+    // every chunk held the lock for 36 ms a chunk at 60k rows and grew with
+    // the table. A candidate stays one: other writers only add rows, so the
+    // newest of its (world, ref) can only get newer. replaceStream --force
+    // deletes and reinserts the rows under new AUTOINCREMENT ids, so a stale
+    // candidate id can only miss a row, never hit a replacement.
+    const ids = (db.query(COMPACT_CANDIDATES_SQL).all(cutoff) as { id: number }[]).map((r) => r.id);
+    return deleteUsageIds(db, ids);
+  } catch (error) {
+    throw new StateWriteError(`${label} cannot be compacted (${reasonOf(error)})`);
   }
+}
 
-  const kept: string[] = [];
-  events.forEach((ev, i) => {
-    if (ev === null || ev["kind"] === "hook_run") return;
-    const ts = ev["ts"];
-    if (typeof ts !== "string" || ts >= cutoff || newestByRef.get(refKey(ev)) === ts) kept.push(lines[i]!);
-  });
+export interface TrimResult {
+  hook_runs: number;
+  nudge_fires: number;
+  /** Rows deleted per world that has payload samples, 0 included. */
+  payload_samples: Record<string, number>;
+}
 
-  const dropped = lines.length - kept.length;
-  if (dropped < Math.max(1, minDrop)) return 0;
-  fsx.atomicWrite(path, kept.length === 0 ? "" : kept.join("\n") + "\n");
-  return dropped;
+// Rows past the newest `bound` of one stream (and one world), oldest first.
+const trimSql = (perWorld: boolean): string => {
+  const where = perWorld ? "stream = ?1 AND world = ?2" : "stream = ?1";
+  return `
+DELETE FROM log_records WHERE id IN (
+  SELECT id FROM log_records WHERE ${where} AND id NOT IN (
+    SELECT id FROM log_records WHERE ${where} ORDER BY id DESC LIMIT ?3
+  )
+  ORDER BY id LIMIT ${TRIM_CHUNK_ROWS}
+)`;
+};
+
+/** Keep each hook-written stream inside its TRIM_BOUNDS row count. Like any
+ * store access (D4), each trim first imports a legacy or spill file waiting at
+ * the old path, so its lines are trimmed with the rows. Any failure throws
+ * StateWriteError starting with that stream's label. Call this from the
+ * worker, inside the worker lock, after compaction. */
+export function trimStreams(): TrimResult {
+  const trimOne = (stream: "hook_runs" | "nudge_fires" | "payload_samples", world: string | null): number => {
+    try {
+      ensureImported({ store: stream, world });
+      return deleteInChunks(openState(), trimSql(world !== null), [stream, world, TRIM_BOUNDS[stream]]);
+    } catch (error) {
+      throw new StateWriteError(`${STREAMS[stream].label(world)} cannot be trimmed (${reasonOf(error)})`);
+    }
+  };
+  const result: TrimResult = { hook_runs: trimOne("hook_runs", null), nudge_fires: trimOne("nudge_fires", null), payload_samples: {} };
+  let worlds: string[];
+  try {
+    // Worlds with rows, and worlds whose payload file still waits to be imported.
+    const withRows = (openState().query("SELECT DISTINCT world FROM log_records WHERE stream = 'payload_samples' AND world IS NOT NULL").all() as { world: string }[]).map((r) => r.world);
+    worlds = [...new Set([...withRows, ...legacyWorlds("payload_samples")])].sort();
+  } catch (error) {
+    throw new StateWriteError(`the payload samples cannot be trimmed (${reasonOf(error)})`);
+  }
+  for (const world of worlds) result.payload_samples[world] = trimOne("payload_samples", world);
+  return result;
 }
 
 export function rebuild(world: World, cfg: Config, opts: ScorecardOptions = {}): string {

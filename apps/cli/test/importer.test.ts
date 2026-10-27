@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import YAML from "yaml";
-import { Config, fsx, ledgerPath, paths, samples, World } from "@sil/core";
+import { Config, ledgerPath, paths, samples, World } from "@sil/core";
+import { closeState, readRecords } from "@sil/statedb";
 import { loadLedger } from "@sil/store";
 import { importKbWorlds, importLedger, importPayloadSamples, importReflections, mergeWorlds } from "../src/importer.ts";
 
@@ -19,11 +20,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  try {
+    closeState();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(tmp, { recursive: true, force: true });
   }
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 describe("importReflections", () => {
@@ -136,7 +141,8 @@ describe("importPayloadSamples", () => {
     return { projects, repo, cfg };
   }
 
-  const lines = (world: string): Record<string, unknown>[] => fsx.readJsonl(paths.payloadSamplesFile(world));
+  // The samples live in loop state; strict, so a missing store fails the test instead of reading empty.
+  const lines = (world: string): Record<string, unknown>[] => readRecords("payload_samples", "strict", world).records;
 
   test("backfills tool_use blocks from recent transcripts and ignores old ones", () => {
     const { projects, repo, cfg } = setup();
@@ -176,6 +182,8 @@ describe("importPayloadSamples", () => {
     expect(result.records).toBe(2);
     expect(result.written).toEqual({ default: 2 });
     expect(result.skippedNoWorld).toBe(0);
+    // Rows, not a file: a payloads file would be imported again as legacy data.
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
 
     const rows = lines("default");
     expect(rows.length).toBe(2);

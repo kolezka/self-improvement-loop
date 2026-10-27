@@ -7,7 +7,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirS
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
-import { closeState, readRecords, replaceStream } from "@sil/statedb";
+import { appendRecord, closeState, readRecords, replaceStream } from "@sil/statedb";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 
@@ -60,6 +60,13 @@ function seedDocs(): { cleared: string } {
   return { cleared: readFileSync(paths.queueClearedFile(), "utf8") };
 }
 
+/** Two samples of world default at the legacy path, plus `extra` raw text. */
+function seedPayloads(extra = ""): void {
+  const file = paths.payloadSamplesFile("default");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `{"world":"default","tool_name":"Bash"}\n{"world":"default","tool_name":"Edit"}\n${extra}`);
+}
+
 const backupsOf = (file: string): string[] =>
   readdirSync(dirname(file))
     .filter((name) => name.startsWith(`${basename(file)}.imported-`))
@@ -71,6 +78,7 @@ interface StatusJson {
   schemaVersion: number;
   streams: Record<string, { rows: number; quarantined: number; pending: boolean }>;
   docs: { store: string; world: string | null; rows: number; quarantined: number; pending: boolean }[];
+  worldStreams: { store: string; world: string; rows: number; quarantined: number; pending: boolean }[];
   invalidWorldEntries: { store: string; name: string }[];
   imports: { store: string; world: string | null; state: string; backupPath: string | null; failure: string | null; lines: number; backupCheck: string | null }[];
 }
@@ -93,6 +101,53 @@ describe("sil state", () => {
     expect(text.code).toBe(0);
     expect(text.out).toContain('documents:\n  invalid world name, not imported: aliases "a b"');
     expect(readFileSync(invalid, "utf8")).toBe('{"wrong":"target"}\n');
+  });
+
+  test("status prints a payload samples block, one line per world, or none", () => {
+    expect(sil("state", "status").out).toContain("\npayload samples: none\n");
+    const legacy = paths.payloadSamplesFile("inkitt");
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, '{"n":1}\n');
+    writeFileSync(join(dirname(legacy), "a b.jsonl"), '{"n":1}\n');
+    const text = sil("state", "status");
+    expect(text.code).toBe(0);
+    // The open imports a valid world's file and leaves an invalid name alone.
+    expect(text.out).toContain('\npayload samples:\n  inkitt                 1 rows\n  invalid world name, not imported: payload_samples "a b"\n');
+    expect(readFileSync(join(dirname(legacy), "a b.jsonl"), "utf8")).toBe('{"n":1}\n');
+    // The per-world stream is not a line of the stores block.
+    const stores = text.out.slice(text.out.indexOf("\nstores:\n"), text.out.indexOf("\ndocuments:"));
+    expect(stores).toContain("\n  usage_events");
+    expect(stores).not.toContain("\n  payload_samples");
+  });
+
+  test("the first open imports a seeded payloads file: status --json counts its rows per world", () => {
+    seedPayloads();
+    const s = status();
+    expect(s.worldStreams).toEqual([{ store: "payload_samples", world: "default", rows: 2, quarantined: 0, pending: false }]);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
+    const text = sil("state", "status");
+    expect(text.out).toMatch(/\npayload samples:\n {2}default\s+2 rows\n/);
+  });
+
+  test("migrate imports a seeded payloads file and prints it with its world", () => {
+    seedPayloads();
+    const r = sil("state", "migrate");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const lines = r.out.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("payload_samples (default): 2 imported, 0 quarantined");
+  });
+
+  test("quarantine --drop payload_samples --world default drops that world's bad line", () => {
+    seedPayloads("not json\n");
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "quarantine").out).toContain("payload_samples (default)");
+    const dropped = sil("state", "quarantine", "--drop", "payload_samples", "--world", "default");
+    expect(dropped.err).toBe("");
+    expect(dropped.code).toBe(0);
+    expect(dropped.out).toContain("dropped 1");
+    expect(status().worldStreams).toEqual([{ store: "payload_samples", world: "default", rows: 2, quarantined: 0, pending: false }]);
   });
 
   test("quarantine --world rejects invalid names as a usage error", () => {
@@ -123,7 +178,7 @@ describe("sil state", () => {
     const first = status();
     // Positive control: the child used the tmp state dir, not the real one.
     expect(first.dbPath).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
-    expect(first.schemaVersion).toBe(2);
+    expect(first.schemaVersion).toBe(3);
     expect(first.streams["critic"]).toEqual({ rows: 2, quarantined: 0, pending: false });
     expect(first.imports).toHaveLength(1);
     expect(first.imports[0]).toMatchObject({ store: "critic", state: "verified", lines: 2, failure: null, backupCheck: "ok" });
@@ -138,6 +193,22 @@ describe("sil state", () => {
 
     rmSync(backup);
     expect(status().imports[0]!.backupCheck).toBe("missing");
+  });
+
+  test("status text names the source file of a failed import", () => {
+    expect(sil("state", "migrate").code).toBe(0);
+    const segment = `${paths.usageEventsFile()}.spill/20261026T000000000Z-1-0.jsonl`;
+    const db = new Database(paths.loopStateDb(), { readwrite: true, create: false });
+    try {
+      db.query("INSERT INTO legacy_imports (store, original_path, state, failure, started_at) VALUES ('usage_events', ?, 'failed', 'EIO', 't')").run(segment);
+    } finally {
+      db.close();
+    }
+    const r = sil("state", "status");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`failed: the usage log (${segment}): EIO\n`);
+    expect(status().imports).toContainEqual(expect.objectContaining({ store: "usage_events", state: "failed", originalPath: segment }));
   });
 
   test("status prints the late-append warning in text mode", () => {
@@ -174,6 +245,90 @@ describe("sil state", () => {
     expect(status().streams["critic"]!.rows).toBe(2);
     // The replaced export's row goes once the new file is in place.
     expect(status().imports.filter((i) => i.backupPath === null)).toEqual([expect.objectContaining({ store: "critic", backupCheck: null })]);
+  });
+
+  test("export --legacy-paths writes a payload-only state back to payloads/default.jsonl", () => {
+    seedPayloads();
+    const seed = readFileSync(paths.payloadSamplesFile("default"), "utf8");
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
+
+    const r = sil("state", "export", "--legacy-paths");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain("nothing to export");
+    expect(r.out).toContain(`wrote ${paths.payloadSamplesFile("default")}`);
+    expect(readFileSync(paths.payloadSamplesFile("default"), "utf8")).toBe(seed);
+  });
+
+  test("export --legacy-paths writes every payload world, a stray world included", () => {
+    const seeds: Record<string, string> = {
+      default: '{"world":"default","tool_name":"Bash"}\n',
+      inkitt: '{"world":"inkitt","tool_name":"Edit"}\n{"world":"inkitt","tool_name":"Read"}\n',
+      // No configured world has this name; its rows still belong to it.
+      stray: '{"tool_name":"Grep"}\n',
+    };
+    for (const [world, text] of Object.entries(seeds)) {
+      fsx.ensureDir(dirname(paths.payloadSamplesFile(world)));
+      writeFileSync(paths.payloadSamplesFile(world), text);
+    }
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(status().worldStreams.map((w) => [w.world, w.rows])).toEqual([
+      ["default", 1],
+      ["inkitt", 2],
+      ["stray", 1],
+    ]);
+
+    const r = sil("state", "export", "--legacy-paths");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const exported = (world: string): string | null => (existsSync(paths.payloadSamplesFile(world)) ? readFileSync(paths.payloadSamplesFile(world), "utf8") : null);
+    for (const [world, text] of Object.entries(seeds)) expect({ world, text: exported(world) }).toEqual({ world, text });
+  });
+
+  test("export --legacy-paths refuses unsafe payload worlds without overwriting a safe sibling", () => {
+    appendRecord("payload_samples", { world: "a/b", marker: "unsafe" }, "default");
+    appendRecord("payload_samples", { world: "a_b", marker: "safe" }, "default");
+    closeState();
+
+    const target = paths.payloadSamplesFile("a_b");
+    const result = sil("state", "export", "--legacy-paths");
+
+    expect(result.code).toBe(1);
+    expect(result.out).toBe(`wrote ${target}\n`);
+    expect(result.err).toContain('the payload samples of world "a/b": world name is not path-safe');
+    expect(readFileSync(target, "utf8")).toBe('{"world":"a_b","marker":"safe"}\n');
+  });
+
+  test("export --legacy-paths refuses a payload world with only quarantined lines and still writes the others", () => {
+    seedPayloads();
+    const bad = paths.payloadSamplesFile("q");
+    writeFileSync(bad, "not json\n");
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(status().worldStreams).toContainEqual({ store: "payload_samples", world: "q", rows: 0, quarantined: 1, pending: false });
+
+    const r = sil("state", "export", "--legacy-paths");
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('error: the payload samples of world "q" has 1 quarantined line; see sil state quarantine');
+    expect(existsSync(bad)).toBe(false);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(true);
+  });
+
+  test("migrate after a payload export adds no rows and moves the file to a backup", () => {
+    seedPayloads();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(true);
+
+    const r = sil("state", "migrate");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const s = status();
+    expect(s.suspended).toBeNull();
+    expect(s.worldStreams).toEqual([{ store: "payload_samples", world: "default", rows: 2, quarantined: 0, pending: false }]);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
+    expect(backupsOf(paths.payloadSamplesFile("default"))).toHaveLength(2);
+    expect(s.imports.every((i) => i.backupCheck === "ok")).toBe(true);
   });
 
   test("forced export retains history but hides only its superseded export row", () => {
@@ -272,7 +427,8 @@ describe("sil state", () => {
       [
         `import { paths } from ${JSON.stringify(join(import.meta.dir, "..", "..", "..", "packages", "core", "src", "index.ts"))};`,
         `import { readRecords, STREAMS } from ${JSON.stringify(join(import.meta.dir, "..", "..", "..", "packages", "statedb", "src", "index.ts"))};`,
-        `const counts = Object.fromEntries(Object.keys(STREAMS).map((s) => [s, readRecords(s, "strict").records.length]));`,
+        `const global = Object.keys(STREAMS).filter((s) => !STREAMS[s].perWorld);`,
+        `const counts = Object.fromEntries(global.map((s) => [s, readRecords(s, "strict").records.length]));`,
         `console.log(JSON.stringify({ db: paths.loopStateDb(), counts }));`,
       ].join("\n"),
     );
@@ -282,7 +438,7 @@ describe("sil state", () => {
     const out = JSON.parse(p.stdout.toString()) as { db: string; counts: Record<string, number> };
     // Positive control: the child read the tmp DB.
     expect(out.db).toBe(join(env["SIL_STATE_DIR"]!, "loop-state.sqlite"));
-    expect(out.counts).toEqual({ reflect_runs: 0, critic: 2, human: 1, proposal_events: 0 });
+    expect(out.counts).toEqual({ reflect_runs: 0, critic: 2, human: 1, proposal_events: 0, usage_events: 0, nudge_fires: 0, hook_runs: 0 });
     expect(readFileSync(paths.criticFeedbackFile(), "utf8")).toBe(critic);
     expect(readFileSync(paths.humanFeedbackFile(), "utf8")).toBe(human);
   });

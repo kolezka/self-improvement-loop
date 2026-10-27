@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "@sil/core";
 import { closeState } from "../src/index.ts";
-import { legacyWorlds, legacyWorldsReport } from "../src/stores.ts";
+import { legacyWorlds, legacyWorldsReport, STORES } from "../src/stores.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -102,5 +102,60 @@ describe("legacyWorlds", () => {
     mkdirSync(paths.dataDir(), { recursive: true });
     touch(join(paths.dataDir(), "worlds"));
     expect(() => legacyWorlds("aliases")).toThrow();
+  });
+});
+
+describe("payload samples", () => {
+  test("the registry has the four hook-written streams, payload samples per world", () => {
+    for (const store of ["usage_events", "nudge_fires", "hook_runs", "payload_samples"]) expect(Object.hasOwn(STORES, store)).toBe(true);
+    expect({ kind: STORES.payload_samples.kind, perWorld: STORES.payload_samples.perWorld }).toEqual({ kind: "stream", perWorld: true });
+    expect(STORES.payload_samples.legacyPath("inkitt").endsWith(join("usage", "payloads", "inkitt.jsonl"))).toBe(true);
+    expect(STORES.payload_samples.label("inkitt")).toBe('the payload samples of world "inkitt"');
+    expect(() => STORES.payload_samples.legacyPath(null)).toThrow("per-world store used without a world");
+    expect(STORES.usage_events.legacyPath(null)).toBe(paths.usageEventsFile());
+    expect(STORES.nudge_fires.legacyPath(null)).toBe(paths.nudgeFiresFile());
+    expect(STORES.hook_runs.legacyPath(null)).toBe(paths.hookRunsFile());
+    for (const store of ["usage_events", "nudge_fires", "hook_runs"] as const) {
+      expect({ kind: STORES[store].kind, perWorld: STORES[store].perWorld }).toEqual({ kind: "stream", perWorld: false });
+    }
+    expect(STORES.usage_events.label(null)).toBe("the usage log");
+    expect(STORES.nudge_fires.label(null)).toBe("the nudge fires log");
+    expect(STORES.hook_runs.label(null)).toBe("the hook runs log");
+  });
+
+  test("legacyWorldsReport lists files, claims and spill dirs; backups, dot names and invalid names are not worlds", () => {
+    const dir = join(paths.stateDir(), "usage", "payloads");
+    mkdirSync(dir, { recursive: true });
+    touch(join(dir, "default.jsonl"));
+    touch(join(dir, `${"koleżka".normalize("NFD")}.jsonl`));
+    touch(join(dir, "stray.jsonl.importing"));
+    touch(join(dir, "old.jsonl.imported-2026-1"));
+    mkdirSync(join(dir, "seg.jsonl.spill"));
+    touch(join(dir, ".DS_Store"));
+    touch(join(dir, "a b.jsonl"));
+    expect(legacyWorldsReport("payload_samples")).toEqual({ worlds: ["default", "koleżka".normalize("NFC"), "seg", "stray"], invalid: ["a b"] });
+    expect(legacyWorlds("payload_samples")).toEqual(["default", "koleżka".normalize("NFC"), "seg", "stray"]);
+  });
+});
+
+describe("module load order", () => {
+  test("streams.ts loads first even though stores.ts reads its table (import cycle)", () => {
+    const streams = join(import.meta.dir, "..", "src", "streams.ts");
+    const env = { PATH: process.env["PATH"] ?? "", HOME: tmp, SIL_CONFIG_DIR: join(tmp, "c"), SIL_STATE_DIR: join(tmp, "s"), SIL_DATA_DIR: join(tmp, "d") };
+    const script = `const m = await import(${JSON.stringify(streams)}); const s = await import(${JSON.stringify(join(import.meta.dir, "..", "src", "stores.ts"))}); console.log(Object.keys(m.STREAMS).length, s.STORES.payload_samples.perWorld);`;
+    const p = Bun.spawnSync(["bun", "-e", script], { env, stdout: "pipe", stderr: "pipe" });
+    expect(p.stderr.toString()).toBe("");
+    expect(p.stdout.toString().trim()).toBe("8 true");
+    expect(p.exitCode).toBe(0);
+  });
+});
+
+describe("payload spill entries", () => {
+  test("a .jsonl.spill entry names a world only when it is a directory", () => {
+    const dir = join(paths.stateDir(), "usage", "payloads");
+    mkdirSync(join(dir, "real.jsonl.spill"), { recursive: true });
+    touch(join(dir, "stray.jsonl.spill"));
+    touch(join(dir, "a b.jsonl"));
+    expect(legacyWorldsReport("payload_samples")).toEqual({ worlds: ["real"], invalid: ["a b"] });
   });
 });

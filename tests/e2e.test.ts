@@ -14,7 +14,7 @@ import * as curriculum from "@sil/curriculum";
 import * as feedback from "@sil/feedback";
 import type { ChatFn } from "@sil/providers";
 import * as review from "@sil/review";
-import { closeState } from "@sil/statedb";
+import { closeState, openState, readRecords } from "@sil/statedb";
 import * as store from "@sil/store";
 import * as worker from "@sil/worker";
 
@@ -183,6 +183,9 @@ describe("session to lesson to next session", () => {
     const transcript = join(tmp, `${sid}.jsonl`);
     writeTranscript(transcript, sid, cwd);
     const base = { session_id: sid, cwd, transcript_path: transcript };
+    // Loop state exists before the hooks run, so they write rows, not spill files.
+    openState();
+    closeState();
 
     const start = runHook({ ...base, hook_event_name: "SessionStart", source: "startup" });
     expect(contextOf(start)).toContain("self-improvement-loop is active");
@@ -197,14 +200,17 @@ describe("session to lesson to next session", () => {
     expect(pending[0]!.ended).toBe(true);
     expect(pending[0]!.tool_uses).toBeGreaterThanOrEqual(6);
 
-    const events = readFileSync(paths.usageEventsFile(), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ref: string });
-    const refs = new Set(events.map((e) => e.ref));
+    expect(existsSync(paths.usageEventsFile())).toBe(false);
+    const events = readRecords("usage_events", "strict").records;
+    const refs = new Set(events.map((e) => e["ref"]));
     expect(refs.has(`skill:${PATTERN}`)).toBe(true);
     expect(refs.has("agent:explorer")).toBe(true);
-    // hook_run diagnostics have their own rotated file and stay out of the
+    // hook_run diagnostics have their own stream and stay out of the
     // scorecard event log.
-    const hookRuns = readFileSync(paths.hookRunsFile(), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ref: string });
-    expect(new Set(hookRuns.map((e) => e.ref)).has("hook:PreToolUse:Bash")).toBe(true);
+    expect(existsSync(paths.hookRunsFile())).toBe(false);
+    const hookRuns = readRecords("hook_runs", "strict").records;
+    expect(new Set(hookRuns.map((e) => e["ref"])).has("hook:PreToolUse:Bash")).toBe(true);
+    expect(refs.has("hook:PreToolUse:Bash")).toBe(false);
 
     const summary = await worker.runOnce(loadConfig(), { curriculum: false, chat: fakeChat });
     expect(summary.reflected).toEqual([sid]);

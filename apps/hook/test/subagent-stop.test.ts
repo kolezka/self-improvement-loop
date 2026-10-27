@@ -4,8 +4,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
-import { readJsonl } from "@sil/core/fsx";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { closeState, readRecords } from "@sil/statedb";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -17,9 +17,11 @@ beforeEach(() => {
   for (const key of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_PLUGIN_ROOT"]) {
     process.env[key] = hookEnv.env[key];
   }
+  createLoopState();
 });
 
 afterEach(() => {
+  closeState();
   cleanupHookEnv(hookEnv);
 });
 
@@ -53,7 +55,7 @@ describe("SubagentStop", () => {
     // SubagentStop is not an OUTPUT_EVENT: no envelope at all.
     expect(result.stdout.trim()).toBe("");
 
-    const events = readJsonl(paths.usageEventsFile());
+    const events = readRecords("usage_events", "strict").records;
     expect(events.length).toBe(1);
     expect(events[0]?.["kind"]).toBe("agent_stop");
     expect(events[0]?.["ref"]).toBe("agent:critic");

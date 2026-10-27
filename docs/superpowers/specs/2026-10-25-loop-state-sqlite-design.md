@@ -197,30 +197,149 @@ knows M)", and the hook spills. No schema fingerprint: migrations are the only D
 `meta` table: `key TEXT PRIMARY KEY, value TEXT NOT NULL`, holding `created_at`,
 `fs_class`, `fs_dev`, `fs_probed_at`.
 
-### D5. Hook writes: DB when ready, otherwise spill to the old file
+### D5. Hook writes: DB when ready, otherwise spill to segments that are never rewritten
 
-When `openForHook()` returns null, or an insert fails with BUSY or anything else,
-the hook appends the same JSON line to the store's old file path with today's
-append code. No line is dropped for a DB reason, and no hook ever runs DDL. Those
-old paths become spill files: the next `openState()` imports them (D6). This also
-covers a Claude session still running the previous plugin version's hooks after
-an update: their appends land in a spill file and get imported.
+Revised 2026-10-26 for phase 3. The open item from the third builder check (a
+rotating spill rewritten in place can be imported twice, or cut before import)
+is closed by this revision: a spill file is never read or rewritten by a hook,
+and every file the importer reads is one it moved itself.
+
+Revised again 2026-10-27 after the final review. A 1.3.0 hook rotates `P` in
+place: it reads `P`, then renames its kept tail over `P`. If the importer
+claimed `P` and a new hook spilled into a fresh `P` in between, that rename
+erased the new spill with no trace in either backup. So the new hook's open
+spill file moved into the spill dir, `P.spill/current.jsonl`, a dir no 1.3.0
+hook touches. A 1.4 hook never writes `P`; only 1.3.0 hooks do.
+
+**Hook side.** `openForHook()` (D4) runs once per hook process. With a handle,
+each record is one `INSERT` in autocommit, and a spool batch is one transaction.
+When the opener returns null, or an insert or commit fails (BUSY or anything
+else), the hook closes the handle, spills that record and every later one in the
+process, and logs the reason once per process to `hook.log`. A failed batch
+spills whole: no half-applied spool. No line is dropped for a DB reason, and no
+hook ever runs DDL. This also covers a Claude session still running the
+previous plugin version's hooks after an update: their appends land in `P` and
+get imported.
+
+**Spill layout**, per store with old path `P`:
+
+- `P.spill/current.jsonl` is the open spill file. The hook creates `P.spill/`
+  when needed and appends to the open file with one `O_APPEND` write per record
+  or batch and never reads it. The hook never opens `P`. A hook of the previous
+  release still appends to `P` and rotates it in place; the importer reads both.
+- Sealing replaces rotation. Before an append, when
+  `stat(P.spill/current.jsonl).size` is at least `SPILL_SEAL_BYTES` (4 MiB),
+  the hook renames the open file to `P.spill/<UTC stamp>-<pid>-<seq>.jsonl`
+  (`seq` counts seals in this process, so two seals in one millisecond cannot
+  rename over each other) and appends to a fresh `current.jsonl`. The rename is
+  the whole rotation: no read, no rewrite, no lock. A writer whose `open`
+  preceded the rename finishes into the sealed file, which is the late append
+  D6 step 6 re-stats for. A crash between the seal and the next append leaves
+  no open file; the next append creates it.
+- Bound. After sealing, the hook lists `P.spill/`; while it holds more than
+  `SPILL_MAX_SEGMENTS` (8) unclaimed sealed segments (`<stamp>-...jsonl`, never
+  `current.jsonl`, never a `*.importing` claim), the hook unlinks the oldest by
+  name and logs once per process that it dropped one. That is the one place a
+  hook drops data. It is the same oldest-first loss today's rotation has, it
+  needs about 36 MiB of spill for one store, and a spill only grows while the
+  DB is unavailable, so it takes a DB that stays unavailable for weeks. Today's
+  per-store line bounds become row trims in the DB (D11).
+- Claims. The importer claims `P` by `rename(P, P.importing)` as in D6, a
+  sealed segment `S` by `rename(S, S.importing)`, and the open spill file by
+  `rename(current.jsonl, current.jsonl.importing)`. The hook's seal and the
+  importer's claim are both a rename of `current.jsonl`, so exactly one
+  succeeds; the other sees ENOENT and does nothing (the importer: nothing
+  pending; the hook: append to a new `current.jsonl`). The bound unlinks only unclaimed segment names, so an unlink
+  and a claim of the same segment also have one winner. Nothing is read from a
+  path another process may still move: no overlap can be imported twice, and no
+  seal can cut a line that was not imported.
+
+The other option named in the builder check, a hook rotation that renames `P`
+to the importer's claim name `P.importing`, was rejected: two processes would
+then create `P.importing` from different sources, and D6 step 2 could no longer
+tell a crashed import from a hook rotation without a second marker. Segments
+keep one meaning per name.
+
+**Import of spills** (amends D6 for streams). The pending check becomes
+`stat(P)`, `stat(P.importing)` and `stat(P.spill)`; an existing dir is pending
+only when it holds a sealed `*.jsonl` segment, a `*.importing` claim, or a
+nonempty `current.jsonl`. Import order for a store: a leftover `P.importing`;
+each `P.spill/*.importing` left by a crash (a `current.jsonl.importing`
+included); each sealed `P.spill/<stamp>-...jsonl` in name order (the stamp
+sorts them oldest first); then `P.spill/current.jsonl`; then `P`. Each spill
+file is claimed by rename, then imported and finalized exactly as `P.importing`
+is (one transaction, inode-matched recovery in step 2, re-stat in step 6,
+backup rename to `P.imported-<stamp>-<id>` next to `P`, `original_path` = the
+spill file's own path). A claim rename that fails with ENOENT means a hook
+sealed the file or the bound unlinked it first: it is "nothing pending now",
+not a failed import. `P.spill/` is never removed; an empty dir is not pending.
+Rows reach the DB in segment order, then the open file, then `P`, which is file
+order for everything one 1.4 process wrote. `P` holds only 1.3.0 hooks' lines,
+older in the usual case; order among sources is not a correctness property,
+since readers order by id and every row lands once.
+
+**Upgrade window.** Hooks of the previous release (1.3.0) still rotate `P` in
+place when it passes their byte bound, so a session that spans the upgrade can
+duplicate one rotation's overlap if it races the first import. It needs a file
+at the bound at that moment (`hook-runs.jsonl` is 6 MB of 8 on this machine).
+Accepted, like the late append window in D6; readers order by id, so a
+duplicate changes counts, not order. Such a rotation can only duplicate the old
+hook's own overlap: it renames over `P`, and no 1.4 hook writes `P`, so it
+cannot touch a new write. `packages/statedb/test/upgrade-window.test.ts` runs
+the real 1.3.0 `fsx.appendLine` paused at its rename across a claim of `P` and
+a new hook's spill, and checks the spill imports once.
 
 The existing never-throw contracts stay: a failed spill logs once per process to
 `hook.log`, as `appendUsageEvent` does today (`apps/hook/src/usage-log.ts:14-28`).
 
-Rotation by the hook goes away for DB writes. Spill files keep today's rotating
-append, so a DB that stays unavailable for weeks still cannot grow a spill file
-without bound.
+**Module boundary.** The hook imports only `@sil/statedb/hook`: `openForHook`,
+the hook writer, the spill writer and its two constants. Its import closure is
+`bun:sqlite`, `@sil/core` subpaths and the pure stream table; never `open.ts`,
+`import.ts` or `status.ts`, so the hook bundle does not carry the opener, the
+probe or the importer. The importer reads the constants from the same module
+for `sil state status`.
 
-Open for phase 3 (third builder check, not phase 1): a rotating spill rewrites
-`P` with an atomic rename (`fsx.ts:130-142`). If a hook reads `P`, the importer
-then claims it, and the hook renames its rotated copy into a new `P`, the overlap
-is imported twice; a long import also keeps hooks spilling long enough for a
-rotation to cut lines never imported. Phase 3 must replace this with spill
-segments that never rotate in place and that an importer claims whole (or a
-rotation that takes the same claim), before its plan is written. Phase 1 writers
-only append and never rotate, so they do not have this race.
+Phase 1 and 2 writers only append or rename whole documents and never rotate, so
+they do not have this race.
+
+Phase 3 rulings, as built:
+
+- `@sil/statedb/hook` (`packages/statedb/src/hook.ts`) exports `openForHook`,
+  `hookWrite`, `hookWriteBatch`, `spillWrite`, `hookLog` and the two spill
+  constants. `openForHook` opens read-write with `create: false`, sets
+  `busy_timeout = 25`, `synchronous = NORMAL`, `foreign_keys = ON`, and returns
+  null on a missing file, `user_version !== SCHEMA_VERSION`, a `meta.fs_dev`
+  that differs from the STATE dir's device, or any error. The result is cached
+  per process, null included.
+- `hookWriteBatch(groups, onLostGroup?)` is the one write path; `hookWrite(stream,
+  records, world)` is a batch of one group. A single record is one autocommit
+  `INSERT`; anything more is one `BEGIN IMMEDIATE` ... `COMMIT` across every
+  group. A Stop's spool ingest is one batch: the usage, hook-runs and
+  nudge-fires groups plus one payload group per world, so all of a spool's rows
+  land or none do. The ruling came from the D11 gate: one transaction per
+  stream made thirty parallel Stops take the write lock four times each.
+- Outcomes are `"db"`, `"spilled"` and `"lost"`. On any failure the hook rolls
+  back, closes the handle, marks the process spilling, and spills every group to
+  its own open spill file. `"lost"` means a group was dropped or its spill append failed;
+  `onLostGroup(index)` names each such group so the spool ingest counts only
+  those lines as skipped. A per-world group without a world is a caller bug: it
+  is dropped with one `hook.log` line, writes no spill file, and does not stop
+  the other groups. A record that is not a JSON object is dropped with one line.
+  An empty batch returns `"db"` without opening the file.
+- Segment names are `<stamp>-<pid>-<seq>.jsonl`, `stamp` the ISO time without
+  `:` and `.`, `seq` counting seals in the process. An ENOENT on the seal rename
+  means another process sealed or claimed `current.jsonl`; the hook appends to a
+  new one. The bound unlinks only sealed segment names, never `current.jsonl`
+  or a `*.importing` claim, and logs
+  `dropped a spill segment of <label>` once per process.
+- Close at exit: Bun closes an open database when the process exits, so a hook
+  that is the last connection checkpoints and truncates the WAL either way (WAL
+  20632 bytes while open, 0 after exit). `closeHookDb` measured about 1 ms with
+  no wall difference; the hook lets the process exit.
+- `sil state status` gains a `payload samples:` block (each world's rows,
+  quarantine and pending flag, and invalid file names) and `worldStreams` in
+  `--json`. `sil state quarantine --drop payload_samples --world <w>` drops one
+  world's quarantine rows.
 
 ### D6. Import of existing files (and of spill files)
 
@@ -233,7 +352,10 @@ Names, per store: the old path `P`, the claim path `P.importing` (one fixed
 name), and the backup `P.imported-<UTC stamp>-<import_id>`.
 
 **Pending check.** Before every read or write of a store, a non-hook process runs
-`stat(P)` and `stat(P.importing)`. If neither exists, nothing is pending. This
+`stat(P)` and `stat(P.importing)` (hook-written streams add `stat(P.spill)`,
+a listing of it and `stat(P.spill/current.jsonl)`: the dir is pending when it
+holds a sealed segment, a claim or a nonempty open spill file, D5). If none
+exists, nothing is pending. This
 runs before the read opens its snapshot, so any import that finished before the
 check is in the snapshot, and any spill that appears after it is an append that
 happened after the read began, as with a file today. Two `stat`s per store
@@ -403,6 +525,11 @@ ALTER TABLE quarantine ADD COLUMN world TEXT;
 -- v3 (phase 3): no new table; streams 'usage_events', 'nudge_fires', 'hook_runs',
 -- 'payload_samples' in log_records, plus an index for compaction:
 CREATE INDEX log_records_usage_ref ON log_records (stream, world, json_extract(body, '$.ref'), ts);
+-- payload_samples is the first per-world stream: its rows carry the world of
+-- the file they came from (legacy_imports.world, quarantine.world), and its
+-- legacy path is usage/payloads/<world>.jsonl. A legacy_imports row of a spill
+-- segment (D5) has original_path = P.spill/<stamp>-<pid>-<seq>.jsonl and a backup
+-- next to P; no column is added for it.
 
 -- v4 (phase 4)
 CREATE TABLE reflection_index (
@@ -489,6 +616,25 @@ object is malformed (`<label> is not a JSON object`), never read as missing. A
 tolerant read of a store that has rows and also a quarantined later file returns
 the rows.
 
+Phase 3 readers, as built. Labels: `the usage log`, `the nudge fires log`, `the
+hook runs log`, `the payload samples of world "<w>"`.
+
+| reader | DB missing | DB fails or pending | bad lines |
+|---|---|---|---|
+| scorecards strict (`usage_events`, `nudge_fires`) | empty | `StateReadError`: `<label> cannot be read (<reason>)` or `<label> is being imported` | `StateReadError("<label> has N line(s) that could not be imported")` |
+| scorecards tolerant (worker rebuild) | empty | the rows the DB has, or empty when it cannot be read; one `state.log` line | ignored, no `state.log` line |
+| ops history `artifact_uses` (`usage_events`) | empty | thrown as `StateReadError`, never empty | `skipped` = the stream's quarantine count plus every selected usage row whose `ts` is missing or not a valid time (today's `fold`, unchanged) |
+| curriculum payload corpus (`payload_samples`, per world, newest 2000) | empty | as scorecards tolerant | ignored, no `state.log` line |
+| `hook_runs` | no reader in the loop; `sqlite3` or `sil state export --legacy-paths` | | |
+
+`readFires(path)` in `@sil/nudges` still reads a file and has no production
+caller; the scorecards read `nudge_fires` rows. For hook writes and legacy file
+imports, a `payload_samples` row's world is the record's own `world` field, else
+the world of the file it was imported from; `legacy_imports.world` and
+`quarantine.world` are the file's world. A bundle restore (`replaceStream` for
+`payloads/<w>.jsonl`, D13) is the exception: it pins the row's `world` to `w`
+whatever the body says, since the file's path names the world.
+
 ### D9. Ids and world names
 
 World names are already path-safe by schema (`WORLD_NAME_RE`,
@@ -532,10 +678,90 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
 - Benchmark gate, new `scripts/bench-hook-state.ts`: spawns the built
   `dist/hook.js` with a PostToolUse `Skill` payload (one usage insert) and a
   Stop with a spool of 50 lines, against tmp `SIL_*` dirs, n=200 sequential and
-  n=200 at 30 in parallel, once on `origin/main`'s build (files) and once on the
-  branch (DB). Gate: added wall time p95 at most 5 ms sequential and at most 20 ms
-  at 30 parallel, zero lost rows (DB rows plus spill lines equal events sent), and
-  the parallel run's spill count reported. Results recorded in BENCHMARK.md.
+  n=200 at 30 in parallel, on the `51fa4c4` baseline and the branch. Gate: added
+  wall time p95 at most 5 ms sequential and at most 20 ms at 30 parallel, zero
+  lost rows (DB rows plus spill lines equal events sent), and report spill lines.
+  Results are recorded in `docs/BENCHMARK.md`.
+- As built: compaction picks candidate ids once outside the lock (hook_run rows,
+  rows with no string `ts`, rows past the cutoff that are not the newest per
+  `(world, ref)`) and deletes by id, 1000 rows per `BEGIN IMMEDIATE` (200k rows:
+  5 s, 13 to 48 ms per chunk). `trimStreams()` imports any pending file per
+  store first, then trims to 40000 / 5000 / 2000 per world; the worker logs
+  `{ action: "trim_streams", result }` when it deleted rows.
+- Gate protocol (ruled 2026-10-27): each run uses a quiet host and an isolated
+  container (`--cpus 4 --memory 2g --network none`), with n=200 and 30 parallel
+  hooks. Each run has 3 interleaved baseline and branch pairs. Run B uses branch
+  `ea9822a`; C and C2 use final HEAD `c2768fe`. The pooled result combines all 9
+  pairs in B, C, C2 order. A busy workstation run is not a result. The sequential
+  rows are unchanged by the spill-path change in `c2768fe`, because spill code
+  does not run when the DB write succeeds.
+- Per-run added p95 values in ms, ordered by repeat 1, repeat 2, repeat 3. Each
+  row also shows its median, 5 ms sequential or 20 ms parallel gate verdict,
+  lost rows and branch spill lines:
+
+  Run B, branch `ea9822a`:
+
+  | row | added p95 x3 | median | gate | verdict | lost | branch spill |
+  |---|---|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [2.48, 1.66, 6.74] | 2.48 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [6.3, 0.49, 82.61] | 6.30 | 20 | PASS | 0 | 1 |
+  | Stop sequential | [3.83, 8.7, -4.58] | 3.83 | 5 | PASS | 0 | 0 |
+  | Stop 30 parallel | [16.11, 8.61, 46.21] | 16.11 | 20 | PASS | 0 | 2300 |
+
+  Run C, branch `c2768fe`:
+
+  | row | added p95 x3 | median | gate | verdict | lost | branch spill |
+  |---|---|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [6.2, 1.84, 4.15] | 4.15 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [77.32, 7.59, -21.34] | 7.59 | 20 | PASS | 0 | 0 |
+  | Stop sequential | [4.47, 14.77, 6.88] | 6.88 | 5 | FAIL | 0 | 0 |
+  | Stop 30 parallel | [92.49, 39.36, 27.49] | 39.36 | 20 | FAIL | 0 | 2100 |
+
+  Run C2, branch `c2768fe`:
+
+  | row | added p95 x3 | median | gate | verdict | lost | branch spill |
+  |---|---|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [2.32, 1.96, 2.22] | 2.22 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [69.63, 79.12, 4.46] | 69.63 | 20 | FAIL | 0 | 0 |
+  | Stop sequential | [1.42, 1.91, 8.32] | 1.91 | 5 | PASS | 0 | 0 |
+  | Stop 30 parallel | [17.31, 132.13, 40.35] | 40.35 | 20 | FAIL | 0 | 2650 |
+
+- Pooled added p95 over the 9 pairs in B, C, C2 order, with the spread of the
+  baseline's own p95 values:
+
+  | row | added p95 x9 | median | baseline p95 spread | gate | assessment | lost | branch spill |
+  |---|---|---:|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [2.5, 1.7, 6.7, 6.2, 1.8, 4.2, 2.3, 2.0, 2.2] | 2.3 | 3.5 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [6.3, 0.5, 82.6, 77.3, 7.6, -21.3, 69.6, 79.1, 4.5] | 7.6 | 103.0 | 20 | Under the numeric limit, but unmeasurable at this threshold | 0 | 1 |
+  | Stop sequential | [3.8, 8.7, -4.6, 4.5, 14.8, 6.9, 1.4, 1.9, 8.3] | 4.5 | 7.9 | 5 | PASS | 0 | 0 |
+  | Stop 30 parallel | [16.1, 8.6, 46.2, 92.5, 39.4, 27.5, 17.3, 132.1, 40.4] | 39.4 | 79.6 | 20 | FAIL | 0 | 7050 |
+
+- Pooled added p50 in ms (B, C, C2, then median):
+
+  | row | B | C | C2 | pooled median |
+  |---|---:|---:|---:|---:|
+  | PostToolUse sequential | 1.54 | 1.87 | 1.77 | 1.7 |
+  | PostToolUse 30 parallel | 15.04 | 11.32 | 15.69 | 15.0 |
+  | Stop sequential | 2.45 | 3.03 | 1.73 | 2.1 |
+  | Stop 30 parallel | 66.08 | 58.85 | 53.78 | 58.8 |
+
+  The per-run Stop 30 parallel added p50 medians were +66.1 ms for B, +58.8
+  ms for C and +53.8 ms for C2. The pooled p50 for this row is the median of
+  the nine branch-minus-baseline p50 differences. Lost rows were 0 in every
+  run. The branch spilled 7050 Stop lines, imported later by design. Thirty
+  concurrent Stops serialize on the SQLite write lock, wait up to the 25 ms
+  busy timeout, then spill; the baseline's four O_APPEND writes do not contend.
+
+  Decision on the parallel Stop row (owner, 2026-10-27): accepted as a bounded
+  exception to the 20 ms parallel threshold, with the numbers above as the
+  recorded baseline. A Stop under 30 concurrent Stops completes in about 290 ms
+  p50 against the 5 s hook deadline, and no row is lost; about 8 percent of the
+  lines spill and import on the next open. The parallel PostToolUse row cannot be
+  measured at 20 ms (the baseline's own p95 spread is 103 ms over 9 pairs). The
+  sequential thresholds stay binding and pass. A no-wait batch (`busy_timeout`
+  0 for a multi-group write, `cb97be5`) was measured and reverted (`c28e308`):
+  p50 unchanged at +54 ms, spills 3.5 times higher; the cost is the per-process
+  open and the WAL checkpoint at exit, not the lock wait.
 
 ### D12. Phase 4 specifics
 
@@ -628,6 +854,10 @@ New `sil state` command:
   `--force`. A document whose row is gone has no empty form, so its file is
   refused. Export and status enumerate the same set: every document and aliases
   ref the DB knows plus every world with a legacy file.
+  Phase 3: payload samples export the same way, one `usage/payloads/<w>.jsonl`
+  per world, over the worlds status lists (rows, quarantine rows, import rows
+  and every world with a legacy file). A world with quarantined lines is
+  refused with the D13 message, like a global stream.
 - `sil state quarantine [--drop <store> [--world <w>]]`. Without `--world`, a
   per-world store drops the quarantine of every world.
 
@@ -657,6 +887,13 @@ in `sil state export`; the live file is gone), README.md:272.
   hook writer): `openForHook` returns null for missing, old, newer, fs mismatch;
   insert on BUSY spills and the spill imports later with no loss and no
   duplicate.
+- Spill segments (phase 3, D5): a hook that seals `P` while an importer claims
+  it ends with every line in the DB exactly once, whichever rename wins (driven
+  through the importer's `ImportIo` seam so the seal lands between the pending
+  check and the claim); a crash after a segment claim leaves `S.importing`,
+  which the next open imports once; the segment bound unlinks only the oldest
+  unclaimed names and never a `.importing`; a `P.spill/` with only backups or
+  nothing in it is not pending.
 - Phase 3 regression for the race: concurrent hook inserts during a compaction
   lose nothing (fails on the file implementation, passes on the DB).
 - Equivalence: for each store, records read through the new reader equal the
@@ -670,8 +907,9 @@ in `sil state export`; the live file is gone), README.md:272.
 
 - Exact function names inside `@sil/statedb` beyond `openForHook`, `openState`,
   `appendRecord`, `importLegacy`, `MIGRATIONS`.
-- Whether the hook closes its handle at exit or lets the process exit
-  (measure the checkpoint cost; correctness is the same in WAL).
+- Whether the hook closes its handle at exit or lets the process exit.
+  Settled in phase 3 (D5 as built): Bun closes the database at process exit,
+  so the checkpoint happens either way; the hook lets the process exit.
 - Chunk size of phase 3 trims within the 1000-row cap, if measurements argue for
   smaller.
 - How the phase 3 benchmark builds the `origin/main` baseline (worktree or tag).

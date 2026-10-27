@@ -6,8 +6,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
-import { readJsonl } from "@sil/core/fsx";
-import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
+import { closeState, readRecords } from "@sil/statedb";
+import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
 const MAIN_TS = new URL("../src/main.ts", import.meta.url).pathname;
@@ -19,9 +19,11 @@ beforeEach(() => {
   for (const key of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_PLUGIN_ROOT"]) {
     process.env[key] = hookEnv.env[key];
   }
+  createLoopState();
 });
 
 afterEach(() => {
+  closeState();
   cleanupHookEnv(hookEnv);
 });
 
@@ -89,13 +91,13 @@ describe("SessionStart", () => {
     const payload = { session_id: "sess-start-4", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
 
     runHook(MAIN_TS, hookEnv, payload);
-    const first = readJsonl(paths.usageEventsFile()).filter((e) => e["kind"] === "rule");
+    const first = readRecords("usage_events", "strict").records.filter((e) => e["kind"] === "rule");
     expect(first.map((e) => e["ref"]).sort()).toEqual(["rule:alpha-rule", "rule:beta-rule"]);
     expect(first[0]!["world"]).toBe("default");
 
     // Resume and compact fire SessionStart again; the rule is still one use.
     runHook(MAIN_TS, hookEnv, payload);
-    const second = readJsonl(paths.usageEventsFile()).filter((e) => e["kind"] === "rule");
+    const second = readRecords("usage_events", "strict").records.filter((e) => e["kind"] === "rule");
     expect(second.length).toBe(2);
   });
 
@@ -103,7 +105,7 @@ describe("SessionStart", () => {
     writeSnapshot({ rules_inject: false });
     writeFileSync(`${hookEnv.root}/RULES.md`, "<!--loop-rules:start-->\n- Rule one. <!--rule:alpha-rule-->\n<!--loop-rules:end-->\n");
     runHook(MAIN_TS, hookEnv, { session_id: "sess-start-5", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root });
-    expect(readJsonl(paths.usageEventsFile()).filter((e) => e["kind"] === "rule").length).toBe(0);
+    expect(readRecords("usage_events", "strict").records.filter((e) => e["kind"] === "rule").length).toBe(0);
   });
 
   test("writes start.json with cwd, world, and git_head", () => {

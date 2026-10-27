@@ -13,6 +13,7 @@
     "install:local": "bun run build && bun run scripts/install-local.ts",
     "bench": "bun run scripts/bench.ts",
     "bench:hooks": "bun run scripts/bench-hooks.ts",
+    "bench:hook-state": "bun run scripts/bench-hook-state.ts",
     "eval:alias-semantic": "bun run scripts/eval-alias-semantic.ts",
     "test": "bun test",
     "typecheck": "bun x tsc -p tsconfig.json --noEmit",

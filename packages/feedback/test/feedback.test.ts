@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type World } from "@sil/core";
-import { closeState } from "@sil/statedb";
+import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type UsageEvent, type World } from "@sil/core";
+import { closeState, readRecords } from "@sil/statedb";
 import { saveAliases, saveLedger, writeReflection } from "@sil/store";
-import { complaints, compactUsageEvents, listHuman, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecardDiagnostics, scorecards } from "../src/index.ts";
+import { appendUsage, complaints, compactUsageEvents, listHuman, load, rebuild, recordHuman, REFINE_COOLDOWN_DAYS, scorecardDiagnostics, scorecards } from "../src/index.ts";
 import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -380,9 +380,11 @@ describe("load", () => {
 });
 
 describe("compactUsageEvents", () => {
+  const rows = (): Record<string, unknown>[] => readRecords("usage_events", "counted").records;
+
   // events.jsonl is append only and reached 15 MB in production, 89% of it
   // hook_run lines that no scorecard reads, and every rebuild parsed all of it.
-  test("drops hook_run, unreadable and stale lines, keeps what scorecards read", () => {
+  test("drops hook_run and stale rows, keeps what scorecards read; a bad legacy line stays in quarantine", () => {
     const { c } = buildWorldAndLedger();
     const events = paths.usageEventsFile();
     fsx.appendJsonl(events, { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "skill", ref: "skill:steady-thing" });
@@ -391,14 +393,14 @@ describe("compactUsageEvents", () => {
     fsx.appendJsonl(events, { ts: iso(daysAgo(200)), session_id: "s3", world: "default", kind: "skill", ref: "skill:steady-thing" });
     fsx.appendLine(events, "{not json");
 
-    const dropped = compactUsageEvents(c, NOW, 1);
+    // The legacy file is imported first, so its rows are compacted too.
+    expect(compactUsageEvents(c, NOW)).toBe(2);
 
-    expect(dropped).toBe(3);
-    const kept = fsx.readJsonl<Record<string, unknown>>(events);
-    expect(kept.some((e) => e["kind"] === "hook_run")).toBe(false);
+    expect(existsSync(events)).toBe(false);
     // retire_after_days is 45, so the cutoff is 75 days: a 60 day old event
     // still feeds the retire clock and stays, 200 days does not.
-    expect(kept.map((e) => e["session_id"])).toEqual(["s1", "s2"]);
+    expect(rows().map((e) => e["session_id"])).toEqual(["s1", "s2"]);
+    expect(readRecords("usage_events", "counted").quarantined).toBe(1);
   });
 
   // `scorecards` reads the newest event per ref whatever its age, as
@@ -410,21 +412,25 @@ describe("compactUsageEvents", () => {
     fsx.appendJsonl(events, { ts: iso(daysAgo(100)), session_id: "s1", world: "default", kind: "skill", ref: "skill:steady-thing" });
     fsx.appendJsonl(events, { ts: iso(daysAgo(120)), session_id: "s2", world: "default", kind: "skill", ref: "skill:steady-thing" });
 
-    expect(compactUsageEvents(c, NOW, 1)).toBe(1);
+    expect(compactUsageEvents(c, NOW)).toBe(1);
 
     const card = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("skill:steady-thing")!;
     expect(card.last_used).toBe(iso(daysAgo(100)));
     expect(card.reason).toContain(iso(daysAgo(100)));
   });
 
-  test("leaves the file alone until enough lines are dead", () => {
+  test("the newest per ref is kept per world, and a row with no string ts goes", () => {
     const { c } = buildWorldAndLedger();
-    const events = paths.usageEventsFile();
-    fsx.appendJsonl(events, { ts: iso(daysAgo(1)), session_id: "s1", world: "default", kind: "skill", ref: "skill:steady-thing" });
-    fsx.appendJsonl(events, { ts: iso(daysAgo(1)), session_id: "s2", world: "default", kind: "hook_run", ref: "hook:PreToolUse" });
+    appendUsage({ ts: iso(daysAgo(150)), session_id: "d1", world: "default", kind: "skill", ref: "skill:steady-thing" } as UsageEvent);
+    appendUsage({ ts: iso(daysAgo(160)), session_id: "d2", world: "default", kind: "skill", ref: "skill:steady-thing" } as UsageEvent);
+    appendUsage({ ts: iso(daysAgo(170)), session_id: "o1", world: "other", kind: "skill", ref: "skill:steady-thing" } as UsageEvent);
+    appendUsage({ session_id: "n1", world: "default", kind: "skill", ref: "skill:no-ts" } as unknown as UsageEvent);
+    appendUsage({ ts: 5, session_id: "n2", world: "default", kind: "skill", ref: "skill:no-ts" } as unknown as UsageEvent);
 
+    expect(compactUsageEvents(c, NOW)).toBe(3);
+    expect(rows().map((e) => e["session_id"])).toEqual(["d1", "o1"]);
+    // Nothing left to drop: a second pass deletes nothing.
     expect(compactUsageEvents(c, NOW)).toBe(0);
-    expect(fsx.readJsonl(events)).toHaveLength(2);
   });
 });
 

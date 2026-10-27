@@ -1,12 +1,12 @@
 // Load nudges from disk and dispatch at most one per hook call. Ported from
 // sil/nudge.py's load_nudges and dispatch. The decisions live in
 // dispatch-core.ts; this file is the Node binding that reads the directories
-// and writes through firelog.ts.
+// and hands fire records to the caller's `fire` writer.
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonOr } from "@sil/core/fsx";
-import { appendLine, claimMarker } from "./firelog.ts";
+import { claimMarker } from "./firelog.ts";
 import { dispatchWith, lintLoadedNudges } from "./dispatch-core.ts";
 import type { DispatchSink, LoadedNudges, Nudge } from "./dispatch-core.ts";
 
@@ -14,7 +14,8 @@ export type { Gate, Nudge, RejectedNudge, LoadedNudges } from "./dispatch-core.t
 
 export interface DispatchOptions {
   sessionDir: string;
-  fireLog: string;
+  // Where fire and breadcrumb records go. Must not throw: dispatch never does.
+  fire: (record: Record<string, unknown>) => void;
   budgetMs?: number;
   // Bun cannot preempt a running regex, so this is not a cutoff: a gate that
   // runs past it logs a `gate_overrun` breadcrumb after the fact. The real
@@ -53,13 +54,13 @@ export function loadNudges(dirs: string[]): Nudge[] {
 function nodeSink(opts: DispatchOptions): DispatchSink {
   return {
     claimMarker: (name) => claimMarker(opts.sessionDir, name),
-    fire: (record) => appendLine(opts.fireLog, JSON.stringify(record)),
-    breadcrumb: (record) => appendLine(opts.fireLog, JSON.stringify(record)),
+    fire: (record) => opts.fire(record),
+    breadcrumb: (record) => opts.fire(record),
   };
 }
 
-/** Fire at most one nudge, logging the fire and any diagnostic breadcrumb to
- * `opts.fireLog`. Never throws. */
+/** Fire at most one nudge, handing the fire and any diagnostic breadcrumb to
+ * `opts.fire`. Never throws. */
 export function dispatch(payload: Record<string, unknown>, nudges: Nudge[], opts: DispatchOptions): string | null {
   return dispatchWith(payload, nudges, nodeSink(opts), { budgetMs: opts.budgetMs, gateTimeoutMs: opts.gateTimeoutMs });
 }

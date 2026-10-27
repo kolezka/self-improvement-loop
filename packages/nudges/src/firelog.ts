@@ -178,7 +178,7 @@ function ts(): string {
  * needs a finer one, such as one record per rejected file rather than one
  * for all of them. */
 export function writeBreadcrumb(
-  fireLog: string,
+  fire: (record: Record<string, unknown>) => void,
   sessionDir: string,
   kind: string,
   sessionId: string,
@@ -187,8 +187,7 @@ export function writeBreadcrumb(
   dedupeKey?: string,
 ): void {
   if (!claimMarker(sessionDir, `breadcrumb-${dedupeKey ?? `${kind}-${event}`}`)) return;
-  const record = { ts: ts(), kind, session_id: sessionId, event, ...extra };
-  appendLine(fireLog, JSON.stringify(record));
+  fire({ ts: ts(), kind, session_id: sessionId, event, ...extra });
 }
 
 /** All fire records in `path`, tolerant of a torn or foreign line. */

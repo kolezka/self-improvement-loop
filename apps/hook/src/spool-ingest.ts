@@ -8,13 +8,10 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import * as paths from "@sil/core/paths";
-import { appendLine as appendLineRotated } from "@sil/core/fsx";
-import { SAMPLES_KEEP_LINES, SAMPLES_ROTATE_AT_BYTES } from "@sil/core/samples";
-import { appendLine as appendLineLocked, ROTATE_AT_BYTES, ROTATE_KEEP_LINES } from "@sil/nudges";
 import { parseSpool, SPOOL_FILE_NAME } from "@sil/core/spool";
 import type { SpoolAppend, SpoolMove } from "@sil/core/spool";
+import { hookWriteBatch, type HookWriteGroup } from "@sil/statedb/hook";
 import { log } from "./log.ts";
-import { appendUsageEvent, HOOK_RUNS_KEEP_LINES, HOOK_RUNS_ROTATE_AT_BYTES } from "./usage-log.ts";
 import { sessionLock } from "./queue.ts";
 
 function spoolPath(sessionId: string): string {
@@ -60,119 +57,90 @@ function makeFailureReporter(sessionId: string): (detail: string) => void {
   };
 }
 
-interface GroupCounts {
-  applied: number;
-  skipped: number;
+const GROUPED_KINDS = { "usage-events": "usage_events", "hook-runs": "hook_runs", "nudge-fires": "nudge_fires" } as const;
+
+// Fixed order for the drop summary, so the line reads the same for any spool.
+const DROP_ORDER = ["usage-events", "hook-runs", "nudge-fires", "payload-samples", "session-file (unsafe name)"] as const;
+type DropKind = (typeof DROP_ORDER)[number];
+
+/** One hook.log line for every line this ingest dropped, or none. Each
+ * log() takes the hook.log lock while Stop holds the session lock, so a
+ * damaged spool must not cost one per entry. */
+function logDrops(drops: Map<DropKind, number>, sessionId: string): void {
+  const parts = DROP_ORDER.filter((kind) => (drops.get(kind) ?? 0) > 0).map((kind) => `${kind} ${drops.get(kind)}`);
+  if (parts.length === 0) return;
+  const total = [...drops.values()].reduce((sum, n) => sum + n, 0);
+  log(`spool ingest for session ${sessionId} dropped ${total} invalid line(s): ${parts.join(", ")}`);
 }
 
-/** Rotates and appends one already-joined block of lines in a single call,
- * instead of once per line: a nudge-fires line paid a whole `withDirLock`
- * (mkdir, pid write, rmdir) and a hook-runs or payload-samples line paid a
- * stat call, both inside the Stop session lock and ahead of a transcript
- * scan that can run to 20 MB. Never throws past this point: a write failure
- * fails the whole group, which is reported once and counted skipped rather
- * than left to duplicate lines already applied. */
-function flushGroup(
-  path: string,
-  lines: string[],
-  writer: (path: string, line: string, rotateAt: number, keep: number) => void,
-  rotateAt: number,
-  keep: number,
+/** Applies every append. usage-events, hook-runs and nudge-fires each become
+ * one group, payload-samples one group per world, and all groups go in one
+ * hookWriteBatch: one loop state transaction per Stop inside its session lock,
+ * all rows or none (design D5, no half-applied spool). session-file
+ * writes stay per line: each can name a different file. Never throws: a
+ * write that fails is reported once per call and counted skipped, and
+ * dropped lines (not a JSON object, unsafe file name) get one summary line. */
+function applyAppends(
+  appends: SpoolAppend[],
+  sessionId: string,
   reportFailure: (detail: string) => void,
-): GroupCounts {
-  if (lines.length === 0) return { applied: 0, skipped: 0 };
-  try {
-    writer(path, lines.join("\n"), rotateAt, keep);
-    return { applied: lines.length, skipped: 0 };
-  } catch (e) {
-    reportFailure((e as Error).message);
-    return { applied: 0, skipped: lines.length };
-  }
-}
-
-/** Applies every append, grouping nudge-fires/hook-runs/payload-samples by
- * their resolved target file so each gets one locked, rotated write for the
- * whole buffered batch. usage-events and session-file writes stay per line:
- * neither carries the lock or stat cost the grouping is for, and
- * session-file lines can each name a different file. Never throws: a write
- * that fails is reported once per call and counted skipped. */
-function applyAppends(appends: SpoolAppend[], sessionId: string, reportFailure: (detail: string) => void): GroupCounts {
+): { applied: number; skipped: number } {
   let applied = 0;
   let skipped = 0;
 
-  const nudgeFiresLines: string[] = [];
-  const hookRunsLines: string[] = [];
-  const samplesByWorld = new Map<string, string[]>();
+  const groups: Record<keyof typeof GROUPED_KINDS, Record<string, unknown>[]> = { "usage-events": [], "hook-runs": [], "nudge-fires": [] };
+  const samplesByWorld = new Map<string, Record<string, unknown>[]>();
+  const drops = new Map<DropKind, number>();
+  const drop = (kind: DropKind): void => {
+    drops.set(kind, (drops.get(kind) ?? 0) + 1);
+    skipped++;
+  };
 
   for (const a of appends) {
     const target = a.target;
-    switch (target.kind) {
-      case "nudge-fires":
-        nudgeFiresLines.push(a.line);
-        break;
-      case "hook-runs": {
-        const obj = tryParseLine(a.line);
-        if (!obj) {
-          log(`spool append dropped, invalid JSON for hook-runs (session ${sessionId})`);
-          skipped++;
-          break;
+    if (target.kind === "session-file") {
+      try {
+        if (!isSafeSessionFileName(target.name)) {
+          drop("session-file (unsafe name)");
+          continue;
         }
-        hookRunsLines.push(JSON.stringify(obj));
-        break;
+        plainAppend(`${paths.sessionDir(sessionId)}/${target.name}`, a.line);
+        applied++;
+      } catch (e) {
+        reportFailure((e as Error).message);
+        skipped++;
       }
-      case "payload-samples": {
-        const bucket = samplesByWorld.get(target.world) ?? [];
-        bucket.push(a.line);
-        samplesByWorld.set(target.world, bucket);
-        break;
-      }
-      case "usage-events": {
-        try {
-          const obj = tryParseLine(a.line);
-          if (!obj) {
-            log(`spool append dropped, invalid JSON for usage-events (session ${sessionId})`);
-            skipped++;
-            break;
-          }
-          appendUsageEvent(paths.usageEventsFile(), obj);
-          applied++;
-        } catch (e) {
-          reportFailure((e as Error).message);
-          skipped++;
-        }
-        break;
-      }
-      case "session-file": {
-        try {
-          if (!isSafeSessionFileName(target.name)) {
-            log(`spool append refused, unsafe session file name "${target.name}" (session ${sessionId})`);
-            skipped++;
-            break;
-          }
-          plainAppend(`${paths.sessionDir(sessionId)}/${target.name}`, a.line);
-          applied++;
-        } catch (e) {
-          reportFailure((e as Error).message);
-          skipped++;
-        }
-        break;
-      }
+      continue;
+    }
+    const obj = tryParseLine(a.line);
+    if (!obj) {
+      drop(target.kind);
+      continue;
+    }
+    if (target.kind === "payload-samples") {
+      const bucket = samplesByWorld.get(target.world) ?? [];
+      bucket.push(obj);
+      samplesByWorld.set(target.world, bucket);
+    } else {
+      groups[target.kind].push(obj);
     }
   }
 
-  const nudgeFires = flushGroup(paths.nudgeFiresFile(), nudgeFiresLines, appendLineLocked, ROTATE_AT_BYTES, ROTATE_KEEP_LINES, reportFailure);
-  applied += nudgeFires.applied;
-  skipped += nudgeFires.skipped;
-
-  const hookRuns = flushGroup(paths.hookRunsFile(), hookRunsLines, appendLineRotated, HOOK_RUNS_ROTATE_AT_BYTES, HOOK_RUNS_KEEP_LINES, reportFailure);
-  applied += hookRuns.applied;
-  skipped += hookRuns.skipped;
-
-  for (const [world, lines] of samplesByWorld) {
-    const samples = flushGroup(paths.payloadSamplesFile(world), lines, appendLineRotated, SAMPLES_ROTATE_AT_BYTES, SAMPLES_KEEP_LINES, reportFailure);
-    applied += samples.applied;
-    skipped += samples.skipped;
-  }
+  const batch: HookWriteGroup[] = (Object.keys(GROUPED_KINDS) as (keyof typeof GROUPED_KINDS)[]).map((kind) => ({
+    stream: GROUPED_KINDS[kind],
+    records: groups[kind],
+  }));
+  for (const [world, records] of samplesByWorld) batch.push({ stream: "payload_samples", records, world });
+  const grouped = batch.reduce((sum, group) => sum + group.records.length, 0);
+  let lost = 0;
+  hookWriteBatch(batch, (index) => {
+    const group = batch[index]!;
+    lost += group.records.length;
+    reportFailure(`${group.records.length} ${group.stream} record(s) lost, see the loop state lines in this log`);
+  });
+  applied += grouped - lost;
+  skipped += lost;
+  logDrops(drops, sessionId);
 
   return { applied, skipped };
 }

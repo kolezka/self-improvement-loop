@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { AliasSemanticConfig, fsx, LlmConfig, LockHeld, paths, ProviderError, saveLlm, type Config, type QueueEntry, type World } from "@sil/core";
-import { closeState } from "@sil/statedb";
+import { closeState, openState, readRecords } from "@sil/statedb";
 import { listQueue, loadEntry, writeEntry } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import {
@@ -308,9 +308,15 @@ describe("runOnce run marker", () => {
 });
 
 describe("runOnce usage events", () => {
+  const workerLines = (): Record<string, unknown>[] =>
+    readFileSync(paths.logFile("worker"), "utf8")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+
   // The legacy file here held 15.4 MB, 89% of it hook_run lines that no
   // scorecard reads, and every rebuild parsed all of it.
-  test("compacts the event log once enough lines are dead", async () => {
+  test("imports a legacy event log and compacts its rows", async () => {
     prepareEnv();
     const events = paths.usageEventsFile();
     for (let i = 0; i < 600; i++) {
@@ -320,9 +326,43 @@ describe("runOnce usage events", () => {
 
     await runOnce(cfg(), { reflect: false, curriculum: false, chat: goodChat });
 
-    const kept = fsx.readJsonl<Record<string, unknown>>(events);
-    expect(kept).toHaveLength(1);
-    expect(kept[0]!["ref"]).toBe("skill:kept-thing");
+    expect(existsSync(events)).toBe(false);
+    const kept = readRecords("usage_events", "strict").records;
+    expect(kept.map((r) => r["ref"])).toEqual(["skill:kept-thing"]);
+    expect(workerLines()).toContainEqual(expect.objectContaining({ action: "compact_usage_events", result: "dropped 600" }));
+    // Nothing past a bound: no trim line.
+    expect(workerLines().some((l) => l["action"] === "trim_streams")).toBe(false);
+  });
+
+  test("trims hook runs past their bound and logs the counts", async () => {
+    prepareEnv();
+    const db = openState();
+    const insert = db.query("INSERT INTO log_records (stream, ts, world, body, recorded_at) VALUES ('hook_runs', NULL, NULL, ?, 'r')");
+    db.run("BEGIN IMMEDIATE");
+    for (let i = 0; i < 40002; i++) insert.run(JSON.stringify({ i }));
+    db.run("COMMIT");
+
+    await runOnce(cfg(), { reflect: false, curriculum: false, chat: goodChat });
+
+    expect((openState().query("SELECT count(*) AS n FROM log_records WHERE stream = 'hook_runs'").get() as { n: number }).n).toBe(40000);
+    const trim = workerLines().find((l) => l["action"] === "trim_streams");
+    expect(trim?.["result"]).toEqual({ hook_runs: 2, nudge_fires: 0, payload_samples: {} });
+  });
+
+  test("a compaction that fails is logged and the run goes on", async () => {
+    prepareEnv();
+    const events = paths.usageEventsFile();
+    fsx.appendJsonl(events, { ts: fsx.nowIso(), session_id: "s1", world: "default", kind: "skill", ref: "skill:x" });
+    chmodSync(events, 0o000);
+    try {
+      await runOnce(cfg(), { reflect: false, curriculum: false, chat: goodChat });
+    } finally {
+      for (const p of [events, `${events}.importing`]) if (existsSync(p)) chmodSync(p, 0o600);
+    }
+    const lines = workerLines();
+    const compact = lines.find((l) => l["action"] === "compact_usage_events");
+    expect(String(compact?.["result"])).toStartWith("failed: the usage log cannot be compacted (");
+    expect(lines.some((l) => l["action"] === "run")).toBe(true);
   });
 });
 

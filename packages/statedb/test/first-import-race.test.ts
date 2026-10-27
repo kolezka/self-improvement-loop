@@ -27,7 +27,7 @@ test("paired first opens leave no false failed import rows", async () => {
     for (const key of ["SIL_STATE_DIR", "SIL_DATA_DIR", "SIL_CONFIG_DIR"]) process.env[key] = join(tmp, `${round}-${key}`);
     const expected = { critic: 14_000, reflect_runs: 3_000 };
     for (const [stream, count] of Object.entries(expected) as [keyof typeof expected, number][]) {
-      const file = STREAMS[stream].legacyPath();
+      const file = STREAMS[stream].legacyPath(null);
       fsx.ensureDir(dirname(file));
       writeFileSync(file, Array.from({ length: count }, (_, i) => JSON.stringify({ stream, i })).join("\n") + "\n");
     }

@@ -13,8 +13,10 @@ import { join } from "node:path";
 import * as paths from "@sil/core/paths";
 import { RULE_END, RULE_START } from "@sil/core/consts";
 import { SPOOL_FILE_NAME } from "@sil/core/spool";
+import { closeState, readRecords } from "@sil/statedb";
+import { closeHookDb } from "@sil/statedb/hook";
 import { ingestSpool } from "../../hook/src/spool-ingest.ts";
-import { cleanupHookEnv, makeHookEnv } from "../../hook/test/helpers.ts";
+import { cleanupHookEnv, createLoopState, makeHookEnv } from "../../hook/test/helpers.ts";
 import type { HookEnv } from "../../hook/test/helpers.ts";
 import { register, resetForTests } from "../src/register.ts";
 import { FakeEngine } from "./fake-engine.ts";
@@ -45,9 +47,12 @@ beforeEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  createLoopState();
 });
 
 afterEach(() => {
+  closeHookDb();
+  closeState();
   for (const key of ENV_KEYS) {
     const value = ORIGINAL_ENV[key];
     if (value === undefined) delete process.env[key];
@@ -56,13 +61,8 @@ afterEach(() => {
   cleanupHookEnv(hookEnv);
 });
 
-function lines(path: string): Array<Record<string, unknown>> {
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
-}
+const rows = (stream: "usage_events" | "nudge_fires" | "hook_runs"): Array<Record<string, unknown>> => readRecords(stream, "strict").records;
+const samples = (): Array<Record<string, unknown>> => readRecords("payload_samples", "strict", "default").records;
 
 test("the module's buffered writes land through the real ingestSpool", async () => {
   const rules = join(hookEnv.data, "worlds", "default", "learned", "RULES.md");
@@ -136,21 +136,24 @@ test("the module's buffered writes land through the real ingestSpool", async () 
   expect(applied.appends).toBeGreaterThan(0);
   expect(existsSync(spoolFile)).toBe(false);
 
-  const events = lines(paths.usageEventsFile());
+  for (const file of [paths.usageEventsFile(), paths.hookRunsFile(), paths.nudgeFiresFile(), paths.payloadSamplesFile("default")]) {
+    expect({ file, exists: existsSync(file) }).toEqual({ file, exists: false });
+  }
+  const events = rows("usage_events");
   expect(events.map((e) => e["ref"])).toEqual(["rule:check-twice", "skill:outline"]);
   expect(events.every((e) => e["session_id"] === SESSION && e["world"] === "default")).toBe(true);
 
-  const samples = lines(paths.payloadSamplesFile("default"));
-  expect(samples.length).toBe(1);
-  expect(samples[0]?.["tool_name"]).toBe("Bash");
-  expect((samples[0]?.["tool_input"] as Record<string, unknown>)["command"]).toBe("rm -rf /tmp/scratch");
-  expect(readFileSync(paths.payloadSamplesFile("default"), "utf8")).not.toContain("clean up");
+  const sampled = samples();
+  expect(sampled.length).toBe(1);
+  expect(sampled[0]?.["tool_name"]).toBe("Bash");
+  expect((sampled[0]?.["tool_input"] as Record<string, unknown>)["command"]).toBe("rm -rf /tmp/scratch");
+  expect(JSON.stringify(sampled)).not.toContain("clean up");
 
-  const fires = lines(paths.nudgeFiresFile());
+  const fires = rows("nudge_fires");
   expect(fires.map((f) => f["pattern"])).toEqual(["probe-nudge"]);
   expect(fires[0]?.["event"]).toBe("PreToolUse");
 
-  const runs = lines(paths.hookRunsFile());
+  const runs = rows("hook_runs");
   expect(runs.map((r) => r["ref"])).toEqual([
     "hook:module:SessionStart",
     "hook:module:PreToolUse",
@@ -165,5 +168,5 @@ test("the module's buffered writes land through the real ingestSpool", async () 
 
   // A second ingest is a no-op: the file is gone, so nothing is applied twice.
   expect(ingestSpool(SESSION)).toEqual({ appends: 0, moves: 0, skipped: 0 });
-  expect(lines(paths.usageEventsFile()).length).toBe(2);
+  expect(rows("usage_events").length).toBe(2);
 });

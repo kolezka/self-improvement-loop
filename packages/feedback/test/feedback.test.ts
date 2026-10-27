@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AliasSemanticConfig, fsx, ledgerPath, paths, Scorecard, type Config, type Ledger, type UsageEvent, type World } from "@sil/core";
@@ -10,6 +10,8 @@ import { setSilDirs, restoreEnv } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
 let savedEnv: Record<string, string | undefined>;
+// Reflection files a test made unreadable; restored before the tmp dir goes.
+const lockedFiles: string[] = [];
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "sil-feedback-"));
@@ -20,6 +22,7 @@ afterEach(() => {
   try {
     closeState();
   } finally {
+    for (const p of lockedFiles.splice(0)) chmodSync(p, 0o644);
     restoreEnv(savedEnv);
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -561,6 +564,22 @@ describe("recurrence since promotion", () => {
     expect(cardOf().recurrence_30d).toBe(2);
     // Past the promotion but out of the window from the later clock.
     expect(cardOf(new Date(daysAgo(10).getTime() + 30.5 * 86_400_000)).recurrence_30d).toBe(1);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("strict cards still read once the indexed reflection files turn unreadable", () => {
+    row({ promoted_at: iso(daysAgo(20)) });
+    use();
+    const files = [reflect(10), reflect(5), reflect(3, "something-else")];
+    files.push(writeReflection("default", { id: "with-session", created: iso(daysAgo(2)), session_id: "s1" }, "Pattern: recurring\n\n## Reusable lesson\nx\n"));
+    const strictCards = () => scorecards(world(), cfg(world()), { now: NOW, strict: true });
+    const before = strictCards();
+    // Positive control: the cards do count these reflections.
+    expect(before.find((s) => s.ref === "rule:recurring")!.recurrence_30d).toBe(3);
+    for (const p of files) {
+      chmodSync(p, 0o000);
+      lockedFiles.push(p);
+    }
+    expect(strictCards()).toEqual(before);
   });
 
   test("a date-only reflection from the promotion day counts", () => {

@@ -18,7 +18,7 @@ import {
 } from "@sil/core";
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { appendRecord, ensureImported, legacyWorlds, openState, readRecords, type Stream, STREAMS } from "@sil/statedb";
-import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger } from "@sil/store";
+import { listReflectionHeads, listReflectionHeadsStrict, loadAliases, loadAliasesStrict, loadLedger } from "@sil/store";
 import { installedArtifacts } from "@sil/critic";
 import { patternRates, type SessionDayRow } from "./rates.ts";
 
@@ -231,7 +231,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
   const allSessionRows: SessionDayRow[] = [];
   const hitsByPattern = new Map<string, SessionDayRow[]>();
   const aliases = strict ? loadAliasesStrict(world.name) : loadAliases(world.name);
-  for (const r of strict ? listReflectionsStrict(world.name) : listReflections(world.name)) {
+  for (const r of strict ? listReflectionHeadsStrict(world.name) : listReflectionHeads(world.name)) {
     // Own keys only: a pattern named like a prototype member ("constructor")
     // is an ordinary pattern, not an alias of an inherited function.
     const pattern = Object.hasOwn(aliases, r.pattern) ? aliases[r.pattern]! : r.pattern;

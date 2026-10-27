@@ -31,7 +31,7 @@ import {
 } from "@sil/core";
 import * as feedback from "@sil/feedback";
 import { readRecords } from "@sil/statedb";
-import { listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger as loadLedgerFile, parseLedger } from "@sil/store";
+import { listReflectionHeads, listReflectionHeadsStrict, listReflections, listReflectionsStrict, loadAliases, loadAliasesStrict, loadLedger as loadLedgerFile, parseLedger, type ReflectionHead } from "@sil/store";
 import * as artifacts from "./artifacts.ts";
 import * as git from "./git.ts";
 
@@ -75,6 +75,24 @@ export function reflectionsStrict(world: World, extraDirs: string[] = []): Refle
 export function reflections(world: World, extraDirs: string[] = []): Reflection[] {
   const aliases = loadAliases(world.name);
   return listReflections(world.name, extraDirs).map((r) => {
+    const canonical = aliases[r.pattern] ?? r.pattern;
+    return canonical === r.pattern ? r : { ...r, pattern: canonical };
+  });
+}
+
+/** As reflectionsStrict(), without bodies and lessons, served from the index. */
+export function reflectionHeadsStrict(world: World, extraDirs: string[] = []): ReflectionHead[] {
+  const aliases = loadAliasesStrict(world.name);
+  return listReflectionHeadsStrict(world.name, extraDirs).map((r) => {
+    const canonical = Object.hasOwn(aliases, r.pattern) ? aliases[r.pattern]! : r.pattern;
+    return canonical === r.pattern ? r : { ...r, pattern: canonical };
+  });
+}
+
+/** As reflections(), without bodies and lessons, served from the index. */
+export function reflectionHeads(world: World, extraDirs: string[] = []): ReflectionHead[] {
+  const aliases = loadAliases(world.name);
+  return listReflectionHeads(world.name, extraDirs).map((r) => {
     const canonical = aliases[r.pattern] ?? r.pattern;
     return canonical === r.pattern ? r : { ...r, pattern: canonical };
   });

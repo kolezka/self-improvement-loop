@@ -45,14 +45,14 @@ afterEach(() => {
 const pragma = (db: Database, name: string): unknown => Object.values(db.query(`PRAGMA ${name}`).get() as object)[0];
 
 describe("openState", () => {
-  test("creates a missing database at version 3 in WAL mode with every v1 table", () => {
+  test("creates a missing database at version 4 in WAL mode with every v1 table", () => {
     const p = paths.loopStateDb();
     expect(existsSync(p)).toBe(false);
     const db = openState();
     expect(existsSync(p)).toBe(true);
     expect(statSync(p).mode & 0o777).toBe(0o600);
-    expect(pragma(db, "user_version")).toBe(3);
-    expect(SCHEMA_VERSION).toBe(3);
+    expect(pragma(db, "user_version")).toBe(4);
+    expect(SCHEMA_VERSION).toBe(4);
     expect(pragma(db, "journal_mode")).toBe("wal");
     expect(pragma(db, "synchronous")).toBe(2);
     expect(pragma(db, "busy_timeout")).toBe(2000);
@@ -83,12 +83,12 @@ describe("openState", () => {
     const raw = new Database(p);
     try {
       raw.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-      raw.run("PRAGMA user_version = 4");
+      raw.run("PRAGMA user_version = 5");
     } finally {
       raw.close();
     }
     expect(() => openState()).toThrow(StateWriteError);
-    expect(() => openState()).toThrow(new StateWriteError("loop state was written by a newer sil (schema 4, this build knows 3)"));
+    expect(() => openState()).toThrow(new StateWriteError("loop state was written by a newer sil (schema 5, this build knows 4)"));
     const after = new Database(p, { readonly: true });
     try {
       expect(after.query("SELECT count(*) AS n FROM meta").get()).toEqual({ n: 0 });
@@ -141,12 +141,12 @@ describe("openState", () => {
       // Another process upgrades the file between prepare and the metadata write.
       const raw = new Database(p);
       try {
-        raw.run("PRAGMA user_version = 4");
+        raw.run("PRAGMA user_version = 5");
       } finally {
         raw.close();
       }
       const probe: Probe = { fsClass: "local", dev: 12345, at: "2000-01-01T00:00:00.000Z" };
-      expect(() => recordProbe(db, probe)).toThrow(new StateWriteError("loop state was written by a newer sil (schema 4, this build knows 3)"));
+      expect(() => recordProbe(db, probe)).toThrow(new StateWriteError("loop state was written by a newer sil (schema 5, this build knows 4)"));
       expect(metaRows()).toEqual(before);
     } finally {
       db.close();

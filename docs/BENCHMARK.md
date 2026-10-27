@@ -264,3 +264,30 @@ The first run of this gate was on a macOS workstation (Apple M4 Pro, macOS
 by 49 ms at p95 on one parallel row. The same commits in the container gave
 +0.5 and +3.0 ms sequential. Those Mac numbers are not a result; they are why
 the gate is run in a container on a quiet host.
+
+## Reflections index, 2026-10-26
+
+`bun scripts/bench-reflection-index.ts <reflections-dir> [n] [world]` copies one
+reflections dir into `world`'s dir (default `default`) in a temp home and times `listReflections` (reads every file)
+against `listReflectionHeads` once with an empty index and `n` times with a warm
+one (default 3). The cold row is first-call cost: it also opens the DB for the
+first time, runs the schema migrations, probes the filesystem and checks for
+legacy imports, besides filling the index. It prints the top-level `.md` file
+count, then p50 and max in ms per reader and the record count each call
+returned; it never touches the source dir or the real home. Pass the world the
+files name in their headers: both readers filter on it, and the script exits 2
+when it finds no reflections of that world.
+
+Measured 2026-10-27 on the development Mac (Apple M4 Pro, APFS, Bun 1.4.2)
+against a copy of the live `inkitt` world, 1514 top-level `.md` files, with
+`bun scripts/bench-reflection-index.ts /tmp/sil-bench-reflections 5 inkitt`:
+
+| reader | n | p50 ms | max ms | records |
+|---|---|---|---|---|
+| listReflections | 5 | 99.8 | 151.7 | 1514 |
+| listReflectionHeads cold (first call) | 1 | 228.0 | 228.0 | 1514 |
+| listReflectionHeads warm | 5 | 12.4 | 14.5 | 1514 |
+
+A warm metadata read is about eight times faster than parsing every file; the
+first call pays for the DB open and the index fill once per process start.
+Every row returned all 1514 records, so the timings are of real reads.

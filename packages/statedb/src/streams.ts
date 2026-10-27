@@ -88,17 +88,22 @@ export function appendRecord(stream: Stream, record: Record<string, unknown>, wo
 // test that switches SIL_STATE_DIR gets its own line).
 const logged = new Set<string>();
 
-/** Log a tolerant read's failure once for `key` (a store, or a store and world). */
-export function logStateOnce(key: string, label: string, reason: string): void {
+/** Append `line` to state.log once for `key`, prefixed with the time. Never throws. */
+export function logStateLineOnce(key: string, line: string): void {
   const file = paths.logFile("state");
   const full = `${file}\0${key}`;
   if (logged.has(full)) return;
   logged.add(full);
   try {
-    fsx.appendLine(file, `${new Date().toISOString()} ${label}: tolerant read used what the database has (${reason})`);
+    fsx.appendLine(file, `${new Date().toISOString()} ${line}`);
   } catch {
     // A tolerant read never throws, and this log is the only place left to report to.
   }
+}
+
+/** Log a tolerant read's failure once for `key` (a store, or a store and world). */
+export function logStateOnce(key: string, label: string, reason: string): void {
+  logStateLineOnce(key, `${label}: tolerant read used what the database has (${reason})`);
 }
 
 const logOnce = (ref: StoreRef, label: string, reason: string): void =>

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { paths, ValidationError } from "@sil/core";
-import { listReflectionsStrict, parseReflectionStrict } from "@sil/store";
+import { listReflectionHeadsStrict, listReflectionsStrict, parseReflectionStrict } from "@sil/store";
 import type { ReflectionArgs, ReflectionListArgs, WorldArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 
@@ -24,7 +24,7 @@ export function reflectionsList(args: ReflectionListArgs) {
 /** Total reflections in a world, unbounded by any list window. */
 export function reflectionsCount(args: WorldArgs): { total: number } {
   const [, world] = cfgWorld(args.world);
-  return { total: listReflectionsStrict(world.name).length };
+  return { total: listReflectionHeadsStrict(world.name).length };
 }
 
 export function reflectionsGet(args: ReflectionArgs) {

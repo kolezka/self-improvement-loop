@@ -4,7 +4,7 @@
 
 import { fsx, paths } from "@sil/core";
 import { readRecords, type Stream } from "@sil/statedb";
-import { isHidden, listQueue, listReflections, loadQueueCleared, readProposalEvents } from "@sil/store";
+import { isHidden, listQueue, listReflectionHeads, loadQueueCleared, readProposalEvents } from "@sil/store";
 import type { HistoryArgs } from "../args.ts";
 import { cfgWorld } from "../cfg-world.ts";
 
@@ -170,8 +170,8 @@ export function historySeries(args: HistoryArgs): HistorySeries {
     skipped[name] = built.skipped;
   };
 
-  // reflections: listReflections already scopes by world; no jsonl to tear.
-  const reflectionRecords: Record<string, unknown>[] = listReflections(world.name).map((r) => ({ created: r.created }));
+  // reflections: listReflectionHeads already scopes by world; no jsonl to tear.
+  const reflectionRecords: Record<string, unknown>[] = listReflectionHeads(world.name).map((r) => ({ created: r.created }));
   set("reflections", fold(reflectionRecords, "created", days, now, 0));
 
   // sessions_done / sessions_failed: visible queue entries only (queue.clear), this world.

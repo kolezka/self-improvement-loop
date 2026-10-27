@@ -766,10 +766,12 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
 ### D12. Phase 4 specifics
 
 - `reflection_index` is a cache of the `.md` files. It is never a source.
-- `scanReflections` keeps walking the dirs with the same rules (dot names,
-  `graphify-out`, `vec-index`, no dir symlinks, realpath de-dupe). For each file it
-  stats; a row with the same `size`, `mtime_ms` and `ino` is reused, anything else
-  is parsed and upserted, and rows for files no longer found are deleted.
+- `listReflectionHeads` maintains the index. It walks the dirs with the same
+  rules as the full readers (dot names, `graphify-out`, `vec-index`, no dir
+  symlinks, realpath de-dupe). For each file it stats; a row with the same `size`,
+  `mtime_ms` and `ino` is reused, anything else is parsed and upserted, and rows
+  for files no longer found are deleted. The full readers (`listReflections`,
+  `scanReflections`, `listReflectionsStrict`) stay on the files.
 - New reader `listReflectionHeads(world, extraDirs)`: the `Reflection` record
   without `body` and `lesson`, same sort and same world filter. Strict and tolerant
   forms, same rules as the full readers (an unreadable changed file still raises in
@@ -780,6 +782,49 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
   files as today and logs once. The index is a speedup, not a dependency.
 - Writers do not change. Outline export, bundle, V1 mirrors and the V1 importer
   keep using files.
+- As built in phase 4 (schema 4, table `reflection_index` as in D7):
+  - A row is reused when `statSync` of the file gives the same `size`,
+    `mtime_ms` and `ino`. The key is the file's realpath (`path`, the primary
+    key); `dir_world` tags the row with the world whose read found it and
+    filters it, but is not part of the key. A file
+    rewritten in place with the same inode, size and mtime (`cp -p` over a file
+    of the same size) is not detected until one of them changes.
+  - An unchanged file is served from the index without being opened. A file made
+    unreadable after it was indexed still reads, in both modes, until it
+    changes; a changed unreadable file still raises in strict mode.
+  - Exception: a symlinked file is still opened through the link by
+    `realpathSync`, so an unreadable target fails the read as before.
+  - The full readers (`listReflections`, `scanReflections`,
+    `listReflectionsStrict`) stay on the files and never touch the DB. Only
+    `listReflectionHeads` and its strict form maintain the index.
+  - `ReflectionHead` carries `mtime_ms` from the same `stat`.
+  - `dir_world` is `worldKey` (NFC) of the world the caller named, for files
+    under its reflections dir and under its `extraDirs` alike. A call with a
+    different `extraDirs` deletes the rows of the dirs it did not walk, so
+    callers that alternate `extraDirs` for one world churn the index; that is a
+    lost speedup, never a wrong read.
+  - Bun's `realpathSync` fails with EACCES on a mode 000 file, so the walk
+    resolves a regular file as the dir's realpath plus its name (a symlinked
+    file still goes through `realpathSync`). Without that, a locked file was
+    dropped before the index was consulted.
+  - Only records the strict parser accepts are cached, in both modes, so a
+    tolerant pass never stores a defaulted record a later strict pass would
+    reuse. A record is cached only when the tolerant parser gives the same
+    metadata, so each mode returns its own file reader's record.
+  - A caller whose world name is not NFC bypasses the index and reads the files.
+    A header without `world` takes the caller's own spelling, so a row parsed for
+    the NFC name would be filtered out for another spelling.
+  - Index failures (open, newer schema, busy, any SQLite error) never fail a
+    read: the pass reads the files and logs once per process and world to
+    `logs/state.log`.
+  - Callers moved to the heads: `@sil/feedback` scorecards, ops `history.ts`,
+    ops `reflections.ts` count, ops `queue.ts`, CLI `status.ts` and
+    `reflections.ts` list, the critic's `recentTitles`, curriculum `plan.ts`
+    heads helpers and `alias-semantic.ts` candidates, review `index.ts` counts
+    and sources and `register.ts`.
+  - Callers not moved (they need bodies or lessons): ops `reflections.ts`
+    list, `console.ts`, review `revise.ts` and `refine.ts`, curriculum `run.ts`,
+    `verify.ts` and the `plan.ts` clustering, and `cmdReflectionsShow`.
 
 ### D13. Bundle export and import
 
@@ -860,6 +905,9 @@ New `sil state` command:
   refused with the D13 message, like a global stream.
 - `sil state quarantine [--drop <store> [--world <w>]]`. Without `--world`, a
   per-world store drops the quarantine of every world.
+- Phase 4: `sil state status` prints a `reflection index:` block with the rows
+  per `dir_world`, or `reflection index: empty`; `--json` carries it as
+  `reflectionIndex`.
 
 ### D15. Docs
 

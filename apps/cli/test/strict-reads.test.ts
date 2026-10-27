@@ -179,6 +179,9 @@ describe("reflections", () => {
 
   test("one unreadable reflection fails the count instead of lowering it", () => {
     seed();
+    // Changed first: an unchanged file is served from the reflections index
+    // without being opened, so only a changed one can fail the count.
+    writeFileSync(join(dir(), "r2.md"), "---\nid: r2\ncreated: 2026-10-22\n---\nPattern: probe-skill\n\nseeded two, changed\n");
     lock(join(dir(), "r2.md"));
     const r = ops(reads);
     for (const id of ["c", "l", "p"]) failed(r[id], ["StateReadError"], "r2.md");

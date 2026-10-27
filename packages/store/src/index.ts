@@ -1,4 +1,5 @@
 export * from "./reflections.ts";
+export * from "./reflection-heads.ts";
 export * from "./aliases.ts";
 export * from "./alias-suggest.ts";
 export * from "./ledger.ts";

@@ -23,7 +23,7 @@ import { gitRepositoryRoot } from "@sil/core/repo-root";
 import type { ChatFn, ChatMessage } from "@sil/providers";
 import { chat as defaultChat } from "@sil/providers";
 import { appendRecord } from "@sil/statedb";
-import { loadLedger, patternCounts, listReflections, putLesson, writeReflection } from "@sil/store";
+import { listReflectionHeads, loadLedger, patternCounts, putLesson, writeReflection } from "@sil/store";
 import { evidencePack, type EvidencePack } from "@sil/transcript";
 
 export interface CriticAnswer {
@@ -319,7 +319,7 @@ export async function reflectSession(entry: QueueEntry, opts: ReflectOptions): P
 
   const pack = evidencePack(entry.transcript_path, entry.cwd, { gitHeadAtStart: entry.git_head });
   const existingPatterns = patternCounts(opts.world.name);
-  const recentTitles = listReflections(opts.world.name).slice(0, 25).map((r) => r.id);
+  const recentTitles = listReflectionHeads(opts.world.name).slice(0, 25).map((r) => r.id);
   const artifacts = installedArtifacts(opts.world, opts.cfg);
 
   const messages = buildMessages(pack, {

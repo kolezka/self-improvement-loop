@@ -6,9 +6,10 @@
 // They say nothing about how well a real model separates two mechanisms; see
 // `scripts/eval-alias-semantic.ts` for that.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join, relative } from "node:path";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   type AliasSemanticConfig,
   Config as ConfigSchema,
@@ -16,6 +17,7 @@ import {
   type Endpoint,
   fsx,
   ledgerPath,
+  paths,
   type LlmConfig,
   LlmConfig as LlmConfigSchema,
   ProviderError,
@@ -29,6 +31,8 @@ import { addReflections, cleanupEnv, LESSON, makeWorld, silEnv, type TestEnv } f
 
 let env: TestEnv;
 const originalFetch = globalThis.fetch;
+// Reflection files a test made unreadable; restored before the tmp dir goes.
+const lockedFiles: string[] = [];
 
 beforeEach(() => {
   env = silEnv();
@@ -41,6 +45,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  for (const p of lockedFiles.splice(0)) chmodSync(p, 0o644);
   cleanupEnv(env);
 });
 
@@ -201,6 +206,78 @@ describe("evidence", () => {
 
     const first = fake.calls.find((c) => c.state.pattern_a.name === "stale-env")!;
     expect(first.state.pattern_b.reflections[0]!.id).toBe("2026-09-15-old-env-00");
+  });
+});
+
+describe("evidence from the index", () => {
+  test.skipIf(process.getuid?.() === 0)("under a cap of one, only the newest reflection of a pattern is opened", async () => {
+    const world = makeWorld();
+    addReflections(world, "stale-env", 1, { startDay: 1 });
+    const older = addReflections(world, "stale-cached-env", 4, { startDay: 3, lesson: "An older lesson." });
+    addReflections(world, "stale-cached-env", 1, { startDay: 9, lesson: "The newest lesson." });
+    const semantic = cfg(world, { enabled: true, max_reflections_per_pattern: 1 });
+    const run = async () => {
+      const fake = new FakeDecider({ "stale-env~stale-cached-env": answer("same_mechanism", 0.9) });
+      await assessAliasSuggestions(semantic, world, { llm: systemOneLlm(), decideChoice: fake.fn });
+      return fake.calls.find((c) => c.state.pattern_a.name === "stale-env")!.state.pattern_b.reflections;
+    };
+    // The first pass indexes every file.
+    expect(await run()).toEqual([{ id: "2026-09-09-stale-cached-env-00", excerpt: "The newest lesson." }]);
+
+    for (const p of older) {
+      chmodSync(p, 0o000);
+      lockedFiles.push(p);
+    }
+    const reads = spyOn(fsx, "readText");
+    const readsIfPresent = spyOn(fsx, "readTextIfPresent");
+    try {
+      expect(await run()).toEqual([{ id: "2026-09-09-stale-cached-env-00", excerpt: "The newest lesson." }]);
+      const opened = [...reads.mock.calls, ...readsIfPresent.mock.calls].map((c) => basename(String(c[0])));
+      // Positive control: the spy does see the reflection reads.
+      expect(opened).toContain("2026-09-09-stale-cached-env-00.md");
+      for (const p of older) expect(opened).not.toContain(basename(p));
+    } finally {
+      reads.mockRestore();
+      readsIfPresent.mockRestore();
+    }
+  });
+
+  test("a file moved to another world between the head read and the body read sends nothing of it", async () => {
+    const world = makeWorld();
+    seedTwoPairs(world);
+    const target = join(paths.reflectionsDir(world.name), "2026-09-05-stale-cached-env-02.md");
+    const semantic = cfg(world, { enabled: true, max_reflections_per_pattern: 2 });
+    const answers = { "stale-env~stale-cached-env": answer("same_mechanism", 0.9), "verify-callsites~verify-callsites-before-fix": answer("distinct", 0.9) };
+    const canonicalIds = (fake: FakeDecider) => fake.calls.find((c) => c.state.pattern_a.name === "stale-env")!.state.pattern_b.reflections.map((r) => r.id);
+
+    // Positive control: unchanged, the target is evidence. This pass also fills the index.
+    const control = new FakeDecider(answers);
+    await assessAliasSuggestions(semantic, world, { llm: systemOneLlm(), decideChoice: control.fn });
+    expect(canonicalIds(control)).toContain("2026-09-05-stale-cached-env-02");
+
+    const original = readFileSync(target, "utf8");
+    const moved = original.replace(`world: ${world.name}\n`, "world: other\n").replace("The cached env copy is read before the refresh lands.", "OTHER WORLD MARKER");
+    expect(moved).toContain("world: other\n");
+    expect(moved).toContain("OTHER WORLD MARKER");
+    const readText = fsx.readText.bind(fsx);
+    let rewritten = false;
+    const reads = spyOn(fsx, "readText").mockImplementation((p: string) => {
+      if (p === target && !rewritten) {
+        rewritten = true;
+        writeFileSync(target, moved);
+      }
+      return readText(p);
+    });
+    const fake = new FakeDecider(answers);
+    try {
+      await assessAliasSuggestions(semantic, world, { llm: systemOneLlm(), decideChoice: fake.fn });
+    } finally {
+      reads.mockRestore();
+    }
+    expect(rewritten).toBe(true);
+    expect(JSON.stringify(fake.calls.map((c) => c.state))).not.toContain("OTHER WORLD MARKER");
+    // The slot goes to the next reflection of the same world, not to nothing.
+    expect(canonicalIds(fake)).toEqual(["2026-09-04-stale-cached-env-01", "2026-09-03-stale-cached-env-00"]);
   });
 });
 
@@ -612,19 +689,38 @@ describe("the live evaluation fixture", () => {
 // --- it never writes ---------------------------------------------------------
 
 describe("read only", () => {
-  /** Every file under `dir`, with its bytes. A new file, a changed file and a
-   * deleted file all show up in one comparison. */
+  /** Every file under `dir`, with its bytes, except the loop-state DB files
+   * (compared as rows below). A new file, a changed file and a deleted file
+   * all show up in one comparison. */
   function treeOf(dir: string): Record<string, string> {
     const out: Record<string, string> = {};
+    const db = paths.loopStateDb();
     const walk = (at: string): void => {
       for (const entry of readdirSync(at, { withFileTypes: true })) {
         const full = join(at, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (entry.isFile()) out[relative(dir, full)] = readFileSync(full, "utf8");
+        else if (entry.isFile() && !full.startsWith(db)) out[relative(dir, full)] = readFileSync(full, "utf8");
       }
     };
     walk(dir);
     return out;
+  }
+
+  /** Every loop-state row, per table. The reflections index is a cache the read
+   * may fill, so it is the one table left out; aliases, docs and logs are compared as rows. */
+  function rowsOf(): Record<string, unknown[]> {
+    const db = new Database(paths.loopStateDb(), { readonly: true });
+    try {
+      const tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[];
+      const out: Record<string, unknown[]> = {};
+      for (const { name } of tables) {
+        if (name === "reflection_index" || name === "sqlite_sequence") continue;
+        out[name] = db.query(`SELECT * FROM "${name}" ORDER BY rowid`).all();
+      }
+      return out;
+    } finally {
+      db.close();
+    }
   }
 
   test("no alias is written, no count moves, no ledger appears", async () => {
@@ -634,7 +730,9 @@ describe("read only", () => {
     const aliasesBefore = loadAliases(world.name);
     const countsBefore = patternCounts(world.name);
     const treeBefore = treeOf(env.root);
+    const rowsBefore = rowsOf();
     expect(Object.keys(treeBefore).length).toBeGreaterThan(0);
+    expect(rowsBefore["aliases"]!.length).toBeGreaterThan(0);
     expect(fsx.exists(ledgerPath(world))).toBe(false);
 
     const fake = new FakeDecider({
@@ -649,6 +747,7 @@ describe("read only", () => {
     // The whole temp root is compared, not the three files a write was
     // expected in: a cache, a queue entry or a log would show up here too.
     expect(treeOf(env.root)).toEqual(treeBefore);
+    expect(rowsOf()).toEqual(rowsBefore);
     expect(loadAliases(world.name)).toEqual(aliasesBefore);
     expect(patternCounts(world.name)).toEqual(countsBefore);
     expect(fsx.exists(ledgerPath(world))).toBe(false);

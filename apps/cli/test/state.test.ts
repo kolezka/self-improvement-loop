@@ -231,6 +231,76 @@ describe("sil state", () => {
     expect(status().imports.filter((i) => i.backupPath === null)).toEqual([expect.objectContaining({ store: "critic", backupCheck: null })]);
   });
 
+  test("export --legacy-paths writes a payload-only state back to payloads/default.jsonl", () => {
+    seedPayloads();
+    const seed = readFileSync(paths.payloadSamplesFile("default"), "utf8");
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
+
+    const r = sil("state", "export", "--legacy-paths");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain("nothing to export");
+    expect(r.out).toContain(`wrote ${paths.payloadSamplesFile("default")}`);
+    expect(readFileSync(paths.payloadSamplesFile("default"), "utf8")).toBe(seed);
+  });
+
+  test("export --legacy-paths writes every payload world, a stray world included", () => {
+    const seeds: Record<string, string> = {
+      default: '{"world":"default","tool_name":"Bash"}\n',
+      inkitt: '{"world":"inkitt","tool_name":"Edit"}\n{"world":"inkitt","tool_name":"Read"}\n',
+      // No configured world has this name; its rows still belong to it.
+      stray: '{"tool_name":"Grep"}\n',
+    };
+    for (const [world, text] of Object.entries(seeds)) {
+      fsx.ensureDir(dirname(paths.payloadSamplesFile(world)));
+      writeFileSync(paths.payloadSamplesFile(world), text);
+    }
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(status().worldStreams.map((w) => [w.world, w.rows])).toEqual([
+      ["default", 1],
+      ["inkitt", 2],
+      ["stray", 1],
+    ]);
+
+    const r = sil("state", "export", "--legacy-paths");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const exported = (world: string): string | null => (existsSync(paths.payloadSamplesFile(world)) ? readFileSync(paths.payloadSamplesFile(world), "utf8") : null);
+    for (const [world, text] of Object.entries(seeds)) expect({ world, text: exported(world) }).toEqual({ world, text });
+  });
+
+  test("export --legacy-paths refuses a payload world with only quarantined lines and still writes the others", () => {
+    seedPayloads();
+    const bad = paths.payloadSamplesFile("q");
+    writeFileSync(bad, "not json\n");
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(status().worldStreams).toContainEqual({ store: "payload_samples", world: "q", rows: 0, quarantined: 1, pending: false });
+
+    const r = sil("state", "export", "--legacy-paths");
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('error: the payload samples of world "q" has 1 quarantined line; see sil state quarantine');
+    expect(existsSync(bad)).toBe(false);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(true);
+  });
+
+  test("migrate after a payload export adds no rows and moves the file to a backup", () => {
+    seedPayloads();
+    expect(sil("state", "migrate").code).toBe(0);
+    expect(sil("state", "export", "--legacy-paths").code).toBe(0);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(true);
+
+    const r = sil("state", "migrate");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const s = status();
+    expect(s.suspended).toBeNull();
+    expect(s.worldStreams).toEqual([{ store: "payload_samples", world: "default", rows: 2, quarantined: 0, pending: false }]);
+    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
+    expect(backupsOf(paths.payloadSamplesFile("default"))).toHaveLength(2);
+    expect(s.imports.every((i) => i.backupCheck === "ok")).toBe(true);
+  });
+
   test("forced export retains history but hides only its superseded export row", () => {
     const critic = paths.criticFeedbackFile();
     fsx.appendJsonl(critic, { n: 1 });

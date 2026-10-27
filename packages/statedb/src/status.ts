@@ -370,7 +370,7 @@ export function dropQuarantine(store: StoreName, world?: string): number {
 
 export interface ExportLegacyResult {
   written: string[];
-  refused: { path: string; message: string }[];
+  refused: { store: StoreName; world: string | null; path: string; message: string }[];
   failures: { store: StoreName; world: string | null; message: string }[];
 }
 
@@ -423,7 +423,8 @@ function docTextOn(db: Database, ref: StoreRef): { text: string; lines: number }
 }
 
 /** Write every store back to its legacy path (design D14): streams as JSONL,
- * documents and aliases in fsx.writeJson's format. An existing file is
+ * one file per payload world (the worlds `sil state status` lists), documents
+ * and aliases in fsx.writeJson's format. An existing file is
  * refused unless it is an unchanged recorded file and `force` is set; a store
  * with no rows writes nothing; a store that cannot be exported is a failure
  * and the others still go out. Files are written to temps, recorded as
@@ -436,6 +437,9 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   const fail = (ref: StoreRef, message: string): void => {
     result.failures.push({ store: ref.store, world: ref.world, message });
   };
+  const refuse = (ref: StoreRef, path: string, message: string): void => {
+    result.refused.push({ store: ref.store, world: ref.world, path, message });
+  };
   // Every pending legacy file is imported first, so the export is never older than it.
   const ready: Stream[] = [];
   const notImported = new Set<string>();
@@ -445,7 +449,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       return true;
     } catch (error) {
       if (!(error instanceof StateReadError || error instanceof StateWriteError)) throw error;
-      const message = STORES[ref.store].kind === "stream" ? strictImportError(ref.store as Stream, error).message : strictStoreImportError(ref, error).message;
+      const message = STORES[ref.store].kind === "stream" ? strictImportError(ref.store as Stream, error, ref.world).message : strictStoreImportError(ref, error).message;
       fail(ref, message);
       notImported.add(refKey(ref));
       return false;
@@ -455,6 +459,7 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
   for (const store of GLOBAL_DOC_STORES) importFirst({ store, world: null });
   // A world dir that cannot be listed fails the whole export as StateReadError.
   for (const store of PER_WORLD_DOC_STORES) for (const world of legacyWorldsReportOrThrow(store).worlds) importFirst({ store, world });
+  for (const world of legacyWorldsReportOrThrow("payload_samples").worlds) importFirst({ store: "payload_samples", world });
 
   const db = openState();
   const io = legacyIo();
@@ -489,24 +494,31 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       entry.rowId = (record.get(ref.store, ref.world, target, lines, sha256(bytes), bytes.length, st.dev, st.ino, now, now) as { id: number }).id;
     };
 
-    for (const stream of ready) {
-      const ref: StoreRef = { store: stream, world: null };
-      const target = STREAMS[stream].legacyPath(null);
+    /** One stream, or one world of a per-world stream, as JSONL at its legacy path. */
+    const stageStream = (stream: Stream, world: string | null): void => {
+      const ref: StoreRef = { store: stream, world };
+      const target = STREAMS[stream].legacyPath(world);
       let bodies: string[];
       try {
-        bodies = exportBodiesOn(db, stream);
+        // A quarantined world is refused here (design D13), as a global stream is.
+        bodies = exportBodiesOn(db, stream, world ?? undefined);
       } catch (error) {
         if (!(error instanceof StateReadError)) throw error;
         fail(ref, error.message);
-        continue;
+        return;
       }
       const refusal = refusalFor(db, target, force);
-      if (bodies.length === 0 && !refusal) continue;
+      if (bodies.length === 0 && !refusal) return;
       if (refusal?.message) {
-        result.refused.push({ path: target, message: refusal.message });
-        continue;
+        refuse(ref, target, refusal.message);
+        return;
       }
       stage(ref, target, bodies.length === 0 ? "" : `${bodies.join("\n")}\n`, bodies.length, refusal?.supersedes ?? null);
+    };
+
+    for (const stream of ready) stageStream(stream, null);
+    for (const world of payloadWorldsOn(db)) {
+      if (!notImported.has(refKey({ store: "payload_samples", world }))) stageStream("payload_samples", world);
     }
 
     for (const ref of allDocRefs(db)) {
@@ -529,14 +541,14 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
       // Nothing in the loop state and no file at the path: nothing to write.
       if (content === null && !refusal) continue;
       if (refusal?.message) {
-        result.refused.push({ path: target, message: refusal.message });
+        refuse(ref, target, refusal.message);
         continue;
       }
       // An emptied store whose recorded file is still there (design D14, final
       // review I1): aliases get the empty map; a document has no empty form.
       if (content === null) {
         if (ref.store !== "aliases") {
-          result.refused.push({ path: target, message: `${target} holds ${label}, which no longer exists in the loop state` });
+          refuse(ref, target, `${target} holds ${label}, which no longer exists in the loop state`);
           continue;
         }
         content = { text: "{}\n", lines: 0 };

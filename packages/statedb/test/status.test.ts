@@ -120,6 +120,21 @@ describe("documents and aliases in status and quarantine", () => {
     ]);
   });
 
+  test("exportLegacy imports a legacy-only payload world on an already open connection and writes it back", () => {
+    openState();
+    const target = paths.payloadSamplesFile("late");
+    mkdirSync(dirname(target), { recursive: true });
+    const bytes = '{"world":"late","tool_name":"Bash"}\n';
+    writeFileSync(target, bytes);
+    const result = exportLegacy(false);
+    expect(result.failures).toEqual([]);
+    expect(result.refused).toEqual([]);
+    expect(result.written).toEqual([target]);
+    expect(readFileSync(target, "utf8")).toBe(bytes);
+    const rows = openState().query("SELECT store, world, original_path AS path FROM legacy_imports WHERE origin = 'export'").all();
+    expect(rows).toEqual([{ store: "payload_samples", world: "late", path: target }]);
+  });
+
   test("exportLegacy refuses a quarantined document world and still exports the others", () => {
     saveDoc("refine_attempts", "b", { x: 1 });
     quarantineRow("refine_attempts", "a");
@@ -153,7 +168,7 @@ describe("documents and aliases in status and quarantine", () => {
     exportLegacy(false);
     replaceAliases("default", {});
     const result = exportLegacy(false);
-    expect(result.refused).toEqual([{ path: paths.aliasesFile("default"), message: `${paths.aliasesFile("default")} already exists; pass --force to overwrite it` }]);
+    expect(result.refused).toEqual([{ store: "aliases", world: "default", path: paths.aliasesFile("default"), message: `${paths.aliasesFile("default")} already exists; pass --force to overwrite it` }]);
     expect(readFileSync(paths.aliasesFile("default"), "utf8")).toBe(`${JSON.stringify({ a: "b" }, null, 2)}\n`);
   });
 
@@ -171,7 +186,7 @@ describe("documents and aliases in status and quarantine", () => {
     openState().query("DELETE FROM docs WHERE name = 'queue_cleared'").run();
     const result = exportLegacy(true);
     expect(result.refused).toEqual([
-      { path: paths.queueClearedFile(), message: `${paths.queueClearedFile()} holds the queue cutoffs, which no longer exists in the loop state` },
+      { store: "queue_cleared", world: null, path: paths.queueClearedFile(), message: `${paths.queueClearedFile()} holds the queue cutoffs, which no longer exists in the loop state` },
     ]);
     expect(readFileSync(paths.queueClearedFile(), "utf8")).toBe(`${JSON.stringify({ default: "t" }, null, 2)}\n`);
   });
@@ -185,7 +200,7 @@ describe("documents and aliases in status and quarantine", () => {
     const bytes = `${JSON.stringify({ x: "y" }, null, 2)}\n`;
     writeFileSync(target, bytes);
     const result = exportLegacy(true);
-    expect(result.refused).toContainEqual({ path: target, message: `${target} has lines that are not in the loop state; run sil state migrate first` });
+    expect(result.refused).toContainEqual({ store: "aliases", world: "default", path: target, message: `${target} has lines that are not in the loop state; run sil state migrate first` });
     expect(readFileSync(target, "utf8")).toBe(bytes);
   });
 

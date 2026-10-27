@@ -797,6 +797,10 @@ New `sil state` command:
   `--force`. A document whose row is gone has no empty form, so its file is
   refused. Export and status enumerate the same set: every document and aliases
   ref the DB knows plus every world with a legacy file.
+  Phase 3: payload samples export the same way, one `usage/payloads/<w>.jsonl`
+  per world, over the worlds status lists (rows, quarantine rows, import rows
+  and every world with a legacy file). A world with quarantined lines is
+  refused with the D13 message, like a global stream.
 - `sil state quarantine [--drop <store> [--world <w>]]`. Without `--world`, a
   per-world store drops the quarantine of every world.
 

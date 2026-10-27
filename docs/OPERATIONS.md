@@ -715,7 +715,8 @@ To downgrade:
    lines too (`sil state quarantine`), or that store will not export.
 3. Run `sil state export --legacy-paths`. It writes each store that has rows to
    its old path in the old format, and pauses imports so this build leaves those
-   files alone. A store with no rows gets no file. Documents and aliases are
+   files alone. A store with no rows gets no file. Payload samples get one
+   file per world, `usage/payloads/<world>.jsonl`. Documents and aliases are
    written back too, as pretty-printed JSON, under the same refusal rules: a
    file that is not one this DB recorded is refused even with `--force`. Two
    cases are particular to them. An aliases world that was emptied, whose file

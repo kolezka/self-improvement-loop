@@ -34,8 +34,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // --- payload samples ------------------------------------------------------
 
 // The record shape lives in @sil/core/samples, shared with `sil import
-// payloads`. Samples go to loop state rows, and to the old per-world file only
-// as a spill when the database is not available. Re-exported here so
+// payloads`. Samples go to loop state rows, and to the per-world file's spill
+// dir only when the database is not available. Re-exported here so
 // importers of the old names keep working.
 export { SAMPLED_INPUT_KEYS, SAMPLE_VALUE_MAX_CHARS, redactCredentials } from "@sil/core/samples";
 

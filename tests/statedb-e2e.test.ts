@@ -12,7 +12,7 @@ import { type Config, fsx, Ledger, ledgerPath, loadConfig, paths, type QueueEntr
 import { serializeSpool, SPOOL_FILE_NAME, SPOOL_VERSION, type SpoolAppend } from "@sil/core/spool";
 import * as feedback from "@sil/feedback";
 import { invoke } from "@sil/ops";
-import { closeState, openState, readRecords, type StateStatus, type Stream } from "@sil/statedb";
+import { closeState, openSpillPath, openState, readRecords, type StateStatus, type Stream } from "@sil/statedb";
 import { loadAliases, loadQueueCleared, readProposalEvents, saveLedger, writeEntry } from "@sil/store";
 import type { HistorySeries } from "../packages/ops/src/handlers/history.ts";
 import { type HookEnv, MAIN_TS, runHook } from "../apps/hook/test/helpers.ts";
@@ -495,29 +495,35 @@ describe("hook-written logs end to end", () => {
     const seeded = seedHookLogs(cfg, now);
     const sent: Record<string, unknown>[] = [];
 
-    // No database yet: both hook runs spill onto the seeded files.
+    // No database yet: both hook runs spill into the open spill files and
+    // leave the seeded files as they were.
     expect(existsSync(paths.loopStateDb())).toBe(false);
     sent.push(...runHookRound(1));
     expect(existsSync(paths.loopStateDb())).toBe(false);
-    expect(lineCount(paths.usageEventsFile())).toBe(300 + 1 + 20);
-    expect(lineCount(paths.hookRunsFile())).toBe(50 + 20);
-    expect(lineCount(paths.payloadSamplesFile(WORLD))).toBe(30 + 5);
+    expect(readFileSync(paths.usageEventsFile(), "utf8")).toBe(seeded.text.events);
+    expect(lineCount(paths.usageEventsFile())).toBe(300);
+    expect(lineCount(openSpillPath(paths.usageEventsFile()))).toBe(1 + 20);
+    expect(lineCount(paths.hookRunsFile())).toBe(50);
+    expect(lineCount(openSpillPath(paths.hookRunsFile()))).toBe(20);
+    expect(lineCount(paths.payloadSamplesFile(WORLD))).toBe(30);
+    expect(lineCount(openSpillPath(paths.payloadSamplesFile(WORLD)))).toBe(5);
     // No nudge fires on a Skill PostToolUse or a Stop: the spool's 5 are all.
-    expect(lineCount(paths.nudgeFiresFile())).toBe(20 + 5);
-    const spilledEventsText = readFileSync(paths.usageEventsFile(), "utf8");
-    expect(spilledEventsText.startsWith(seeded.text.events)).toBe(true);
+    expect(lineCount(paths.nudgeFiresFile())).toBe(20);
+    expect(lineCount(openSpillPath(paths.nudgeFiresFile()))).toBe(5);
+    const spilledEventsText = readFileSync(openSpillPath(paths.usageEventsFile()), "utf8");
 
     // The worker's first open and its tolerant rebuild.
     openState();
     feedback.rebuild(world, cfg);
-    for (const file of [paths.usageEventsFile(), paths.nudgeFiresFile(), paths.hookRunsFile(), paths.payloadSamplesFile(WORLD)]) {
-      expect({ file, exists: existsSync(file) }).toEqual({ file, exists: false });
+    for (const legacy of [paths.usageEventsFile(), paths.nudgeFiresFile(), paths.hookRunsFile(), paths.payloadSamplesFile(WORLD)]) {
+      for (const file of [legacy, openSpillPath(legacy)]) expect({ file, exists: existsSync(file) }).toEqual({ file, exists: false });
     }
 
     // Database ready: the same two payloads write rows, not files.
     sent.push(...runHookRound(2));
-    expect(existsSync(paths.usageEventsFile())).toBe(false);
-    expect(existsSync(paths.hookRunsFile())).toBe(false);
+    for (const legacy of [paths.usageEventsFile(), paths.hookRunsFile()]) {
+      for (const file of [legacy, openSpillPath(legacy)]) expect({ file, exists: existsSync(file) }).toEqual({ file, exists: false });
+    }
 
     // A 1.3.0 hook in a session spanning the upgrade appends to the old path.
     const late = { ts: new Date().toISOString(), session_id: "sess-late", world: WORLD, kind: "skill", ref: "skill:late-append", detail: {} };
@@ -538,16 +544,19 @@ describe("hook-written logs end to end", () => {
       expect({ store: imp.store, state: imp.state, backupCheck: imp.backupCheck }).toEqual({ store: imp.store, state: "verified", backupCheck: "ok" });
     }
     const usageImports = status.imports.filter((i) => i.store === "usage_events");
-    expect(usageImports).toHaveLength(2);
-    // The seed file plus the pre-open spills, then the late append's new file.
+    expect(usageImports).toHaveLength(3);
+    // The pre-open spills (the open spill file is claimed before P), the seed
+    // file, then the late append's new file.
     expect(readFileSync(usageImports[0]!.backupPath!, "utf8")).toBe(spilledEventsText);
-    expect(usageImports[0]!.lines).toBe(321);
-    expect(readFileSync(usageImports[1]!.backupPath!, "utf8")).toBe(lateText);
-    expect(usageImports[1]!.lines).toBe(1);
+    expect(usageImports[0]!.lines).toBe(21);
+    expect(readFileSync(usageImports[1]!.backupPath!, "utf8")).toBe(seeded.text.events);
+    expect(usageImports[1]!.lines).toBe(300);
+    expect(readFileSync(usageImports[2]!.backupPath!, "utf8")).toBe(lateText);
+    expect(usageImports[2]!.lines).toBe(1);
     for (const store of ["nudge_fires", "hook_runs", "payload_samples"]) {
-      expect({ store, n: status.imports.filter((i) => i.store === store).length }).toEqual({ store, n: 1 });
+      expect({ store, n: status.imports.filter((i) => i.store === store).length }).toEqual({ store, n: 2 });
     }
-    expect(status.imports).toHaveLength(8 + 2 + 3);
+    expect(status.imports).toHaveLength(8 + 3 + 3 * 2);
 
     // Nothing left under usage/ but backups.
     const usageDir = dirname(paths.usageEventsFile());

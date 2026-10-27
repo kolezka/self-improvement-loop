@@ -162,8 +162,9 @@ function countLines(path: string): number {
   return readFileSync(path, "utf8").split("\n").filter((l) => l.trim() !== "").length;
 }
 
-/** Lines in `P` and in every sealed segment under `P.spill/`. On a build
- * without the DB streams these are the live files themselves. */
+/** Lines in `P` and in every file under `P.spill/` (the open spill file and
+ * the sealed segments). On a build without the DB streams these are the live
+ * files themselves. */
 function fileLines(state: string): number {
   let total = 0;
   for (const p of legacyPaths(state)) {

@@ -46,6 +46,8 @@ afterEach(() => {
 
 const legacy = (stream: Stream, world: string | null = null): string => STREAMS[stream].legacyPath(world);
 const spillDirOf = (p: string): string => `${p}.spill`;
+/** The hook's open spill file of `p`: the only file a hook appends to. */
+const openSpillOf = (p: string): string => join(spillDirOf(p), "current.jsonl");
 const dbPath = (): string => paths.loopStateDb();
 
 /** A v3 database as the non-hook opener leaves it. */
@@ -129,10 +131,11 @@ describe("openForHook and hookWrite on a ready database", () => {
     const payloads = join(paths.stateDir(), "usage", "payloads");
     // Positive control: a payload spill with a world lands in this dir.
     expect(spillWrite("payload_samples", ['{"n":0}'], "w")).toBe(true);
-    expect(readdirSync(payloads)).toEqual(["w.jsonl"]);
+    expect(readdirSync(payloads)).toEqual(["w.jsonl.spill"]);
     expect(hookWrite("payload_samples", [{ ts: "2026-10-26T10:00:00.000Z" }, { ts: "2026-10-26T10:00:01.000Z" }])).toBe("lost");
-    expect(readdirSync(payloads)).toEqual(["w.jsonl"]);
-    expect(readFileSync(join(payloads, "w.jsonl"), "utf8")).toBe('{"n":0}\n');
+    expect(readdirSync(payloads)).toEqual(["w.jsonl.spill"]);
+    expect(readdirSync(join(payloads, "w.jsonl.spill"))).toEqual(["current.jsonl"]);
+    expect(readFileSync(join(payloads, "w.jsonl.spill", "current.jsonl"), "utf8")).toBe('{"n":0}\n');
     expect(hookLogLines().filter((l) => l.endsWith("payload samples written without a world: dropped 2 record(s)"))).toHaveLength(1);
   });
 
@@ -173,7 +176,7 @@ describe("openForHook returns null and the hook spills", () => {
       expect(openForHook()).toBeNull();
       expect(hookWrite("usage_events", [ev(1)])).toBe("spilled");
       expect(hookWrite("usage_events", [ev(2)])).toBe("spilled");
-      expect(lines(legacy("usage_events"))).toEqual([JSON.stringify(ev(1)), JSON.stringify(ev(2))]);
+      expect(lines(openSpillOf(legacy("usage_events")))).toEqual([JSON.stringify(ev(1)), JSON.stringify(ev(2))]);
       expect(hookLogLines().length - before).toBe(1);
       if (existsSync(dbPath())) expect(rowBodies("usage_events")).toEqual([]);
     });
@@ -189,13 +192,13 @@ describe("busy database", () => {
       expect(hookWrite("usage_events", [ev(1)])).toBe("spilled");
       const first = performance.now() - t0;
       expect(first).toBeLessThan(200);
-      expect(lines(legacy("usage_events"))).toEqual([JSON.stringify(ev(1))]);
+      expect(lines(openSpillOf(legacy("usage_events")))).toEqual([JSON.stringify(ev(1))]);
 
       const t1 = performance.now();
       expect(hookWrite("usage_events", [ev(2)])).toBe("spilled");
       const second = performance.now() - t1;
       expect(second).toBeLessThan(5);
-      expect(lines(legacy("usage_events"))).toEqual([JSON.stringify(ev(1)), JSON.stringify(ev(2))]);
+      expect(lines(openSpillOf(legacy("usage_events")))).toEqual([JSON.stringify(ev(1)), JSON.stringify(ev(2))]);
       console.log(`busy: first write spilled in ${first.toFixed(1)} ms, second in ${second.toFixed(2)} ms`);
       expect(hookLogLines().filter((l) => l.includes("SQLITE_BUSY"))).toHaveLength(1);
     } finally {
@@ -215,7 +218,7 @@ describe("busy database", () => {
       locker.close();
     }
     expect(rowBodies("hook_runs")).toEqual([]);
-    expect(lines(legacy("hook_runs"))).toEqual([ev(1), ev(2), ev(3)].map((r) => JSON.stringify(r)));
+    expect(lines(openSpillOf(legacy("hook_runs")))).toEqual([ev(1), ev(2), ev(3)].map((r) => JSON.stringify(r)));
   });
 
   test("a batch that fails after its first insert rolls back and spills whole", () => {
@@ -227,7 +230,7 @@ describe("busy database", () => {
     expect(hookWrite("hook_runs", [ev(1), ev(2), ev(3)])).toBe("spilled");
     closeHookDb();
     expect(rowBodies("hook_runs")).toEqual([]);
-    expect(lines(legacy("hook_runs"))).toEqual([ev(1), ev(2), ev(3)].map((r) => JSON.stringify(r)));
+    expect(lines(openSpillOf(legacy("hook_runs")))).toEqual([ev(1), ev(2), ev(3)].map((r) => JSON.stringify(r)));
   });
 });
 
@@ -252,9 +255,9 @@ describe("hookWriteBatch", () => {
     }
     expect(outcome).toBe("spilled");
     expect(allRows()).toEqual([]);
-    expect(lines(legacy("usage_events"))).toEqual(bodiesOf([ev(1), ev(2)]));
-    expect(lines(legacy("hook_runs"))).toEqual(bodiesOf([ev(3)]));
-    expect(lines(legacy("payload_samples", "default"))).toEqual(bodiesOf([ev(4), ev(5)]));
+    expect(lines(openSpillOf(legacy("usage_events")))).toEqual(bodiesOf([ev(1), ev(2)]));
+    expect(lines(openSpillOf(legacy("hook_runs")))).toEqual(bodiesOf([ev(3)]));
+    expect(lines(openSpillOf(legacy("payload_samples", "default")))).toEqual(bodiesOf([ev(4), ev(5)]));
   });
 
   test("an insert that fails in the second group leaves no row of any group", () => {
@@ -270,8 +273,8 @@ describe("hookWriteBatch", () => {
     closeHookDb();
     expect(outcome).toBe("spilled");
     expect(allRows()).toEqual([]);
-    expect(lines(legacy("usage_events"))).toEqual(bodiesOf([ev(1), ev(2)]));
-    expect(lines(legacy("nudge_fires"))).toEqual(bodiesOf([ev(3), ev(4)]));
+    expect(lines(openSpillOf(legacy("usage_events")))).toEqual(bodiesOf([ev(1), ev(2)]));
+    expect(lines(openSpillOf(legacy("nudge_fires")))).toEqual(bodiesOf([ev(3), ev(4)]));
   });
 
   test("a per-world group without a world is dropped with one log line, and the other groups commit", () => {
@@ -304,74 +307,88 @@ describe("hookWriteBatch", () => {
 });
 
 describe("spillWrite", () => {
-  test("seals P at the bound into a named segment, and each seal takes the next seq", () => {
+  test("with no database the spill goes to current.jsonl in P.spill and P is never created", () => {
+    expect(spillWrite("usage_events", ['{"n":1}'])).toBe(true);
+    expect(hookWrite("hook_runs", [ev(2)])).toBe("spilled");
+    expect(spillWrite("payload_samples", ['{"n":3}'], "w")).toBe(true);
+    expect(lines(openSpillOf(legacy("usage_events")))).toEqual(['{"n":1}']);
+    expect(lines(openSpillOf(legacy("hook_runs")))).toEqual([JSON.stringify(ev(2))]);
+    expect(lines(openSpillOf(legacy("payload_samples", "w")))).toEqual(['{"n":3}']);
+    for (const p of [legacy("usage_events"), legacy("hook_runs"), legacy("payload_samples", "w")]) expect(existsSync(p)).toBe(false);
+  });
+
+  test("seals the open file at the bound into a named segment, and each seal takes the next seq", () => {
     const p = legacy("usage_events");
-    mkdirSync(join(p, ".."), { recursive: true });
-    writeFileSync(p, "old\n");
-    setHookIoForTest(sealAt(p));
+    const open = openSpillOf(p);
+    mkdirSync(spillDirOf(p), { recursive: true });
+    writeFileSync(open, "old\n");
+    setHookIoForTest(sealAt(open));
 
     expect(spillWrite("usage_events", ['{"n":1}'])).toBe(true);
-    const first = readdirSync(spillDirOf(p));
+    const first = readdirSync(spillDirOf(p)).filter((n) => n !== "current.jsonl");
     expect(first).toHaveLength(1);
     const m1 = SEGMENT_NAME.exec(first[0]!);
     expect(m1).not.toBeNull();
     expect(Number(m1![1])).toBe(process.pid);
     expect(readFileSync(join(spillDirOf(p), first[0]!), "utf8")).toBe("old\n");
-    expect(readFileSync(p, "utf8")).toBe('{"n":1}\n');
+    expect(readFileSync(open, "utf8")).toBe('{"n":1}\n');
 
     expect(spillWrite("usage_events", ['{"n":2}'])).toBe(true);
-    const second = readdirSync(spillDirOf(p)).filter((n) => n !== first[0]);
+    const second = readdirSync(spillDirOf(p)).filter((n) => n !== first[0] && n !== "current.jsonl");
     expect(second).toHaveLength(1);
     const m2 = SEGMENT_NAME.exec(second[0]!);
     expect(m2).not.toBeNull();
     expect(Number(m2![2])).toBe(Number(m1![2]) + 1);
     expect(readFileSync(join(spillDirOf(p), second[0]!), "utf8")).toBe('{"n":1}\n');
-    expect(readFileSync(p, "utf8")).toBe('{"n":2}\n');
+    expect(readFileSync(open, "utf8")).toBe('{"n":2}\n');
+    expect(existsSync(p)).toBe(false);
   });
 
   test("below the bound it only appends", () => {
     const p = legacy("nudge_fires");
     expect(spillWrite("nudge_fires", ['{"n":1}', '{"n":2}'])).toBe(true);
     expect(spillWrite("nudge_fires", ['{"n":3}'])).toBe(true);
-    expect(readFileSync(p, "utf8")).toBe('{"n":1}\n{"n":2}\n{"n":3}\n');
-    expect(existsSync(spillDirOf(p))).toBe(false);
+    expect(readFileSync(openSpillOf(p), "utf8")).toBe('{"n":1}\n{"n":2}\n{"n":3}\n');
+    expect(readdirSync(spillDirOf(p))).toEqual(["current.jsonl"]);
+    expect(existsSync(p)).toBe(false);
   });
 
   test("a seal that loses the rename to another process still appends", () => {
-    const p = legacy("usage_events");
-    mkdirSync(join(p, ".."), { recursive: true });
-    writeFileSync(p, "old\n");
+    const open = openSpillOf(legacy("usage_events"));
+    mkdirSync(join(open, ".."), { recursive: true });
+    writeFileSync(open, "old\n");
     setHookIoForTest(
-      sealAt(p, {
+      sealAt(open, {
         rename: () => {
           throw Object.assign(new Error("ENOENT: no such file or directory, rename"), { code: "ENOENT" });
         },
       }),
     );
     expect(spillWrite("usage_events", ['{"n":1}'])).toBe(true);
-    expect(readFileSync(p, "utf8")).toBe('old\n{"n":1}\n');
+    expect(readFileSync(open, "utf8")).toBe('old\n{"n":1}\n');
   });
 
   test("the bound drops the oldest unclaimed segments and never a claim", () => {
     const p = legacy("usage_events");
     const dir = spillDirOf(p);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(p, "old\n");
+    writeFileSync(openSpillOf(p), "old\n");
     // An old segment a crashed importer claimed: its name sorts first.
     const claim = "2025-12-31T000000000Z-1-0.jsonl.importing";
     writeFileSync(join(dir, claim), "claimed\n");
     const existing = Array.from({ length: SPILL_MAX_SEGMENTS + 1 }, (_, i) => `2026-01-01T0000000${String(i).padStart(2, "0")}Z-1-${i}.jsonl`);
     for (const name of existing) writeFileSync(join(dir, name), `${name}\n`);
-    setHookIoForTest(sealAt(p));
+    setHookIoForTest(sealAt(openSpillOf(p)));
 
     expect(spillWrite("usage_events", ['{"n":1}'])).toBe(true);
     const after = readdirSync(dir).sort();
-    const segments = after.filter((n) => n.endsWith(".jsonl"));
+    const segments = after.filter((n) => n.endsWith(".jsonl") && n !== "current.jsonl");
     expect(segments).toHaveLength(SPILL_MAX_SEGMENTS);
     expect(segments.slice(0, -1)).toEqual(existing.slice(2));
     expect(readFileSync(join(dir, segments.at(-1)!), "utf8")).toBe("old\n");
     expect(after).toContain(claim);
     expect(readFileSync(join(dir, claim), "utf8")).toBe("claimed\n");
+    expect(readFileSync(openSpillOf(p), "utf8")).toBe('{"n":1}\n');
     expect(hookLogLines().filter((l) => l.includes("dropped a spill segment of the usage log"))).toHaveLength(1);
   });
 
@@ -430,7 +447,7 @@ describe("thirty hooks at once", () => {
     console.log(`thirty hooks: ${30 - spilled} wrote to the database, ${spilled} spilled`);
 
     const inDb = rowBodies("usage_events");
-    const inSpill = lines(legacy("usage_events"));
+    const inSpill = lines(openSpillOf(legacy("usage_events")));
     expect(inDb.length + inSpill.length).toBe(30);
     expect(new Set([...inDb, ...inSpill]).size).toBe(30);
 

@@ -1,11 +1,12 @@
 // The command hook writes its four usage logs into loop state when the
-// database is ready (design D5), and spills to the old paths when it is not.
+// database is ready (design D5), and spills into the open spill files when it is not.
 // Every case runs the real hook entry as a subprocess.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
+import { openSpillPath } from "@sil/statedb/hook";
 import { serializeSpool, SPOOL_FILE_NAME, SPOOL_VERSION } from "@sil/core/spool";
 import type { SpoolAppend } from "@sil/core/spool";
 import { closeState, openState, readRecords } from "@sil/statedb";
@@ -83,7 +84,7 @@ describe("hook writes with loop state ready", () => {
     writeSnapshot();
     createDb();
     expect(runHook(MAIN_TS, hookEnv, SKILL_PAYLOAD).exitCode).toBe(0);
-    expect(existsSync(paths.usageEventsFile())).toBe(false);
+    expect([existsSync(paths.usageEventsFile()), existsSync(openSpillPath(paths.usageEventsFile()))]).toEqual([false, false]);
     const rows = readRecords("usage_events", "strict").records;
     expect(rows.map((r) => r["ref"])).toEqual(["skill:some-skill"]);
   });
@@ -92,7 +93,7 @@ describe("hook writes with loop state ready", () => {
     writeSnapshot();
     createDb();
     expect(runHook(MAIN_TS, hookEnv, BASH_PAYLOAD).exitCode).toBe(0);
-    expect(existsSync(paths.payloadSamplesFile("default"))).toBe(false);
+    expect([existsSync(paths.payloadSamplesFile("default")), existsSync(openSpillPath(paths.payloadSamplesFile("default")))]).toEqual([false, false]);
     const rows = readRecords("payload_samples", "strict", "default").records;
     expect(rows.map((r) => r["tool_name"])).toEqual(["Bash"]);
   });
@@ -102,7 +103,7 @@ describe("hook writes with loop state ready", () => {
     createDb();
     writeFiftyLineSpool("sess-sw-spool");
     expect(runHook(MAIN_TS, hookEnv, stopPayload("sess-sw-spool")).exitCode).toBe(0);
-    for (const file of oldPaths()) expect({ file, exists: existsSync(file) }).toEqual({ file, exists: false });
+    for (const file of oldPaths()) expect({ file, exists: existsSync(file) || existsSync(openSpillPath(file)) }).toEqual({ file, exists: false });
     expect(readRecords("usage_events", "strict").records.length).toBe(20);
     expect(readRecords("hook_runs", "strict").records.length).toBe(20);
     expect(readRecords("nudge_fires", "strict").records.length).toBe(5);
@@ -128,32 +129,32 @@ describe("hook writes with loop state ready", () => {
     const payload = { session_id: "sess-sw-nudge", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git commit -m wip" } };
     const result = runHook(MAIN_TS, hookEnv, payload);
     expect(JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext).toBe("Write a good commit message.");
-    expect(existsSync(paths.nudgeFiresFile())).toBe(false);
+    expect([existsSync(paths.nudgeFiresFile()), existsSync(openSpillPath(paths.nudgeFiresFile()))]).toEqual([false, false]);
     const fires = readRecords("nudge_fires", "strict").records.filter((f) => typeof f["pattern"] === "string");
     expect(fires.map((f) => f["pattern"])).toEqual(["commit-nudge"]);
   });
 });
 
 describe("hook writes with no loop state file", () => {
-  // No openState here: these read the old paths directly, which an import would move.
-  test("the same payloads append to the old paths, and hook.log says why once per process", () => {
+  // No openState here: these read the open spill files directly, which an import would move.
+  test("the same payloads append to the open spill files, and hook.log says why once per process", () => {
     writeSnapshot();
     expect(runHook(MAIN_TS, hookEnv, SKILL_PAYLOAD).exitCode).toBe(0);
-    expect(readJsonl(paths.usageEventsFile()).map((e) => e["ref"])).toEqual(["skill:some-skill"]);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).map((e) => e["ref"])).toEqual(["skill:some-skill"]);
     expect(spillingLines().length).toBe(1);
 
     expect(runHook(MAIN_TS, hookEnv, BASH_PAYLOAD).exitCode).toBe(0);
-    expect(readJsonl(paths.payloadSamplesFile("default")).map((e) => e["tool_name"])).toEqual(["Bash"]);
+    expect(readJsonl(openSpillPath(paths.payloadSamplesFile("default"))).map((e) => e["tool_name"])).toEqual(["Bash"]);
 
     writeFiftyLineSpool("sess-sw-spill");
     const before = spillingLines().length;
     expect(runHook(MAIN_TS, hookEnv, stopPayload("sess-sw-spill")).exitCode).toBe(0);
     // One Stop process, many writes: one hook.log line.
     expect(spillingLines().length - before).toBe(1);
-    expect(readJsonl(paths.usageEventsFile()).length).toBe(21);
-    expect(readJsonl(paths.hookRunsFile()).length).toBe(20);
-    expect(readJsonl(paths.nudgeFiresFile()).filter((f) => /^p\d$/.test(String(f["pattern"] ?? ""))).length).toBe(5);
-    expect(readJsonl(paths.payloadSamplesFile("default")).length).toBe(6);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).length).toBe(21);
+    expect(readJsonl(openSpillPath(paths.hookRunsFile())).length).toBe(20);
+    expect(readJsonl(openSpillPath(paths.nudgeFiresFile())).filter((f) => /^p\d$/.test(String(f["pattern"] ?? ""))).length).toBe(5);
+    expect(readJsonl(openSpillPath(paths.payloadSamplesFile("default"))).length).toBe(6);
     expect(existsSync(paths.loopStateDb())).toBe(false);
   });
 });

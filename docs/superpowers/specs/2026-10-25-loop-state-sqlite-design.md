@@ -204,6 +204,13 @@ rotating spill rewritten in place can be imported twice, or cut before import)
 is closed by this revision: a spill file is never read or rewritten by a hook,
 and every file the importer reads is one it moved itself.
 
+Revised again 2026-10-27 after the final review. A 1.3.0 hook rotates `P` in
+place: it reads `P`, then renames its kept tail over `P`. If the importer
+claimed `P` and a new hook spilled into a fresh `P` in between, that rename
+erased the new spill with no trace in either backup. So the new hook's open
+spill file moved into the spill dir, `P.spill/current.jsonl`, a dir no 1.3.0
+hook touches. A 1.4 hook never writes `P`; only 1.3.0 hooks do.
+
 **Hook side.** `openForHook()` (D4) runs once per hook process. With a handle,
 each record is one `INSERT` in autocommit, and a spool batch is one transaction.
 When the opener returns null, or an insert or commit fails (BUSY or anything
@@ -216,27 +223,33 @@ get imported.
 
 **Spill layout**, per store with old path `P`:
 
-- `P` is the open segment. The hook appends to it with one `O_APPEND` write per
-  record or batch and never reads it. A hook of the previous release writes the
-  same path, so one import path covers both.
-- Sealing replaces rotation. Before an append, when `stat(P).size` is at least
-  `SPILL_SEAL_BYTES` (4 MiB), the hook renames `P` to
-  `P.spill/<UTC stamp>-<pid>-<seq>.jsonl` (`seq` counts seals in this process, so two seals in one millisecond cannot rename over each other) and appends to a fresh `P`. The rename is
+- `P.spill/current.jsonl` is the open spill file. The hook creates `P.spill/`
+  when needed and appends to the open file with one `O_APPEND` write per record
+  or batch and never reads it. The hook never opens `P`. A hook of the previous
+  release still appends to `P` and rotates it in place; the importer reads both.
+- Sealing replaces rotation. Before an append, when
+  `stat(P.spill/current.jsonl).size` is at least `SPILL_SEAL_BYTES` (4 MiB),
+  the hook renames the open file to `P.spill/<UTC stamp>-<pid>-<seq>.jsonl`
+  (`seq` counts seals in this process, so two seals in one millisecond cannot
+  rename over each other) and appends to a fresh `current.jsonl`. The rename is
   the whole rotation: no read, no rewrite, no lock. A writer whose `open`
   preceded the rename finishes into the sealed file, which is the late append
-  D6 step 6 re-stats for.
+  D6 step 6 re-stats for. A crash between the seal and the next append leaves
+  no open file; the next append creates it.
 - Bound. After sealing, the hook lists `P.spill/`; while it holds more than
-  `SPILL_MAX_SEGMENTS` (8) unclaimed segments, the hook unlinks the oldest by
+  `SPILL_MAX_SEGMENTS` (8) unclaimed sealed segments (`<stamp>-...jsonl`, never
+  `current.jsonl`, never a `*.importing` claim), the hook unlinks the oldest by
   name and logs once per process that it dropped one. That is the one place a
   hook drops data. It is the same oldest-first loss today's rotation has, it
   needs about 36 MiB of spill for one store, and a spill only grows while the
   DB is unavailable, so it takes a DB that stays unavailable for weeks. Today's
   per-store line bounds become row trims in the DB (D11).
-- Claims. The importer claims `P` by `rename(P, P.importing)` as in D6, and a
-  sealed segment `S` by `rename(S, S.importing)`. The hook's seal and the
-  importer's claim are both a rename of `P`, so exactly one succeeds; the other
-  sees ENOENT and does nothing (the importer: nothing pending; the hook: append
-  to a new `P`). The bound unlinks only unclaimed segment names, so an unlink
+- Claims. The importer claims `P` by `rename(P, P.importing)` as in D6, a
+  sealed segment `S` by `rename(S, S.importing)`, and the open spill file by
+  `rename(current.jsonl, current.jsonl.importing)`. The hook's seal and the
+  importer's claim are both a rename of `current.jsonl`, so exactly one
+  succeeds; the other sees ENOENT and does nothing (the importer: nothing
+  pending; the hook: append to a new `current.jsonl`). The bound unlinks only unclaimed segment names, so an unlink
   and a claim of the same segment also have one winner. Nothing is read from a
   path another process may still move: no overlap can be imported twice, and no
   seal can cut a line that was not imported.
@@ -249,25 +262,32 @@ keep one meaning per name.
 
 **Import of spills** (amends D6 for streams). The pending check becomes
 `stat(P)`, `stat(P.importing)` and `stat(P.spill)`; an existing dir is pending
-only when it holds a `*.jsonl` or `*.importing` entry. Import order for a store:
-a leftover `P.importing`; each `P.spill/*.importing` left by a crash; each
-`P.spill/*.jsonl` in name order (the stamp sorts them oldest first), claimed by
-rename, then imported and finalized exactly as `P.importing` is (one
-transaction, inode-matched recovery in step 2, re-stat in step 6, backup rename
-to `P.imported-<stamp>-<id>` next to `P`, `original_path` = the segment's own
-path); then `P`. A claim rename that fails with ENOENT means a hook sealed the
-file or the bound unlinked it first: it is "nothing pending now", not a failed
-import. `P.spill/` is never removed; an empty dir is not pending. Rows reach
-the DB in segment order, then `P`, which is file order for everything one
-process wrote.
+only when it holds a sealed `*.jsonl` segment, a `*.importing` claim, or a
+nonempty `current.jsonl`. Import order for a store: a leftover `P.importing`;
+each `P.spill/*.importing` left by a crash (a `current.jsonl.importing`
+included); each sealed `P.spill/<stamp>-...jsonl` in name order (the stamp
+sorts them oldest first); then `P.spill/current.jsonl`; then `P`. Each spill
+file is claimed by rename, then imported and finalized exactly as `P.importing`
+is (one transaction, inode-matched recovery in step 2, re-stat in step 6,
+backup rename to `P.imported-<stamp>-<id>` next to `P`, `original_path` = the
+spill file's own path). A claim rename that fails with ENOENT means a hook
+sealed the file or the bound unlinked it first: it is "nothing pending now",
+not a failed import. `P.spill/` is never removed; an empty dir is not pending.
+Rows reach the DB in segment order, then the open file, then `P`, which is file
+order for everything one 1.4 process wrote. `P` holds only 1.3.0 hooks' lines,
+older in the usual case; order among sources is not a correctness property,
+since readers order by id and every row lands once.
 
 **Upgrade window.** Hooks of the previous release (1.3.0) still rotate `P` in
 place when it passes their byte bound, so a session that spans the upgrade can
 duplicate one rotation's overlap if it races the first import. It needs a file
-at the bound at that moment (`hook-runs.jsonl` is 6 MB of 8 on this machine);
-new hooks seal at 4 MiB, so `P` rarely reaches it. Accepted, like the late
-append window in D6; readers order by id, so a duplicate changes counts, not
-order.
+at the bound at that moment (`hook-runs.jsonl` is 6 MB of 8 on this machine).
+Accepted, like the late append window in D6; readers order by id, so a
+duplicate changes counts, not order. Such a rotation can only duplicate the old
+hook's own overlap: it renames over `P`, and no 1.4 hook writes `P`, so it
+cannot touch a new write. `packages/statedb/test/upgrade-window.test.ts` runs
+the real 1.3.0 `fsx.appendLine` paused at its rename across a claim of `P` and
+a new hook's spill, and checks the spill imports once.
 
 The existing never-throw contracts stay: a failed spill logs once per process to
 `hook.log`, as `appendUsageEvent` does today (`apps/hook/src/usage-log.ts:14-28`).
@@ -300,7 +320,7 @@ Phase 3 rulings, as built:
   stream made thirty parallel Stops take the write lock four times each.
 - Outcomes are `"db"`, `"spilled"` and `"lost"`. On any failure the hook rolls
   back, closes the handle, marks the process spilling, and spills every group to
-  its own `P`. `"lost"` means a group was dropped or its spill append failed;
+  its own open spill file. `"lost"` means a group was dropped or its spill append failed;
   `onLostGroup(index)` names each such group so the spool ingest counts only
   those lines as skipped. A per-world group without a world is a caller bug: it
   is dropped with one `hook.log` line, writes no spill file, and does not stop
@@ -308,8 +328,9 @@ Phase 3 rulings, as built:
   An empty batch returns `"db"` without opening the file.
 - Segment names are `<stamp>-<pid>-<seq>.jsonl`, `stamp` the ISO time without
   `:` and `.`, `seq` counting seals in the process. An ENOENT on the seal rename
-  means another process sealed or claimed `P`; the hook appends to a new `P`.
-  The bound unlinks only `*.jsonl` names, never a `*.importing` claim, and logs
+  means another process sealed or claimed `current.jsonl`; the hook appends to a
+  new one. The bound unlinks only sealed segment names, never `current.jsonl`
+  or a `*.importing` claim, and logs
   `dropped a spill segment of <label>` once per process.
 - Close at exit: Bun closes an open database when the process exits, so a hook
   that is the last connection checkpoints and truncates the WAL either way (WAL
@@ -332,7 +353,9 @@ name), and the backup `P.imported-<UTC stamp>-<import_id>`.
 
 **Pending check.** Before every read or write of a store, a non-hook process runs
 `stat(P)` and `stat(P.importing)` (hook-written streams add `stat(P.spill)`,
-D5). If none exists, nothing is pending. This
+a listing of it and `stat(P.spill/current.jsonl)`: the dir is pending when it
+holds a sealed segment, a claim or a nonempty open spill file, D5). If none
+exists, nothing is pending. This
 runs before the read opens its snapshot, so any import that finished before the
 check is in the snapshot, and any spill that appears after it is an append that
 happened after the read began, as with a file today. Two `stat`s per store

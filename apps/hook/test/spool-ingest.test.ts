@@ -12,7 +12,7 @@ import { readJsonl } from "@sil/core/fsx";
 import { serializeSpool, SPOOL_FILE_NAME, SPOOL_VERSION } from "@sil/core/spool";
 import type { Spool } from "@sil/core/spool";
 import { closeState, readRecords } from "@sil/statedb";
-import { closeHookDb } from "@sil/statedb/hook";
+import { closeHookDb, openSpillPath } from "@sil/statedb/hook";
 import { ingestSpool, ORPHAN_SPOOL_OLDER_THAN_MS, sweepOrphanSpools } from "../src/spool-ingest.ts";
 import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
@@ -83,7 +83,7 @@ describe("ingestSpool", () => {
     expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
 
     for (const file of [paths.usageEventsFile(), paths.hookRunsFile(), paths.nudgeFiresFile(), paths.payloadSamplesFile("default")]) {
-      expect({ file, exists: existsSync(file) }).toEqual({ file, exists: false });
+      expect({ file, exists: existsSync(file) || existsSync(openSpillPath(file)) }).toEqual({ file, exists: false });
     }
     expect(readRecords("usage_events", "strict").records).toEqual([{ ts: "x", kind: "skill", ref: "skill:foo" }]);
     expect(readRecords("hook_runs", "strict").records).toEqual([{ ts: "x", kind: "hook_run", ref: "hook:bar" }]);
@@ -167,7 +167,7 @@ describe("ingestSpool", () => {
     const result = ingestSpool(sessionId);
     expect(result).toEqual({ appends: 0, moves: 0, skipped: 1 });
     expect(existsSync(spoolFile(sessionId))).toBe(false);
-    expect(existsSync(paths.usageEventsFile())).toBe(false);
+    expect([existsSync(paths.usageEventsFile()), existsSync(openSpillPath(paths.usageEventsFile()))]).toEqual([false, false]);
   });
 
   test("calling twice is a no-op the second time", () => {
@@ -181,7 +181,7 @@ describe("ingestSpool", () => {
 
     const second = ingestSpool(sessionId);
     expect(second).toEqual({ appends: 0, moves: 0, skipped: 0 });
-    expect(readJsonl(paths.usageEventsFile()).length).toBe(1);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).length).toBe(1);
   });
 
   test("a blocked payload-samples or session-file write never throws, and is counted skipped", () => {
@@ -214,7 +214,7 @@ describe("ingestSpool", () => {
 
     const second = ingestSpool(sessionId);
     expect(second).toEqual({ appends: 0, moves: 0, skipped: 0 });
-    expect(readJsonl(paths.usageEventsFile()).length).toBe(1);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).length).toBe(1);
   });
 
   // A spool group is one hookWrite: one transaction in loop state, or one
@@ -243,7 +243,7 @@ describe("ingestSpool", () => {
     }
     expect(result).toEqual({ appends: 5, moves: 0, skipped: 0 });
     // Read the spill before anything imports it.
-    expect(readJsonl(paths.hookRunsFile()).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
+    expect(readJsonl(openSpillPath(paths.hookRunsFile())).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
     expect(hookRunRows(holder)).toBe(0);
     holder.close();
   });
@@ -272,10 +272,10 @@ describe("ingestSpool", () => {
     expect(result).toEqual({ appends: 9, moves: 0, skipped: 0 });
     const rowsOfAnyGroup = (plain.query("SELECT stream, count(*) AS n FROM log_records GROUP BY stream").all() as { stream: string; n: number }[]);
     expect(rowsOfAnyGroup).toEqual([]);
-    expect(readJsonl(paths.usageEventsFile()).map((r) => r["ref"])).toEqual(["skill:u0", "skill:u1"]);
-    expect(readJsonl(paths.hookRunsFile()).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
-    expect(readJsonl(paths.nudgeFiresFile()).map((r) => r["nudge"])).toEqual(["n0"]);
-    expect(readJsonl(paths.payloadSamplesFile("default")).map((r) => r["tool"])).toEqual(["Bash"]);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile())).map((r) => r["ref"])).toEqual(["skill:u0", "skill:u1"]);
+    expect(readJsonl(openSpillPath(paths.hookRunsFile())).map((r) => r["ref"])).toEqual(["hook:h0", "hook:h1", "hook:h2", "hook:h3", "hook:h4"]);
+    expect(readJsonl(openSpillPath(paths.nudgeFiresFile())).map((r) => r["nudge"])).toEqual(["n0"]);
+    expect(readJsonl(openSpillPath(paths.payloadSamplesFile("default"))).map((r) => r["tool"])).toEqual(["Bash"]);
     plain.close();
   });
 });
@@ -357,7 +357,7 @@ describe("sweepOrphanSpools", () => {
     expect(existsSync(spoolFile(stale2))).toBe(false);
     expect(existsSync(spoolFile(fresh))).toBe(true);
 
-    const events = readJsonl(paths.usageEventsFile());
+    const events = readJsonl(openSpillPath(paths.usageEventsFile()));
     expect(events.map((e) => e["ref"]).sort()).toEqual([stale1, stale2].sort());
   });
 
@@ -415,6 +415,6 @@ describe("ingestSpool through a real Stop event", () => {
     expect(result.exitCode).toBe(0);
 
     expect(existsSync(spoolFile(sessionId))).toBe(false);
-    expect(readJsonl(paths.usageEventsFile())).toEqual([{ kind: "skill", ref: "skill:from-module" }]);
+    expect(readJsonl(openSpillPath(paths.usageEventsFile()))).toEqual([{ kind: "skill", ref: "skill:from-module" }]);
   });
 });

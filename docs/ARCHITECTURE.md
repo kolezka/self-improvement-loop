@@ -81,10 +81,12 @@ queue/pending/<session_id>.json     written by the Stop/SessionEnd hook
 queue/done/<session_id>.json
 queue/failed/<session_id>.json
 usage/events.jsonl                  moved into loop-state.sqlite in 1.4 (usage events);
-usage/hook-runs.jsonl               each path is now a spill file, written by a hook only
-usage/payloads/<world>.jsonl        while the DB is unavailable and imported on the next
-usage/nudge-fires.jsonl             non-hook open; see "Loop state" below
-<spill path>.spill/<stamp>-<pid>-<seq>.jsonl
+usage/hook-runs.jsonl               each path is now written only by a 1.3.0 hook still
+usage/payloads/<world>.jsonl        running, and imported on the next non-hook open;
+usage/nudge-fires.jsonl             see "Loop state" below
+<old log>.spill/current.jsonl       the open spill file a 1.4 hook appends to while the DB
+                                    is unavailable, imported after the sealed segments
+<old log>.spill/<stamp>-<pid>-<seq>.jsonl
                                     a sealed spill segment (at 4 MiB), imported in name order
 loop-state.sqlite                   loop state DB (with -wal and -shm), mode 600; see "Loop state" below
 <old file>.imported-<stamp>-<id>    an imported legacy log or document, kept byte for byte as its backup
@@ -165,12 +167,15 @@ schema version, a STATE dir that changed device since the probe, or any error.
 `hookWrite` and `hookWriteBatch` write one record as one insert and anything
 more as one `BEGIN IMMEDIATE` transaction (a Stop's whole spool ingest is one
 transaction across all its streams). On any database failure the hook rolls
-back, spills the records to the stream's old path `P`, and keeps spilling for
-the rest of its process. Spill files are append only: at 4 MiB the hook seals
-`P` by renaming it to `P.spill/<stamp>-<pid>-<seq>.jsonl` and starts a new `P`,
-and it keeps at most 8 sealed segments per store (the oldest is unlinked, with
-one `hook.log` line). The next non-hook open imports a leftover claim, the
-sealed segments in name order, then `P`, each claimed by a rename first.
+back, spills the records to the stream's open spill file
+`P.spill/current.jsonl` (`P` is the stream's old path, which a 1.4 hook never
+writes), and keeps spilling for the rest of its process. Spill files are append
+only: at 4 MiB the hook seals `current.jsonl` by renaming it to
+`P.spill/<stamp>-<pid>-<seq>.jsonl` and starts a new one, and it keeps at most
+8 sealed segments per store (the oldest is unlinked, with one `hook.log` line).
+The next non-hook open imports leftover claims, the sealed segments in name
+order, `current.jsonl`, then `P` (written only by a 1.3.0 hook), each claimed
+by a rename first.
 
 Before any read or write of a stream, a non-hook process checks whether the old
 JSONL file is still there. If it is, it imports it in one transaction: every

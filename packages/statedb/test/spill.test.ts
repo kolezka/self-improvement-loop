@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listSpillSegments, spillDir, spillPending } from "../src/spill.ts";
+import { listSpillSegments, openSpillPath, spillDir, spillPending } from "../src/spill.ts";
 
 let tmp: string;
 let legacy: string;
@@ -41,6 +41,22 @@ describe("spill dir", () => {
     writeFileSync(join(dir, "x.jsonl.imported-1"), "{}\n");
     expect(spillPending(legacy)).toBe(false);
     writeFileSync(join(dir, "y.jsonl.importing"), "{}\n");
+    expect(spillPending(legacy)).toBe(true);
+  });
+
+  test("the open spill file is not a sealed segment; it is pending only when nonempty; its claim is a claim", () => {
+    const dir = spillDir(legacy);
+    mkdirSync(dir);
+    expect(openSpillPath(legacy)).toBe(join(dir, "current.jsonl"));
+    writeFileSync(openSpillPath(legacy), "");
+    expect(listSpillSegments(legacy)).toEqual({ segments: [], claims: [] });
+    expect(spillPending(legacy)).toBe(false);
+    writeFileSync(openSpillPath(legacy), "{}\n");
+    expect(listSpillSegments(legacy)).toEqual({ segments: [], claims: [] });
+    expect(spillPending(legacy)).toBe(true);
+    writeFileSync(openSpillPath(legacy), "");
+    writeFileSync(join(dir, "current.jsonl.importing"), "{}\n");
+    expect(listSpillSegments(legacy)).toEqual({ segments: [], claims: ["current.jsonl.importing"] });
     expect(spillPending(legacy)).toBe(true);
   });
 

@@ -1,6 +1,7 @@
 // The command hook's only way into loop state (design D4, D5): an opener that
-// never blocks, creates or migrates, a writer that spills to `P` on any
-// database failure, and the spill writer. Closure: bun:sqlite, @sil/core/paths,
+// never blocks, creates or migrates, a writer that spills on any database
+// failure, and the spill writer. A hook never writes `P` itself: a 1.3.0 hook
+// may rename its rotated tail over it. Closure: bun:sqlite, @sil/core/paths,
 // the pure stream table and spill helpers. Never open.ts, import.ts or status.ts.
 
 import { Database } from "bun:sqlite";
@@ -9,10 +10,10 @@ import { dirname, join, resolve } from "node:path";
 import * as paths from "@sil/core/paths";
 import { hookIo } from "./hook-io.ts";
 import { SCHEMA_VERSION } from "./migrations.ts";
-import { SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES, spillDir } from "./spill.ts";
+import { isSealedSegment, openSpillPath, SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES, spillDir } from "./spill.ts";
 import { type Stream, STREAMS } from "./stream-table.ts";
 
-export { SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES } from "./spill.ts";
+export { openSpillPath, SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES } from "./spill.ts";
 export { type HookIo, REAL_HOOK_IO, setHookIoForTest } from "./hook-io.ts";
 
 const HOOK_BUSY_TIMEOUT_MS = 25;
@@ -170,7 +171,7 @@ function prepareGroup(group: HookWriteGroup, index: number): PreparedGroup | "lo
 
 /** Write every group in one transaction: all rows land or none do. A single
  * record is one autocommit insert. Any database failure spills every group to
- * its own `P`, and every later call in this process. A dropped group (see
+ * its own open spill file, and every later call in this process. A dropped group (see
  * `prepareGroup`) does not stop the others. "lost" when any group was dropped
  * or could not be spilled; `onLostGroup` names each such group by its index.
  * Never throws. */
@@ -231,10 +232,7 @@ const isEnoent = (error: unknown): boolean => (error as { code?: unknown } | nul
 function applyBound(legacyPath: string, label: string): void {
   const io = hookIo();
   const dir = spillDir(legacyPath);
-  const segments = io
-    .readdir(dir)
-    .filter((name) => /\.jsonl$/.test(name))
-    .sort();
+  const segments = io.readdir(dir).filter(isSealedSegment).sort();
   while (segments.length > SPILL_MAX_SEGMENTS) {
     const oldest = segments.shift()!;
     try {
@@ -248,31 +246,31 @@ function applyBound(legacyPath: string, label: string): void {
   }
 }
 
-/** Seal `P` into its spill dir when it is at the bound. True when this call sealed it. */
+/** Seal the open spill file into a segment when it is at the bound. True when this call sealed it. */
 function sealIfFull(legacyPath: string): boolean {
   const io = hookIo();
+  const open = openSpillPath(legacyPath);
   let size = 0;
   try {
-    size = io.stat(legacyPath).size;
+    size = io.stat(open).size;
   } catch (error) {
     if (!isEnoent(error)) throw error;
   }
   if (size < SPILL_SEAL_BYTES) return false;
-  const dir = spillDir(legacyPath);
-  io.mkdir(dir);
   const stamp = new Date().toISOString().replace(/[:.]/g, "");
   try {
-    io.rename(legacyPath, join(dir, `${stamp}-${process.pid}-${sealSeq++}.jsonl`));
+    io.rename(open, join(spillDir(legacyPath), `${stamp}-${process.pid}-${sealSeq++}.jsonl`));
     return true;
   } catch (error) {
-    // Another hook sealed it or an importer claimed it: append to a new P.
+    // Another hook sealed it or an importer claimed it: append to a new open file.
     if (isEnoent(error)) return false;
     throw error;
   }
 }
 
-/** Append `lines` to the stream's `P`, sealing `P` into its spill dir first
- * when it is at the bound. False only when the append itself failed. Never throws. */
+/** Append `lines` to the stream's open spill file `P.spill/current.jsonl`,
+ * sealing it into a segment first when it is at the bound. `P` is never
+ * opened. False only when the append itself failed. Never throws. */
 export function spillWrite(stream: Stream, lines: string[], world?: string): boolean {
   let legacyPath: string;
   let label: string;
@@ -287,14 +285,14 @@ export function spillWrite(stream: Stream, lines: string[], world?: string): boo
   const io = hookIo();
   let sealed = false;
   try {
-    io.mkdir(dirname(legacyPath));
+    io.mkdir(spillDir(legacyPath));
     sealed = sealIfFull(legacyPath);
   } catch (error) {
-    // A failed seal still leaves P to append to.
+    // A failed seal still leaves the open file to append to.
     hookLog(`could not seal ${label} (${reasonOf(error)})`);
   }
   try {
-    io.appendFile(legacyPath, `${lines.join("\n")}\n`);
+    io.appendFile(openSpillPath(legacyPath), `${lines.join("\n")}\n`);
   } catch (error) {
     hookLog(`could not spill ${label} (${reasonOf(error)})`);
     return false;

@@ -596,36 +596,50 @@ world's bad lines.
 The four logs from 1.4 on (usage events, nudge fires, hook runs, payload
 samples) are written by hooks, and a hook never waits more than 25 ms for the
 database. When the DB is missing, on another schema version, moved, or busy
-past that, the hook appends the record to the store's old path `P`
-(`usage/events.jsonl` and the others above) instead, and keeps doing so for
-the rest of that hook process. A record whose append to `P` succeeds is not
-lost: the next `sil` command, worker pass or `sil web` imports the file as it
-imports any old file, and renames it to a backup. A hook of 1.3.0 still running in an open session writes the same
-path the same way.
+past that, the hook appends the record to the store's open spill file
+`P.spill/current.jsonl` instead, where `P` is the store's old path
+(`usage/events.jsonl` and the others above), and keeps doing so for the rest of
+that hook process. A 1.4 hook never writes `P` itself. A record whose spill
+append succeeds is not lost: the next `sil` command, worker pass or `sil web`
+imports the file as it imports any old file, and renames it to a backup next to
+`P`.
 
-`P` is append only. When it reaches 4 MiB the hook seals it by renaming it to
-`P.spill/<stamp>-<pid>-<seq>.jsonl` and starts a new `P`. The importer takes
-sealed segments in name order (oldest first), then `P`, and claims each by a
-rename before reading it, so a line is never imported twice. If the DB stays
-unavailable long enough for a store to hold more than 8 sealed segments
-(about 36 MiB), the hook deletes the oldest one.
+The open spill file is append only. When it reaches 4 MiB the hook seals it by
+renaming it to `P.spill/<stamp>-<pid>-<seq>.jsonl` and starts a new
+`current.jsonl`. The importer takes sealed segments in name order (oldest
+first), then `current.jsonl`, then `P`, and claims each by a rename before
+reading it, so a line is never imported twice. If the DB stays unavailable long
+enough for a store to hold more than 8 sealed segments (about 36 MiB), the hook
+deletes the oldest one.
+
+A hook of 1.3.0 still running in an open session keeps appending to `P` and
+rotating it in place when it passes its old size bound. The importer reads `P`
+too, so those lines are not lost. That rotation can, if it races an import,
+bring back the old hook's own kept tail once more (duplicate rows of its own
+lines); it cannot touch anything a 1.4 hook wrote, because no 1.4 hook writes
+`P`.
 
 A hook loses records in two cases only: that bound, the one place a hook drops
-data on purpose, and a spill append that fails (an unwritable `P` or a full
-disk), which the hook reports as lost. `hook.log` (`sil logs hook`) says what
-happened, once per hook process, for each case:
+data on purpose, and a spill append that fails (an unwritable spill dir or a
+full disk), which the hook reports as lost. `hook.log` (`sil logs hook`) says
+what happened, once per hook process, for each case:
 
 - `loop state not opened, spilling (<reason>)`: the hook could not use the DB
-  and wrote to `P`.
+  and wrote to the open spill file.
 - `loop state write failed, spilling (<reason>)`: a write failed (usually
-  `SQLITE_BUSY`), rolled back whole and went to `P`.
+  `SQLITE_BUSY`), rolled back whole and went to the open spill file.
 - `dropped a spill segment of <label>`: the 8-segment bound deleted the oldest
   sealed segment.
-- `could not spill <label> (<reason>)`: the append to `P` failed too; those
+- `could not spill <label> (<reason>)`: the spill append failed too; those
   records are lost (the second loss case above).
 
 Under heavy parallel load (thirty hooks at once) some records spill by
 design and reach the DB on the next import.
+
+Upgrade with no 1.3.0 session running if you can: close the Claude sessions
+that started before the update, then install 1.4. That avoids the duplicate
+rows above. It is advice, not a requirement: a session left running loses
+nothing it wrote.
 
 A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
 old JSONL file is also still whole in that file's backup. A line from a bundle

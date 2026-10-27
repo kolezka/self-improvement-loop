@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
+import { openSpillPath } from "@sil/statedb/hook";
 import { cleanupHookEnv, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
 
@@ -131,9 +132,9 @@ describe("PreToolUse nudge dispatch", () => {
     expect(proc.exitCode).toBe(0);
     expect((proc.stdout ?? Buffer.alloc(0)).toString("utf8").trim()).toBe("");
 
-    // No loop state in this file: the breadcrumb spills to the old path
+    // No loop state in this file: the breadcrumb spills into the open spill file
     // (statedb-write.test.ts covers the row in loop state).
-    const fires = readJsonl(paths.nudgeFiresFile());
+    const fires = readJsonl(openSpillPath(paths.nudgeFiresFile()));
     expect(fires.some((f) => f["kind"] === "nudge_dir_missing")).toBe(true);
     cleanupHookEnv(bareEnv);
   });

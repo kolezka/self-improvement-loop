@@ -138,25 +138,28 @@ describe("import of hook-written logs and sealed spill segments", () => {
     }
   });
 
-  test("sealed segments import oldest first, then the open file", () => {
+  test("sealed segments import oldest first, then the hook's open spill file, then P", () => {
     const P = events();
     const older = join(spill(P), "20260101T000000000Z-1-0.jsonl");
     const newer = join(spill(P), "20260102T000000000Z-1-0.jsonl");
+    const current = join(spill(P), "current.jsonl");
     // Seeded newest first so creation order cannot stand in for name order.
+    seed(current, [{ b: "o" }]);
     seed(newer, [{ b: "c" }]);
     seed(older, [{ b: "a" }, { b: "b" }]);
     seed(P, [{ b: "d" }]);
 
     const bodies = readRecords("usage_events", "strict").records.map((r) => r["b"]);
-    expect(bodies).toEqual(["a", "b", "c", "d"]);
+    expect(bodies).toEqual(["a", "b", "c", "o", "d"]);
 
     expect(statSync(spill(P)).isDirectory()).toBe(true);
-    expect(readdirSync(spill(P)).filter((name) => name.endsWith(".jsonl"))).toEqual([]);
-    expect(backups(P)).toHaveLength(3);
+    expect(readdirSync(spill(P)).filter((name) => name.endsWith(".jsonl") || name.endsWith(".importing"))).toEqual([]);
+    expect(backups(P)).toHaveLength(4);
     const rows = importRows("usage_events");
     expect(rows.map((r) => [r.state, r.original_path])).toEqual([
       ["verified", older],
       ["verified", newer],
+      ["verified", current],
       ["verified", P],
     ]);
     for (const row of rows) expect(dirname(row.backup_path!)).toBe(dirname(P));
@@ -242,15 +245,58 @@ describe("import of hook-written logs and sealed spill segments", () => {
     expect(readdirSync(spill(P)).filter((name) => name.endsWith(".jsonl") || name.endsWith(".importing"))).toEqual([]);
   });
 
-  test("full D5 order: P's leftover claim, a segment claim, a segment, then P", () => {
+  test("full D5 order: P's leftover claim, the spill dir's claims, a segment, the open file, then P", () => {
     const P = events();
     openState();
     seed(`${P}.importing`, [{ b: "x" }]);
     seed(join(spill(P), "20260101T000000000Z-1-0.jsonl.importing"), [{ b: "y" }]);
+    // An open-file claim a crash left, next to the open file a hook started since.
+    seed(join(spill(P), "current.jsonl.importing"), [{ b: "y2" }]);
     seed(join(spill(P), "20260102T000000000Z-1-0.jsonl"), [{ b: "z" }]);
+    seed(join(spill(P), "current.jsonl"), [{ b: "o" }]);
     seed(P, [{ b: "w" }]);
-    expect(readRecords("usage_events", "strict").records.map((r) => r["b"])).toEqual(["x", "y", "z", "w"]);
-    expect(importRows("usage_events").map((r) => r.state)).toEqual(["verified", "verified", "verified", "verified"]);
+    expect(readRecords("usage_events", "strict").records.map((r) => r["b"])).toEqual(["x", "y", "y2", "z", "o", "w"]);
+    const rows = importRows("usage_events");
+    expect(rows.map((r) => r.state)).toEqual(["verified", "verified", "verified", "verified", "verified", "verified"]);
+    expect(rows.filter((r) => r.original_path === join(spill(P), "current.jsonl"))).toHaveLength(2);
+    for (const row of rows) expect(dirname(row.backup_path!)).toBe(dirname(P));
+    expect(readdirSync(spill(P)).filter((name) => name.endsWith(".jsonl") || name.endsWith(".importing"))).toEqual([]);
+  });
+
+  test("a hook appending to the open file after its claim: the line imports on the next read, once", () => {
+    const P = events();
+    const current = join(spill(P), "current.jsonl");
+    openState();
+    seed(current, [{ n: 1 }]);
+    let appended = false;
+    setImportIoForTest({
+      stat: (path) => statSync(path),
+      rename: (from, to) => {
+        renameSync(from, to);
+        if (!appended && from === current && to === `${current}.importing`) {
+          appended = true;
+          seed(current, [{ n: 2 }]);
+        }
+      },
+      readFile: (path) => readFileSync(path),
+    });
+    expect(readRecords("usage_events", "strict").records).toEqual([{ n: 1 }]);
+    expect(appended).toBe(true);
+    expect(stateStatus().streams.usage_events.pending).toBe(true);
+    expect(readRecords("usage_events", "strict").records).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(existsSync(P)).toBe(false);
+  });
+
+  test("an empty open spill file is not pending", () => {
+    const P = events();
+    openState();
+    seed(P, [{ n: 1 }]);
+    readRecords("usage_events", "strict");
+    mkdirSync(spill(P), { recursive: true });
+    writeFileSync(join(spill(P), "current.jsonl"), "");
+    expect(stateStatus().streams.usage_events.pending).toBe(false);
+    writeFileSync(join(spill(P), "current.jsonl"), '{"n":2}\n');
+    expect(stateStatus().streams.usage_events.pending).toBe(true);
   });
 
   test("claim wins the race: a line appended after the claim imports on the next read, once", () => {

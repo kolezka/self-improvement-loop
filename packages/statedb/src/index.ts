@@ -11,7 +11,7 @@ export {
 } from "./import.ts";
 export { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 export { closeState, openState } from "./open.ts";
-export { listSpillSegments, SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES } from "./spill.ts";
+export { listSpillSegments, openSpillPath, SPILL_MAX_SEGMENTS, SPILL_SEAL_BYTES } from "./spill.ts";
 export {
   type BackupCheck,
   dropQuarantine,

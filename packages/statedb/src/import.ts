@@ -8,7 +8,7 @@ import { readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assertOneHop, fsx, isSlug, StateReadError, StateWriteError, ValidationError } from "@sil/core";
 import { openState, openStateReporting } from "./open.ts";
-import { listSpillSegments, spillDir } from "./spill.ts";
+import { listSpillSegments, openSpillPath, spillDir, spillPending } from "./spill.ts";
 import { legacyWorlds, type StoreName, type StoreRef, STORES } from "./stores.ts";
 import type { Stream } from "./streams.ts";
 
@@ -132,8 +132,8 @@ export function importSuspendedAt(db: Database): string | null {
 const originalPath = (ref: StoreRef): string => STORES[ref.store].legacyPath(ref.world);
 const claimPath = (ref: StoreRef): string => `${originalPath(ref)}.importing`;
 
-/** One file the importer claims: the old path `P` or a sealed segment of it
- * (D5). `original` is the row's `original_path`; backups always sit next to `P`. */
+/** One file the importer claims: the old path `P`, a sealed segment of it or
+ * its open spill file (D5). `original` is the row's `original_path`; backups always sit next to `P`. */
 interface Claimable {
   original: string;
   claim: string;
@@ -142,7 +142,7 @@ interface Claimable {
 
 const mainClaimable = (ref: StoreRef): Claimable => ({ original: originalPath(ref), claim: claimPath(ref), backupBase: originalPath(ref) });
 
-/** A segment of `P` by its path inside the spill dir, without `.importing`. */
+/** A segment or the open spill file of `P`, by its path inside the spill dir, without `.importing`. */
 const segmentClaimable = (ref: StoreRef, segment: string): Claimable => ({
   original: segment,
   claim: `${segment}.importing`,
@@ -160,9 +160,7 @@ const rowWorld = (ref: StoreRef): string => ref.world ?? "";
 function isPending(ref: StoreRef): boolean {
   try {
     if (statOrNull(originalPath(ref)) !== null || statOrNull(claimPath(ref)) !== null) return true;
-    if (!growsByAppend(ref)) return false;
-    const { segments, claims } = listSpillSegments(originalPath(ref));
-    return segments.length > 0 || claims.length > 0;
+    return growsByAppend(ref) && spillPending(originalPath(ref), statOrNull);
   } catch (error) {
     throw new ImportError(ref, reasonOf(error), false);
   }
@@ -447,8 +445,8 @@ function finalize(db: Database, ref: StoreRef, target: Claimable, rowId: number,
 }
 
 /** Run the D6 import for one store on `db`. Handles a claim left by a crash
- * first, then a stream's sealed segments, then the old path once; a spill
- * created after that waits for the next check. */
+ * first, then a stream's sealed segments and open spill file, then the old
+ * path once; a spill created after that waits for the next check. */
 export function importStoreOn(db: Database, ref: StoreRef): ImportOutcome[] {
   const { outcomes, error } = importCollecting(db, ref);
   if (error) throw error;
@@ -474,8 +472,9 @@ function importCollecting(db: Database, ref: StoreRef): { outcomes: ImportOutcom
 }
 
 /** D5 import order for one store: a leftover claim of `P`; for a stream, each
- * segment claim a crash left, then each sealed segment in name order (oldest
- * first); then `P`. Stops early when legacy imports are suspended. */
+ * segment or open-file claim a crash left, then each sealed segment in name
+ * order (oldest first), then the open spill file; then `P`. Stops early when
+ * legacy imports are suspended. */
 function importPasses(db: Database, ref: StoreRef, outcomes: ImportOutcome[]): void {
   const main = mainClaimable(ref);
   if (!importOne(db, ref, main, true, outcomes)) return;
@@ -493,6 +492,7 @@ function importPasses(db: Database, ref: StoreRef, outcomes: ImportOutcome[]): v
     for (const name of listed.segments) {
       if (!importOne(db, ref, segmentClaimable(ref, join(dir, name)), false, outcomes)) return;
     }
+    if (!importOne(db, ref, segmentClaimable(ref, openSpillPath(main.original)), false, outcomes)) return;
   }
   importOne(db, ref, main, false, outcomes);
 }
@@ -529,8 +529,9 @@ function importOne(db: Database, ref: StoreRef, target: Claimable, claimOnly: bo
   return true;
 }
 
-/** Claim a file by rename. ENOENT means it is gone (a hook sealed `P`, the
- * spill bound unlinked a segment, or there was nothing): nothing pending now. */
+/** Claim a file by rename. ENOENT means it is gone (a hook sealed the open
+ * spill file, the spill bound unlinked a segment, or there was nothing):
+ * nothing pending now. */
 function claimByRename(target: Claimable): boolean {
   try {
     importIo.rename(target.original, target.claim);

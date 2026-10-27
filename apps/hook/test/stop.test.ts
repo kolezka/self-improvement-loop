@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { readJsonl } from "@sil/core/fsx";
+import { openSpillPath } from "@sil/statedb/hook";
 import { closeState, readRecords } from "@sil/statedb";
 import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
@@ -151,16 +152,16 @@ describe("Stop", () => {
     const hugeLine = "x".repeat(MAX_TRANSCRIPT_SCAN_BYTES + 1024 * 1024);
     const normal = JSON.stringify({ type: "attachment", attachment: { type: "hook_success", hookName: "hook-after", exitCode: 0, durationMs: 1, hookEvent: "PreToolUse" } });
     writeFileSync(transcript, `${hugeLine}\n${normal}\n`);
-    // No loop state here: the spill proof for hook runs, read from the old path.
+    // No loop state here: the spill proof for hook runs, read from the open spill file.
 
     const payload = { session_id: "sess-stop-5", hook_event_name: "Stop", stop_hook_active: false, transcript_path: transcript, cwd: hookEnv.root };
 
     runHook(MAIN_TS, hookEnv, payload);
-    let events = readJsonl(paths.hookRunsFile());
+    let events = readJsonl(openSpillPath(paths.hookRunsFile()));
     expect(events.some((e) => e["kind"] === "hook_run")).toBe(false);
 
     runHook(MAIN_TS, hookEnv, payload);
-    events = readJsonl(paths.hookRunsFile());
+    events = readJsonl(openSpillPath(paths.hookRunsFile()));
     const hookRunEvents = events.filter((e) => e["kind"] === "hook_run");
     expect(hookRunEvents.length).toBe(1);
     expect(hookRunEvents[0]?.["ref"]).toBe("hook:hook-after");

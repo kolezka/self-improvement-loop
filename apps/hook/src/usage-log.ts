@@ -1,6 +1,6 @@
 // The handlers' one-record writers for usage events and hook runs. Both go
 // through hookWrite: a loop state row when the database is ready, else a
-// spill to the old file (design D5). Spool ingest writes its groups itself.
+// spill next to the old file (design D5). Spool ingest writes its groups itself.
 
 import { hookWrite } from "@sil/statedb/hook";
 import { log } from "./log.ts";

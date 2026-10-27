@@ -50,7 +50,7 @@ const spillDirOf = (p: string): string => `${p}.spill`;
 const openSpillOf = (p: string): string => join(spillDirOf(p), "current.jsonl");
 const dbPath = (): string => paths.loopStateDb();
 
-/** A v3 database as the non-hook opener leaves it. */
+/** A current-schema database as the non-hook opener leaves it. */
 function fresh(): void {
   openState();
   closeState();
@@ -96,7 +96,7 @@ function sealAt(target: string, extra: Partial<HookIo> = {}): HookIo {
 const SEGMENT_NAME = /^\d{4}-\d{2}-\d{2}T\d{9}Z-(\d+)-(\d+)\.jsonl$/;
 
 describe("openForHook and hookWrite on a ready database", () => {
-  test("opens a v3 database with the hook pragmas and writes a row", () => {
+  test("opens a current-schema database with the hook pragmas and writes a row", () => {
     fresh();
     const handle = openForHook();
     expect(handle).not.toBeNull();

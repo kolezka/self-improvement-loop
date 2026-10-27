@@ -25,7 +25,7 @@
     },
     "apps/cli": {
       "name": "@sil/cli",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",
@@ -46,7 +46,7 @@
     },
     "apps/hook": {
       "name": "@sil/hook",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/nudges": "workspace:*",
@@ -55,7 +55,7 @@
     },
     "apps/hook-module": {
       "name": "@sil/hook-module",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/nudges": "workspace:*",
@@ -63,7 +63,7 @@
     },
     "apps/server": {
       "name": "@sil/server",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/ops": "workspace:*",
@@ -73,7 +73,7 @@
     },
     "apps/web": {
       "name": "@sil/web",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
@@ -87,7 +87,7 @@
     },
     "packages/core": {
       "name": "@sil/core",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "yaml": "^2.9.1",
         "zod": "^4.6.5",
@@ -95,7 +95,7 @@
     },
     "packages/critic": {
       "name": "@sil/critic",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/providers": "workspace:*",
@@ -106,7 +106,7 @@
     },
     "packages/curriculum": {
       "name": "@sil/curriculum",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/feedback": "workspace:*",
@@ -119,7 +119,7 @@
     },
     "packages/feedback": {
       "name": "@sil/feedback",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",
@@ -129,14 +129,14 @@
     },
     "packages/nudges": {
       "name": "@sil/nudges",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
     },
     "packages/openclaw": {
       "name": "@sil/openclaw",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/store": "workspace:*",
@@ -145,7 +145,7 @@
     },
     "packages/ops": {
       "name": "@sil/ops",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",
@@ -162,14 +162,14 @@
     },
     "packages/providers": {
       "name": "@sil/providers",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
     },
     "packages/review": {
       "name": "@sil/review",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/curriculum": "workspace:*",
@@ -181,14 +181,14 @@
     },
     "packages/statedb": {
       "name": "@sil/statedb",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
     },
     "packages/store": {
       "name": "@sil/store",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/statedb": "workspace:*",
@@ -198,14 +198,14 @@
     },
     "packages/transcript": {
       "name": "@sil/transcript",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
       },
     },
     "packages/worker": {
       "name": "@sil/worker",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@sil/core": "workspace:*",
         "@sil/critic": "workspace:*",

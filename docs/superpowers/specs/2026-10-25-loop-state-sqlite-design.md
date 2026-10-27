@@ -678,33 +678,80 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
 - Benchmark gate, new `scripts/bench-hook-state.ts`: spawns the built
   `dist/hook.js` with a PostToolUse `Skill` payload (one usage insert) and a
   Stop with a spool of 50 lines, against tmp `SIL_*` dirs, n=200 sequential and
-  n=200 at 30 in parallel, once on `origin/main`'s build (files) and once on the
-  branch (DB). Gate: added wall time p95 at most 5 ms sequential and at most 20 ms
-  at 30 parallel, zero lost rows (DB rows plus spill lines equal events sent), and
-  the parallel run's spill count reported. Results recorded in BENCHMARK.md.
+  n=200 at 30 in parallel, on the `51fa4c4` baseline and the branch. Gate: added
+  wall time p95 at most 5 ms sequential and at most 20 ms at 30 parallel, zero
+  lost rows (DB rows plus spill lines equal events sent), and report spill lines.
+  Results are recorded in `docs/BENCHMARK.md`.
 - As built: compaction picks candidate ids once outside the lock (hook_run rows,
   rows with no string `ts`, rows past the cutoff that are not the newest per
   `(world, ref)`) and deletes by id, 1000 rows per `BEGIN IMMEDIATE` (200k rows:
   5 s, 13 to 48 ms per chunk). `trimStreams()` imports any pending file per
   store first, then trims to 40000 / 5000 / 2000 per world; the worker logs
   `{ action: "trim_streams", result }` when it deleted rows.
-- Gate protocol (ruled 2026-10-27): an isolated container on a quiet host
-  (`--cpus 4 --memory 2g --network none`), 3 interleaved repeats per build,
-  n=200, 30 parallel; the gate reads the median added p95 per row, and the
-  per-repeat spread, lost rows and spill count are reported beside it. A run
-  on a busy workstation is not a result.
-- Measured 2026-10-27 (Linux 6.12, 12 cores, 4 to the container, bun 1.4.2),
-  baseline `51fa4c4`. Branch `8389bfc` (one transaction per spool stream):
-  PostToolUse +0.49 ms sequential, +69.0 ms parallel; Stop +3.04 ms sequential,
-  +63.3 ms parallel: fails. Branch `ea9822a` (one transaction per spool
-  ingest): PostToolUse +2.48 ms sequential (repeats +2.48, +1.66, +6.74),
-  +6.30 ms parallel (+6.30, +0.49, +82.61); Stop +3.83 ms sequential (+3.83,
-  +8.70, -4.58), +16.11 ms parallel (+16.11, +8.61, +46.21): passes. Lost rows
-  0 everywhere. Parallel spill on `ea9822a`: Stop 2300 of 30150 lines over
-  three repeats (7.6%), PostToolUse 1 of 603. Open caveat: thirty simultaneous
-  hooks serialize on the write lock and some spill, by design and without loss;
-  one repeat per parallel row is over the gate, and the Stop p50 at 30 parallel
-  is 66 ms above the baseline.
+- Gate protocol (ruled 2026-10-27): each run uses a quiet host and an isolated
+  container (`--cpus 4 --memory 2g --network none`), with n=200 and 30 parallel
+  hooks. Each run has 3 interleaved baseline and branch pairs. Run B uses branch
+  `ea9822a`; C and C2 use final HEAD `c2768fe`. The pooled result combines all 9
+  pairs in B, C, C2 order. A busy workstation run is not a result. The sequential
+  rows are unchanged by the spill-path change in `c2768fe`, because spill code
+  does not run when the DB write succeeds.
+- Per-run added p95 values in ms, ordered by repeat 1, repeat 2, repeat 3. Each
+  row also shows its median, 5 ms sequential or 20 ms parallel gate verdict,
+  lost rows and branch spill lines:
+
+  Run B, branch `ea9822a`:
+
+  | row | added p95 x3 | median | gate | verdict | lost | branch spill |
+  |---|---|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [2.48, 1.66, 6.74] | 2.48 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [6.3, 0.49, 82.61] | 6.30 | 20 | PASS | 0 | 1 |
+  | Stop sequential | [3.83, 8.7, -4.58] | 3.83 | 5 | PASS | 0 | 0 |
+  | Stop 30 parallel | [16.11, 8.61, 46.21] | 16.11 | 20 | PASS | 0 | 2300 |
+
+  Run C, branch `c2768fe`:
+
+  | row | added p95 x3 | median | gate | verdict | lost | branch spill |
+  |---|---|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [6.2, 1.84, 4.15] | 4.15 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [77.32, 7.59, -21.34] | 7.59 | 20 | PASS | 0 | 0 |
+  | Stop sequential | [4.47, 14.77, 6.88] | 6.88 | 5 | FAIL | 0 | 0 |
+  | Stop 30 parallel | [92.49, 39.36, 27.49] | 39.36 | 20 | FAIL | 0 | 2100 |
+
+  Run C2, branch `c2768fe`:
+
+  | row | added p95 x3 | median | gate | verdict | lost | branch spill |
+  |---|---|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [2.32, 1.96, 2.22] | 2.22 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [69.63, 79.12, 4.46] | 69.63 | 20 | FAIL | 0 | 0 |
+  | Stop sequential | [1.42, 1.91, 8.32] | 1.91 | 5 | PASS | 0 | 0 |
+  | Stop 30 parallel | [17.31, 132.13, 40.35] | 40.35 | 20 | FAIL | 0 | 2650 |
+
+- Pooled added p95 over the 9 pairs in B, C, C2 order, with the spread of the
+  baseline's own p95 values:
+
+  | row | added p95 x9 | median | baseline p95 spread | gate | assessment | lost | branch spill |
+  |---|---|---:|---:|---:|---|---:|---:|
+  | PostToolUse sequential | [2.5, 1.7, 6.7, 6.2, 1.8, 4.2, 2.3, 2.0, 2.2] | 2.3 | 3.5 | 5 | PASS | 0 | 0 |
+  | PostToolUse 30 parallel | [6.3, 0.5, 82.6, 77.3, 7.6, -21.3, 69.6, 79.1, 4.5] | 7.6 | 103.0 | 20 | Under the numeric limit, but unmeasurable at this threshold | 0 | 1 |
+  | Stop sequential | [3.8, 8.7, -4.6, 4.5, 14.8, 6.9, 1.4, 1.9, 8.3] | 4.5 | 7.9 | 5 | PASS | 0 | 0 |
+  | Stop 30 parallel | [16.1, 8.6, 46.2, 92.5, 39.4, 27.5, 17.3, 132.1, 40.4] | 39.4 | 79.6 | 20 | FAIL | 0 | 7050 |
+
+- Pooled added p50 in ms (B, C, C2, then median):
+
+  | row | B | C | C2 | pooled median |
+  |---|---:|---:|---:|---:|
+  | PostToolUse sequential | 1.54 | 1.87 | 1.77 | 1.7 |
+  | PostToolUse 30 parallel | 15.04 | 11.32 | 15.69 | 15.0 |
+  | Stop sequential | 2.45 | 3.03 | 1.73 | 2.1 |
+  | Stop 30 parallel | 66.08 | 58.85 | 53.78 | 58.8 |
+
+  The raw files and requested pooled script give +58.8 ms for Stop 30 parallel,
+  not the earlier +55 ms estimate. Lost rows were 0 in every run. The branch
+  spilled 7050 Stop lines, imported later by design. Thirty concurrent Stops
+  serialize on the SQLite write lock, wait up to the 25 ms busy timeout, then
+  spill; the baseline's four O_APPEND writes do not contend.
+
+  Decision on the parallel Stop row: pending the owner.
 
 ### D12. Phase 4 specifics
 

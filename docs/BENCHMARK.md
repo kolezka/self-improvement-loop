@@ -171,58 +171,77 @@ With `--json` the JSON goes to stdout and the table to stderr.
 
 ### Protocol
 
-The gate compares two builds: `origin/main` built in its own worktree with its
-own `bun install` (no symlinked `node_modules`), and the branch. "Added p95" is
-the branch p95 minus the baseline p95 for the same row. Thresholds: at most
-5 ms sequential, at most 20 ms at 30 parallel, and zero lost rows.
+The gate compares the `51fa4c4` baseline, built in its own worktree with its
+own `bun install` and no symlinked `node_modules`, with a branch build. "Added
+p95" is the branch p95 minus the baseline p95 for the same row. Thresholds are
+5 ms sequential, 20 ms at 30 parallel, and zero lost rows.
 
 1. Run on a quiet host, inside an isolated container (`--cpus 4 --memory 2g
    --network none`), never on a busy workstation.
-2. Run 3 repeats per build, interleaved (baseline, branch, baseline, ...),
-   n=200, 30 parallel.
-3. Take the median added p95 per row. Report each repeat's added p95 (the
-   spread), the lost rows and the branch's spill count beside it.
+2. Each run has 3 interleaved baseline and branch pairs, with n=200 and 30
+   parallel hooks.
+3. Run B uses branch `ea9822a`; runs C and C2 use final HEAD `c2768fe`. The
+   pooled table combines all 9 pairs in B, C, C2 order. It reports the median
+   added p95 per row, each run's repeat values, lost rows and branch spill lines.
 
 ### Result, 2026-10-27
 
-Host: Linux 6.12, 12 cores, 4 given to the container, bun 1.4.2, load 1 to 6.
-Baseline `51fa4c4` (1.3.0, files). Branch before the fix `8389bfc`, after it
-`ea9822a` (one transaction per spool ingest instead of one per stream).
+Baseline `51fa4c4` (1.3.0, files). Run B used branch `ea9822a` (one transaction
+per spool ingest). Runs C and C2 used final HEAD `c2768fe`, which changes the
+spill path. Sequential rows are unchanged by that spill-path change because the
+spill code does not run when the DB write succeeds.
 
-Median added p95, ms (each repeat's value in brackets):
+Per-run p95 values in ms. Each list is repeat 1, repeat 2, repeat 3. `Lost` is
+the total lost rows for the baseline and branch; `Spill` counts branch file lines.
 
-| row | gate | `8389bfc` | `ea9822a` |
-|---|---|---|---|
-| PostToolUse, sequential | 5 | +0.49 (+1.61, +0.49, -1.54) | +2.48 (+2.48, +1.66, +6.74) |
-| PostToolUse, 30 parallel | 20 | +69.02 (+11.81, +69.02, +70.92) | +6.30 (+6.30, +0.49, +82.61) |
-| Stop, sequential | 5 | +3.04 (+5.85, +3.04, +1.29) | +3.83 (+3.83, +8.70, -4.58) |
-| Stop, 30 parallel | 20 | +63.33 (-18.23, +88.20, +63.33) | +16.11 (+16.11, +8.61, +46.21) |
-| verdict | | fails both parallel rows | passes |
+Run B, branch `ea9822a`:
 
-Baseline p95 per repeat, ms, for scale: PostToolUse sequential 14.6 to 22,
-PostToolUse 30 parallel 203 to 274, Stop sequential 20 to 28, Stop 30 parallel
-386 to 492. Lost rows: 0 in every row of every repeat, both sessions. The
-branch's 30 parallel runs spilled, over 3 repeats: Stop 2935 of 30150 lines
-before the fix and 2300 (7.6%) after; PostToolUse 0 before and 1 of 603 after.
+| row | main p95 x3 | branch p95 x3 | added p95 x3 | median | gate | run verdict | lost | spill |
+|---|---|---|---|---:|---:|---|---:|---:|
+| PostToolUse sequential | [15.09, 16.12, 15.52] | [17.57, 17.78, 22.26] | [2.48, 1.66, 6.74] | 2.48 | 5 | PASS | 0 | 0 |
+| PostToolUse 30 parallel | [219.68, 273.6, 203.4] | [225.98, 274.09, 286.01] | [6.3, 0.49, 82.61] | 6.30 | 20 | PASS | 0 | 1 |
+| Stop sequential | [20.9, 20.2, 28.13] | [24.73, 28.9, 23.55] | [3.83, 8.7, -4.58] | 3.83 | 5 | PASS | 0 | 0 |
+| Stop 30 parallel | [386.25, 405.37, 395.97] | [402.36, 413.98, 442.18] | [16.11, 8.61, 46.21] | 16.11 | 20 | PASS | 0 | 2300 |
 
-What the numbers say:
+Run C, branch `c2768fe`:
 
-- One hook at a time, the DB adds 0.5 to 3.8 ms at the median p95 (open,
-  pragmas, one insert or one transaction); both sequential rows pass.
-- At 30 parallel the hooks queue on SQLite's single write lock. Before the fix a
-  Stop took the lock four times (one transaction per stream); now it takes it
-  once. A hook that cannot get the lock within its 25 ms busy timeout spills
-  instead of waiting, so contention shows up as spill lines, never as a lost
-  row. That spill is by design and is imported on the next non-hook open.
-- The parallel rows are noisy: the baseline's own p95 moves by up to 101 ms
-  between repeats, and one repeat in each parallel row is over the gate. The
-  median is what the gate reads. The p50 of Stop at 30 parallel is 66 ms above
-  the baseline after the fix (223 vs 289 ms): the median Stop waits on the lock,
-  and only the median p95 is gated.
-- Bun closes an open database when the process exits, so a hook that is the
-  last connection checkpoints and truncates the WAL on its way out (WAL 20632
-  bytes while open, 0 after exit, on macOS). An explicit close does the same
-  checkpoint, and measured no different in wall time.
+| row | main p95 x3 | branch p95 x3 | added p95 x3 | median | gate | run verdict | lost | spill |
+|---|---|---|---|---:|---:|---|---:|---:|
+| PostToolUse sequential | [18.57, 15.33, 15.85] | [24.77, 17.17, 20] | [6.2, 1.84, 4.15] | 4.15 | 5 | PASS | 0 | 0 |
+| PostToolUse 30 parallel | [213.39, 220.08, 306.39] | [290.71, 227.67, 285.05] | [77.32, 7.59, -21.34] | 7.59 | 20 | PASS | 0 | 0 |
+| Stop sequential | [21.01, 21.68, 23.43] | [25.48, 36.45, 30.31] | [4.47, 14.77, 6.88] | 6.88 | 5 | FAIL | 0 | 0 |
+| Stop 30 parallel | [390.3, 399.38, 452.98] | [482.79, 438.74, 480.47] | [92.49, 39.36, 27.49] | 39.36 | 20 | FAIL | 0 | 2100 |
+
+Run C2, branch `c2768fe`:
+
+| row | main p95 x3 | branch p95 x3 | added p95 x3 | median | gate | run verdict | lost | spill |
+|---|---|---|---|---:|---:|---|---:|---:|
+| PostToolUse sequential | [15.35, 15.56, 18.08] | [17.67, 17.52, 20.3] | [2.32, 1.96, 2.22] | 2.22 | 5 | PASS | 0 | 0 |
+| PostToolUse 30 parallel | [208.64, 206.62, 267.08] | [278.27, 285.74, 271.54] | [69.63, 79.12, 4.46] | 69.63 | 20 | FAIL | 0 | 0 |
+| Stop sequential | [24.44, 21.19, 21.51] | [25.86, 23.1, 29.83] | [1.42, 1.91, 8.32] | 1.91 | 5 | PASS | 0 | 0 |
+| Stop 30 parallel | [389.48, 392.65, 373.34] | [406.79, 524.78, 413.69] | [17.31, 132.13, 40.35] | 40.35 | 20 | FAIL | 0 | 2650 |
+
+Pooled added p95 over the 9 pairs in B, C, C2 order:
+
+| row | added p95 x9 | median | baseline p95 spread | gate | assessment | lost | branch spill |
+|---|---|---:|---:|---:|---|---:|---:|
+| PostToolUse sequential | [2.5, 1.7, 6.7, 6.2, 1.8, 4.2, 2.3, 2.0, 2.2] | 2.3 | 3.5 | 5 | PASS | 0 | 0 |
+| PostToolUse 30 parallel | [6.3, 0.5, 82.6, 77.3, 7.6, -21.3, 69.6, 79.1, 4.5] | 7.6 | 103.0 | 20 | Under the numeric limit, but unmeasurable at this threshold | 0 | 1 |
+| Stop sequential | [3.8, 8.7, -4.6, 4.5, 14.8, 6.9, 1.4, 1.9, 8.3] | 4.5 | 7.9 | 5 | PASS | 0 | 0 |
+| Stop 30 parallel | [16.1, 8.6, 46.2, 92.5, 39.4, 27.5, 17.3, 132.1, 40.4] | 39.4 | 79.6 | 20 | FAIL | 0 | 7050 |
+
+The pooled median added p50 values are +1.7 ms for PostToolUse sequential,
++15.0 ms for PostToolUse 30 parallel, +2.1 ms for Stop sequential, and +58.8 ms
+for Stop 30 parallel. The last value is the median of the nine branch-minus-
+baseline p50 differences from the raw files. It differs from the earlier +55 ms
+estimate; the requested pooled script gives +58.8 ms on these inputs.
+
+Lost rows are 0 in every run. The branch spilled 7050 Stop lines across the 9
+pairs, all imported later by design. Thirty concurrent Stops serialize on the
+SQLite write lock; they wait up to the 25 ms busy timeout, then spill. The
+baseline's four O_APPEND writes do not contend.
+
+Decision on the parallel Stop row: pending the owner.
 
 ### Why the protocol asks for a quiet host
 

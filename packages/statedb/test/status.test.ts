@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths, StateReadError } from "@sil/core";
-import { closeState, dropQuarantine, exportLegacy, listQuarantine, openState, replaceAliases, saveDoc, stateStatus } from "../src/index.ts";
+import { appendRecord, closeState, dropQuarantine, exportLegacy, listQuarantine, openState, replaceAliases, saveDoc, stateStatus } from "../src/index.ts";
 
 let tmp: string;
 const saved: Record<string, string | undefined> = {};
@@ -139,6 +139,26 @@ describe("documents and aliases in status and quarantine", () => {
     expect(readFileSync(target, "utf8")).toBe(bytes);
     const rows = openState().query("SELECT store, world, original_path AS path FROM legacy_imports WHERE origin = 'export'").all();
     expect(rows).toEqual([{ store: "payload_samples", world: "late", path: target }]);
+  });
+
+  test("exportLegacy refuses payload worlds whose names are not path-safe", () => {
+    appendRecord("payload_samples", { world: "a/b", marker: "unsafe" }, "default");
+    appendRecord("payload_samples", { world: "a_b", marker: "safe" }, "default");
+
+    const target = paths.payloadSamplesFile("a_b");
+    const result = exportLegacy(false);
+
+    expect(result.failures).toEqual([]);
+    expect(result.refused).toEqual([
+      {
+        store: "payload_samples",
+        world: "a/b",
+        path: target,
+        message: 'the payload samples of world "a/b": world name is not path-safe',
+      },
+    ]);
+    expect(result.written).toEqual([target]);
+    expect(readFileSync(target, "utf8")).toBe('{"world":"a_b","marker":"safe"}\n');
   });
 
   test("exportLegacy refuses a quarantined document world and still exports the others", () => {

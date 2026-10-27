@@ -5,7 +5,7 @@ import type { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fsx, paths, StateReadError, StateWriteError } from "@sil/core";
+import { fsx, paths, StateReadError, StateWriteError, WORLD_NAME_RE } from "@sil/core";
 import { ensureImported, importAll, type ImportAllResult, importAllOn, importSuspendedAt, legacyIo, reasonOf, SUSPENDED_KEY } from "./import.ts";
 import { quarantineCountOn, quarantinedMessage, storeRef, strictStoreImportError } from "./docs.ts";
 import { openState, openStateReporting } from "./open.ts";
@@ -521,7 +521,13 @@ export function exportLegacy(force: boolean): ExportLegacyResult {
 
     for (const stream of ready) stageStream(stream, null);
     for (const world of payloadWorldsOn(db)) {
-      if (!notImported.has(refKey({ store: "payload_samples", world }))) stageStream("payload_samples", world);
+      const ref: StoreRef = { store: "payload_samples", world };
+      const target = STREAMS.payload_samples.legacyPath(world);
+      if (!(WORLD_NAME_RE.test(world) && paths.safeComponent(world) === world)) {
+        refuse(ref, target, `${labelOf(ref.store, ref.world)}: world name is not path-safe`);
+        continue;
+      }
+      if (!notImported.has(refKey(ref))) stageStream("payload_samples", world);
     }
 
     for (const ref of allDocRefs(db)) {

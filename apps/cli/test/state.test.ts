@@ -7,7 +7,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirS
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fsx, paths, StateReadError } from "@sil/core";
-import { closeState, readRecords, replaceStream } from "@sil/statedb";
+import { appendRecord, closeState, readRecords, replaceStream } from "@sil/statedb";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 
@@ -284,6 +284,20 @@ describe("sil state", () => {
     expect(r.code).toBe(0);
     const exported = (world: string): string | null => (existsSync(paths.payloadSamplesFile(world)) ? readFileSync(paths.payloadSamplesFile(world), "utf8") : null);
     for (const [world, text] of Object.entries(seeds)) expect({ world, text: exported(world) }).toEqual({ world, text });
+  });
+
+  test("export --legacy-paths refuses unsafe payload worlds without overwriting a safe sibling", () => {
+    appendRecord("payload_samples", { world: "a/b", marker: "unsafe" }, "default");
+    appendRecord("payload_samples", { world: "a_b", marker: "safe" }, "default");
+    closeState();
+
+    const target = paths.payloadSamplesFile("a_b");
+    const result = sil("state", "export", "--legacy-paths");
+
+    expect(result.code).toBe(1);
+    expect(result.out).toBe(`wrote ${target}\n`);
+    expect(result.err).toContain('the payload samples of world "a/b": world name is not path-safe');
+    expect(readFileSync(target, "utf8")).toBe('{"world":"a_b","marker":"safe"}\n');
   });
 
   test("export --legacy-paths refuses a payload world with only quarantined lines and still writes the others", () => {

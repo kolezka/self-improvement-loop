@@ -72,7 +72,8 @@ export function cmdStateStatus(opts: { json?: boolean }): number {
   console.log("imports:");
   for (const imp of status.imports) {
     if (imp.state === "failed") {
-      console.log(`  ${named(imp.store, imp.world).padEnd(16)} failed: ${imp.failure ?? "no reason recorded"}`);
+      const label = Object.hasOwn(STORES, imp.store) ? STORES[imp.store as StoreName].label(imp.world) : imp.store;
+      console.log(`  ${named(imp.store, imp.world).padEnd(16)} failed: ${label} (${imp.originalPath}): ${imp.failure ?? "no reason recorded"}`);
       continue;
     }
     let check: string;

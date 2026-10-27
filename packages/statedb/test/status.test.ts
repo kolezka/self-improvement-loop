@@ -29,10 +29,10 @@ afterEach(() => {
   }
 });
 
-function importRow(state: "verified" | "failed", dev: number | null, ino: number | null, failure: string | null = null): void {
+function importRow(state: "verified" | "failed", dev: number | null, ino: number | null, failure: string | null = null, originalPath = "/x"): void {
   openState()
-    .query("INSERT INTO legacy_imports (store, original_path, state, failure, dev, ino, started_at) VALUES ('critic', '/x', ?, ?, ?, ?, 't')")
-    .run(state, failure, dev, ino);
+    .query("INSERT INTO legacy_imports (store, original_path, state, failure, dev, ino, started_at) VALUES ('critic', ?, ?, ?, ?, ?, 't')")
+    .run(originalPath, state, failure, dev, ino);
 }
 
 describe("stateStatus imports", () => {
@@ -51,8 +51,14 @@ describe("stateStatus imports", () => {
   test("a failed row has no backup check", () => {
     importRow("failed", 1, 10, "boom");
     expect(stateStatus().imports).toEqual([
-      { store: "critic", world: null, state: "failed", backupPath: null, failure: "boom", lines: 0, backupCheck: null, grewBytes: null },
+      { store: "critic", world: null, state: "failed", originalPath: "/x", backupPath: null, failure: "boom", lines: 0, backupCheck: null, grewBytes: null },
     ]);
+  });
+
+  test("a failed segment import names the segment it came from", () => {
+    const segment = `${paths.criticFeedbackFile()}.spill/20261026T000000000Z-1-0.jsonl`;
+    importRow("failed", null, null, "EIO", segment);
+    expect(stateStatus().imports.map((i) => [i.state, i.originalPath, i.failure])).toEqual([["failed", segment, "EIO"]]);
   });
 });
 

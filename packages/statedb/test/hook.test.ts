@@ -298,6 +298,39 @@ describe("hookWriteBatch", () => {
     expect(hookLogLines().filter((l) => l.includes("written without a world"))).toHaveLength(1);
   });
 
+  test("a loss observer that throws is logged once and the later groups are still spilled", () => {
+    const failing = openSpillOf(legacy("usage_events"));
+    setHookIoForTest({
+      ...REAL_HOOK_IO,
+      appendFile: (p, data) => {
+        if (p === failing) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        REAL_HOOK_IO.appendFile(p, data);
+      },
+    });
+    const seen: number[] = [];
+    let outcome: string | null = null;
+    let thrown: unknown = null;
+    try {
+      outcome = hookWriteBatch(
+        [
+          { stream: "usage_events", records: [ev(1)] },
+          { stream: "hook_runs", records: [ev(2)] },
+        ],
+        (index) => {
+          seen.push(index);
+          throw new Error("observer failed");
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(lines(openSpillOf(legacy("hook_runs")))).toEqual(bodiesOf([ev(2)]));
+    expect(thrown).toBeNull();
+    expect(outcome).toBe("lost");
+    expect(seen).toEqual([0]);
+    expect(hookLogLines().filter((l) => l.includes("loss observer failed"))).toHaveLength(1);
+  });
+
   test("an empty batch is db and opens nothing", () => {
     expect(hookWriteBatch([])).toBe("db");
     expect(hookWriteBatch([{ stream: "usage_events", records: [] }])).toBe("db");

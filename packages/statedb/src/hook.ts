@@ -169,6 +169,8 @@ function prepareGroup(group: HookWriteGroup, index: number): PreparedGroup | "lo
   return { index, stream, records: good, bodies, world };
 }
 
+// API note: a group with some non-object records commits the valid ones and
+// reports no loss for the dropped ones; every production caller filters non-objects first.
 /** Write every group in one transaction: all rows land or none do. A single
  * record is one autocommit insert. Any database failure spills every group to
  * its own open spill file, and every later call in this process. A dropped group (see
@@ -179,7 +181,12 @@ export function hookWriteBatch(groups: HookWriteGroup[], onLostGroup?: (index: n
   let anyLost = false;
   const lose = (index: number): void => {
     anyLost = true;
-    onLostGroup?.(index);
+    try {
+      onLostGroup?.(index);
+    } catch (error) {
+      // The observer only counts; a throw from it must not stop the other groups.
+      hookLog(`loss observer failed (${reasonOf(error)})`);
+    }
   };
   const prepared: PreparedGroup[] = [];
   groups.forEach((group, index) => {

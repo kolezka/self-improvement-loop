@@ -195,6 +195,22 @@ describe("sil state", () => {
     expect(status().imports[0]!.backupCheck).toBe("missing");
   });
 
+  test("status text names the source file of a failed import", () => {
+    expect(sil("state", "migrate").code).toBe(0);
+    const segment = `${paths.usageEventsFile()}.spill/20261026T000000000Z-1-0.jsonl`;
+    const db = new Database(paths.loopStateDb(), { readwrite: true, create: false });
+    try {
+      db.query("INSERT INTO legacy_imports (store, original_path, state, failure, started_at) VALUES ('usage_events', ?, 'failed', 'EIO', 't')").run(segment);
+    } finally {
+      db.close();
+    }
+    const r = sil("state", "status");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`failed: the usage log (${segment}): EIO\n`);
+    expect(status().imports).toContainEqual(expect.objectContaining({ store: "usage_events", state: "failed", originalPath: segment }));
+  });
+
   test("status prints the late-append warning in text mode", () => {
     seedCritic();
     expect(sil("state", "migrate").code).toBe(0);

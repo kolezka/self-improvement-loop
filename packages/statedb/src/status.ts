@@ -19,6 +19,8 @@ export interface StatusImport {
   store: string;
   world: string | null;
   state: string;
+  /** The file the import claimed: `P`, a sealed segment or the open spill file. */
+  originalPath: string;
   backupPath: string | null;
   failure: string | null;
   /** Lines imported as rows. */
@@ -323,6 +325,7 @@ export function stateStatus(): StateStatus {
       store: row.store,
       world: row.world,
       state: row.state,
+      originalPath: row.original_path,
       backupPath: row.backup_path,
       failure: row.failure,
       lines: row.lines_imported,

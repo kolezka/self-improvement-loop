@@ -49,6 +49,14 @@ export function groupByDay<T extends { created: string }>(items: T[], now: Date 
   }));
 }
 
+/** The timestamp a reflection row shows: the write time when the file has
+ * one, else the date-only `created` of files written before that field. Shown
+ * as a time, a date-only value is midnight UTC for every reflection of the
+ * day, which made new ones look six hours old. */
+export function writtenAt(item: { created: string; created_at?: string | null }): string {
+  return item.created_at ?? item.created;
+}
+
 export interface PatternCount {
   pattern: string;
   count: number;

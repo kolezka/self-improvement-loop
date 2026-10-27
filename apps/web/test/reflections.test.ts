@@ -4,9 +4,21 @@
 // into its "## heading" sections for the reader.
 
 import { describe, expect, test } from "bun:test";
-import { buildPatternOutcomeFlows, groupByDay, patternCounts, reflectionOutcome, reflectionSections, topPatternIds } from "../src/lib/reflections.ts";
+import { buildPatternOutcomeFlows, groupByDay, patternCounts, reflectionOutcome, reflectionSections, topPatternIds, writtenAt } from "../src/lib/reflections.ts";
 
 const NOW = new Date("2026-09-29T15:00:00Z");
+
+describe("writtenAt", () => {
+  test("prefers the write-time timestamp over the date-only created field", () => {
+    // `created` is a date; shown as a time it reads as midnight UTC for every
+    // reflection of the day, which hid new ones in the list.
+    expect(writtenAt({ created: "2026-10-27", created_at: "2026-10-27T06:30:11.429Z" })).toBe("2026-10-27T06:30:11.429Z");
+  });
+
+  test("falls back to created when the reflection predates created_at", () => {
+    expect(writtenAt({ created: "2026-10-27", created_at: null })).toBe("2026-10-27");
+  });
+});
 
 describe("groupByDay", () => {
   test("labels the current local day as Today and the one before as Yesterday", () => {

@@ -12,6 +12,7 @@
     reflectionOutcome,
     reflectionSections,
     topPatternIds,
+    writtenAt,
     type CurriculumPlanAction,
     type RouterStatusRow,
   } from "../lib/reflections.ts";
@@ -27,6 +28,7 @@
     id: string;
     pattern: string;
     created: string;
+    created_at?: string | null;
     lesson?: string;
     artifacts_used?: string[];
     artifacts_helpful?: string[];
@@ -286,7 +288,7 @@
                       <p class="reflections-lesson">{firstLine(r.lesson)}</p>
                     {/if}
                     <div class="reflections-row__meta">
-                      <span class="reflections-row__date muted">{formatTime(r.created)}</span>
+                      <span class="reflections-row__date muted">{formatTime(writtenAt(r))}</span>
                       {#each countBadges(r) as b}<span class="chip {b.cls}">{b.label}</span>{/each}
                     </div>
                   </button>
@@ -312,7 +314,7 @@
       {:else if selected}
         <div class="meta">
           <span class="mono">{selected.id}</span>
-          <span>{formatTime(selected.created)}</span>
+          <span>{formatTime(writtenAt(selected))}</span>
           {#if selected.session_id}<span class="mono">{selected.session_id}</span>{/if}
           {#if stagedPatterns.has(selected.pattern)}
             <a class="chip accent" href="#/review">{selected.pattern}, in review</a>

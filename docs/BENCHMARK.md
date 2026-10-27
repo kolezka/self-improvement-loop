@@ -137,7 +137,7 @@ with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` (the module owns the four in-session
 events) and once without (command hooks only). Both runs delivered the rule, the
 lesson and the nudge to the model, queued the session, and kicked the worker.
 
-| event | command hook (`bun dist/hook.js`, transcript `durationMs`) | module (own work, `hook:module:*` in hook-runs.jsonl) |
+| event | command hook (`bun dist/hook.js`, transcript `durationMs`) | module (own work, `hook:module:*` hook runs; then in hook-runs.jsonl, since 1.4 `hook_runs` rows) |
 |---|---|---|
 | SessionStart, cold | 163 to 191 ms | 67 and 98 ms over two runs (includes the pid probe 9 ms, `realpath` 6 ms, `git rev-parse` 2 ms) |
 | UserPromptSubmit | not recorded by Claude Code | 0.8 and 1 ms |
@@ -150,3 +150,85 @@ reduced to a `sh` test that exits at once. The module's `classic.PreToolUse`
 `settled in` time reported by `claude --debug` still includes every other
 plugin's command hooks beneath it, so it is not a measure of this plugin.
 
+
+## Hook state gate (phase 3)
+
+`scripts/bench-hook-state.ts` checks the cost the loop state DB adds to the
+command hook (design D11). It spawns a built `dist/hook.js` with two payloads:
+a PostToolUse `Skill` call (one usage event) and a Stop that ingests a 50-line
+module spool (20 usage events, 20 hook runs, 5 nudge fires, 5 payload samples).
+Each payload runs n times one after another, then n times with 30 hooks running
+at once, each mode against fresh tmp `SIL_*` dirs set up by the `cli.js` next to
+the bundle (`sil init`, `sil state migrate`). It prints p50, p95 and max wall
+time per row, DB rows, spill or file lines, and the events sent, and exits 1 when
+rows plus lines differ from the events sent or a hook fails.
+
+```
+bun run bench:hook-state -- --hook dist/hook.js [--n 200] [--parallel 30] [--json]
+```
+
+With `--json` the JSON goes to stdout and the table to stderr.
+
+### Protocol
+
+The gate compares two builds: `origin/main` built in its own worktree with its
+own `bun install` (no symlinked `node_modules`), and the branch. "Added p95" is
+the branch p95 minus the baseline p95 for the same row. Thresholds: at most
+5 ms sequential, at most 20 ms at 30 parallel, and zero lost rows.
+
+1. Run on a quiet host, inside an isolated container (`--cpus 4 --memory 2g
+   --network none`), never on a busy workstation.
+2. Run 3 repeats per build, interleaved (baseline, branch, baseline, ...),
+   n=200, 30 parallel.
+3. Take the median added p95 per row. Report each repeat's added p95 (the
+   spread), the lost rows and the branch's spill count beside it.
+
+### Result, 2026-10-27
+
+Host: Linux 6.12, 12 cores, 4 given to the container, bun 1.4.2, load 1 to 6.
+Baseline `51fa4c4` (1.3.0, files). Branch before the fix `8389bfc`, after it
+`ea9822a` (one transaction per spool ingest instead of one per stream).
+
+Median added p95, ms (each repeat's value in brackets):
+
+| row | gate | `8389bfc` | `ea9822a` |
+|---|---|---|---|
+| PostToolUse, sequential | 5 | +0.49 (+1.61, +0.49, -1.54) | +2.48 (+2.48, +1.66, +6.74) |
+| PostToolUse, 30 parallel | 20 | +69.02 (+11.81, +69.02, +70.92) | +6.30 (+6.30, +0.49, +82.61) |
+| Stop, sequential | 5 | +3.04 (+5.85, +3.04, +1.29) | +3.83 (+3.83, +8.70, -4.58) |
+| Stop, 30 parallel | 20 | +63.33 (-18.23, +88.20, +63.33) | +16.11 (+16.11, +8.61, +46.21) |
+| verdict | | fails both parallel rows | passes |
+
+Baseline p95 per repeat, ms, for scale: PostToolUse sequential 14.6 to 22,
+PostToolUse 30 parallel 203 to 274, Stop sequential 20 to 28, Stop 30 parallel
+386 to 492. Lost rows: 0 in every row of every repeat, both sessions. The
+branch's 30 parallel runs spilled, over 3 repeats: Stop 2935 of 30150 lines
+before the fix and 2300 (7.6%) after; PostToolUse 0 before and 1 of 603 after.
+
+What the numbers say:
+
+- One hook at a time, the DB adds 0.5 to 3.8 ms at the median p95 (open,
+  pragmas, one insert or one transaction); both sequential rows pass.
+- At 30 parallel the hooks queue on SQLite's single write lock. Before the fix a
+  Stop took the lock four times (one transaction per stream); now it takes it
+  once. A hook that cannot get the lock within its 25 ms busy timeout spills
+  instead of waiting, so contention shows up as spill lines, never as a lost
+  row. That spill is by design and is imported on the next non-hook open.
+- The parallel rows are noisy: the baseline's own p95 moves by up to 101 ms
+  between repeats, and one repeat in each parallel row is over the gate. The
+  median is what the gate reads. The p50 of Stop at 30 parallel is 66 ms above
+  the baseline after the fix (223 vs 289 ms): the median Stop waits on the lock,
+  and only the median p95 is gated.
+- Bun closes an open database when the process exits, so a hook that is the
+  last connection checkpoints and truncates the WAL on its way out (WAL 20632
+  bytes while open, 0 after exit, on macOS). An explicit close does the same
+  checkpoint, and measured no different in wall time.
+
+### Why the protocol asks for a quiet host
+
+The first run of this gate was on a macOS workstation (Apple M4 Pro, macOS
+27.0.1) at load average 10 to 17. It reported +12 ms sequential and +63 to
++97 ms parallel for `8389bfc`, and three repeats of the same baseline differed
+by 49 ms at p95 on one parallel row. The same commits in the container gave
++0.5 and +3.0 ms sequential. Those Mac numbers are not a result; they are why
+the gate is run in a container on a quiet host.

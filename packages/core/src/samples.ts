@@ -14,7 +14,6 @@
 // credential shapes are blanked before the write.
 export const SAMPLED_INPUT_KEYS = ["command", "file_path"] as const;
 export const SAMPLE_VALUE_MAX_CHARS = 500;
-export const SAMPLES_ROTATE_AT_BYTES = 2 * 1024 * 1024;
 export const SAMPLES_KEEP_LINES = 2000;
 
 // A gate matches flags and subcommands, never the value after them.

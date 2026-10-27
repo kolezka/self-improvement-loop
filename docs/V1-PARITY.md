@@ -32,7 +32,7 @@ The "V2 location" column points at the current TypeScript/Bun implementation
 | Accept digest (`reviewed_state`) | `packages/review/src/index.ts`, `ReviewDetail.reviewed_state` | kept | Same 64-hex-char hash, recomputed and re-checked around the remote steps. |
 | Relink skills into the world's Claude config dir on accept | `packages/review/src/index.ts` (`relink`, calls into `packages/curriculum/src/git.ts`) | kept | Same relink step after a fast-forward merge. |
 | Nudge dispatcher (sorted `*.json`, one winner, once-per-session, fire log) | `packages/nudges/src/dispatch.ts` | kept | Same contract: PreToolUse/PostToolUse/UserPromptSubmit dispatch, never blocks. |
-| Nudge fire log (`usage/nudge-fires.jsonl`) | `packages/core/src/paths.ts::nudgeFiresFile`, `packages/nudges/src/firelog.ts` | kept | Same JSONL shape. |
+| Nudge fire log (`usage/nudge-fires.jsonl`) | `nudge_fires` stream in `packages/statedb`, `packages/nudges/src/firelog.ts` | kept | Same JSONL shape in bundles and in `sil state export --legacy-paths`. The live file is gone since 1.4: fires are rows in `loop-state.sqlite`, and the old path is only a spill file while the DB is unavailable. |
 | `llm.yaml` model roles (critic, drafter, judge) | `packages/core/src/schemas.ts` (`LlmConfig.models`), `packages/core/src/config.ts::modelFor` | kept | Same three roles, same "never defaults, raise `ModelNotConfigured`" rule. |
 | Locality (`llm: local` worlds restricted to `local_models`) | `packages/core/src/config.ts::modelFor` (`LocalityViolation`) | kept | Same allowlist check. |
 | Temperature 0 on every drafter/judge/critic call | `packages/providers/src/index.ts` | kept | Same rationale: router determinism and format-constrained output. |

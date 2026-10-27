@@ -80,11 +80,12 @@ State dir (`$SIL_STATE_DIR`, default `~/.local/state/self-improvement-loop/`):
 queue/pending/<session_id>.json     written by the Stop/SessionEnd hook
 queue/done/<session_id>.json
 queue/failed/<session_id>.json
-usage/events.jsonl                  skill / agent / rule usage events, compacted by the worker
-usage/hook-runs.jsonl               hook run diagnostics (exit code, duration), rotated
-usage/payloads/<world>.jsonl        PreToolUse samples (tool name, command, file path), rotated; the router's gate corpus
-                                    backfill an empty one from old transcripts with `sil import payloads --days 30`
-usage/nudge-fires.jsonl             nudge emissions (V1 format)
+usage/events.jsonl                  moved into loop-state.sqlite in 1.4 (usage events);
+usage/hook-runs.jsonl               each path is now a spill file, written by a hook only
+usage/payloads/<world>.jsonl        while the DB is unavailable and imported on the next
+usage/nudge-fires.jsonl             non-hook open; see "Loop state" below
+<spill path>.spill/<stamp>-<pid>-<seq>.jsonl
+                                    a sealed spill segment (at 4 MiB), imported in name order
 loop-state.sqlite                   loop state DB (with -wal and -shm), mode 600; see "Loop state" below
 <old file>.imported-<stamp>-<id>    an imported legacy log or document, kept byte for byte as its backup
 inbox/<world>/<lesson_id>.json      lessons waiting for delivery to sessions
@@ -108,7 +109,7 @@ worlds/<world>/learned/             default target repo (git, auto-init) when th
 
 ### Loop state
 
-`STATE/loop-state.sqlite` holds four logs that used to be JSONL files in the
+`STATE/loop-state.sqlite` holds eight logs that used to be JSONL files in the
 state dir, three documents that used to be JSON files (the queue cutoffs, the
 worker status and the per-world refine attempts), and the per-world alias map.
 Each log is a stream of rows in one table, `log_records`:
@@ -119,6 +120,15 @@ Each log is a stream of rows in one table, `log_records`:
 | `critic` | `feedback/critic.jsonl` | the critic's verdicts on served artifacts |
 | `human` | `feedback/human.jsonl` | `/feedback` and `sil feedback add` |
 | `proposal_events` | `curriculum/proposal-events.jsonl` | staged, revised, accepted, rejected and the other proposal events |
+| `usage_events` | `usage/events.jsonl` | the hook (skill and agent uses, transcript scan), `feedback.appendUsage` |
+| `nudge_fires` | `usage/nudge-fires.jsonl` | nudge dispatch, in the hook or the hooks module's spool |
+| `hook_runs` | `usage/hook-runs.jsonl` | the Stop hook's transcript scan and the hooks module's own runs |
+| `payload_samples` | `usage/payloads/<world>.jsonl`, one per world | PreToolUse in the hook, `sil import payloads` |
+
+The last four are written by hooks and arrived in 1.4 (schema 3, which also
+adds the index `log_records_usage_ref` on `(stream, world, json_extract(body,
+'$.ref'), ts)`). `payload_samples` is the one per-world stream: a row's `world`
+is the record's own `world` field, else the world of the file it came from.
 
 The three documents live one row each in the `docs` table, keyed by name and
 world. The alias maps live in the `aliases` table, one row per pair and world.
@@ -140,9 +150,23 @@ The code is `@sil/statedb` (`packages/statedb`), which depends on `@sil/core`
 only and keeps `bun:sqlite` out of `@sil/core` and the browser bundles.
 `openState()` is the one opener and the only thing that creates the file. Every
 connection runs WAL, `synchronous=FULL`, a 2 s busy timeout and foreign keys on.
-`PRAGMA user_version` is the schema version (2: version 1 added the logs,
-version 2 the `docs` and `aliases` tables); a newer one raises instead of being
-read. Hooks do not touch the DB yet.
+`PRAGMA user_version` is the schema version (3: version 1 added the logs,
+version 2 the `docs` and `aliases` tables, version 3 the hook streams' index); a
+newer one raises instead of being read.
+
+Hooks use their own opener, `@sil/statedb/hook`. `openForHook` opens an existing
+file read-write with a 25 ms busy timeout and `synchronous=NORMAL`, and returns
+null instead of creating, migrating or importing: on a missing file, another
+schema version, a STATE dir that changed device since the probe, or any error.
+`hookWrite` and `hookWriteBatch` write one record as one insert and anything
+more as one `BEGIN IMMEDIATE` transaction (a Stop's whole spool ingest is one
+transaction across all its streams). On any database failure the hook rolls
+back, spills the records to the stream's old path `P`, and keeps spilling for
+the rest of its process. Spill files are append only: at 4 MiB the hook seals
+`P` by renaming it to `P.spill/<stamp>-<pid>-<seq>.jsonl` and starts a new `P`,
+and it keeps at most 8 sealed segments per store (the oldest is unlinked, with
+one `hook.log` line). The next non-hook open imports a leftover claim, the
+sealed segments in name order, then `P`, each claimed by a rename first.
 
 Before any read or write of a stream, a non-hook process checks whether the old
 JSONL file is still there. If it is, it imports it in one transaction: every
@@ -159,8 +183,8 @@ clears the pause. Readers
 come in three kinds: strict (raises on a quarantined line), counted (returns the
 quarantine count, as `history.series` and `readProposalEvents` do) and tolerant
 (reads what the DB has, logs once to `logs/state.log`). `sil state status`
-shows the streams, a `documents:` block for the three documents and each
-aliases world, and every import. `sil state` shows and manages all of this;
+shows the streams, a `payload samples:` block per world, a `documents:` block
+for the three documents and each aliases world, and every import. `sil state` shows and manages all of this;
 OPERATIONS.md has the commands and the way back to an older plugin.
 
 ## Worlds and targets
@@ -262,7 +286,8 @@ does the `llm.use` op behind the web Models pane.
 
 ## Hook fast path (`apps/hook`, bundled to `dist/hook.js`)
 
-One entry point for every event; imports only `@sil/core` and `@sil/nudges`; wall
+One entry point for every event; imports only `@sil/core`, `@sil/nudges` and
+`@sil/statedb/hook` (never the `@sil/statedb` root, its opener or its importer); wall
 budget 250 ms shared by nudge gates. Everything is wrapped so a failure is a silent exit 0.
 
 With `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, Claude Code loads a hooks module
@@ -293,7 +318,7 @@ next Stop or SessionEnd of any session, once it is 30 minutes old.
 | UserPromptSubmit | Deliver inbox lessons that arrived since session start (once each). Nudge dispatch. |
 | PreToolUse | Record one payload sample for the world: tool name plus `tool_input.command` (credential values blanked) and `tool_input.file_path`, the two keys a gate can read; never `description`, `old_string`, `content` or a prompt. Nudge dispatch. |
 | PostToolUse | Record usage for `Skill` (skill name) and `Agent` (subagent_type, model). Nudge dispatch. |
-| Stop | Under a per-session lock: upsert the queue entry (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count) and scan the transcript from the stored byte offset for `attachment` hook records, appending hook run diagnostics to `usage/hook-runs.jsonl`. No nudge dispatch: Claude Code does not deliver `additionalContext` on Stop. |
+| Stop | Under a per-session lock: upsert the queue entry (session_id, transcript_path, cwd, world, git head, first/last stop ts, stop count) and scan the transcript from the stored byte offset for `attachment` hook records, writing hook run diagnostics as `hook_runs` rows in loop state (spilled to `usage/hook-runs.jsonl` only while the DB is unavailable). The hooks module's spool is ingested first, in one transaction. No nudge dispatch: Claude Code does not deliver `additionalContext` on Stop. |
 | SubagentStop | Record `agent_stop` usage event. |
 | SessionEnd | Mark queue entry `ended: true`. |
 
@@ -339,8 +364,12 @@ Under `worker.lock`:
    re-parsing the same transcripts on every run.
 2. **Scorecards.** `scorecards(world, cfg)` in `@sil/feedback` folds usage events, nudge
    fires, critic votes and human feedback into one record per artifact. The same
-   step compacts `usage/events.jsonl`: hook_run diagnostics and events past the
-   retire clock go, the newest event per artifact stays whatever its age.
+   step compacts the `usage_events` stream: hook_run rows, rows with no `ts` and
+   events past the retire clock are deleted, the newest event per artifact and
+   world stays whatever its age. Deletes commit 1000 rows at a time, so a hook
+   waits on one chunk at most. Then `trimStreams` keeps `hook_runs` at 40000
+   rows, `nudge_fires` at 5000 and `payload_samples` at 2000 per world, oldest
+   rows first.
 3. **Curriculum.** If the interval elapsed: `run(world, cfg, { apply: true })` in `@sil/curriculum`, the V1
    gate stack (route, rule-writability, lint, integrity, judge) against a scratch
    worktree; stages branches, never pushes.
@@ -400,7 +429,8 @@ failure:
   is cut from the drafter's input and from the router's quote haystack, so a
   claim the critic refused to stand behind can never buy a skill or an agent.
 - The payload corpus is the plugin's fixtures plus the world's recorded
-  `usage/payloads/<world>.jsonl` samples (newest 2000, deduplicated). A narrow
+  `payload_samples` rows in loop state (newest 2000, deduplicated; a tolerant
+  read, so a quarantined line does not stop the curriculum). A narrow
   gate on a real command (`--no-verify`, `pkill`) can never match twenty
   synthetic fixtures; six of eight drafted hooks (eleven drafter runs on five
   live clusters) were downgraded to rules that way before the samples existed. A gate firing on more than half of the corpus

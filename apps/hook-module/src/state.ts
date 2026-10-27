@@ -295,8 +295,9 @@ export function settleSpool(state: SessionState, flight: SpoolFlight, applied: b
   state.moves.unshift(...flight.moves);
 }
 
-/** One hook_run line per handled event, so the module's cost shows up in
- * usage/hook-runs.jsonl next to the command hooks' own records. `error` is a
+/** One hook_run line per handled event, so the module's cost shows up as
+ * `hook_runs` rows in loop state next to the command hooks' own records (the
+ * Stop hook ingests the spool; usage/hook-runs.jsonl only while the DB is unavailable). `error` is a
  * short summary: never a stack trace, never anything from the payload. */
 export function spoolHookRun(state: SessionState, event: string, durationMs: number, error?: string): void {
   const detail: Record<string, unknown> = { exitCode: 0, durationMs: Number(durationMs.toFixed(1)), hookEvent: event };

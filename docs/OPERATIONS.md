@@ -465,12 +465,16 @@ same way.
 The bundle holds what the loop created: `config.yaml`, `llm.yaml`, and per world
 the reflections, aliases, scorecards, inbox and the built-in `learned` repo with
 its review branches, plus the usage and feedback history the scorecards are
-rebuilt from. Every path under `$HOME` is stored as `~/...`, so a bundle written
+rebuilt from. The usage events, nudge fires, payload samples and feedback logs
+live in loop state; export writes each one out as a JSONL file at its old
+relative path (`state/usage/events.jsonl` and so on), so the bundle format is
+unchanged. Every path under `$HOME` is stored as `~/...`, so a bundle written
 in `/home/me` restores under `/Users/me`.
 
 Host state stays behind on purpose: the queue, sessions, logs, the worker lock,
-the web token, and `hook-config.json`, which import regenerates. `usage/hook-runs.jsonl`
-is also left out; it is the bulk of the volume and no scorecard reads it.
+the web token, and `hook-config.json`, which import regenerates. The hook runs
+log (`hook_runs` in loop state) is also left out; it is the bulk of the volume
+and no scorecard reads it.
 
 Flags:
 
@@ -485,9 +489,10 @@ Import merges, it does not replace. On a host with no `config.yaml` the bundle's
 config is taken whole. On a live host the worlds are merged, and any file the
 host already has is kept and counted in the summary; `--force` reverses that
 choice. Reflections are the one exception: they are append-only and are never
-overwritten, not even with `--force`. The history files are whole-file copies
-rather than appends, because appending would double every usage event the host
-already counted.
+overwritten, not even with `--force`. A history log replaces the host's stream
+whole rather than appending to it, because appending would double every usage
+event the host already counted: a stream that already has rows (or quarantined
+lines) on this host is left alone unless you pass `--force`.
 
 Two things need a hand after an import:
 
@@ -534,7 +539,7 @@ Two consequences worth knowing:
 
 ## Loop state (`sil state`)
 
-Four logs, three documents (queue cutoffs, worker status, per-world refine
+Eight logs, three documents (queue cutoffs, worker status, per-world refine
 attempts) and the per-world alias map moved from files into one SQLite file,
 `~/.local/state/self-improvement-loop/loop-state.sqlite`:
 
@@ -544,6 +549,10 @@ attempts) and the per-world alias map moved from files into one SQLite file,
 | `critic` | `feedback/critic.jsonl` |
 | `human` | `feedback/human.jsonl` |
 | `proposal_events` | `curriculum/proposal-events.jsonl` |
+| `usage_events` | `usage/events.jsonl` (1.4) |
+| `nudge_fires` | `usage/nudge-fires.jsonl` (1.4) |
+| `hook_runs` | `usage/hook-runs.jsonl` (1.4) |
+| `payload_samples` | `usage/payloads/<world>.jsonl`, one per world (1.4) |
 | `queue_cleared` | `queue/cleared.json` |
 | `worker_status` | `worker-status.json` |
 | `refine_attempts` | `curriculum/refine-attempts/<world>.json`, one per world |
@@ -576,7 +585,44 @@ whether an old file is still waiting. A document is not imported line by line.
 If the file is not valid JSON, or an aliases file breaks the one-hop rule, the
 whole file goes to quarantine with the reason, and the backup keeps it whole.
 `--drop` on a per-world store drops every world's entries unless you pass
-`--world`.
+`--world`. The `payload samples:` block lists each world with its rows,
+quarantined lines and whether a file still waits, including a world that came
+from a file name no configured world maps to, and any file name it could not
+use. `sil state quarantine --drop payload_samples --world <w>` acknowledges one
+world's bad lines.
+
+#### Spill files
+
+The four logs from 1.4 on (usage events, nudge fires, hook runs, payload
+samples) are written by hooks, and a hook never waits more than 25 ms for the
+database. When the DB is missing, on another schema version, moved, or busy
+past that, the hook appends the record to the store's old path `P`
+(`usage/events.jsonl` and the others above) instead, and keeps doing so for
+the rest of that hook process. Nothing is lost: the next `sil` command, worker
+pass or `sil web` imports the file as it imports any old file, and renames it
+to a backup. A hook of 1.3.0 still running in an open session writes the same
+path the same way.
+
+`P` is append only. When it reaches 4 MiB the hook seals it by renaming it to
+`P.spill/<stamp>-<pid>-<seq>.jsonl` and starts a new `P`. The importer takes
+sealed segments in name order (oldest first), then `P`, and claims each by a
+rename before reading it, so a line is never imported twice. If the DB stays
+unavailable long enough for a store to hold more than 8 sealed segments
+(about 36 MiB), the hook deletes the oldest one. That is the one place a hook
+drops data. `hook.log` (`sil logs hook`) says so, once per hook process, for
+each case:
+
+- `loop state not opened, spilling (<reason>)`: the hook could not use the DB
+  and wrote to `P`.
+- `loop state write failed, spilling (<reason>)`: a write failed (usually
+  `SQLITE_BUSY`), rolled back whole and went to `P`.
+- `dropped a spill segment of <label>`: the 8-segment bound deleted the oldest
+  sealed segment.
+- `could not spill <label> (<reason>)`: the append to `P` failed too; those
+  records are lost.
+
+Under heavy parallel load (thirty hooks at once) some records spill by
+design and reach the DB on the next import.
 
 A quarantined line keeps its raw text in the DB, cut at 64 KiB. A line from an
 old JSONL file is also still whole in that file's backup. A line from a bundle
@@ -690,7 +736,18 @@ sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
 ```
 
 `body` is the record as one JSON line: the imported line with surrounding
-whitespace trimmed, or what this build wrote.
+whitespace trimmed, or what this build wrote. The stream names are
+`reflect_runs`, `critic`, `human`, `proposal_events`, `usage_events`,
+`nudge_fires`, `hook_runs` and `payload_samples` (`world` set per row).
+Anything that read `usage/hook-runs.jsonl` reads the rows instead:
+
+```
+sqlite3 -readonly ~/.local/state/self-improvement-loop/loop-state.sqlite \
+  "SELECT body FROM log_records WHERE stream = 'hook_runs' ORDER BY id DESC LIMIT 50"
+```
+
+Lines still waiting in a spill file are not in the DB until the next import
+(`sil state migrate` runs it now).
 
 Documents are in `docs`, one row per name and world (`world` is `''` for a
 global document):

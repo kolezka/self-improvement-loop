@@ -282,6 +282,44 @@ for `sil state status`.
 Phase 1 and 2 writers only append or rename whole documents and never rotate, so
 they do not have this race.
 
+Phase 3 rulings, as built:
+
+- `@sil/statedb/hook` (`packages/statedb/src/hook.ts`) exports `openForHook`,
+  `hookWrite`, `hookWriteBatch`, `spillWrite`, `hookLog` and the two spill
+  constants. `openForHook` opens read-write with `create: false`, sets
+  `busy_timeout = 25`, `synchronous = NORMAL`, `foreign_keys = ON`, and returns
+  null on a missing file, `user_version !== SCHEMA_VERSION`, a `meta.fs_dev`
+  that differs from the STATE dir's device, or any error. The result is cached
+  per process, null included.
+- `hookWriteBatch(groups, onLostGroup?)` is the one write path; `hookWrite(stream,
+  records, world)` is a batch of one group. A single record is one autocommit
+  `INSERT`; anything more is one `BEGIN IMMEDIATE` ... `COMMIT` across every
+  group. A Stop's spool ingest is one batch: the usage, hook-runs and
+  nudge-fires groups plus one payload group per world, so all of a spool's rows
+  land or none do. The ruling came from the D11 gate: one transaction per
+  stream made thirty parallel Stops take the write lock four times each.
+- Outcomes are `"db"`, `"spilled"` and `"lost"`. On any failure the hook rolls
+  back, closes the handle, marks the process spilling, and spills every group to
+  its own `P`. `"lost"` means a group was dropped or its spill append failed;
+  `onLostGroup(index)` names each such group so the spool ingest counts only
+  those lines as skipped. A per-world group without a world is a caller bug: it
+  is dropped with one `hook.log` line, writes no spill file, and does not stop
+  the other groups. A record that is not a JSON object is dropped with one line.
+  An empty batch returns `"db"` without opening the file.
+- Segment names are `<stamp>-<pid>-<seq>.jsonl`, `stamp` the ISO time without
+  `:` and `.`, `seq` counting seals in the process. An ENOENT on the seal rename
+  means another process sealed or claimed `P`; the hook appends to a new `P`.
+  The bound unlinks only `*.jsonl` names, never a `*.importing` claim, and logs
+  `dropped a spill segment of <label>` once per process.
+- Close at exit: Bun closes an open database when the process exits, so a hook
+  that is the last connection checkpoints and truncates the WAL either way (WAL
+  20632 bytes while open, 0 after exit). `closeHookDb` measured about 1 ms with
+  no wall difference; the hook lets the process exit.
+- `sil state status` gains a `payload samples:` block (each world's rows,
+  quarantine and pending flag, and invalid file names) and `worldStreams` in
+  `--json`. `sil state quarantine --drop payload_samples --world <w>` drops one
+  world's quarantine rows.
+
 ### D6. Import of existing files (and of spill files)
 
 Revised 2026-10-25 after two rounds of the independent builder check. The first
@@ -555,6 +593,22 @@ object is malformed (`<label> is not a JSON object`), never read as missing. A
 tolerant read of a store that has rows and also a quarantined later file returns
 the rows.
 
+Phase 3 readers, as built. Labels: `the usage log`, `the nudge fires log`, `the
+hook runs log`, `the payload samples of world "<w>"`.
+
+| reader | DB missing | DB fails or pending | bad lines |
+|---|---|---|---|
+| scorecards strict (`usage_events`, `nudge_fires`) | empty | `StateReadError`: `<label> cannot be read (<reason>)` or `<label> is being imported` | `StateReadError("<label> has N line(s) that could not be imported")` |
+| scorecards tolerant (worker rebuild) | empty | the rows the DB has, or empty when it cannot be read; one `state.log` line | ignored, no `state.log` line |
+| ops history `artifact_uses` (`usage_events`) | empty | thrown as `StateReadError`, never empty | `skipped` = the stream's quarantine count |
+| curriculum payload corpus (`payload_samples`, per world, newest 2000) | empty | as scorecards tolerant | ignored, no `state.log` line |
+| `hook_runs` | no reader in the loop; `sqlite3` or `sil state export --legacy-paths` | | |
+
+`readFires(path)` in `@sil/nudges` still reads a file and has no production
+caller; the scorecards read `nudge_fires` rows. A `payload_samples` row's world
+is the record's own `world` field, else the world of the file it was imported
+from; `legacy_imports.world` and `quarantine.world` are the file's world.
+
 ### D9. Ids and world names
 
 World names are already path-safe by schema (`WORLD_NAME_RE`,
@@ -602,6 +656,29 @@ whenever mtime, size or inode change, so both keep their current meaning exactly
   branch (DB). Gate: added wall time p95 at most 5 ms sequential and at most 20 ms
   at 30 parallel, zero lost rows (DB rows plus spill lines equal events sent), and
   the parallel run's spill count reported. Results recorded in BENCHMARK.md.
+- As built: compaction picks candidate ids once outside the lock (hook_run rows,
+  rows with no string `ts`, rows past the cutoff that are not the newest per
+  `(world, ref)`) and deletes by id, 1000 rows per `BEGIN IMMEDIATE` (200k rows:
+  5 s, 13 to 48 ms per chunk). `trimStreams()` imports any pending file per
+  store first, then trims to 40000 / 5000 / 2000 per world; the worker logs
+  `{ action: "trim_streams", result }` when it deleted rows.
+- Gate protocol (ruled 2026-10-27): an isolated container on a quiet host
+  (`--cpus 4 --memory 2g --network none`), 3 interleaved repeats per build,
+  n=200, 30 parallel; the gate reads the median added p95 per row, and the
+  per-repeat spread, lost rows and spill count are reported beside it. A run
+  on a busy workstation is not a result.
+- Measured 2026-10-27 (Linux 6.12, 12 cores, 4 to the container, bun 1.4.2),
+  baseline `51fa4c4`. Branch `8389bfc` (one transaction per spool stream):
+  PostToolUse +0.49 ms sequential, +69.0 ms parallel; Stop +3.04 ms sequential,
+  +63.3 ms parallel: fails. Branch `ea9822a` (one transaction per spool
+  ingest): PostToolUse +2.48 ms sequential (repeats +2.48, +1.66, +6.74),
+  +6.30 ms parallel (+6.30, +0.49, +82.61); Stop +3.83 ms sequential (+3.83,
+  +8.70, -4.58), +16.11 ms parallel (+16.11, +8.61, +46.21): passes. Lost rows
+  0 everywhere. Parallel spill on `ea9822a`: Stop 2300 of 30150 lines over
+  three repeats (7.6%), PostToolUse 1 of 603. Open caveat: thirty simultaneous
+  hooks serialize on the write lock and some spill, by design and without loss;
+  one repeat per parallel row is over the gate, and the Stop p50 at 30 parallel
+  is 66 ms above the baseline.
 
 ### D12. Phase 4 specifics
 
@@ -743,8 +820,9 @@ in `sil state export`; the live file is gone), README.md:272.
 
 - Exact function names inside `@sil/statedb` beyond `openForHook`, `openState`,
   `appendRecord`, `importLegacy`, `MIGRATIONS`.
-- Whether the hook closes its handle at exit or lets the process exit
-  (measure the checkpoint cost; correctness is the same in WAL).
+- Whether the hook closes its handle at exit or lets the process exit.
+  Settled in phase 3 (D5 as built): Bun closes the database at process exit,
+  so the checkpoint happens either way; the hook lets the process exit.
 - Chunk size of phase 3 trims within the 1000-row cap, if measurements argue for
   smaller.
 - How the phase 3 benchmark builds the `origin/main` baseline (worktree or tag).

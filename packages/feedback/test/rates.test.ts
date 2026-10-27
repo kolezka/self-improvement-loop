@@ -40,6 +40,25 @@ describe("patternRates", () => {
     expect(rates.rate_since_revision).toEqual({ sessions: 3, hits: 3, rate: 1 });
   });
 
+  test("since_revision excludes a same-day session that ended before revised_at", () => {
+    // An accept at 06:36 must not count the morning's sessions as readers of
+    // the new text; windowing by calendar day did, and kept a freshly
+    // redrafted pattern escalated for the rest of the day.
+    const entry = { promoted_at: "2026-09-01T00:00:00Z", revised_at: "2026-09-10T06:36:04.249Z" };
+    const before = { session_id: "s-before", day: "2026-09-10", at: "2026-09-10T05:47:58.266Z" };
+    const after1 = { session_id: "s-after-1", day: "2026-09-10", at: "2026-09-10T07:00:00.000Z" };
+    const after2 = { session_id: "s-after-2", day: "2026-09-11", at: "2026-09-11T09:00:00.000Z" };
+    const after3 = { session_id: "s-after-3", day: "2026-09-11", at: "2026-09-11T10:00:00.000Z" };
+    const all = [before, after1, after2, after3];
+    const hits = [before];
+
+    const rates = patternRates(entry, all, hits, OBSERVE_MIN, NOW);
+
+    expect(rates.rate_since_revision).toEqual({ sessions: 3, hits: 0, rate: 0 });
+    // The promotion window is unchanged: a day-only row still counts by day.
+    expect(rates.rate_since_promotion).toEqual({ sessions: 4, hits: 1, rate: 1 / 4 });
+  });
+
   test("since_revision falls back to promoted_at when the row has never been redrafted", () => {
     const entry = { promoted_at: "2026-09-01T00:00:00Z", revised_at: null };
     const all = [row("s1", "2026-09-02"), row("s2", "2026-09-03"), row("s3", "2026-09-04")];

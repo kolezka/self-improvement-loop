@@ -7,10 +7,13 @@ import type { PromotionEntry, RateWindow } from "@sil/core";
 
 /** One reflected session and the day (YYYY-MM-DD) it happened. Reflection
  * `created` is date-only already; a reflect-run's `ts` is truncated to match,
- * so both sources window the same way. */
+ * so both sources window the same way. `at` is the full write time when the
+ * source has one (`created_at`, a reflect-run `ts`); the revision window uses
+ * it so a redraft accepted mid-day does not count that morning's sessions. */
 export interface SessionDayRow {
   session_id: string;
   day: string;
+  at?: string;
 }
 
 export interface RateWindows {
@@ -19,13 +22,13 @@ export interface RateWindows {
   rate_since_revision: RateWindow | null;
 }
 
-function distinctSessions(rows: readonly SessionDayRow[], inRange: (day: string) => boolean): number {
+function distinctSessions(rows: readonly SessionDayRow[], inRange: (row: SessionDayRow) => boolean): number {
   const seen = new Set<string>();
-  for (const row of rows) if (inRange(row.day)) seen.add(row.session_id);
+  for (const row of rows) if (inRange(row)) seen.add(row.session_id);
   return seen.size;
 }
 
-function window(allSessions: readonly SessionDayRow[], hits: readonly SessionDayRow[], inRange: (day: string) => boolean, observeMinSessions: number): RateWindow {
+function window(allSessions: readonly SessionDayRow[], hits: readonly SessionDayRow[], inRange: (row: SessionDayRow) => boolean, observeMinSessions: number): RateWindow {
   const sessions = distinctSessions(allSessions, inRange);
   const hitCount = distinctSessions(hits, inRange);
   return { sessions, hits: hitCount, rate: sessions >= observeMinSessions ? hitCount / sessions : null };
@@ -47,12 +50,21 @@ export function patternRates(
 ): RateWindows {
   const promotedDay = entry?.promoted_at ? entry.promoted_at.slice(0, 10) : null;
   if (promotedDay === null) return { rate_baseline: null, rate_since_promotion: null, rate_since_revision: null };
-  const revisedDay = entry?.revised_at ? entry.revised_at.slice(0, 10) : promotedDay;
+  const revisedAt = entry?.revised_at ?? null;
+  const revisedDay = revisedAt ? revisedAt.slice(0, 10) : promotedDay;
   const nowDay = now.toISOString().slice(0, 10);
+  // A row with a write time is compared against the full revised_at, so a
+  // session that ended earlier on the day of the redraft stays out of the
+  // revision window. A day-only row keeps the day comparison.
+  const sinceRevision = (row: SessionDayRow): boolean => {
+    if (row.day > nowDay) return false;
+    if (row.at !== undefined && revisedAt !== null) return row.at >= revisedAt;
+    return row.day >= revisedDay;
+  };
 
   return {
-    rate_baseline: window(allSessions, hits, (d) => d < promotedDay, observeMinSessions),
-    rate_since_promotion: window(allSessions, hits, (d) => d >= promotedDay && d <= nowDay, observeMinSessions),
-    rate_since_revision: window(allSessions, hits, (d) => d >= revisedDay && d <= nowDay, observeMinSessions),
+    rate_baseline: window(allSessions, hits, (row) => row.day < promotedDay, observeMinSessions),
+    rate_since_promotion: window(allSessions, hits, (row) => row.day >= promotedDay && row.day <= nowDay, observeMinSessions),
+    rate_since_revision: window(allSessions, hits, sinceRevision, observeMinSessions),
   };
 }

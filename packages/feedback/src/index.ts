@@ -241,7 +241,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
       else createdByPattern.set(pattern, [r.created]);
     }
     if (r.session_id) {
-      const row: SessionDayRow = { session_id: r.session_id, day: r.created.slice(0, 10) };
+      const row: SessionDayRow = { session_id: r.session_id, day: r.created.slice(0, 10), ...(r.created_at ? { at: r.created_at } : {}) };
       allSessionRows.push(row);
       const bucket = hitsByPattern.get(pattern);
       if (bucket) bucket.push(row);
@@ -255,7 +255,7 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     const sid = rec["session_id"];
     const ts = rec["ts"];
     if (typeof sid === "string" && sid.length > 0 && typeof ts === "string") {
-      allSessionRows.push({ session_id: sid, day: ts.slice(0, 10) });
+      allSessionRows.push({ session_id: sid, day: ts.slice(0, 10), at: ts });
     }
   }
 

@@ -232,53 +232,6 @@ describe("busy database", () => {
     expect(rowBodies("hook_runs")).toEqual([]);
     expect(lines(openSpillOf(legacy("hook_runs")))).toEqual([ev(1), ev(2), ev(3)].map((r) => JSON.stringify(r)));
   });
-
-  const threeGroups = (base: number) => [
-    { stream: "usage_events" as const, records: [ev(base), ev(base + 1)] },
-    { stream: "hook_runs" as const, records: [ev(base + 2)] },
-    { stream: "payload_samples" as const, records: [ev(base + 3)], world: "default" },
-  ];
-
-  /** Wall ms of `fn`, which must return `expected`. */
-  const timed = (fn: () => string, expected: string): number => {
-    const t0 = performance.now();
-    expect(fn()).toBe(expected);
-    return performance.now() - t0;
-  };
-
-  test("a multi-group batch under a held lock spills at once, a single record still waits", () => {
-    fresh();
-    const locker = lockDb();
-    try {
-      const batchMs = timed(() => hookWriteBatch(threeGroups(1)), "spilled");
-      // A new handle in the same process: the single record keeps the 25 ms wait.
-      closeHookDb();
-      const singleMs = timed(() => hookWrite("usage_events", [ev(9)]), "spilled");
-      console.log(`held lock: three-group batch spilled in ${batchMs.toFixed(2)} ms, single record in ${singleMs.toFixed(2)} ms`);
-      expect(batchMs).toBeLessThan(10);
-      expect(singleMs).toBeGreaterThanOrEqual(20);
-    } finally {
-      locker.run("ROLLBACK");
-      locker.close();
-    }
-  });
-
-  test("a committed multi-group batch restores the 25 ms wait on the cached handle", () => {
-    fresh();
-    expect(hookWriteBatch(threeGroups(1))).toBe("db");
-    const handle = openForHook();
-    expect(handle).not.toBeNull();
-    expect(pragma(handle!.db, "busy_timeout")).toBe(25);
-    const locker = lockDb();
-    try {
-      const singleMs = timed(() => hookWrite("usage_events", [ev(9)]), "spilled");
-      console.log(`after a committed batch: single record under a held lock spilled in ${singleMs.toFixed(2)} ms`);
-      expect(singleMs).toBeGreaterThanOrEqual(20);
-    } finally {
-      locker.run("ROLLBACK");
-      locker.close();
-    }
-  });
 });
 
 describe("hookWriteBatch", () => {

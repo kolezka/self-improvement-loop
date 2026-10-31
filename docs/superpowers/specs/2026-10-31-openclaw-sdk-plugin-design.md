@@ -78,8 +78,8 @@ the `openclaw` user has passwordless sudo, there is no sandbox and
    worker, critic and evidence pack as Claude Code sessions.
 2. Accepted rules and lessons reach Synergy agents every turn, without any file
    write into `synergy-brain`.
-3. A Control UI tab and a dashboard widget show the loop state for the Synergy
-   world.
+3. A Control UI tab shows the loop state for the Synergy world (the widget is
+   dropped from v1, see section 3).
 4. Review decisions keep the `reviewed_state` digest binding (rule 4).
 5. The plugin never blocks or slows a turn beyond a fixed budget and never calls a
    model (rule 1 applies to the plugin as it does to hooks).
@@ -103,15 +103,22 @@ OpenClaw gateway (node)                     sil on the host (bun)
 +-------------------------------+           +---------------------------+
 | plugin "self-improvement-loop"|  spawn    | sil openclaw enqueue      |
 |  session_end   ---------------+---------->|   (queue entry, ended)    |
-|  after_tool_call -> usage log |           |                           |
+|  after_tool_call --------------+--spawn--->| sil openclaw usage        |
 |  before_prompt_build <- cache +<----------+ sil openclaw deliver      |
-|  HTTP route (tab, GET only) --+--spawn--->| sil ops   (read envelope) |
-|  HTTP route (page, POST) -----+--spawn--->| sil ops   (mutation)      |
-|  widget descriptor            |           | sil worker (own process)  |
+|  HTTP route (tab, GET only) --+--proxy--->| sil web on 127.0.0.1      |
+|  HTTP route (page, POST) -----+--proxy--->|   (token, own guards)     |
+|  widget descriptor            |           | sil worker (own unit)     |
 +-------------------------------+           +-------------+-------------+
                                                           | read only
                                             openclaw-agent.sqlite files
 ```
+
+Revision after the user's approval (2026-10-31, while planning): the route
+proxies to `sil web` instead of piping to `sil ops`. Reason: `sil ops` dispatches
+only curation mutations ("only curation mutations run through this dispatcher",
+`packages/ops/src/mutation.ts`), while review accept and reject with
+`reviewed_state` are served by the `sil web` HTTP API. Proxying keeps one path for
+reads and mutations, with the server's own Host, `X-SIL-Local` and token guards.
 
 The plugin stays thin, as today. All loop logic stays in sil. The plugin is plain
 ESM with no build step, as today, and is checked by a contract test against the
@@ -124,7 +131,14 @@ SDK names listed above.
   the tail is capped and dies with the handler. It reads only
   `endedTranscript.available` and, when false, passes `--unavailable <reason>` so
   the queue entry records why.
-- New `@sil/transcript` reader for the SQLite store, used by the worker:
+- New reader for the SQLite store in `@sil/openclaw`. It materializes the session
+  as an OpenClaw-format JSONL file under the sil state dir and sets the queue
+  entry's `transcript_path` to it, with the file mtime set to
+  `transcript_updated_at`. The worker's idle window, `countToolUses` and
+  `evidencePack` then work unchanged. Event records in the store have the same
+  shape as the old JSONL lines (probe on the `sre` store, keys only: `session`
+  header with `cwd`, `message` with `message.role`); one new type,
+  `custom_message`, is already dropped by `adaptOpenclawRecords`.
   - Opens the store with `bun:sqlite` read only (`?mode=ro`), one session at a time,
     by primary key, ordered by `seq`. Never scans the whole table.
   - Decodes `event_zstd` with Bun's zstd. If the installed Bun has no zstd, the
@@ -158,8 +172,11 @@ SDK names listed above.
   nothing and logs every time with the parse error: that is a defect, not a quiet
   state (rule 7). The widget shows both states.
 - Delivery counting: a lesson counts as delivered once per session, not once per
-  turn. The plugin records the first injection per `session_id` in the usage log.
-  Five sessions archive it, which keeps today's meaning.
+  turn. On the first injection per `session_id` the plugin spawns `sil openclaw
+  delivered --session <id> --lessons <ids>`, detached; sil counts through
+  `markDelivered`, its single write point. Five sessions archive it, which keeps
+  today's meaning. Skill usage goes the same way (`sil openclaw usage`) instead of
+  the plugin appending to `usage/events.jsonl` itself.
 - Needs `allowConversationAccess: true` and `allowPromptInjection` left at its
   default for this plugin entry. That is a config change on Synergy, applied by
   hand after approval.
@@ -169,15 +186,25 @@ SDK names listed above.
 - Tab: `registerControlUiDescriptor({ surface: "tab", id: "loop", slug:
   "self-improvement", group: "control", requiredScopes: ["operator.read"] })` with
   `path` under `registerHttpRoute({ auth: "gateway" })`.
-- The route serves the built `apps/web` bundle and a GET-only read proxy that pipes
-  one control read envelope to `sil ops` per request. Mutation envelopes are
-  refused at the route, before any spawn.
+- The route (`match: "prefix"`) proxies to `sil web` on `127.0.0.1:<port>`: it
+  strips the route prefix, sets `Host` to the loopback address, adds
+  `X-SIL-Local` and `X-SIL-Token` from the 0600 token file, and streams the
+  response (the log stream is SSE). `sil web` serves the bundle and the API.
 - `apps/web` changes: all API URLs relative to the page (today they are absolute
   `/api/...`); an embedded mode, detected from the host, that hides mutation
   buttons and shows "Open review" instead, linking to the standalone page below;
   no token in the fragment when served by the plugin, since gateway auth does it.
-- Widget: queue depth, items waiting for review, last worker pass and its result,
-  and delivery cache state. Same read path.
+- Widget: dropped from v1. The bundled `feature-plugins.md` says "a native view
+  renders only when its matching backend descriptor is advertised", so a widget
+  needs a native Control UI view, which external plugins cannot ship. The tab's
+  first screen shows queue depth, items waiting for review, the last worker pass
+  and the delivery cache state instead.
+- Route handler signature from the bundled docs: `handler: async (req, res) =>
+  boolean`, Node style. The docs do not name an accessor for the runtime scope
+  inside the handler. With `trusted-proxy` and no `x-openclaw-scopes`, every
+  request that reaches an `auth: "gateway"` route runs with `operator.write`, and
+  the frame grant already refuses non-GET at the gateway. The plugin's own Origin
+  and `Sec-Fetch-Dest` checks are a second layer, not the only one.
 
 ### 4. Review decisions
 
@@ -188,16 +215,15 @@ request goes through oauth2-proxy, the gateway authenticates it as
 `trusted-proxy`, and the `auth: "gateway"` route runs with `operator.write`.
 
 - The tab is read only and links to the standalone page in a new browser tab.
-- Mutation endpoint: `POST <route>/api/ops`, same route and auth level as the
-  reads (overlapping routes with different auth levels are rejected).
-- The handler accepts a mutation only when all hold: the runtime scope includes
-  `operator.write`; the request is not from the sandboxed frame (`Origin` equals
-  the gateway origin and `Sec-Fetch-Dest` is not `iframe`); `Content-Type` is
-  `application/json`; the envelope carries the `reviewed_state` digest. Anything
-  else is refused before any spawn, with a 4xx and a reason.
-- The plugin pipes the envelope to `sil ops`, which checks the digest as it does
-  today. The audit row records the user from the gateway identity
-  (`x-forwarded-email` as resolved by the gateway, not read raw by the plugin).
+- Mutations: any non-GET/HEAD request on the same route and auth level
+  (overlapping routes with different auth levels are rejected).
+- The proxy forwards a non-GET/HEAD request only when all hold: the runtime scope
+  includes `operator.write`; the request is not from the sandboxed frame (`Origin`
+  equals the gateway origin and `Sec-Fetch-Dest` is not `iframe`); `Content-Type`
+  is `application/json`. Anything else gets a 4xx with a reason and never reaches
+  `sil web`. The `reviewed_state` digest is checked by `sil web` as it is today.
+- Recording which user made a decision is a follow-up, not v1: the server has
+  no actor field today. The plugin never reads `x-forwarded-email` itself.
 - Not `auth: "plugin"`: port 18789 also listens on the private address, so a
   plugin that trusted the proxy header itself could be spoofed from the LAN.
 
@@ -210,8 +236,10 @@ Until that probe passes, the design is source-reviewed only.
 A separate systemd user unit `sil-worker.service` for the `openclaw` user (Q2),
 with the absolute Bun path and `LITELLM_API_KEY` from an env file at mode 600. Not
 `registerService`: the gateway has run out of heap and restarted before, and a
-worker inside its cgroup adds memory pressure and dies with it. The plugin only
-reports the worker state it reads through `sil ops`.
+worker inside its cgroup adds memory pressure and dies with it. A second unit,
+`sil-web.service`, runs `sil web --host 127.0.0.1 --port <port> --token` (the
+token is forced on loopback because agents on the host have no sandbox). The
+plugin reads worker state through the proxied API.
 
 ### 6. Scope of the pilot
 
@@ -258,7 +286,7 @@ the plan.
   hooks, descriptors and route; `before_prompt_build` with valid, missing and
   malformed cache; the route refuses a mutation from the frame (`Sec-Fetch-Dest:
   iframe`), from a foreign `Origin`, without `operator.write`, without JSON, and
-  without a digest, each with its own reason, and passes a valid one to `sil ops`;
+  each with its own reason, and forwards a valid one to `sil web` with the token;
   sessions of agents outside the allowlist are ignored.
 - Delivery counting: one session, many turns, one count.
 - End to end through the real modules: fixture store to queue to worker (fake

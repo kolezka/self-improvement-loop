@@ -1,0 +1,253 @@
+# OpenClaw SDK plugin for Synergy: design
+
+Status: draft, waiting for the user's answers to Q1 to Q4 (end of file).
+Branch: `feat/openclaw-sdk-plugin`, base `31da0f8` (v1.5.1).
+
+## Why
+
+The current OpenClaw integration (`integrations/openclaw/plugin`, `@sil/openclaw`,
+`docs/OPENCLAW.md`, verified on OpenClaw 2026.2.26) cannot work on Synergy:
+
+- It finds sessions as `~/.openclaw/agents/<id>/sessions/*.jsonl`. Synergy has none
+  of those files: read on the host on 2026-10-31, the count is 0. Since OpenClaw
+  2026.9.4 transcripts live in SQLite.
+- It delivers lessons by writing a managed block into the workspace `AGENTS.md`. On
+  Synergy the workspace is the `synergy-brain` repo, and a 10 minute cron pushes
+  workspace changes to it. A machine-written block would reach a shared remote with
+  no human in between, which breaks design rule 4.
+- It assumes no per-turn context hook exists. OpenClaw now has one.
+
+The user also wants a view of the loop inside the OpenClaw Control UI.
+
+## What was verified on the host (2026-10-31, read only)
+
+Host `openclaw@10.1.11.52`, nothing changed, no config or secrets read.
+
+- `openclaw --version`: `OpenClaw 2026.10.8 (dc2523e)`.
+- These names are present in the installed `dist/` and in the bundled
+  `docs/plugins/`: `definePluginEntry`, `before_prompt_build`,
+  `appendSystemContext`, `prependContext`, `after_tool_call`, `endedTranscript`,
+  `allowConversationAccess`, `registerControlUiDescriptor`, `registerHttpRoute`,
+  `registerService`, `registerGatewayMethod`, `registerSessionAction`,
+  `uiCapabilities`. Presence in the bundle is not runtime proof; see "Acceptance".
+- Transcript stores: `~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite` for
+  `software-factory` (6.9 GB), `inkitt` (1.4 GB), `sre` (157 MB), `openclaw`
+  (0.7 MB).
+- Schema read from the `openclaw` agent store with `mode=ro`:
+  - `transcript_events(session_id, seq, event_json, created_at, event_zstd,
+    event_utf8_bytes, navigation_json)`, primary key `(session_id, seq)`. Exactly
+    one of `event_json` and `event_zstd` is set.
+  - `session_windows(session_id, session_key, started_at, ended_at, status,
+    transcript_updated_at, model_provider, model, parent_session_key, spawned_by,
+    ...)`.
+  - `session_transcript_active_events(session_id, active_position, event_seq, ...)`
+    holds the active branch after rewind or compaction.
+  - `session_transcript_cold_archives(session_id, storage 'file'|'sqlite',
+    archive_blob, ...)`: an old session can leave `transcript_events`.
+- Bun is installed at `~/.bun/bin/bun` and is not on `PATH`. Its version was not
+  read. Node is v24.22.1. There is no `sqlite3` CLI.
+- From the bundled docs: `session_end` gives `ctx.endedTranscript` as
+  `{ available: true, readTail }` or `{ available: false, reason }`. `readTail`
+  needs positive `maxMessages` and `maxBytes`, the host caps both, and the result
+  carries `truncated`. The reader dies when the handler settles.
+- From the bundled docs: a `surface: "tab"` descriptor with `path` under a
+  same-plugin `auth: "gateway"` HTTP route renders in a sandboxed frame. The frame
+  grant allows only `GET` and `HEAD` with `operator.read`. `requiredScopes` hides
+  the tab and never widens the grant. Mutations must use a Gateway-authenticated
+  surface. HTTPS is required.
+
+Other context comes from memory and was not re-read on the host: the gateway runs
+as a systemd user unit of `openclaw`, it has run out of heap before and restarted,
+the `openclaw` user has passwordless sudo, there is no sandbox and
+`tools.profile` is `full`. The memory slot is held by `hindsight-openclaw` with bank
+`inkitt`.
+
+## Goals
+
+1. Synergy sessions reach the sil reflection queue and are reflected with the same
+   worker, critic and evidence pack as Claude Code sessions.
+2. Accepted rules and lessons reach Synergy agents every turn, without any file
+   write into `synergy-brain`.
+3. A Control UI tab and a dashboard widget show the loop state for the Synergy
+   world.
+4. Review decisions keep the `reviewed_state` digest binding (rule 4).
+5. The plugin never blocks or slows a turn beyond a fixed budget and never calls a
+   model (rule 1 applies to the plugin as it does to hooks).
+
+## Non-goals
+
+- No Postgres. sil state stays in its SQLite under the sil state dir on the host.
+  Revisit only if workers run on more than one machine.
+- No writes to the Hindsight bank `inkitt` and no use of the memory slot.
+- No lesson retrieval by relevance (variant 3). It may come later through a
+  separate Hindsight bank fed only after accept.
+- No change to the existing Claude Code paths.
+- No deploy in this branch. Installing on Synergy is a separate, approved step.
+
+## Design
+
+### Components
+
+```
+OpenClaw gateway (node)                     sil on the host (bun)
++-------------------------------+           +---------------------------+
+| plugin "self-improvement-loop"|  spawn    | sil openclaw enqueue      |
+|  session_end   ---------------+---------->|   (queue entry, ended)    |
+|  after_tool_call -> usage log |           |                           |
+|  before_prompt_build <- cache +<----------+ sil openclaw deliver      |
+|  HTTP route (tab, GET only) --+--spawn--->| sil ops   (read envelope) |
+|  /sil command (mutation) -----+--spawn--->| sil ops   (mutation)      |
+|  widget descriptor            |           | sil worker (own process)  |
++-------------------------------+           +-------------+-------------+
+                                                          | read only
+                                            openclaw-agent.sqlite files
+```
+
+The plugin stays thin, as today. All loop logic stays in sil. The plugin is plain
+ESM with no build step, as today, and is checked by a contract test against the
+SDK names listed above.
+
+### 1. Ingest
+
+- `session_end`: spawn `sil openclaw enqueue --session <id> --agent <agentId>
+  --ended`, detached. The plugin does not use `endedTranscript` to read the body:
+  the tail is capped and dies with the handler. It reads only
+  `endedTranscript.available` and, when false, passes `--unavailable <reason>` so
+  the queue entry records why.
+- New `@sil/transcript` reader for the SQLite store, used by the worker:
+  - Opens the store with `bun:sqlite` read only (`?mode=ro`), one session at a time,
+    by primary key, ordered by `seq`. Never scans the whole table.
+  - Decodes `event_zstd` with Bun's zstd. If the installed Bun has no zstd, the
+    read fails with an explicit error naming the Bun version. No fallback.
+  - Follows `session_transcript_active_events` when it has rows for the session, so
+    a rewound branch is not reflected as if it happened.
+  - A session found only in `session_transcript_cold_archives` is retired as
+    `skipped: transcript cold-archived` in v1, not `failed`.
+  - Before reading, checks the columns it needs exist (`PRAGMA table_info`). A
+    missing column raises `TranscriptSchemaError` naming the column and the
+    OpenClaw version from `meta`. This is an internal schema, so the reader must
+    fail loud when it changes.
+  - Feeds decoded events through the existing `adaptOpenclawRecords`, so the
+    critic sees one format.
+- `sil openclaw scan` gains the SQLite source: list `session_windows` rows with
+  `transcript_updated_at` newer than the window and enqueue them. This covers
+  sessions that never end. The schedule stays as documented today.
+- Session id: `session_windows.session_id`. Usage events carry the same id, which
+  closes the documented gap where usage events used the session key.
+
+### 2. Delivery
+
+- `sil openclaw deliver --world <w> --out <cache.json>` writes the rules and lessons
+  block to a cache file in the sil state dir. It runs after each worker pass and
+  after each accept.
+- `before_prompt_build` reads that cache file synchronously (one small file, size
+  capped) and returns rules in `appendSystemContext` (stable, small) and lessons in
+  `prependContext`. No CLI call, no network, no model on the turn path.
+- Budget: the handler must finish under 5 ms on the host. A missing cache file
+  returns nothing and logs once per gateway start. A malformed cache file returns
+  nothing and logs every time with the parse error: that is a defect, not a quiet
+  state (rule 7). The widget shows both states.
+- Delivery counting: a lesson counts as delivered once per session, not once per
+  turn. The plugin records the first injection per `session_id` in the usage log.
+  Five sessions archive it, which keeps today's meaning.
+- Needs `allowConversationAccess: true` and `allowPromptInjection` left at its
+  default for this plugin entry. That is a config change on Synergy, applied by
+  hand after approval.
+
+### 3. Control UI
+
+- Tab: `registerControlUiDescriptor({ surface: "tab", id: "loop", slug:
+  "self-improvement", group: "control", requiredScopes: ["operator.read"] })` with
+  `path` under `registerHttpRoute({ auth: "gateway" })`.
+- The route serves the built `apps/web` bundle and a GET-only read proxy that pipes
+  one control read envelope to `sil ops` per request. Mutation envelopes are
+  refused at the route, before any spawn.
+- `apps/web` changes: all API URLs relative to the page (today they are absolute
+  `/api/...`); a read-only mode, detected from the host, that hides mutation
+  buttons and shows the exact `/sil` command for each decision instead (see Q1);
+  no token in the fragment when embedded, since the gateway grant does the auth.
+- Widget: queue depth, items waiting for review, last worker pass and its result,
+  and delivery cache state. Same read path.
+
+### 4. Review decisions
+
+The frame cannot POST. Proposed path (Q1): a `registerCommand` command `/sil accept
+<id> <digest>` and `/sil reject <id> <digest> [reason]`, run by an authenticated
+user in chat. The plugin pipes a mutation envelope to `sil ops`, which already
+checks the digest against `reviewed_state`. The tab shows the ready command with
+the digest of what is on screen. The command checks the caller has
+`operator.write` before spawning.
+
+### 5. Worker
+
+Proposed (Q2): a separate systemd user unit `sil-worker.service` for the
+`openclaw` user, with the absolute Bun path and `LITELLM_API_KEY` from an env file
+at mode 600. Not `registerService`: the gateway has run out of heap and restarted
+before, and a worker inside its cgroup adds memory pressure and dies with it. The
+plugin only reports the worker state it reads through `sil ops`.
+
+### 6. Redaction
+
+Synergy transcripts contain secrets: the Hindsight plugin needs a local redaction
+patch for that reason. The critic sends transcript excerpts to a model. Before
+this ships to Synergy, the evidence pack must pass through a redaction step with at
+least the patterns the host already uses. Scope of that step is its own task in
+the plan.
+
+## Failure modes
+
+| Case | Result |
+| --- | --- |
+| `sil` missing or broken | plugin logs once per handler kind, turns are unaffected |
+| `endedTranscript.available` false | queue entry records the reason; scan still finds the session |
+| store schema changed | `TranscriptSchemaError`, entry `failed` with the column name |
+| session cold-archived | `skipped: transcript cold-archived` |
+| Bun without zstd | explicit error at read, worker pass fails loud |
+| cache file missing | no injection, logged once, widget shows "no delivery cache" |
+| cache file malformed | no injection, logged every time, widget shows the error |
+| frame blocked by browser privacy mode | host shows unavailable panel (host behaviour) |
+
+## Tests
+
+- Transcript reader: fixture store built from the verified schema (plain, zstd,
+  active branch, cold-archived only, missing column). Each case asserts the decoded
+  records or the exact error. The missing-column case must fail on a tolerant
+  reader (mutation check).
+- Plugin contract: load `index.mjs` with a fake `api` and assert the registered
+  hooks, descriptors and route; `before_prompt_build` with valid, missing and
+  malformed cache; the route refuses a mutation envelope; the command refuses a
+  caller without `operator.write`.
+- Delivery counting: one session, many turns, one count.
+- End to end through the real modules: fixture store to queue to worker (fake
+  model) to accept via `sil ops` to cache to `before_prompt_build` output.
+- `apps/web`: relative URLs and read-only mode.
+
+## Acceptance (on the host, after approval, separate from this branch)
+
+1. Plugin loads on 2026.10.8: `openclaw plugins list` shows it enabled, gateway log
+   shows the registrations.
+2. One real session ends and its queue entry appears with the right session id.
+3. The worker reflects it from the SQLite store.
+4. After one accept, a new turn's prompt carries the block (checked with the
+   gateway's raw stream or a probe session matching `agent:*:probe-*`, which the
+   Hindsight plugin already ignores).
+5. The tab renders over `synergy.inkitt.com` and the widget shows real numbers.
+
+## Docs
+
+Rewrite `docs/OPENCLAW.md` for the SDK plugin and the SQLite store, and mark the
+file and `AGENTS.md` paths as legacy for OpenClaw before 2026.9.4. Update the
+"Other hosts" section of `docs/ARCHITECTURE.md`.
+
+## Open questions
+
+- Q1. Review decisions: `/sil` chat command with the digest (proposed), or a tab
+  with its own auth that can POST? The second needs plugin-managed auth on the
+  gateway hostname, which the host docs warn against.
+- Q2. Worker: separate systemd user unit (proposed) or `registerService` inside the
+  gateway?
+- Q3. World: map Synergy sessions to the existing `inkitt` world, or a new
+  `synergy` world? With `inkitt`, lessons from Synergy agents also reach the
+  user's Claude Code sessions in that world, and the other way round.
+- Q4. Which agents feed the loop: all four (`software-factory`, `inkitt`, `sre`,
+  `openclaw`), or a pilot on one?

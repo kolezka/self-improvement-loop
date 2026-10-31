@@ -1,6 +1,7 @@
 # OpenClaw SDK plugin for Synergy: design
 
-Status: draft, waiting for the user's answers to Q1 to Q4 (end of file).
+Status: draft, Q1 to Q4 answered by the user on 2026-10-31 ("Answers" at the end).
+Waiting for approval of the design as revised by those answers.
 Branch: `feat/openclaw-sdk-plugin`, base `31da0f8` (v1.5.1).
 
 ## Why
@@ -44,8 +45,17 @@ Host `openclaw@10.1.11.52`, nothing changed, no config or secrets read.
     holds the active branch after rewind or compaction.
   - `session_transcript_cold_archives(session_id, storage 'file'|'sqlite',
     archive_blob, ...)`: an old session can leave `transcript_events`.
-- Bun is installed at `~/.bun/bin/bun` and is not on `PATH`. Its version was not
-  read. Node is v24.22.1. There is no `sqlite3` CLI.
+- Bun is installed at `~/.bun/bin/bun` and is not on `PATH`. `bun --version`
+  prints `1.4.2`, the same as `.bun-version`, and `Bun.zstdDecompressSync` is a
+  function. Node is v24.22.1. There is no `sqlite3` CLI.
+- `gateway.auth.mode` is `trusted-proxy` (keys `allowLoopback`, `allowUsers`,
+  `deviceAutoApprove`, `requiredHeaders`, `userHeader`; values not read).
+  `gateway.controlUi.basePath` is unset.
+- From the bundled `architecture-internals/gateway-routes.md`: an `auth:
+  "gateway"` route gets `operator.write` for a `trusted-proxy` caller that sends no
+  `x-openclaw-scopes`. Inside the sandboxed tab the frame is cross-site, so its
+  grant allows only `GET` and `HEAD`; "mutations and WebSocket upgrades stay on
+  explicit Gateway-authenticated surfaces".
 - From the bundled docs: `session_end` gives `ctx.endedTranscript` as
   `{ available: true, readTail }` or `{ available: false, reason }`. `readTail`
   needs positive `maxMessages` and `maxBytes`, the host caps both, and the result
@@ -96,7 +106,7 @@ OpenClaw gateway (node)                     sil on the host (bun)
 |  after_tool_call -> usage log |           |                           |
 |  before_prompt_build <- cache +<----------+ sil openclaw deliver      |
 |  HTTP route (tab, GET only) --+--spawn--->| sil ops   (read envelope) |
-|  /sil command (mutation) -----+--spawn--->| sil ops   (mutation)      |
+|  HTTP route (page, POST) -----+--spawn--->| sil ops   (mutation)      |
 |  widget descriptor            |           | sil worker (own process)  |
 +-------------------------------+           +-------------+-------------+
                                                           | read only
@@ -163,30 +173,61 @@ SDK names listed above.
   one control read envelope to `sil ops` per request. Mutation envelopes are
   refused at the route, before any spawn.
 - `apps/web` changes: all API URLs relative to the page (today they are absolute
-  `/api/...`); a read-only mode, detected from the host, that hides mutation
-  buttons and shows the exact `/sil` command for each decision instead (see Q1);
-  no token in the fragment when embedded, since the gateway grant does the auth.
+  `/api/...`); an embedded mode, detected from the host, that hides mutation
+  buttons and shows "Open review" instead, linking to the standalone page below;
+  no token in the fragment when served by the plugin, since gateway auth does it.
 - Widget: queue depth, items waiting for review, last worker pass and its result,
   and delivery cache state. Same read path.
 
 ### 4. Review decisions
 
-The frame cannot POST. Proposed path (Q1): a `registerCommand` command `/sil accept
-<id> <digest>` and `/sil reject <id> <digest> [reason]`, run by an authenticated
-user in chat. The plugin pipes a mutation envelope to `sil ops`, which already
-checks the digest against `reviewed_state`. The tab shows the ready command with
-the digest of what is on screen. The command checks the caller has
-`operator.write` before spawning.
+Decisions happen in the web UI (Q1). The embedded tab cannot POST, so the same
+plugin route also serves the console as a standalone, top-level page, for example
+`https://synergy.inkitt.com/plugins/self-improvement-loop/review`. A top-level
+request goes through oauth2-proxy, the gateway authenticates it as
+`trusted-proxy`, and the `auth: "gateway"` route runs with `operator.write`.
+
+- The tab is read only and links to the standalone page in a new browser tab.
+- Mutation endpoint: `POST <route>/api/ops`, same route and auth level as the
+  reads (overlapping routes with different auth levels are rejected).
+- The handler accepts a mutation only when all hold: the runtime scope includes
+  `operator.write`; the request is not from the sandboxed frame (`Origin` equals
+  the gateway origin and `Sec-Fetch-Dest` is not `iframe`); `Content-Type` is
+  `application/json`; the envelope carries the `reviewed_state` digest. Anything
+  else is refused before any spawn, with a 4xx and a reason.
+- The plugin pipes the envelope to `sil ops`, which checks the digest as it does
+  today. The audit row records the user from the gateway identity
+  (`x-forwarded-email` as resolved by the gateway, not read raw by the plugin).
+- Not `auth: "plugin"`: port 18789 also listens on the private address, so a
+  plugin that trusted the proxy header itself could be spoofed from the LAN.
+
+Open item for the plan: confirm on the host that oauth2-proxy forwards
+`/plugins/...` paths and that the route's runtime scope is visible to the handler.
+Until that probe passes, the design is source-reviewed only.
 
 ### 5. Worker
 
-Proposed (Q2): a separate systemd user unit `sil-worker.service` for the
-`openclaw` user, with the absolute Bun path and `LITELLM_API_KEY` from an env file
-at mode 600. Not `registerService`: the gateway has run out of heap and restarted
-before, and a worker inside its cgroup adds memory pressure and dies with it. The
-plugin only reports the worker state it reads through `sil ops`.
+A separate systemd user unit `sil-worker.service` for the `openclaw` user (Q2),
+with the absolute Bun path and `LITELLM_API_KEY` from an env file at mode 600. Not
+`registerService`: the gateway has run out of heap and restarted before, and a
+worker inside its cgroup adds memory pressure and dies with it. The plugin only
+reports the worker state it reads through `sil ops`.
 
-### 6. Redaction
+### 6. Scope of the pilot
+
+World `inkitt` (Q3) and agent `software-factory` only (Q4, "flash": the Flash
+agents were merged into `software-factory`). The plugin takes an `agents`
+allowlist; sessions of other agents are ignored at `session_end`, in `scan` and in
+`before_prompt_build`. `software-factory` has the largest store (6.9 GB), so the
+reader's by-key access and the scan's `transcript_updated_at` window are tested
+against a fixture with many sessions, and the first host run is timed.
+
+The sil instance on Synergy is its own install with its own state. World
+`inkitt` there is not the `inkitt` world of the sil on the Mac: lessons do not
+cross between the two. Sharing them would need a shared store, which is out of
+scope (see Non-goals).
+
+### 7. Redaction
 
 Synergy transcripts contain secrets: the Hindsight plugin needs a local redaction
 patch for that reason. The critic sends transcript excerpts to a model. Before
@@ -215,8 +256,10 @@ the plan.
   reader (mutation check).
 - Plugin contract: load `index.mjs` with a fake `api` and assert the registered
   hooks, descriptors and route; `before_prompt_build` with valid, missing and
-  malformed cache; the route refuses a mutation envelope; the command refuses a
-  caller without `operator.write`.
+  malformed cache; the route refuses a mutation from the frame (`Sec-Fetch-Dest:
+  iframe`), from a foreign `Origin`, without `operator.write`, without JSON, and
+  without a digest, each with its own reason, and passes a valid one to `sil ops`;
+  sessions of agents outside the allowlist are ignored.
 - Delivery counting: one session, many turns, one count.
 - End to end through the real modules: fixture store to queue to worker (fake
   model) to accept via `sil ops` to cache to `before_prompt_build` output.
@@ -232,6 +275,8 @@ the plan.
    gateway's raw stream or a probe session matching `agent:*:probe-*`, which the
    Hindsight plugin already ignores).
 5. The tab renders over `synergy.inkitt.com` and the widget shows real numbers.
+6. One accept from the standalone page succeeds with the right digest, and the
+   same request replayed from the embedded tab is refused.
 
 ## Docs
 
@@ -239,15 +284,12 @@ Rewrite `docs/OPENCLAW.md` for the SDK plugin and the SQLite store, and mark the
 file and `AGENTS.md` paths as legacy for OpenClaw before 2026.9.4. Update the
 "Other hosts" section of `docs/ARCHITECTURE.md`.
 
-## Open questions
+## Answers (user, 2026-10-31)
 
-- Q1. Review decisions: `/sil` chat command with the digest (proposed), or a tab
-  with its own auth that can POST? The second needs plugin-managed auth on the
-  gateway hostname, which the host docs warn against.
-- Q2. Worker: separate systemd user unit (proposed) or `registerService` inside the
-  gateway?
-- Q3. World: map Synergy sessions to the existing `inkitt` world, or a new
-  `synergy` world? With `inkitt`, lessons from Synergy agents also reach the
-  user's Claude Code sessions in that world, and the other way round.
-- Q4. Which agents feed the loop: all four (`software-factory`, `inkitt`, `sre`,
-  `openclaw`), or a pilot on one?
+- Q1. Review decisions in the web UI. Realised as the standalone page in section
+  4, since the embedded tab cannot POST by host design.
+- Q2. The recommended way: separate systemd user unit.
+- Q3. World `inkitt`. Correction to the question as first asked: the sil on
+  Synergy has its own state, so this names the world there and does not share
+  lessons with the Mac's `inkitt` world.
+- Q4. "flash", read as agent `software-factory`.

@@ -83,6 +83,11 @@ export interface RunOptions {
    * (the human's instruction) instead of refusing. Every other caller leaves
    * this unset, so the two gates it narrows keep refusing exactly as before. */
   manualRefine?: boolean;
+  /** Most patterns this run may draft for. 0 or unset means no count bound. */
+  maxAttempts?: number;
+  /** Epoch ms after which no further draft starts. A per-pattern provider
+   * timeout can be minutes long, so a count alone does not bound the run. */
+  deadline?: number;
 }
 
 function describe(e: unknown): string {
@@ -232,8 +237,12 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
     // like the plan: the first `cap` in sorted order would stage, the rest are
     // over the cap. Like the other gates, the staged-refine and refused-refine
     // skips are not forecast.
-    report.staged = actionable.slice(0, cap).map((a) => a.pattern);
-    for (const a of actionable.slice(cap)) report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
+    const count = opts.maxAttempts && opts.maxAttempts > 0 ? Math.min(cap, opts.maxAttempts) : cap;
+    report.staged = actionable.slice(0, count).map((a) => a.pattern);
+    for (const a of actionable.slice(count)) {
+      report.gated_out[a.pattern] =
+        count < cap ? `over the run budget of ${count} pattern(s)` : `over the per-run cap of ${cap}`;
+    }
     report.finished = fsx.nowIso();
     return report;
   }
@@ -269,6 +278,8 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // pattern, which a per-pattern read would cost once per actionable pattern.
   const proposalEvents = readProposalEvents().events;
 
+  const maxAttempts = opts.maxAttempts && opts.maxAttempts > 0 ? opts.maxAttempts : 0;
+  let attempted = 0;
   for (const action of actionable) {
     const isRefine = action.action === "refine";
     const card = cardsByPattern.get(action.pattern) ?? null;
@@ -298,6 +309,18 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
       continue;
     }
+    // Last gate before the expensive part: a run that drafts every actionable
+    // pattern can outlast the slot it was scheduled in, and each attempt costs
+    // one or more provider calls.
+    if (maxAttempts > 0 && attempted >= maxAttempts) {
+      report.gated_out[action.pattern] = `over the run budget of ${maxAttempts} pattern(s)`;
+      continue;
+    }
+    if (opts.deadline !== undefined && Date.now() >= opts.deadline) {
+      report.gated_out[action.pattern] = "over the run time budget";
+      continue;
+    }
+    attempted += 1;
     const attempt = { drafted: false, transient: false };
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat, attempt, {

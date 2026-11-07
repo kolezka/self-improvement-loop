@@ -536,13 +536,25 @@ async function runCurriculumIfDue(world: World, cfg: Config, curriculumEnabled: 
   const marker = join(paths.stateDir(), `last-curriculum-${world.name}`);
   if (!curriculumEnabled || !curriculumDue(marker, cfg.worker.curriculum_interval_minutes, now)) return;
   try {
-    const report = await curriculumRun(world, cfg, { apply: true });
+    const report = await curriculumRun(world, cfg, { apply: true, ...curriculumBudget(cfg) });
     summary.curriculum[world.name] = report as unknown as Record<string, unknown>;
   } catch (e) {
     summary.curriculum[world.name] = { error: (e as Error).message };
   }
   fsx.ensureDir(dirname(marker));
   writeFileSync(marker, now.toISOString(), "utf8");
+}
+
+/** What one curriculum tick may spend, from the worker config. Extracted so a
+ * test can lock the mapping: a per-pattern provider call can take minutes, so
+ * the deadline is what actually bounds the run, the count only stops the queue
+ * from growing. */
+export function curriculumBudget(cfg: Config, now = Date.now()): { maxAttempts: number; deadline?: number } {
+  const minutes = cfg.worker.curriculum_max_minutes;
+  return {
+    maxAttempts: cfg.worker.curriculum_max_patterns,
+    deadline: minutes > 0 ? now + minutes * 60_000 : undefined,
+  };
 }
 
 function curriculumDue(markerPath: string, intervalMinutes: number, now: Date): boolean {

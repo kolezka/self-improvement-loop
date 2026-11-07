@@ -88,6 +88,12 @@ export const Promotion = z.object({
 export const WorkerConfig = z.object({
   idle_minutes: z.number().int().min(0).default(10),
   curriculum_interval_minutes: z.number().int().min(1).default(60),
+  // Upper bounds on one curriculum tick, so a tick cannot outlast the slot the
+  // worker scheduled it in. 0 leaves that axis unbounded. A pattern's provider
+  // calls can each take minutes, so the time budget is the one that matters:
+  // the count only stops the queue early.
+  curriculum_max_patterns: z.number().int().min(0).default(6),
+  curriculum_max_minutes: z.number().int().min(0).default(15),
   min_tool_uses: z.number().int().min(0).default(6),
   auto_kick: z.boolean().default(true),
 });

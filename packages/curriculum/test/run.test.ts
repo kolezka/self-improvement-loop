@@ -295,6 +295,40 @@ describe("the happy path", () => {
     expect(roomy.promptsFor("drafter")[0]).toContain(stated(400));
   });
 
+  test("a run stops drafting after its pattern budget", async () => {
+    const world = worldWith();
+    initTarget(world);
+    addReflections(world, "second-pattern", 3);
+    const chat = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg({ per_run_cap: 10 }), opts({ apply: true, chat: chat.fn, maxAttempts: 1 }));
+    // One attempt means one drafter call, whatever staged.
+    expect(report.staged).toHaveLength(1);
+    expect(chat.calls.filter((c) => c.role === "drafter")).toHaveLength(1);
+    const skipped = Object.entries(report.gated_out).filter(([, why]) => why.includes("over the run budget of 1 pattern(s)"));
+    expect(skipped).toHaveLength(1);
+  });
+
+  test("a run stops starting drafts after its deadline", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, deadline: Date.now() - 1 }));
+    expect(report.staged).toEqual([]);
+    expect(chat.calls).toHaveLength(0);
+    expect(Object.values(report.gated_out)).toContain("over the run time budget");
+
+    // A deadline still ahead changes nothing.
+    const later = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const ok = await run(world, makeCfg(), opts({ apply: true, chat: later.fn, deadline: Date.now() + 60_000 }));
+    expect(ok.staged).toEqual([PATTERN]);
+  });
+
+  test("a dry run forecasts the count budget", async () => {
+    const report = await run(worldWith(), makeCfg({ per_run_cap: 10 }), opts({ apply: false, maxAttempts: 1 }));
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.gated_out[PATTERN]).toBeUndefined();
+  });
+
   test("a rule over the world's total budget gates out before the judge", async () => {
     const world = worldWith();
     initTarget(world);

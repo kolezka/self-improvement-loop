@@ -218,6 +218,53 @@ describe("chat claude-cli kind", () => {
     await expect(chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm })).rejects.toBeInstanceOf(ProviderError);
   });
 
+  // A rate limit exits 1 with the reason buried in the JSON `result`, behind
+  // hundreds of usage counters. Slicing stdout raw hid it for months: the log
+  // line read `"duration_api_ms":0` and nothing else.
+  test("a failed exit reports what the CLI said, not the head of its usage block", async () => {
+    spawnSyncImpl.run = () =>
+      fakeResult({
+        success: false,
+        exitCode: 1,
+        stdout: Buffer.from(
+          JSON.stringify({
+            duration_api_ms: 0,
+            stop_reason: "stop_sequence",
+            is_error: true,
+            subtype: "success",
+            terminal_reason: "api_error",
+            result:
+              "API Error: Request rejected (429) \u00b7 All credentials for model claude-fable-5 are cooling down (last error: rate_limit_error)",
+          }),
+        ),
+      });
+    const ep = endpoint({ name: "cli", kind: "claude-cli" });
+    const llm = llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } });
+
+    let caught: unknown;
+    try {
+      await chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    const message = (caught as Error).message;
+    expect(message).toContain("api_error");
+    expect(message).toContain("429");
+    expect(message).toContain("cooling down");
+    expect(message).not.toContain("duration_api_ms");
+  });
+
+  test("a failed exit with no readable JSON still carries stderr", async () => {
+    spawnSyncImpl.run = () => fakeResult({ success: false, exitCode: 127, stderr: Buffer.from("claude: not found") });
+    const ep = endpoint({ name: "cli", kind: "claude-cli" });
+    const llm = llmConfig({ endpoints: [ep], active: "cli", models: { critic: "opus" } });
+
+    await expect(chat("critic", [{ role: "user", content: "hi" }], { world: world(), llm })).rejects.toThrow(
+      /claude: not found/,
+    );
+  });
+
   test("raises ProviderTimeout when the spawn exited due to timeout", async () => {
     spawnSyncImpl.run = () => fakeResult({ success: false, exitedDueToTimeout: true });
     const ep = endpoint({ name: "cli", kind: "claude-cli" });

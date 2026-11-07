@@ -570,6 +570,29 @@ describe("gates", () => {
     expect(git.refExists(repo, `refs/heads/${branchName(world.name, "bbb-pattern")}`)).toBe(true);
   });
 
+  // One 429 means every later call in the same run fails instantly, so
+  // continuing buys one failure per pattern. A live tick recorded 14 of them in
+  // 36 seconds. The run stops and the next tick retries the rest.
+  test("a rate limit ends the run instead of failing every pattern", async () => {
+    const world = makeWorld();
+    addReflections(world, "aaa-pattern", 3);
+    addReflections(world, "bbb-pattern", 3, { startDay: 20 });
+    initTarget(world);
+
+    let drafts = 0;
+    const chat: ChatFn = async () => {
+      drafts += 1;
+      throw new Error("claude -p exited 1: api_error: API Error: Request rejected (429)");
+    };
+    const report = await run(world, makeCfg(), opts({ apply: true, chat }));
+
+    expect(report.staged).toEqual([]);
+    // The whole point: the second pattern is never sent to the provider.
+    expect(drafts).toBe(1);
+    expect(report.gated_out["aaa-pattern"]).toContain("429");
+    expect(report.gated_out["bbb-pattern"]).toContain("429");
+  });
+
   test("a provider failure gates one pattern and the run continues", async () => {
     const world = makeWorld();
     addReflections(world, "aaa-pattern", 3);

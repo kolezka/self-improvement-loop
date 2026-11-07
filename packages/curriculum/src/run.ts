@@ -285,7 +285,14 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
 
   const maxAttempts = opts.maxAttempts && opts.maxAttempts > 0 ? opts.maxAttempts : 0;
   let attempted = 0;
+  // Set when the provider says stop (a rate limit). Every pattern after it is
+  // reported with the same reason instead of buying one failure each.
+  let stopped: string | null = null;
   for (const action of actionable) {
+    if (stopped) {
+      report.gated_out[action.pattern] = stopped;
+      continue;
+    }
     const isRefine = action.action === "refine";
     const card = cardsByPattern.get(action.pattern) ?? null;
     // Before the cap check on purpose: a skipped refine must not look over-cap.
@@ -326,7 +333,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       continue;
     }
     attempted += 1;
-    const attempt = { drafted: false, transient: false };
+    const attempt: { drafted: boolean; transient: boolean; stop?: string } = { drafted: false, transient: false };
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat, attempt, {
         target,
@@ -348,6 +355,7 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = `staging failed: ${describe(e)}`;
       attempt.transient = true;
     }
+    if (attempt.stop) stopped = attempt.stop;
     // Any stage answers a cached refusal, a promote included.
     if (report.staged.includes(action.pattern)) {
       for (const key of [action.pattern, promoteKey]) {
@@ -412,7 +420,7 @@ async function stageOne(
   chat: ChatFn,
   /** `drafted` once a draft came back; `transient` when a provider or staging
    * failure ended it, which says nothing about the draft and is not cached. */
-  attempt: { drafted: boolean; transient: boolean },
+  attempt: { drafted: boolean; transient: boolean; stop?: string },
   ctx: StageContext,
 ): Promise<void> {
   const pattern = action.pattern;
@@ -542,9 +550,13 @@ async function stageOne(
       { world, jsonMode: true },
     );
   } catch (e) {
-    // A provider failure gates one pattern.
-    report.gated_out[pattern] = `draft failed: ${describe(e)}`;
+    const said = describe(e);
+    report.gated_out[pattern] = `draft failed: ${said}`;
     attempt.transient = true;
+    // A rate limit is the provider, not this pattern: it will not have cleared
+    // by the next pattern in the same run. Live, one 429 turned a 14 pattern
+    // tick into 14 instant failures in 36 seconds.
+    if (rateLimited(said)) attempt.stop = `draft failed: ${said}`;
     return;
   }
   attempt.drafted = true;
@@ -879,6 +891,15 @@ function stillRefused(cached: string, current: string): boolean {
 // a colon, so the prefix cannot collide with a refine row.
 const PROMOTE_PREFIX = "promote:";
 export const PROMOTE_TRIES = 2;
+
+/** Whether a provider message says "not now" rather than "this pattern failed".
+ *
+ * Matched on the message because the provider layer only has a string: a 429
+ * from the CLI proxy arrives as `API Error: Request rejected (429)`, and the
+ * LiteLLM side as `rate_limit_error` or `quota`. */
+export function rateLimited(message: string): boolean {
+  return /\b429\b|rate.?limit|too many requests|cooling down|quota|overloaded/i.test(message);
+}
 
 /** Gated drafts recorded at exactly this reflection count. Any other count,
  * or a row that does not parse, starts again at zero. */

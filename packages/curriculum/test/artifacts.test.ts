@@ -189,6 +189,32 @@ describe("managed rules block", () => {
     expect(text).toContain(`- mine ${ruleTag(PATTERN)}`);
   });
 
+  test("the rule budget counts the block, and a shorten always fits", () => {
+    const world = makeWorld();
+    const root = join(env.tmp, "target");
+    const path = writeRules(root, MARKED);
+    const long = "- " + "y".repeat(200);
+    artifacts.writeArtifact(world, "rule", "other-pattern", "- " + "x".repeat(60), root);
+    artifacts.writeArtifact(world, "rule", PATTERN, long, root);
+    // The block as written, tags and newlines included: the size the budget caps.
+    const [, block] = artifacts.splitManagedBlock(readFileSync(path, "utf8"));
+    const blockChars = block.trim().length;
+
+    expect(artifacts.ruleBudgetProblem(world, PATTERN, long, blockChars, root)).toBe("");
+    expect(artifacts.ruleBudgetProblem(world, PATTERN, long, blockChars - 1, root)).toContain(
+      `would hold ${blockChars} of ${blockChars - 1} chars`,
+    );
+
+    // A refine is measured as a delta, so shortening fits a block that is
+    // already over budget instead of counting the rule twice.
+    expect(artifacts.ruleBudgetProblem(world, PATTERN, "- short", blockChars - 1, root)).toBe("");
+    expect(artifacts.ruleBudgetProblem(world, PATTERN, "- " + "z".repeat(300), blockChars - 1, root)).toContain(
+      "retire or shrink a rule first",
+    );
+    // 0 disables the check.
+    expect(artifacts.ruleBudgetProblem(world, PATTERN, "- " + "z".repeat(300), 0, root)).toBe("");
+  });
+
   test("remove drops only this pattern's bullet and never the file", () => {
     const world = makeWorld();
     const root = join(env.tmp, "target");

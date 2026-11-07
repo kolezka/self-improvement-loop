@@ -51,7 +51,8 @@ function cfg(worlds: World[] = [DEFAULT]): Config {
   return {
     version: 1,
     worlds,
-    promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 },
+    promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500,
+    max_total_rule_chars: 12000, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 },
     worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: false },
     web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] },
     alias_semantic: AliasSemanticConfig.parse({}),

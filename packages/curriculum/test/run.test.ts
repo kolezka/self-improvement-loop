@@ -295,6 +295,22 @@ describe("the happy path", () => {
     expect(roomy.promptsFor("drafter")[0]).toContain(stated(400));
   });
 
+  test("a rule over the world's total budget gates out before the judge", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg({ max_total_rule_chars: 100 }), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("rule budget");
+    // Cheap gate first: an unwritable rule costs no judge call.
+    expect(chat.calls.filter((c) => c.role === "judge")).toHaveLength(0);
+
+    // 0 disables the budget, so the same draft stages.
+    const roomy = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const staged = await run(world, makeCfg({ max_total_rule_chars: 0 }), opts({ apply: true, chat: roomy.fn }));
+    expect(staged.staged).toEqual([PATTERN]);
+  });
+
   test("a draft refused only for length gets one shorten redraft told the overage", async () => {
     const world = worldWith();
     initTarget(world);

@@ -1,7 +1,7 @@
 // Domain schemas. zod is the single source of truth; types are inferred.
 
 import { z } from "zod";
-import { DEFAULT_MAX_RULE_CHARS, ROLES, SLUG_RE, WORLD_NAME_RE } from "./consts.ts";
+import { DEFAULT_MAX_RULE_CHARS, DEFAULT_MAX_TOTAL_RULE_CHARS, ROLES, SLUG_RE, WORLD_NAME_RE } from "./consts.ts";
 
 export const slug = z.string().regex(SLUG_RE).max(64);
 export const isoTs = z.string();
@@ -62,6 +62,10 @@ export const Promotion = z.object({
   per_run_cap: z.number().int().min(1).default(3),
   // Longest rule bullet the lint accepts, its <!--rule:...--> tag included.
   max_rule_chars: z.number().int().min(100).default(DEFAULT_MAX_RULE_CHARS),
+  // Every bullet in the world's managed block, tags included: the whole block is
+  // injected at each session start, so this bounds what the rules cost in
+  // context. 0 disables the budget.
+  max_total_rule_chars: z.number().int().min(0).default(DEFAULT_MAX_TOTAL_RULE_CHARS),
   auto_merge: z.boolean().default(false),
   retire_after_days: z.number().int().min(1).default(45),
   // Minimum reflected sessions since the live text (revised_at, or

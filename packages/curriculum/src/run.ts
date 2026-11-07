@@ -368,8 +368,11 @@ interface StageContext {
 /** One field feeds both the budget the drafter is told and the cap the lint
  * checks, so a staging draft and a human-requested revision read the same
  * limit. Exported for `review.revise`, which drafts outside a run. */
-export function draftCaps(cfg: Config): { maxRuleChars: number } {
-  return { maxRuleChars: cfg.promotion.max_rule_chars };
+export function draftCaps(cfg: Config): { maxRuleChars: number; maxTotalRuleChars: number } {
+  return {
+    maxRuleChars: cfg.promotion.max_rule_chars,
+    maxTotalRuleChars: cfg.promotion.max_total_rule_chars,
+  };
 }
 
 async function stageOne(
@@ -630,6 +633,16 @@ async function stageOne(
     if (forcedType === null || rerouteFrom !== null) reason += `; router: ${routedReason}`;
     report.gated_out[pattern] = reason;
     return;
+  }
+
+  // Before the judge on purpose: a rule that cannot be written costs no judge
+  // call. The block, not the bullet, is what every session pays for.
+  if (routedType === "rule" && typeof body === "string") {
+    const over = artifacts.ruleBudgetProblem(world, pattern, body, caps.maxTotalRuleChars);
+    if (over) {
+      report.gated_out[pattern] = over;
+      return;
+    }
   }
 
   // A redraft that reproduces the artifact already in place is not a promotion.

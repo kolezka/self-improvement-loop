@@ -7,6 +7,10 @@ export const ruleTag = (pattern: string): string => `<!--rule:${pattern}-->`;
 // One rule bullet in the managed block, tag included. `promotion.max_rule_chars`
 // overrides it; the drafter is told the budget net of the tag.
 export const DEFAULT_MAX_RULE_CHARS = 500;
+// Every bullet in one world's managed block, tags included. The whole block is
+// injected at each session start, so this bounds the context the rules cost, not
+// one rule's wording. Live worlds reached 25k of it before this existed.
+export const DEFAULT_MAX_TOTAL_RULE_CHARS = 12000;
 
 // Hook config snapshot written by the engine, read by the hook.
 export const HOOK_SNAPSHOT = "hook-config.json";

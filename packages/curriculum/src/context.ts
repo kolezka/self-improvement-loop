@@ -19,7 +19,7 @@
 // cached summary, or to the raw lessons, and never blocks a promotion.
 
 import { join } from "node:path";
-import { fsx, isSlug, type Ledger, paths, type Reflection, ValidationError, type World } from "@sil/core";
+import { fsx, isSlug, type Ledger, paths, type Reflection, servedType, ValidationError, type World } from "@sil/core";
 import type { ChatFn } from "@sil/providers";
 import * as artifacts from "./artifacts.ts";
 import { loadLedger } from "./plan.ts";
@@ -142,7 +142,7 @@ export function worldKnowledge(world: World, items: Reflection[], ledger?: Ledge
   for (const pattern of patterns) {
     const entry = entries[pattern];
     const live = entry && (entry.status === "promoted" || entry.status === "staged");
-    const type = live ? (entry.served_by ? entry.served_by.type : entry.artifact_type) : "none";
+    const type = live ? servedType(entry) : "none";
     rows.push({
       pattern,
       type,

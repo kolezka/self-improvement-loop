@@ -295,6 +295,126 @@ describe("the happy path", () => {
     expect(roomy.promptsFor("drafter")[0]).toContain(stated(400));
   });
 
+  test("a run stops drafting after its pattern budget", async () => {
+    const world = worldWith();
+    initTarget(world);
+    addReflections(world, "second-pattern", 3);
+    const chat = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg({ per_run_cap: 10 }), opts({ apply: true, chat: chat.fn, maxAttempts: 1 }));
+    // One attempt means one drafter call, whatever staged.
+    expect(report.staged).toHaveLength(1);
+    expect(chat.calls.filter((c) => c.role === "drafter")).toHaveLength(1);
+    const skipped = Object.entries(report.gated_out).filter(([, why]) => why.includes("over the run budget of 1 pattern(s)"));
+    expect(skipped).toHaveLength(1);
+  });
+
+  test("a run stops starting drafts after its deadline", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn, deadline: Date.now() - 1 }));
+    expect(report.staged).toEqual([]);
+    expect(chat.calls).toHaveLength(0);
+    expect(Object.values(report.gated_out)).toContain("over the run time budget");
+
+    // A deadline still ahead changes nothing.
+    const later = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const ok = await run(world, makeCfg(), opts({ apply: true, chat: later.fn, deadline: Date.now() + 60_000 }));
+    expect(ok.staged).toEqual([PATTERN]);
+  });
+
+  test("a dry run forecasts the count budget", async () => {
+    const report = await run(worldWith(), makeCfg({ per_run_cap: 10 }), opts({ apply: false, maxAttempts: 1 }));
+    expect(report.staged).toEqual([PATTERN]);
+    expect(report.gated_out[PATTERN]).toBeUndefined();
+  });
+
+  test("a rule over the world's total budget gates out before the judge", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg({ max_total_rule_chars: 100 }), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("rule budget");
+    // Cheap gate first: an unwritable rule costs no judge call.
+    expect(chat.calls.filter((c) => c.role === "judge")).toHaveLength(0);
+
+    // 0 disables the budget, so the same draft stages.
+    const roomy = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const staged = await run(world, makeCfg({ max_total_rule_chars: 0 }), opts({ apply: true, chat: roomy.fn }));
+    expect(staged.staged).toEqual([PATTERN]);
+  });
+
+  test("a draft refused only for length gets one shorten redraft told the overage", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const long =
+      ruleBody().slice(0, -1) +
+      ", then re-run `rg` after every later edit, count the hits again, compare that count with the graphify " +
+      "inventory, and name the call sites that changed in the commit message before calling the change safe.";
+    const chat = new FakeChat({ drafts: [ruleDraftFor(long), { artifact: ruleBody() }] });
+    const report = await run(world, makeCfg({ max_rule_chars: 200 }), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([PATTERN]);
+    const calls = chat.calls.filter((c) => c.role === "drafter");
+    expect(calls).toHaveLength(2);
+    const retry = calls[1]!.messages;
+    expect(retry.at(-2)).toEqual({ role: "assistant", content: JSON.stringify(ruleDraftFor(long)) });
+    expect(retry.at(-1)!.content).toContain("the cap is 200");
+  });
+
+  test("a shorten redraft that still fails gates out and names both drafts", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const long = ruleBody().slice(0, -1) + ", " + "and re-run `rg` again ".repeat(10) + ".";
+    const chat = new FakeChat({ draft: ruleDraftFor(long) });
+    const report = await run(world, makeCfg({ max_rule_chars: 150 }), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("after one shorten redraft");
+    expect(chat.calls.filter((c) => c.role === "drafter")).toHaveLength(2);
+  });
+
+  test("a lint failure that is not about length gets no shorten redraft", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: ruleDraftFor(`${ruleBody()}\n- second line`) });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+    expect(report.gated_out[PATTERN]).toContain("exactly one bullet");
+    expect(chat.calls.filter((c) => c.role === "drafter")).toHaveLength(1);
+  });
+
+  test("a promote gated twice at the same count waits for new evidence, then retries", async () => {
+    const world = worldWith(PATTERN, 3);
+    initTarget(world);
+    const bad = () => new FakeChat({ draft: ruleDraftFor(`${ruleBody()}\n- second line`) });
+    for (let i = 0; i < 2; i++) {
+      const report = await run(world, makeCfg(), opts({ apply: true, chat: bad().fn }));
+      expect(report.gated_out[PATTERN]).toContain("exactly one bullet");
+    }
+    const third = bad();
+    const skipped = await run(world, makeCfg(), opts({ apply: true, chat: third.fn }));
+    expect(skipped.gated_out[PATTERN]).toContain("waiting for new evidence");
+    expect(third.calls.filter((c) => c.role === "drafter")).toHaveLength(0);
+
+    // A new reflection reopens it, and a stage clears the backoff row.
+    addReflections(world, PATTERN, 1, { startDay: 10 });
+    const good = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const staged = await run(world, makeCfg(), opts({ apply: true, chat: good.fn }));
+    expect(staged.staged).toEqual([PATTERN]);
+    expect(readDoc("refine_attempts", world.name, "tolerant") ?? {}).toEqual({});
+  });
+
+  test("a provider failure does not count toward the promote backoff", async () => {
+    const world = worldWith(PATTERN, 3);
+    initTarget(world);
+    const failing: ChatFn = async () => {
+      throw new Error("down");
+    };
+    for (let i = 0; i < 3; i++) await run(world, makeCfg(), opts({ apply: true, chat: failing }));
+    const good = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: good.fn }));
+    expect(report.staged).toEqual([PATTERN]);
+  });
+
   test("an agent draft is written at the agents path", async () => {
     // The fourth type. Skill, hook and rule each had a staging test; agent had
     // none, and the loop had never staged one since the V2 port.
@@ -448,6 +568,29 @@ describe("gates", () => {
     expect(report.gated_out["aaa-pattern"]).toContain("judge:");
     expect(git.refExists(repo, `refs/heads/${branchName(world.name, "aaa-pattern")}`)).toBe(false);
     expect(git.refExists(repo, `refs/heads/${branchName(world.name, "bbb-pattern")}`)).toBe(true);
+  });
+
+  // One 429 means every later call in the same run fails instantly, so
+  // continuing buys one failure per pattern. A live tick recorded 14 of them in
+  // 36 seconds. The run stops and the next tick retries the rest.
+  test("a rate limit ends the run instead of failing every pattern", async () => {
+    const world = makeWorld();
+    addReflections(world, "aaa-pattern", 3);
+    addReflections(world, "bbb-pattern", 3, { startDay: 20 });
+    initTarget(world);
+
+    let drafts = 0;
+    const chat: ChatFn = async () => {
+      drafts += 1;
+      throw new Error("claude -p exited 1: api_error: API Error: Request rejected (429)");
+    };
+    const report = await run(world, makeCfg(), opts({ apply: true, chat }));
+
+    expect(report.staged).toEqual([]);
+    // The whole point: the second pattern is never sent to the provider.
+    expect(drafts).toBe(1);
+    expect(report.gated_out["aaa-pattern"]).toContain("429");
+    expect(report.gated_out["bbb-pattern"]).toContain("429");
   });
 
   test("a provider failure gates one pattern and the run continues", async () => {

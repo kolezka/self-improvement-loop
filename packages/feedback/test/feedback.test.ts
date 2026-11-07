@@ -53,7 +53,8 @@ function world(name = "default"): World {
 }
 
 function cfg(w: World): Config {
-  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] }, alias_semantic: AliasSemanticConfig.parse({}) };
+  return { version: 1, worlds: [w], promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500,
+    max_total_rule_chars: 12000, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 }, worker: { idle_minutes: 10, curriculum_interval_minutes: 60, curriculum_max_patterns: 6, curriculum_max_minutes: 15, reflect_max_sessions: 8, reflect_max_minutes: 20, min_tool_uses: 6, auto_kick: true }, web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] }, alias_semantic: AliasSemanticConfig.parse({}) };
 }
 
 function buildWorldAndLedger(): { w: World; c: Config } {
@@ -114,6 +115,21 @@ describe("scorecards proposals", () => {
     expect(card.proposal).toBe("refine");
     expect(card.fires_30d).toBe(1);
     expect(card.misfired).toBe(2);
+  });
+
+  // The fires log is global, so a record's world decides whether it counts
+  // here. Rows written before the field existed stay ambiguous and count.
+  test("a fire from another world does not count", () => {
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(2)), world: "inkitt", pattern: "flaky-thing", event: "PreToolUse" });
+    const card = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("hook:flaky-thing")!;
+    expect(card.fires_30d).toBe(1);
+
+    // The same fire attributed to this world does count.
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(2)), world: w.name, pattern: "flaky-thing", event: "PreToolUse" });
+    const counted = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("hook:flaky-thing")!;
+    expect(counted.fires_30d).toBe(2);
   });
 
   // uses_30d means "times served", so an artifact that only fires or is only

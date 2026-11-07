@@ -19,6 +19,7 @@ import {
   type ArtifactRef,
   type ArtifactType,
   type Config,
+  declaredType,
   fsx,
   GitError,
   paths,
@@ -83,6 +84,11 @@ export interface RunOptions {
    * (the human's instruction) instead of refusing. Every other caller leaves
    * this unset, so the two gates it narrows keep refusing exactly as before. */
   manualRefine?: boolean;
+  /** Most patterns this run may draft for. 0 or unset means no count bound. */
+  maxAttempts?: number;
+  /** Epoch ms after which no further draft starts. A per-pattern provider
+   * timeout can be minutes long, so a count alone does not bound the run. */
+  deadline?: number;
 }
 
 function describe(e: unknown): string {
@@ -132,9 +138,13 @@ function servedBy(staged: PromotionEntry | null, prior: PromotionEntry | null): 
   return prior ? prior.served_by : null;
 }
 
+/** What type this row declares, served_by included even when it is "none".
+ *
+ * Null means "no row", which is what makes a missing default-branch row differ
+ * from a branch that re-homed the pattern to nothing. The rule lives in
+ * `declaredType`; `servedType` is the other question (which artifact serves it). */
 function rowType(entry: PromotionEntry | null): string | null {
-  if (!entry) return null;
-  return entry.served_by ? entry.served_by.type : entry.artifact_type;
+  return entry ? declaredType(entry) : null;
 }
 
 /** Whether the branch carries a type change the default branch does not know.
@@ -232,8 +242,12 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
     // like the plan: the first `cap` in sorted order would stage, the rest are
     // over the cap. Like the other gates, the staged-refine and refused-refine
     // skips are not forecast.
-    report.staged = actionable.slice(0, cap).map((a) => a.pattern);
-    for (const a of actionable.slice(cap)) report.gated_out[a.pattern] = `over the per-run cap of ${cap}`;
+    const count = opts.maxAttempts && opts.maxAttempts > 0 ? Math.min(cap, opts.maxAttempts) : cap;
+    report.staged = actionable.slice(0, count).map((a) => a.pattern);
+    for (const a of actionable.slice(count)) {
+      report.gated_out[a.pattern] =
+        count < cap ? `over the run budget of ${count} pattern(s)` : `over the per-run cap of ${cap}`;
+    }
     report.finished = fsx.nowIso();
     return report;
   }
@@ -269,7 +283,16 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
   // pattern, which a per-pattern read would cost once per actionable pattern.
   const proposalEvents = readProposalEvents().events;
 
+  const maxAttempts = opts.maxAttempts && opts.maxAttempts > 0 ? opts.maxAttempts : 0;
+  let attempted = 0;
+  // Set when the provider says stop (a rate limit). Every pattern after it is
+  // reported with the same reason instead of buying one failure each.
+  let stopped: string | null = null;
   for (const action of actionable) {
+    if (stopped) {
+      report.gated_out[action.pattern] = stopped;
+      continue;
+    }
     const isRefine = action.action === "refine";
     const card = cardsByPattern.get(action.pattern) ?? null;
     // Before the cap check on purpose: a skipped refine must not look over-cap.
@@ -280,6 +303,17 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = "the last refine at this scorecard was gated out; waiting for new feedback";
       continue;
     }
+    // A gated promote leaves the watermark where it was, so the next tick
+    // redrafts the same evidence. Live, the same patterns failed the same gate
+    // every tick, a drafter call each. Two tries per count, then wait for a new
+    // reflection.
+    const promoteKey = PROMOTE_PREFIX + action.pattern;
+    const promoteFails = !opts.manualRefine && !isRefine ? promoteFailures(attempts[promoteKey], action.count) : 0;
+    if (promoteFails >= PROMOTE_TRIES) {
+      report.gated_out[action.pattern] =
+        `gated out ${promoteFails} times at ${action.count} reflection(s); waiting for new evidence`;
+      continue;
+    }
     // The cap bounds successful stages, so it is checked against report.staged,
     // which only a real stage grows. A pattern that gated out above passed its
     // slot to the next candidate rather than wasting it.
@@ -287,7 +321,19 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = `over the per-run cap of ${cap}`;
       continue;
     }
-    const attempt = { drafted: false, transient: false };
+    // Last gate before the expensive part: a run that drafts every actionable
+    // pattern can outlast the slot it was scheduled in, and each attempt costs
+    // one or more provider calls.
+    if (maxAttempts > 0 && attempted >= maxAttempts) {
+      report.gated_out[action.pattern] = `over the run budget of ${maxAttempts} pattern(s)`;
+      continue;
+    }
+    if (opts.deadline !== undefined && Date.now() >= opts.deadline) {
+      report.gated_out[action.pattern] = "over the run time budget";
+      continue;
+    }
+    attempted += 1;
+    const attempt: { drafted: boolean; transient: boolean; stop?: string } = { drafted: false, transient: false };
     try {
       await stageOne(world, cfg, report, action, groups.get(action.pattern) ?? [], chat, attempt, {
         target,
@@ -309,14 +355,20 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = `staging failed: ${describe(e)}`;
       attempt.transient = true;
     }
+    if (attempt.stop) stopped = attempt.stop;
     // Any stage answers a cached refusal, a promote included.
     if (report.staged.includes(action.pattern)) {
-      if (Object.hasOwn(attempts, action.pattern)) {
-        delete attempts[action.pattern];
-        attemptsChanged = true;
+      for (const key of [action.pattern, promoteKey]) {
+        if (Object.hasOwn(attempts, key)) {
+          delete attempts[key];
+          attemptsChanged = true;
+        }
       }
     } else if (isRefine && card && attempt.drafted && !attempt.transient) {
       attempts[action.pattern] = attemptKey(card, ledger.entries[action.pattern] ?? null);
+      attemptsChanged = true;
+    } else if (!isRefine && attempt.drafted && !attempt.transient) {
+      attempts[promoteKey] = JSON.stringify([action.count, promoteFails + 1]);
       attemptsChanged = true;
     }
   }
@@ -352,8 +404,11 @@ interface StageContext {
 /** One field feeds both the budget the drafter is told and the cap the lint
  * checks, so a staging draft and a human-requested revision read the same
  * limit. Exported for `review.revise`, which drafts outside a run. */
-export function draftCaps(cfg: Config): { maxRuleChars: number } {
-  return { maxRuleChars: cfg.promotion.max_rule_chars };
+export function draftCaps(cfg: Config): { maxRuleChars: number; maxTotalRuleChars: number } {
+  return {
+    maxRuleChars: cfg.promotion.max_rule_chars,
+    maxTotalRuleChars: cfg.promotion.max_total_rule_chars,
+  };
 }
 
 async function stageOne(
@@ -365,7 +420,7 @@ async function stageOne(
   chat: ChatFn,
   /** `drafted` once a draft came back; `transient` when a provider or staging
    * failure ended it, which says nothing about the draft and is not cached. */
-  attempt: { drafted: boolean; transient: boolean },
+  attempt: { drafted: boolean; transient: boolean; stop?: string },
   ctx: StageContext,
 ): Promise<void> {
   const pattern = action.pattern;
@@ -495,9 +550,13 @@ async function stageOne(
       { world, jsonMode: true },
     );
   } catch (e) {
-    // A provider failure gates one pattern.
-    report.gated_out[pattern] = `draft failed: ${describe(e)}`;
+    const said = describe(e);
+    report.gated_out[pattern] = `draft failed: ${said}`;
     attempt.transient = true;
+    // A rate limit is the provider, not this pattern: it will not have cleared
+    // by the next pattern in the same run. Live, one 429 turned a 14 pattern
+    // tick into 14 instant failures in 36 seconds.
+    if (rateLimited(said)) attempt.stop = `draft failed: ${said}`;
     return;
   }
   attempt.drafted = true;
@@ -582,12 +641,48 @@ async function stageOne(
   // pattern sat on that loop with 50 reflections behind it.
   if (routedType === "rule" && typeof body === "string") body = artifacts.stripRuleTag(body, pattern);
 
-  const problems = lint(routedType, body, pattern, sources, caps);
+  let problems = lint(routedType, body, pattern, sources, caps);
+  // A draft refused only for length is the one lint failure the drafter can fix
+  // from the message alone. Live runs refused hooks at 404 and 417 chars of 400
+  // every tick, each a full drafter call thrown away. One retry, told the exact
+  // overage, costs one call and usually ends the loop.
+  if (problems.length > 0 && problems.every(isCapProblem)) {
+    try {
+      raw = await chat(
+        "drafter",
+        [
+          ...prompts.draftMessages(pattern, drafting, existing, routedType, draftOpts),
+          { role: "assistant", content: raw },
+          { role: "user", content: prompts.shortenMessage(problems) },
+        ],
+        { world, jsonMode: true },
+      );
+    } catch (e) {
+      report.gated_out[pattern] = `artifact-lint: ${problems.join("; ")}; shorten redraft failed: ${describe(e)}`;
+      attempt.transient = true;
+      return;
+    }
+    [body] = prompts.parseDraft(raw, { forcedType: routedType });
+    if (routedType === "rule" && typeof body === "string") body = artifacts.stripRuleTag(body, pattern);
+    const first = problems;
+    problems = lint(routedType, body, pattern, sources, caps);
+    if (problems.length > 0) problems = [...problems, `after one shorten redraft (first draft: ${first.join("; ")})`];
+  }
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");
     if (forcedType === null || rerouteFrom !== null) reason += `; router: ${routedReason}`;
     report.gated_out[pattern] = reason;
     return;
+  }
+
+  // Before the judge on purpose: a rule that cannot be written costs no judge
+  // call. The block, not the bullet, is what every session pays for.
+  if (routedType === "rule" && typeof body === "string") {
+    const over = artifacts.ruleBudgetProblem(world, pattern, body, caps.maxTotalRuleChars);
+    if (over) {
+      report.gated_out[pattern] = over;
+      return;
+    }
   }
 
   // A redraft that reproduces the artifact already in place is not a promotion.
@@ -760,6 +855,12 @@ async function stageOne(
   if (autoMerge) autoMergeBranch(report, ctx.target, ctx.defaultRef, branch, pattern);
 }
 
+/** A lint problem that only says the artifact is too long. Matches the wording
+ * of `lintRule`, the nudge lint's text cap and `lintDescriptionCap`. */
+export function isCapProblem(problem: string): boolean {
+  return / is \d+ chars\b.*; the cap is \d+/.test(problem);
+}
+
 function snapshotOf(card: Scorecard | undefined): Scorecard | null {
   return card ? { ...card, snapshot_at: fsx.nowIso() } : null;
 }
@@ -783,6 +884,33 @@ function stillRefused(cached: string, current: string): boolean {
     return was.slice(0, 4).every((v, i) => v === now[i]) && Number(now[4]) <= Number(was[4] ?? 0);
   } catch {
     return false;
+  }
+}
+
+// Promote backoff rows share the refine-attempts doc. Pattern slugs never hold
+// a colon, so the prefix cannot collide with a refine row.
+const PROMOTE_PREFIX = "promote:";
+export const PROMOTE_TRIES = 2;
+
+/** Whether a provider message says "not now" rather than "this pattern failed".
+ *
+ * Matched on the message because the provider layer only has a string: a 429
+ * from the CLI proxy arrives as `API Error: Request rejected (429)`, and the
+ * LiteLLM side as `rate_limit_error` or `quota`. */
+export function rateLimited(message: string): boolean {
+  return /\b429\b|rate.?limit|too many requests|cooling down|quota|overloaded/i.test(message);
+}
+
+/** Gated drafts recorded at exactly this reflection count. Any other count,
+ * or a row that does not parse, starts again at zero. */
+function promoteFailures(cached: string | undefined, count: number): number {
+  if (cached === undefined) return 0;
+  try {
+    const row: unknown = JSON.parse(cached);
+    if (!Array.isArray(row) || row[0] !== count) return 0;
+    return Number(row[1]) || 0;
+  } catch {
+    return 0;
   }
 }
 

@@ -1,7 +1,7 @@
 // Domain schemas. zod is the single source of truth; types are inferred.
 
 import { z } from "zod";
-import { DEFAULT_MAX_RULE_CHARS, ROLES, SLUG_RE, WORLD_NAME_RE } from "./consts.ts";
+import { DEFAULT_MAX_RULE_CHARS, DEFAULT_MAX_TOTAL_RULE_CHARS, ROLES, SLUG_RE, WORLD_NAME_RE } from "./consts.ts";
 
 export const slug = z.string().regex(SLUG_RE).max(64);
 export const isoTs = z.string();
@@ -62,6 +62,10 @@ export const Promotion = z.object({
   per_run_cap: z.number().int().min(1).default(3),
   // Longest rule bullet the lint accepts, its <!--rule:...--> tag included.
   max_rule_chars: z.number().int().min(100).default(DEFAULT_MAX_RULE_CHARS),
+  // Every bullet in the world's managed block, tags included: the whole block is
+  // injected at each session start, so this bounds what the rules cost in
+  // context. 0 disables the budget.
+  max_total_rule_chars: z.number().int().min(0).default(DEFAULT_MAX_TOTAL_RULE_CHARS),
   auto_merge: z.boolean().default(false),
   retire_after_days: z.number().int().min(1).default(45),
   // Minimum reflected sessions since the live text (revised_at, or
@@ -84,6 +88,18 @@ export const Promotion = z.object({
 export const WorkerConfig = z.object({
   idle_minutes: z.number().int().min(0).default(10),
   curriculum_interval_minutes: z.number().int().min(1).default(60),
+  // Upper bounds on one curriculum tick, so a tick cannot outlast the slot the
+  // worker scheduled it in. 0 leaves that axis unbounded. A pattern's provider
+  // calls can each take minutes, so the time budget is the one that matters:
+  // the count only stops the queue early.
+  curriculum_max_patterns: z.number().int().min(0).default(6),
+  curriculum_max_minutes: z.number().int().min(0).default(15),
+  // The same bound for one reflection pass. A pass walks every pending entry,
+  // and a backlog of parked sessions put back in line (see `sil queue
+  // requeue`) would otherwise hold the worker lock for hours while each entry
+  // costs a provider session. Entries past the budget stay pending, untouched.
+  reflect_max_sessions: z.number().int().min(0).default(8),
+  reflect_max_minutes: z.number().int().min(0).default(20),
   min_tool_uses: z.number().int().min(0).default(6),
   auto_kick: z.boolean().default(true),
 });
@@ -356,11 +372,25 @@ export const PromotionEntry = z.object({
 });
 export type PromotionEntry = z.infer<typeof PromotionEntry>;
 
+/** The type a ledger row declares it is served by: `served_by` whenever that is
+ * set, including to "none" (a re-home to nothing), else `artifact_type`.
+ *
+ * This answers "does this row say something different from that one", so a
+ * branch that re-homes a pattern to nothing still reads as a change. Ask
+ * `servedType` instead to learn which artifact actually serves the row. */
+export function declaredType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): ArtifactType {
+  return entry.served_by ? entry.served_by.type : entry.artifact_type;
+}
+
 /** The type of the artifact that actually serves a ledger row: a re-home's
  * `served_by` wins over the drafted `artifact_type`, except `served_by` of
- * "none", which means "not served" (same rule as review's entryType). The
- * result is "none" when nothing serves the row. */
-export function servedType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): string {
+ * "none", which means "not served". The result is "none" when nothing serves
+ * the row.
+ *
+ * This is the one rule for reading a row's type. Every reader goes through it
+ * (`review` entryType, curriculum rowType and worldKnowledge); copies that
+ * disagreed cost five review rounds on PR #54. */
+export function servedType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): ArtifactType {
   if (entry.served_by && entry.served_by.type !== "none") return entry.served_by.type;
   return entry.artifact_type;
 }

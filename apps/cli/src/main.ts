@@ -24,6 +24,7 @@ import { cmdLlmList, cmdLlmSetModel, cmdLlmUse } from "./commands/llm.ts";
 import { cmdLogs } from "./commands/logs.ts";
 import { cmdOps } from "./commands/ops.ts";
 import { cmdOpenclawEnqueue, cmdOpenclawInstall, cmdOpenclawScan, cmdOpenclawStatus, cmdOpenclawSync } from "./commands/openclaw.ts";
+import { cmdQueueRequeue } from "./commands/queue.ts";
 import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
 import { cmdReviewAccept, cmdReviewDelete, cmdReviewList, cmdReviewRehome, cmdReviewReject, cmdReviewRetire, cmdReviewShow } from "./commands/review.ts";
@@ -143,6 +144,14 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .requiredOption("--world <name>")
     .option("--yes")
     .action(wire((pattern: string, opts) => cmdReviewDelete(pattern, opts, deps)));
+
+  const queue = program.command("queue");
+  queue
+    .command("requeue")
+    .option("--failed", "requeue the sessions the worker parked in failed")
+    .option("--world <name>")
+    .option("--dry-run")
+    .action(wire((opts) => cmdQueueRequeue(opts)));
 
   const reflections = program.command("reflections");
   reflections

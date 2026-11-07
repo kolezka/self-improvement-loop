@@ -9,6 +9,7 @@ import { listQueue, loadEntry, writeEntry } from "@sil/store";
 import { countToolUses } from "@sil/transcript";
 import {
   ABANDONED_AFTER_DAYS,
+  curriculumBudget,
   eligible,
   Lock,
   MAX_ATTEMPTS,
@@ -103,16 +104,24 @@ function world(name = "default"): World {
   };
 }
 
-function cfg(opts: { idleMinutes?: number; minToolUses?: number } = {}): Config {
+function cfg(opts: { idleMinutes?: number; minToolUses?: number; maxPatterns?: number; maxMinutes?: number; maxSessions?: number } = {}): Config {
   return {
     version: 1,
     worlds: [world()],
-    promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 },
-    worker: { idle_minutes: opts.idleMinutes ?? 10, curriculum_interval_minutes: 60, min_tool_uses: opts.minToolUses ?? 1, auto_kick: true },
+    promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500,
+    max_total_rule_chars: 12000, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 },
+    worker: { idle_minutes: opts.idleMinutes ?? 10, curriculum_interval_minutes: 60, curriculum_max_patterns: opts.maxPatterns ?? 6, curriculum_max_minutes: opts.maxMinutes ?? 15, reflect_max_sessions: opts.maxSessions ?? 8, reflect_max_minutes: 20, min_tool_uses: opts.minToolUses ?? 1, auto_kick: true },
     web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] },
     alias_semantic: AliasSemanticConfig.parse({}),
   };
 }
+
+describe("curriculum budget", () => {
+  test("the worker maps its config onto the tick's count and deadline", () => {
+    expect(curriculumBudget(cfg(), 1_000)).toEqual({ maxAttempts: 6, deadline: 1_000 + 15 * 60_000 });
+    expect(curriculumBudget(cfg({ maxPatterns: 2, maxMinutes: 0 }), 1_000)).toEqual({ maxAttempts: 2, deadline: undefined });
+  });
+});
 
 // --- run_once: eligible entry ------------------------------------------------
 
@@ -192,6 +201,35 @@ describe("runOnce missing transcript", () => {
     const done = loadEntry("done", "sess-no-transcript");
     expect(done).not.toBeNull();
     expect(done!.result).toContain("not persisted");
+  });
+});
+
+describe("runOnce reflection budget", () => {
+  // One pass walks every pending entry and each costs a provider session. A
+  // backlog put back in line by `sil queue requeue` (50 sessions in one go)
+  // would hold the worker lock for hours, and the next hourly run would find
+  // the lock held and do nothing.
+  test("stops after its session budget and leaves the rest pending", async () => {
+    prepareEnv();
+    for (const id of ["sess-a", "sess-b", "sess-c"]) writePending(id, { ended: true });
+
+    const summary = await runOnce(cfg({ maxSessions: 2 }), { reflect: true, curriculum: false, chat: goodChat });
+
+    expect(summary.reflected).toHaveLength(2);
+    // Not skipped: nothing was decided about them, they wait for the next pass.
+    expect(summary.skipped).toEqual([]);
+    expect(listQueue("pending")).toHaveLength(1);
+    expect(readFileSync(paths.logFile("worker"), "utf8")).toContain("over the reflection budget of 2 session(s)");
+  });
+
+  test("a zero budget leaves the pass unbounded", async () => {
+    prepareEnv();
+    for (const id of ["sess-a", "sess-b", "sess-c"]) writePending(id, { ended: true });
+
+    const summary = await runOnce(cfg({ maxSessions: 0 }), { reflect: true, curriculum: false, chat: goodChat });
+
+    expect(summary.reflected).toHaveLength(3);
+    expect(listQueue("pending")).toHaveLength(0);
   });
 });
 

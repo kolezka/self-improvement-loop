@@ -132,6 +132,8 @@ describe("hook writes with loop state ready", () => {
     expect([existsSync(paths.nudgeFiresFile()), existsSync(openSpillPath(paths.nudgeFiresFile()))]).toEqual([false, false]);
     const fires = readRecords("nudge_fires", "strict").records.filter((f) => typeof f["pattern"] === "string");
     expect(fires.map((f) => f["pattern"])).toEqual(["commit-nudge"]);
+    // A global stream, so the row itself has to say which world fired it.
+    expect(fires.map((f) => f["world"])).toEqual(["default"]);
   });
 });
 

@@ -429,6 +429,14 @@ async function reflectPending(
   // them instead of repeating the same failing call once per entry.
   const configBrokenWorlds = new Set<string>();
 
+  // One pass is bounded, like a curriculum tick: a backlog of sessions put back
+  // in line costs a provider session each and would otherwise hold the worker
+  // lock for hours. Entries past the budget stay pending, unread, for the next
+  // pass: they are not skipped in the summary, because nothing was decided.
+  const maxSessions = cfg.worker.reflect_max_sessions;
+  const deadline = cfg.worker.reflect_max_minutes > 0 ? now.getTime() + cfg.worker.reflect_max_minutes * 60_000 : undefined;
+  let attempted = 0;
+
   for (const entry of listQueue("pending")) {
     if (worldName !== undefined && entry.world !== worldName) continue;
     const world = worldByName.get(entry.world);
@@ -478,6 +486,15 @@ async function reflectPending(
       continue;
     }
 
+    if (maxSessions > 0 && attempted >= maxSessions) {
+      log({ action: "reflect", result: `over the reflection budget of ${maxSessions} session(s); the rest wait for the next pass` });
+      break;
+    }
+    if (deadline !== undefined && Date.now() >= deadline) {
+      log({ action: "reflect", result: "over the reflection time budget; the rest wait for the next pass" });
+      break;
+    }
+    attempted += 1;
     try {
       const result = await reflectSession(entry, { cfg, world, chat });
       if (result.recorded) reflectedIn(entry.world).set(entry.session_id, Date.now());
@@ -536,13 +553,25 @@ async function runCurriculumIfDue(world: World, cfg: Config, curriculumEnabled: 
   const marker = join(paths.stateDir(), `last-curriculum-${world.name}`);
   if (!curriculumEnabled || !curriculumDue(marker, cfg.worker.curriculum_interval_minutes, now)) return;
   try {
-    const report = await curriculumRun(world, cfg, { apply: true });
+    const report = await curriculumRun(world, cfg, { apply: true, ...curriculumBudget(cfg) });
     summary.curriculum[world.name] = report as unknown as Record<string, unknown>;
   } catch (e) {
     summary.curriculum[world.name] = { error: (e as Error).message };
   }
   fsx.ensureDir(dirname(marker));
   writeFileSync(marker, now.toISOString(), "utf8");
+}
+
+/** What one curriculum tick may spend, from the worker config. Extracted so a
+ * test can lock the mapping: a per-pattern provider call can take minutes, so
+ * the deadline is what actually bounds the run, the count only stops the queue
+ * from growing. */
+export function curriculumBudget(cfg: Config, now = Date.now()): { maxAttempts: number; deadline?: number } {
+  const minutes = cfg.worker.curriculum_max_minutes;
+  return {
+    maxAttempts: cfg.worker.curriculum_max_patterns,
+    deadline: minutes > 0 ? now + minutes * 60_000 : undefined,
+  };
 }
 
 function curriculumDue(markerPath: string, intervalMinutes: number, now: Date): boolean {

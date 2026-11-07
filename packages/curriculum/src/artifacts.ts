@@ -353,6 +353,45 @@ function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
+/** Why writing `bullet` for `pattern` would put the managed block over the
+ * world's total rule budget. "" when it fits.
+ *
+ * The whole block is injected at every session start, so its size is the
+ * context the rules cost. Measured as a delta, because a refine replaces this
+ * pattern's own bullet: shortening one always fits, and a rule already counted
+ * is not counted twice. `budget` of 0 disables the check.
+ *
+ * Read-only and checked before the judge, so an over-budget draft costs no
+ * judge call. The human revise path is deliberately not gated: an operator
+ * asking for longer wording outranks a context budget. */
+export function ruleBudgetProblem(
+  world: World,
+  pattern: string,
+  bullet: string,
+  budget: number,
+  root?: string | null,
+): string {
+  if (budget <= 0) return "";
+  const path = resolveContained(rootFor(world, root), strip(world.layout.rules_file));
+  let text = "";
+  try {
+    if (existsSync(path)) text = fsx.readText(path);
+  } catch {
+    // An unreadable file is `rulesProblem`'s to report, and it runs first.
+    return "";
+  }
+  const [, block] = splitManagedBlock(text);
+  const tag = ruleTag(pattern);
+  const others = block.split("\n").filter((line) => line.trim() && !line.replace(/\s+$/, "").endsWith(tag));
+  const held = others.length > 0 ? others.join("\n").length : 0;
+  const next = (others.length > 0 ? held + 1 : 0) + bullet.length + 1 + tag.length;
+  if (next <= budget) return "";
+  return (
+    `rule budget: the block would hold ${next} of ${budget} chars (${others.length} rule(s) hold ${held} now); ` +
+    "retire or shrink a rule first"
+  );
+}
+
 function markerProblem(path: string, text: string): string | null {
   const starts = count(text, RULE_START);
   const ends = count(text, RULE_END);

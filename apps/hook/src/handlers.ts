@@ -106,9 +106,11 @@ function isDir(path: string): boolean {
 // the nudges sink calls this from inside dispatch.
 let fireFailureLogged = false;
 
-function writeFire(record: Record<string, unknown>): void {
+// The fires log is a global stream, so the world has to travel inside each
+// record: without it every world's scorecards count every other world's fires.
+function writeFire(world: string, record: Record<string, unknown>): void {
   try {
-    if (hookWrite("nudge_fires", [record]) !== "lost" || fireFailureLogged) return;
+    if (hookWrite("nudge_fires", [{ world, ...record }]) !== "lost" || fireFailureLogged) return;
     fireFailureLogged = true;
     log("nudges.fire failed: record lost, see the loop state lines above");
   } catch (e) {
@@ -125,8 +127,10 @@ function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessi
   const dirs = typeof worldDir === "string" && worldDir.trim() ? [worldDir] : [];
   dirs.push(paths.builtinNudgesDir());
 
+  // Breadcrumbs and fires go to the same log, so both are stamped with the world.
+  const fire = (record: Record<string, unknown>): void => writeFire(world.name, record);
   if (!dirs.some(isDir)) {
-    writeBreadcrumb(writeFire, sdir, "nudge_dir_missing", sessionId, event);
+    writeBreadcrumb(fire, sdir, "nudge_dir_missing", sessionId, event);
   }
   const { nudges, rejected } = loadNudgesDetailed(dirs);
   // One breadcrumb per rejected file per session, not per (kind, event):
@@ -134,7 +138,7 @@ function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessi
   // about it is how a nudge appears to be installed but never fires.
   for (const r of rejected) {
     writeBreadcrumb(
-      writeFire,
+      fire,
       sdir,
       "nudge_invalid",
       sessionId,
@@ -143,7 +147,7 @@ function dispatchNudge(payload: Record<string, unknown>, world: HookWorld, sessi
       `nudge_invalid-${r.file}`,
     );
   }
-  return dispatch(payload, nudges, { sessionDir: sdir, fire: writeFire }) ?? "";
+  return dispatch(payload, nudges, { sessionDir: sdir, fire }) ?? "";
 }
 
 // --- per-event handlers ------------------------------------------------

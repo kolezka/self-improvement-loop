@@ -552,6 +552,30 @@ function extractChoiceContent(data: unknown): string | null {
   return typeof content === "string" ? content : null;
 }
 
+/** What a failed `claude -p` actually said.
+ *
+ * The CLI exits 1 on an API error and puts the reason in the JSON `result`,
+ * behind a few hundred characters of usage counters. Slicing stdout raw hid a
+ * rate limit behind `"duration_api_ms":0` for months, so the reason is read out
+ * of the JSON whenever there is one. */
+function cliFailureText(result: SpawnSyncResult): string {
+  const stdoutText = result.stdout.toString("utf8");
+  const stderrText = result.stderr.toString("utf8");
+  let data: unknown;
+  try {
+    data = JSON.parse(stdoutText);
+  } catch {
+    data = null;
+  }
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>;
+    const said = typeof obj["result"] === "string" ? obj["result"].trim() : "";
+    const reason = typeof obj["terminal_reason"] === "string" ? obj["terminal_reason"] : "";
+    if (said) return `${reason ? reason + ": " : ""}${said}`.slice(0, 300);
+  }
+  return (stderrText || stdoutText).slice(0, 300);
+}
+
 async function chatClaudeCli(endpoint: Endpoint, model: string, messages: ChatMessage[], _opts: { maxTokens: number }): Promise<string> {
   const systemParts = messages.filter((m) => m.role === "system").map((m) => m.content);
   const userParts = messages.filter((m) => m.role !== "system").map((m) => m.content);
@@ -589,9 +613,7 @@ async function chatClaudeCli(endpoint: Endpoint, model: string, messages: ChatMe
     throw new ProviderTimeout(`claude -p timed out after ${endpoint.timeout_s}s`);
   }
   if (!result.success) {
-    const stderrText = result.stderr.toString("utf8");
-    const stdoutText = result.stdout.toString("utf8");
-    throw new ProviderError(`claude -p exited ${result.exitCode}: ${(stderrText || stdoutText).slice(0, 300)}`);
+    throw new ProviderError(`claude -p exited ${result.exitCode}: ${cliFailureText(result)}`);
   }
 
   const stdoutText = result.stdout.toString("utf8");

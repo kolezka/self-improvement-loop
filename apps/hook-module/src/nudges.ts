@@ -110,10 +110,13 @@ export async function dispatchNudges(
     );
   }
 
+  // The fires log is a global stream, so the world has to travel inside each
+  // record, exactly as apps/hook/src/handlers.ts does it.
+  const record = (r: Record<string, unknown>): string => JSON.stringify({ world: state.worldName, ...r });
   const sink: DispatchSink = {
     claimMarker: (name) => claimMarker(state, name),
-    fire: (record) => spoolAppend(state, { kind: "nudge-fires" }, JSON.stringify(record)),
-    breadcrumb: (record) => spoolAppend(state, { kind: "nudge-fires" }, JSON.stringify(record)),
+    fire: (r) => spoolAppend(state, { kind: "nudge-fires" }, record(r)),
+    breadcrumb: (r) => spoolAppend(state, { kind: "nudge-fires" }, record(r)),
   };
   const text = dispatchWith(payload, state.nudges ?? [], sink) ?? "";
   await flushMarkers($, state);

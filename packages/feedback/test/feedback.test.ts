@@ -117,6 +117,21 @@ describe("scorecards proposals", () => {
     expect(card.misfired).toBe(2);
   });
 
+  // The fires log is global, so a record's world decides whether it counts
+  // here. Rows written before the field existed stay ambiguous and count.
+  test("a fire from another world does not count", () => {
+    const { w, c } = buildWorldAndLedger();
+    seedSignals();
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(2)), world: "inkitt", pattern: "flaky-thing", event: "PreToolUse" });
+    const card = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("hook:flaky-thing")!;
+    expect(card.fires_30d).toBe(1);
+
+    // The same fire attributed to this world does count.
+    fsx.appendJsonl(paths.nudgeFiresFile(), { ts: iso(daysAgo(2)), world: w.name, pattern: "flaky-thing", event: "PreToolUse" });
+    const counted = new Map(scorecards(w, c, { now: NOW }).map((s) => [s.ref, s])).get("hook:flaky-thing")!;
+    expect(counted.fires_30d).toBe(2);
+  });
+
   // uses_30d means "times served", so an artifact that only fires or is only
   // injected must not read as unused. Counting skill and agent events alone
   // pinned every rule and hook in the UI at 0.

@@ -173,8 +173,12 @@ function buildScorecards(world: World, cfg: Config, opts: ScorecardOptions = {})
     if (within(ev["ts"], windowStart, now)) bump(usesByRef, r);
   }
 
-  // Fires carry no world field, so every world reads all of them.
+  // Fires are a global stream, so the record carries its world. Rows written
+  // before that field existed have no world and stay ambiguous: they count in
+  // every world until the 30-day window ages them out.
   for (const line of readStream("nudge_fires")) {
+    const fireWorld = line["world"];
+    if (typeof fireWorld === "string" && fireWorld !== world.name) continue;
     const pattern = line["pattern"];
     if (!pattern) continue;
     const ref = `hook:${String(pattern)}`;

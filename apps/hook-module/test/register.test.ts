@@ -532,6 +532,7 @@ describe("classic.PreToolUse", () => {
     const fires = linesFor(spool, "nudge-fires").filter((line) => line["pattern"] === "probe-nudge");
     expect(fires.length).toBe(1);
     expect(fires[0]?.["event"]).toBe("PreToolUse");
+    expect(fires[0]?.["world"]).toBe("default");
     cleanup();
   });
 

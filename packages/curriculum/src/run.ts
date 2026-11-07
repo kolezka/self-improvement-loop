@@ -404,6 +404,18 @@ interface StageContext {
 /** One field feeds both the budget the drafter is told and the cap the lint
  * checks, so a staging draft and a human-requested revision read the same
  * limit. Exported for `review.revise`, which drafts outside a run. */
+/** Caps for one pattern's draft. A live rule keeps the room it already uses, so
+ * lowering the cap cannot force it to shed mechanisms in a single redraft. It
+ * may shrink under the cap; it may not grow past `max(cap, live size)`. */
+export function patternCaps(
+  world: World,
+  pattern: string,
+  cfg: Config,
+): { maxRuleChars: number; maxTotalRuleChars: number } {
+  const caps = draftCaps(cfg);
+  return { ...caps, maxRuleChars: Math.max(caps.maxRuleChars, artifacts.liveRuleChars(world, pattern)) };
+}
+
 export function draftCaps(cfg: Config): { maxRuleChars: number; maxTotalRuleChars: number } {
   return {
     maxRuleChars: cfg.promotion.max_rule_chars,
@@ -432,7 +444,7 @@ async function stageOne(
   // and counts stay about reflections.
   const extra: string[] = [];
   const lessons = lessonTexts(items);
-  const caps = draftCaps(cfg);
+  const caps = patternCaps(world, pattern, cfg);
   if (action.feedback) {
     // The misfire reasons travel with the evidence, so the redraft is told what
     // was wrong with the artifact it is replacing.

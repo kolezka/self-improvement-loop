@@ -26,7 +26,7 @@ import * as git from "./git.ts";
 import { lint, lintHook } from "./lint.ts";
 import { draftingTexts, loadLedger, loadPayloadCorpus, reflections, sourcesText, workedSections } from "./plan.ts";
 import * as prompts from "./prompts.ts";
-import { draftCaps, UPGRADE_TYPES } from "./run.ts";
+import { patternCaps, UPGRADE_TYPES } from "./run.ts";
 import { hookVerdict, route, RouteAnswer } from "./router.ts";
 
 export interface LiveCheck {
@@ -382,7 +382,7 @@ export async function verifyArtifact(world: World, cfg: Config, pattern: string,
   const allItems = reflections(world);
   const items = allItems.filter((r) => r.pattern === pattern);
   const sources = sourcesText(items);
-  const caps = draftCaps(cfg);
+  const caps = patternCaps(world, pattern, cfg);
   const lintProblems = exists ? lint(artifactType, payloadForLint(artifactType, body), pattern, sources, caps) : ["no artifact body to lint"];
 
   let gate: GateCheck | null = null;

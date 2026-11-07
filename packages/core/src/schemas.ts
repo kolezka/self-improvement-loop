@@ -366,11 +366,25 @@ export const PromotionEntry = z.object({
 });
 export type PromotionEntry = z.infer<typeof PromotionEntry>;
 
+/** The type a ledger row declares it is served by: `served_by` whenever that is
+ * set, including to "none" (a re-home to nothing), else `artifact_type`.
+ *
+ * This answers "does this row say something different from that one", so a
+ * branch that re-homes a pattern to nothing still reads as a change. Ask
+ * `servedType` instead to learn which artifact actually serves the row. */
+export function declaredType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): ArtifactType {
+  return entry.served_by ? entry.served_by.type : entry.artifact_type;
+}
+
 /** The type of the artifact that actually serves a ledger row: a re-home's
  * `served_by` wins over the drafted `artifact_type`, except `served_by` of
- * "none", which means "not served" (same rule as review's entryType). The
- * result is "none" when nothing serves the row. */
-export function servedType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): string {
+ * "none", which means "not served". The result is "none" when nothing serves
+ * the row.
+ *
+ * This is the one rule for reading a row's type. Every reader goes through it
+ * (`review` entryType, curriculum rowType and worldKnowledge); copies that
+ * disagreed cost five review rounds on PR #54. */
+export function servedType(entry: Pick<PromotionEntry, "artifact_type" | "served_by">): ArtifactType {
   if (entry.served_by && entry.served_by.type !== "none") return entry.served_by.type;
   return entry.artifact_type;
 }

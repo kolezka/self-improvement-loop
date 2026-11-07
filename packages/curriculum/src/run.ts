@@ -19,6 +19,7 @@ import {
   type ArtifactRef,
   type ArtifactType,
   type Config,
+  declaredType,
   fsx,
   GitError,
   paths,
@@ -137,9 +138,13 @@ function servedBy(staged: PromotionEntry | null, prior: PromotionEntry | null): 
   return prior ? prior.served_by : null;
 }
 
+/** What type this row declares, served_by included even when it is "none".
+ *
+ * Null means "no row", which is what makes a missing default-branch row differ
+ * from a branch that re-homed the pattern to nothing. The rule lives in
+ * `declaredType`; `servedType` is the other question (which artifact serves it). */
 function rowType(entry: PromotionEntry | null): string | null {
-  if (!entry) return null;
-  return entry.served_by ? entry.served_by.type : entry.artifact_type;
+  return entry ? declaredType(entry) : null;
 }
 
 /** Whether the branch carries a type change the default branch does not know.

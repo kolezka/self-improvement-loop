@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { GitError, StateReadError, type ArtifactType, type PromotionEntry, type World } from "@sil/core";
+import { GitError, StateReadError, type ArtifactType, type PromotionEntry, servedType, type World } from "@sil/core";
 import { artifacts, branchName, git } from "@sil/curriculum";
 import { parseLedger } from "@sil/store";
 
@@ -105,11 +105,10 @@ export function branchEntry(world: World, repo: string, ref: string, pattern: st
 /** The type a branch's row actually describes, served_by first.
  *
  * They disagree in exactly the re-home case, where `served_by` is the new type
- * and `artifact_type` may still be the old one. */
+ * and `artifact_type` may still be the old one. A row that is not there yet is
+ * read as a skill, the draft default. The rule itself lives in `servedType`. */
 export function entryType(entry: PromotionEntry | null): ArtifactType {
-  if (!entry) return "skill";
-  if (entry.served_by && entry.served_by.type !== "none") return entry.served_by.type;
-  return entry.artifact_type;
+  return entry ? servedType(entry) : "skill";
 }
 
 /** (found, body) for this pattern's artifact at `ref`.

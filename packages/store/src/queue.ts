@@ -119,6 +119,11 @@ export function writeEntry(bucket: Bucket, entry: QueueEntryT): string {
   return p;
 }
 
+/** Drops one entry from a bucket. */
+export function removeEntry(bucket: Bucket, sessionId: string): void {
+  rmSync(entryPath(bucket, sessionId), { force: true });
+}
+
 /** Write the entry into `to`, then remove it from `from`. */
 export function moveEntry(entry: QueueEntryT, from: Bucket, to: Bucket, result: string | null = null): string {
   const next = { ...entry, result: result ?? entry.result };

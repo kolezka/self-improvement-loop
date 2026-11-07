@@ -165,7 +165,7 @@ describe("parseAnswer", () => {
     }
   });
 
-  test("a non-closed pattern keeps its own slug and may carry a mechanism", () => {
+  test("a non-closed pattern keeps its own slug and drops a stray mechanism", () => {
     const text = JSON.stringify({
       record: true,
       pattern: "zsh-equals-expansion",
@@ -175,6 +175,9 @@ describe("parseAnswer", () => {
     const answer = parseAnswer(text);
     expect(answer.record).toBe(true);
     expect(answer.pattern).toBe("zsh-equals-expansion");
+    // mechanism answers a closed pattern only, so a second pattern field
+    // cannot leak into every row.
+    expect(answer.mechanism).toBeNull();
   });
 
   test("a mechanism equal to a closed pattern is refused", () => {

@@ -191,7 +191,8 @@ export function buildMessages(pack: EvidencePack, opts: BuildOptions): ChatMessa
     "against the recorded tool calls and their results, not the assistant's " +
     "prose alone. Output STRICT JSON only, no prose, no code fence, with " +
     "exactly these keys: record (bool), pattern (kebab-case slug or null), " +
-    "mechanism (kebab-case slug naming the concrete failure mechanism, or null), " +
+    "mechanism (kebab-case slug naming the concrete failure mechanism; null " +
+    "unless the pattern you return is one of the closed slugs), " +
     "what_worked (string), what_failed (string), lesson (string, one " +
     "concrete imperative rule, <= 300 chars), verification (string: what " +
     "the evidence shows, commands and exit codes), not_verified (list of " +
@@ -299,6 +300,9 @@ function validated(data: Record<string, unknown>): CriticAnswer {
   // the pattern, so the rule that accumulates every overclaim cannot grow
   // again: each cause gets its own row, its own artifact and its own cap.
   let identity = pattern;
+  // `mechanism` answers a closed pattern, nothing else. A critic that fills it
+  // for every row would turn it into a second pattern field with no reader.
+  let named: string | null = null;
   if (record && pattern !== null && CLOSED_PATTERNS.has(pattern)) {
     if (mechanism === null || !isSlug(mechanism)) {
       return rejected(`closed pattern ${pattern} needs a concrete mechanism slug, got ${JSON.stringify(mechanism)}`);
@@ -308,6 +312,7 @@ function validated(data: Record<string, unknown>): CriticAnswer {
       return rejected(`mechanism ${mechanism} is a catch-all, not a cause`);
     }
     identity = mechanism;
+    named = mechanism;
   }
 
   let confidence = 0;
@@ -320,7 +325,7 @@ function validated(data: Record<string, unknown>): CriticAnswer {
   return {
     record,
     pattern: record ? identity : null,
-    mechanism: record ? mechanism : null,
+    mechanism: record ? named : null,
     what_worked: strOr(data["what_worked"]),
     what_failed: strOr(data["what_failed"]),
     lesson: strOr(data["lesson"]).slice(0, 300),

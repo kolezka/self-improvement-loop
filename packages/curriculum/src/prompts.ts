@@ -473,6 +473,18 @@ export function draftMessages(
   ];
 }
 
+/** The follow-up turn after a draft the lint refused only for length. It
+ * quotes the lint's own words, so the overage the drafter reads is the one the
+ * lint measured. */
+export function shortenMessage(problems: string[]): string {
+  return (
+    `The lint refused that draft: ${problems.join("; ")}. ` +
+    "Reply with the same JSON object, with the artifact shortened to fit with " +
+    "room to spare. Cut wording, not the commands or checks it names. Change " +
+    "nothing else."
+  );
+}
+
 /** Messages for the judge.
  *
  * Adversarial framing, because the permissive version did not discriminate: a

@@ -280,6 +280,17 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
       report.gated_out[action.pattern] = "the last refine at this scorecard was gated out; waiting for new feedback";
       continue;
     }
+    // A gated promote leaves the watermark where it was, so the next tick
+    // redrafts the same evidence. Live, the same patterns failed the same gate
+    // every tick, a drafter call each. Two tries per count, then wait for a new
+    // reflection.
+    const promoteKey = PROMOTE_PREFIX + action.pattern;
+    const promoteFails = !opts.manualRefine && !isRefine ? promoteFailures(attempts[promoteKey], action.count) : 0;
+    if (promoteFails >= PROMOTE_TRIES) {
+      report.gated_out[action.pattern] =
+        `gated out ${promoteFails} times at ${action.count} reflection(s); waiting for new evidence`;
+      continue;
+    }
     // The cap bounds successful stages, so it is checked against report.staged,
     // which only a real stage grows. A pattern that gated out above passed its
     // slot to the next candidate rather than wasting it.
@@ -311,12 +322,17 @@ export async function run(world: World, cfg: Config, opts: RunOptions): Promise<
     }
     // Any stage answers a cached refusal, a promote included.
     if (report.staged.includes(action.pattern)) {
-      if (Object.hasOwn(attempts, action.pattern)) {
-        delete attempts[action.pattern];
-        attemptsChanged = true;
+      for (const key of [action.pattern, promoteKey]) {
+        if (Object.hasOwn(attempts, key)) {
+          delete attempts[key];
+          attemptsChanged = true;
+        }
       }
     } else if (isRefine && card && attempt.drafted && !attempt.transient) {
       attempts[action.pattern] = attemptKey(card, ledger.entries[action.pattern] ?? null);
+      attemptsChanged = true;
+    } else if (!isRefine && attempt.drafted && !attempt.transient) {
+      attempts[promoteKey] = JSON.stringify([action.count, promoteFails + 1]);
       attemptsChanged = true;
     }
   }
@@ -582,7 +598,33 @@ async function stageOne(
   // pattern sat on that loop with 50 reflections behind it.
   if (routedType === "rule" && typeof body === "string") body = artifacts.stripRuleTag(body, pattern);
 
-  const problems = lint(routedType, body, pattern, sources, caps);
+  let problems = lint(routedType, body, pattern, sources, caps);
+  // A draft refused only for length is the one lint failure the drafter can fix
+  // from the message alone. Live runs refused hooks at 404 and 417 chars of 400
+  // every tick, each a full drafter call thrown away. One retry, told the exact
+  // overage, costs one call and usually ends the loop.
+  if (problems.length > 0 && problems.every(isCapProblem)) {
+    try {
+      raw = await chat(
+        "drafter",
+        [
+          ...prompts.draftMessages(pattern, drafting, existing, routedType, draftOpts),
+          { role: "assistant", content: raw },
+          { role: "user", content: prompts.shortenMessage(problems) },
+        ],
+        { world, jsonMode: true },
+      );
+    } catch (e) {
+      report.gated_out[pattern] = `artifact-lint: ${problems.join("; ")}; shorten redraft failed: ${describe(e)}`;
+      attempt.transient = true;
+      return;
+    }
+    [body] = prompts.parseDraft(raw, { forcedType: routedType });
+    if (routedType === "rule" && typeof body === "string") body = artifacts.stripRuleTag(body, pattern);
+    const first = problems;
+    problems = lint(routedType, body, pattern, sources, caps);
+    if (problems.length > 0) problems = [...problems, `after one shorten redraft (first draft: ${first.join("; ")})`];
+  }
   if (problems.length > 0) {
     let reason = "artifact-lint: " + problems.join("; ");
     if (forcedType === null || rerouteFrom !== null) reason += `; router: ${routedReason}`;
@@ -760,6 +802,12 @@ async function stageOne(
   if (autoMerge) autoMergeBranch(report, ctx.target, ctx.defaultRef, branch, pattern);
 }
 
+/** A lint problem that only says the artifact is too long. Matches the wording
+ * of `lintRule`, the nudge lint's text cap and `lintDescriptionCap`. */
+export function isCapProblem(problem: string): boolean {
+  return / is \d+ chars\b.*; the cap is \d+/.test(problem);
+}
+
 function snapshotOf(card: Scorecard | undefined): Scorecard | null {
   return card ? { ...card, snapshot_at: fsx.nowIso() } : null;
 }
@@ -783,6 +831,24 @@ function stillRefused(cached: string, current: string): boolean {
     return was.slice(0, 4).every((v, i) => v === now[i]) && Number(now[4]) <= Number(was[4] ?? 0);
   } catch {
     return false;
+  }
+}
+
+// Promote backoff rows share the refine-attempts doc. Pattern slugs never hold
+// a colon, so the prefix cannot collide with a refine row.
+const PROMOTE_PREFIX = "promote:";
+export const PROMOTE_TRIES = 2;
+
+/** Gated drafts recorded at exactly this reflection count. Any other count,
+ * or a row that does not parse, starts again at zero. */
+function promoteFailures(cached: string | undefined, count: number): number {
+  if (cached === undefined) return 0;
+  try {
+    const row: unknown = JSON.parse(cached);
+    if (!Array.isArray(row) || row[0] !== count) return 0;
+    return Number(row[1]) || 0;
+  } catch {
+    return 0;
   }
 }
 

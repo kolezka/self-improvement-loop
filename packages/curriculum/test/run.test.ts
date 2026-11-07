@@ -295,6 +295,76 @@ describe("the happy path", () => {
     expect(roomy.promptsFor("drafter")[0]).toContain(stated(400));
   });
 
+  test("a draft refused only for length gets one shorten redraft told the overage", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const long =
+      ruleBody().slice(0, -1) +
+      ", then re-run `rg` after every later edit, count the hits again, compare that count with the graphify " +
+      "inventory, and name the call sites that changed in the commit message before calling the change safe.";
+    const chat = new FakeChat({ drafts: [ruleDraftFor(long), { artifact: ruleBody() }] });
+    const report = await run(world, makeCfg({ max_rule_chars: 200 }), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([PATTERN]);
+    const calls = chat.calls.filter((c) => c.role === "drafter");
+    expect(calls).toHaveLength(2);
+    const retry = calls[1]!.messages;
+    expect(retry.at(-2)).toEqual({ role: "assistant", content: JSON.stringify(ruleDraftFor(long)) });
+    expect(retry.at(-1)!.content).toContain("the cap is 200");
+  });
+
+  test("a shorten redraft that still fails gates out and names both drafts", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const long = ruleBody().slice(0, -1) + ", " + "and re-run `rg` again ".repeat(10) + ".";
+    const chat = new FakeChat({ draft: ruleDraftFor(long) });
+    const report = await run(world, makeCfg({ max_rule_chars: 150 }), opts({ apply: true, chat: chat.fn }));
+    expect(report.staged).toEqual([]);
+    expect(report.gated_out[PATTERN]).toContain("after one shorten redraft");
+    expect(chat.calls.filter((c) => c.role === "drafter")).toHaveLength(2);
+  });
+
+  test("a lint failure that is not about length gets no shorten redraft", async () => {
+    const world = worldWith();
+    initTarget(world);
+    const chat = new FakeChat({ draft: ruleDraftFor(`${ruleBody()}\n- second line`) });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: chat.fn }));
+    expect(report.gated_out[PATTERN]).toContain("exactly one bullet");
+    expect(chat.calls.filter((c) => c.role === "drafter")).toHaveLength(1);
+  });
+
+  test("a promote gated twice at the same count waits for new evidence, then retries", async () => {
+    const world = worldWith(PATTERN, 3);
+    initTarget(world);
+    const bad = () => new FakeChat({ draft: ruleDraftFor(`${ruleBody()}\n- second line`) });
+    for (let i = 0; i < 2; i++) {
+      const report = await run(world, makeCfg(), opts({ apply: true, chat: bad().fn }));
+      expect(report.gated_out[PATTERN]).toContain("exactly one bullet");
+    }
+    const third = bad();
+    const skipped = await run(world, makeCfg(), opts({ apply: true, chat: third.fn }));
+    expect(skipped.gated_out[PATTERN]).toContain("waiting for new evidence");
+    expect(third.calls.filter((c) => c.role === "drafter")).toHaveLength(0);
+
+    // A new reflection reopens it, and a stage clears the backoff row.
+    addReflections(world, PATTERN, 1, { startDay: 10 });
+    const good = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const staged = await run(world, makeCfg(), opts({ apply: true, chat: good.fn }));
+    expect(staged.staged).toEqual([PATTERN]);
+    expect(readDoc("refine_attempts", world.name, "tolerant") ?? {}).toEqual({});
+  });
+
+  test("a provider failure does not count toward the promote backoff", async () => {
+    const world = worldWith(PATTERN, 3);
+    initTarget(world);
+    const failing: ChatFn = async () => {
+      throw new Error("down");
+    };
+    for (let i = 0; i < 3; i++) await run(world, makeCfg(), opts({ apply: true, chat: failing }));
+    const good = new FakeChat({ draft: ruleDraftFor(ruleBody()) });
+    const report = await run(world, makeCfg(), opts({ apply: true, chat: good.fn }));
+    expect(report.staged).toEqual([PATTERN]);
+  });
+
   test("an agent draft is written at the agents path", async () => {
     // The fourth type. Skill, hook and rule each had a staging test; agent had
     // none, and the loop had never staged one since the V2 port.

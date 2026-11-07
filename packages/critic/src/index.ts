@@ -27,7 +27,7 @@ import { listReflectionHeads, loadLedger, patternCounts, putLesson, writeReflect
 import { evidencePack, type EvidencePack } from "@sil/transcript";
 
 export interface CriticAnswer {
-  record: boolean; pattern: string | null; what_worked: string; what_failed: string; lesson: string; verification: string;
+  record: boolean; pattern: string | null; mechanism: string | null; what_worked: string; what_failed: string; lesson: string; verification: string;
   not_verified: string[]; lesson_short: string | null; confidence: number; artifacts_used: string[]; artifacts_helpful: string[];
   artifacts_misfired: Array<{ ref: string; reason: string }>; rules_relevant: string[]; reason?: string;
 }
@@ -35,11 +35,32 @@ export interface ReflectResult { recorded: boolean; reflection_id: string | null
 export interface BuildOptions { world: World; existingPatterns: Record<string, number>; installedArtifacts: string[]; recentTitles: string[] }
 export interface ReflectOptions { cfg: Config; world: World; llm?: LlmConfig; chat?: ChatFn }
 
-// `evidence-level-overclaim` is closed: reuse it only when the mechanism
-// matches exactly. Never coin an evidence-grade sibling (overclaimed-*,
-// unverified-*, insufficient-evidence-*); name the mechanism instead
-// (stale-cached-env, relayed-subagent-claim, absence-from-filtered-view).
+// A closed pattern is a category, not a mechanism: it absorbed every claim
+// failure it was shown, so the rule written for it grew to the cap and could
+// not name any single check. The critic must now name the mechanism for one of
+// these, and that name becomes the pattern. Weaker mechanisms are refused
+// because they recreate the category under a new slug.
 export const CLOSED_PATTERNS: ReadonlySet<string> = new Set(["evidence-level-overclaim"]);
+
+// Whole-slug refusals: these name an evidence grade, not a cause.
+const VAGUE_MECHANISMS: ReadonlySet<string> = new Set([
+  "overclaim", "overclaimed", "unverified", "insufficient-evidence", "claim",
+  "claims", "verification", "evidence-discipline",
+]);
+
+// Token refusals: a slug built from one of these names a drawer, not a
+// mechanism, so "general-evidence" is refused while "relayed-subagent-claim"
+// stays allowed.
+const VAGUE_TOKENS: ReadonlySet<string> = new Set([
+  "other", "misc", "miscellaneous", "general", "unknown", "none", "various",
+  "multiple", "evidence",
+]);
+
+/** Whether a mechanism slug would recreate the closed category it came from. */
+export function vagueMechanism(mechanism: string): boolean {
+  if (VAGUE_MECHANISMS.has(mechanism)) return true;
+  return mechanism.split("-").some((token) => VAGUE_TOKENS.has(token));
+}
 
 // --- installed artifacts ----------------------------------------------------
 
@@ -170,6 +191,7 @@ export function buildMessages(pack: EvidencePack, opts: BuildOptions): ChatMessa
     "against the recorded tool calls and their results, not the assistant's " +
     "prose alone. Output STRICT JSON only, no prose, no code fence, with " +
     "exactly these keys: record (bool), pattern (kebab-case slug or null), " +
+    "mechanism (kebab-case slug naming the concrete failure mechanism, or null), " +
     "what_worked (string), what_failed (string), lesson (string, one " +
     "concrete imperative rule, <= 300 chars), verification (string: what " +
     "the evidence shows, commands and exit codes), not_verified (list of " +
@@ -182,12 +204,15 @@ export function buildMessages(pack: EvidencePack, opts: BuildOptions): ChatMessa
     "derivable from the pack's skills_used/agents_used/hooks fields. Set " +
     "record false and pattern null when there is no concrete reusable " +
     "lesson.\n\n" +
-    `The slug(s) ${JSON.stringify(closed)} are CLOSED: reuse one only when ` +
-    "the mechanism matches exactly, never coin a sibling like overclaimed-*, " +
-    "unverified-* or insufficient-evidence-*. Name the mechanism (e.g. " +
-    "stale-cached-env, relayed-subagent-claim, absence-from-filtered-view), " +
-    "never the evidence grade. Reuse an existing pattern slug below when its " +
-    "mechanism matches this occurrence rather than coining a near-duplicate.";
+    `The slug(s) ${JSON.stringify(closed)} are CLOSED and must not be returned ` +
+    "as the pattern. When the failure is one of theirs, name the concrete " +
+    "mechanism in `mechanism` and that name becomes the pattern: one checkable " +
+    "cause, such as stale-cached-env, relayed-subagent-claim, " +
+    "branch-protection-snapshot or gui-action-assumed-from-api. Never use an " +
+    "evidence grade or a catch-all (overclaim, unverified, general, other) as " +
+    "the mechanism, since those recreate the category. Reuse an existing " +
+    "pattern slug below when its mechanism matches this occurrence rather than " +
+    "coining a near-duplicate.";
 
   const existingDesc =
     Object.entries(opts.existingPatterns)
@@ -243,6 +268,7 @@ function rejected(reason: string): CriticAnswer {
   return {
     record: false,
     pattern: null,
+    mechanism: null,
     what_worked: "",
     what_failed: "",
     lesson: "",
@@ -258,11 +284,31 @@ function rejected(reason: string): CriticAnswer {
   };
 }
 
+function slugField(raw: unknown): string | null {
+  if (raw == null) return null;
+  return String(raw).trim().toLowerCase().replace(/ /g, "-").replace(/-+/g, "-");
+}
+
 function validated(data: Record<string, unknown>): CriticAnswer {
   const record = Boolean(data["record"]);
-  let pattern: string | null = data["pattern"] != null ? String(data["pattern"]) : null;
-  if (pattern !== null) pattern = pattern.trim().toLowerCase().replace(/ /g, "-").replace(/-+/g, "-");
+  const pattern = slugField(data["pattern"]);
+  const mechanism = slugField(data["mechanism"]);
   if (record && (!pattern || !isSlug(pattern))) return rejected(`record is true but pattern ${JSON.stringify(pattern)} is not a valid slug`);
+
+  // A closed pattern names a category. The mechanism the critic names becomes
+  // the pattern, so the rule that accumulates every overclaim cannot grow
+  // again: each cause gets its own row, its own artifact and its own cap.
+  let identity = pattern;
+  if (record && pattern !== null && CLOSED_PATTERNS.has(pattern)) {
+    if (mechanism === null || !isSlug(mechanism)) {
+      return rejected(`closed pattern ${pattern} needs a concrete mechanism slug, got ${JSON.stringify(mechanism)}`);
+    }
+    if (CLOSED_PATTERNS.has(mechanism)) return rejected(`mechanism ${mechanism} is itself a closed pattern`);
+    if (vagueMechanism(mechanism)) {
+      return rejected(`mechanism ${mechanism} is a catch-all, not a cause`);
+    }
+    identity = mechanism;
+  }
 
   let confidence = 0;
   const rawConfidence = data["confidence"];
@@ -273,7 +319,8 @@ function validated(data: Record<string, unknown>): CriticAnswer {
 
   return {
     record,
-    pattern: record ? pattern : null,
+    pattern: record ? identity : null,
+    mechanism: record ? mechanism : null,
     what_worked: strOr(data["what_worked"]),
     what_failed: strOr(data["what_failed"]),
     lesson: strOr(data["lesson"]).slice(0, 300),

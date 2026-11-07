@@ -94,6 +94,12 @@ export const WorkerConfig = z.object({
   // the count only stops the queue early.
   curriculum_max_patterns: z.number().int().min(0).default(6),
   curriculum_max_minutes: z.number().int().min(0).default(15),
+  // The same bound for one reflection pass. A pass walks every pending entry,
+  // and a backlog of parked sessions put back in line (see `sil queue
+  // requeue`) would otherwise hold the worker lock for hours while each entry
+  // costs a provider session. Entries past the budget stay pending, untouched.
+  reflect_max_sessions: z.number().int().min(0).default(8),
+  reflect_max_minutes: z.number().int().min(0).default(20),
   min_tool_uses: z.number().int().min(0).default(6),
   auto_kick: z.boolean().default(true),
 });

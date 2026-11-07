@@ -56,7 +56,7 @@ function cfg(): Config {
     ],
     promotion: { threshold: 3, per_run_cap: 3, max_rule_chars: 500,
     max_total_rule_chars: 12000, auto_merge: false, retire_after_days: 45, observe_min_sessions: 20, observe_max_days: 14, max_rewords: 2, escalate_ratio: 0.9 },
-    worker: { idle_minutes: 10, curriculum_interval_minutes: 60, curriculum_max_patterns: 6, curriculum_max_minutes: 15, min_tool_uses: 99, auto_kick: true },
+    worker: { idle_minutes: 10, curriculum_interval_minutes: 60, curriculum_max_patterns: 6, curriculum_max_minutes: 15, reflect_max_sessions: 8, reflect_max_minutes: 20, min_tool_uses: 99, auto_kick: true },
     web: { port: 8766, host: "127.0.0.1", allowed_hosts: [] },
     alias_semantic: AliasSemanticConfig.parse({}),
   };

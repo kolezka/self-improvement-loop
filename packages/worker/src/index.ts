@@ -429,6 +429,14 @@ async function reflectPending(
   // them instead of repeating the same failing call once per entry.
   const configBrokenWorlds = new Set<string>();
 
+  // One pass is bounded, like a curriculum tick: a backlog of sessions put back
+  // in line costs a provider session each and would otherwise hold the worker
+  // lock for hours. Entries past the budget stay pending, unread, for the next
+  // pass: they are not skipped in the summary, because nothing was decided.
+  const maxSessions = cfg.worker.reflect_max_sessions;
+  const deadline = cfg.worker.reflect_max_minutes > 0 ? now.getTime() + cfg.worker.reflect_max_minutes * 60_000 : undefined;
+  let attempted = 0;
+
   for (const entry of listQueue("pending")) {
     if (worldName !== undefined && entry.world !== worldName) continue;
     const world = worldByName.get(entry.world);
@@ -478,6 +486,15 @@ async function reflectPending(
       continue;
     }
 
+    if (maxSessions > 0 && attempted >= maxSessions) {
+      log({ action: "reflect", result: `over the reflection budget of ${maxSessions} session(s); the rest wait for the next pass` });
+      break;
+    }
+    if (deadline !== undefined && Date.now() >= deadline) {
+      log({ action: "reflect", result: "over the reflection time budget; the rest wait for the next pass" });
+      break;
+    }
+    attempted += 1;
     try {
       const result = await reflectSession(entry, { cfg, world, chat });
       if (result.recorded) reflectedIn(entry.world).set(entry.session_id, Date.now());

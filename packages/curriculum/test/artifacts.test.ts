@@ -296,6 +296,21 @@ describe("rules-file ownership", () => {
   });
 });
 
+describe("live rule size", () => {
+  test("measures the tagged bullet the lint measures, and 0 when absent", () => {
+    const world = makeWorld();
+    const tree = join(env.tmp, "target");
+    writeRules(tree, MARKED);
+    artifacts.writeArtifact(world, "rule", PATTERN, "- run the thing", tree);
+    artifacts.writeArtifact(world, "rule", "other-pattern", "- run the other thing", tree);
+
+    // Same measure as lintRule's total: body, one space, tag.
+    expect(artifacts.liveRuleChars(world, PATTERN, tree)).toBe("- run the thing".length + 1 + ruleTag(PATTERN).length);
+    // A pattern with no bullet is 0, not the whole file.
+    expect(artifacts.liveRuleChars(world, "no-such-pattern", tree)).toBe(0);
+  });
+});
+
 describe("rules file path containment", () => {
   // Regression: `rules_file` is operator config, never validated the way a
   // pattern slug is. `join` collapses a "../" instead of refusing it, so a

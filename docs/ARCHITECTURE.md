@@ -407,6 +407,44 @@ Under `worker.lock`:
    worktree; stages branches, never pushes.
 4. **Export.** If the world configures Outline, push new reflections (best effort).
 
+### A closed pattern needs a mechanism
+
+A pattern slug is an identity, and one of them became a category instead.
+`evidence-level-overclaim` collected every reflection where a claim outran its
+evidence: test totals, restart persistence, browser preview, device power,
+backup inventories. Each new domain was appended to the same rule, so the rule
+reached the per-rule cap twice and had to be trimmed by hand, and the row still
+recurred because the cause was never named.
+
+`CLOSED_PATTERNS` (in `@sil/critic`) lists the slugs that may not come back as a
+pattern. The critic answers with a `mechanism` field alongside the pattern. When
+the returned pattern is closed, the mechanism becomes the pattern, so each cause
+gets its own row, artifact, cap and recurrence rate. Three answers are refused
+rather than accepted as a new name: a closed pattern with no mechanism, a
+mechanism that is itself a closed pattern, and a catch-all. `vagueMechanism()`
+rejects whole slugs (`overclaim`, `unverified`, `insufficient-evidence`) and any
+slug containing a vague token (`general`, `other`, `evidence`), so
+`general-evidence` fails while `relayed-subagent-claim` passes. The refusal names
+the reason in `reflect_runs`, the same way a rejected artifact does.
+
+The mechanism is written into the reflection document and the ledger exactly
+like any other pattern, so nothing downstream knows about the split. Adding a
+slug to `CLOSED_PATTERNS` does not rewrite reflections that already carry it:
+the old rows keep their slug, and their rule stays live until it stops
+recurring. The critic's prompt tells it the closed slug may not be returned and
+gives mechanism examples, so the split is one prompt paragraph plus the
+validation above, not a taxonomy in code.
+
+Lowering `promotion.max_rule_chars` used to freeze every rule longer than the
+new cap, because each redraft of such a rule was refused on length alone and a
+rule that is never accepted can never shrink. `patternCaps()` therefore returns
+`max(cap, liveRuleChars())`: a rule already over the cap may shrink and may not
+grow. `liveRuleChars()` measures the live bullet the way `lintRule` measures a
+draft, tag included, so the two numbers are comparable. `sil verify` uses the
+same function, so it does not report a violation for a rule the cap
+grandfathers.
+
+
 ## Reflection document
 
 V1 body shape, plus YAML front matter for machine fields. `Pattern:` stays the

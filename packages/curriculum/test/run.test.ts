@@ -329,6 +329,40 @@ describe("the happy path", () => {
     expect(report.gated_out[PATTERN]).toBeUndefined();
   });
 
+  test("a live rule longer than the cap may shrink but not grow", async () => {
+    const seedRule = (world: World, bullet: string): void => {
+      writeFileSync(
+        join(targetRoot(world), "RULES.md"),
+        `# Boot contract\n\n${RULE_START}\n- ${bullet.replace(/^- /, "")} ${ruleTag(PATTERN)}\n${RULE_END}\n`,
+        "utf8",
+      );
+    };
+    const tail = (n: number) => " " + "each commit records the graphify inventory count and the rg hit count;".repeat(n).trim();
+    const live = ruleBody().trimEnd() + tail(5);
+    const liveChars = live.length + 1 + ruleTag(PATTERN).length;
+
+    // A rule promoted when the cap was 5000: far over the 150 it runs under now.
+    const world = worldWith();
+    initTarget(world);
+    seedRule(world, live);
+
+    // Growth past the live size is still refused, so lowering the cap stops a
+    // rule from ballooning even when it is grandfathered. No write happens, so
+    // the world is unchanged for the next tick below.
+    const grow = new FakeChat({ draft: ruleDraftFor(ruleBody().trimEnd() + tail(9)) });
+    const grown = await run(world, makeCfg({ max_rule_chars: 150 }), opts({ apply: true, chat: grow.fn }));
+    expect(grown.staged).toEqual([]);
+    expect(grown.gated_out[PATTERN]).toContain(`the cap is ${liveChars}`);
+
+    // Over the cap but shorter than what is already live, so it fits: without
+    // the grandfathered cap this pattern could never shed a single word.
+    const shorter = ruleBody().trimEnd() + tail(2);
+    expect(shorter.length + 1 + ruleTag(PATTERN).length).toBeGreaterThan(150);
+    const shrink = new FakeChat({ draft: ruleDraftFor(shorter) });
+    const shrunk = await run(world, makeCfg({ max_rule_chars: 150 }), opts({ apply: true, chat: shrink.fn }));
+    expect(shrunk.staged).toEqual([PATTERN]);
+  });
+
   test("a rule over the world's total budget gates out before the judge", async () => {
     const world = worldWith();
     initTarget(world);

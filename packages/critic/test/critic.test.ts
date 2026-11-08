@@ -6,7 +6,7 @@ import { AliasSemanticConfig, fsx, SECTIONS, type Config, type LlmConfig, type Q
 import { listLessons, listReflections, writeReflection } from "@sil/store";
 import type { ChatMessage } from "@sil/providers";
 import { closeState, readRecords } from "@sil/statedb";
-import { installedArtifacts, parseAnswer, reflectSession } from "../src/index.ts";
+import { buildMessages, installedArtifacts, parseAnswer, reflectSession } from "../src/index.ts";
 import { setSilDirs, restoreEnv, writeSampleTranscript } from "../../transcript/test/fixture.ts";
 
 let tmpDir: string;
@@ -97,6 +97,22 @@ function llm(): LlmConfig {
 
 // --- parseAnswer -----------------------------------------------------------
 
+describe("buildMessages", () => {
+  test("asks for the mechanism and forbids returning the closed slug", () => {
+    const pack = {
+      session_id: "s1", cwd: "/tmp", prompts: [], final_assistant_texts: [], tool_calls: [], bash: [],
+      test_like: [], skills_used: [], agents_used: [], hooks: {}, errors: [],
+      counts: { tool_uses: 0, turns: 0, user_prompts: 0, attachments: 0 },
+      git: { head_at_start: null, head_now: null, diff_stat: "", diff_excerpt: "", files_changed: [] },
+    };
+    const opts = { world: world(), existingPatterns: {}, installedArtifacts: [], recentTitles: [] };
+    const system = buildMessages(pack, opts).find((m) => m.role === "system")!.content;
+    expect(system).toContain("mechanism");
+    expect(system).toContain("CLOSED");
+    expect(system).toContain("evidence-level-overclaim");
+  });
+});
+
 describe("parseAnswer", () => {
   test("tolerates a code fence", () => {
     const text = "```json\n" + goodAnswer() + "\n```";
@@ -117,6 +133,58 @@ describe("parseAnswer", () => {
     const answer = parseAnswer("not json at all");
     expect(answer.record).toBe(false);
     expect(answer.pattern).toBeNull();
+  });
+
+  test("a closed pattern is replaced by the mechanism the critic names", () => {
+    const text = JSON.stringify({
+      record: true,
+      pattern: "evidence-level-overclaim",
+      mechanism: "branch-protection-snapshot",
+      lesson: "Read the effective branch protection before claiming CI could not gate the merge.",
+    });
+    const answer = parseAnswer(text);
+    expect(answer.record).toBe(true);
+    expect(answer.pattern).toBe("branch-protection-snapshot");
+    expect(answer.mechanism).toBe("branch-protection-snapshot");
+  });
+
+  test("a closed pattern without a mechanism is refused", () => {
+    const text = JSON.stringify({ record: true, pattern: "evidence-level-overclaim", lesson: "x" });
+    const answer = parseAnswer(text);
+    expect(answer.record).toBe(false);
+    expect(answer.pattern).toBeNull();
+    expect(answer.reason).toContain("needs a concrete mechanism slug");
+  });
+
+  test("a catch-all mechanism is refused, so the category cannot come back", () => {
+    for (const mechanism of ["overclaim", "unverified", "general-evidence", "other", "evidence"]) {
+      const text = JSON.stringify({ record: true, pattern: "evidence-level-overclaim", mechanism, lesson: "x" });
+      const answer = parseAnswer(text);
+      expect(answer.record).toBe(false);
+      expect(answer.reason).toContain("catch-all");
+    }
+  });
+
+  test("a non-closed pattern keeps its own slug and drops a stray mechanism", () => {
+    const text = JSON.stringify({
+      record: true,
+      pattern: "zsh-equals-expansion",
+      mechanism: "relayed-subagent-claim",
+      lesson: "x",
+    });
+    const answer = parseAnswer(text);
+    expect(answer.record).toBe(true);
+    expect(answer.pattern).toBe("zsh-equals-expansion");
+    // mechanism answers a closed pattern only, so a second pattern field
+    // cannot leak into every row.
+    expect(answer.mechanism).toBeNull();
+  });
+
+  test("a mechanism equal to a closed pattern is refused", () => {
+    const text = JSON.stringify({ record: true, pattern: "evidence-level-overclaim", mechanism: "evidence-level-overclaim", lesson: "x" });
+    const answer = parseAnswer(text);
+    expect(answer.record).toBe(false);
+    expect(answer.reason).toContain("itself a closed pattern");
   });
 
   test("not_verified never iterates a non-list", () => {

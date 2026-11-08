@@ -100,7 +100,7 @@ export {
   verdictFor,
 } from "./alias-semantic.ts";
 export { branchName } from "./git.ts";
-export { draftCaps, run, type RunOptions, sameArtifact, UPGRADE_TYPES } from "./run.ts";
+export { draftCaps, patternCaps, run, type RunOptions, sameArtifact, UPGRADE_TYPES } from "./run.ts";
 export { type GateCorpusResult, type GateRunner, type NudgeAdapter, setNudgeAdapter } from "./deps.ts";
 export {
   type GateCheck,

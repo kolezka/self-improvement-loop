@@ -334,6 +334,21 @@ export function ruleBulletInManagedBlock(world: World, pattern: string, root?: s
   return stripRuleTag(ruleBulletInText(block, pattern), pattern);
 }
 
+/** Length of this pattern's live rule bullet, tag included, or 0 when it holds
+ * none. Measured the way `lintRule` measures a draft, so the two numbers can be
+ * compared: `body.length + 1 + tag.length`.
+ *
+ * Used to grandfather a rule that is already longer than the cap. Lowering
+ * `promotion.max_rule_chars` must not make every existing rule permanently
+ * unfixable: without this, the next redraft of a 3500-char rule is refused on
+ * length alone and the pattern can never shrink, only stay. */
+export function liveRuleChars(world: World, pattern: string, root?: string | null): number {
+  const path = resolveContained(rootFor(world, root), strip(world.layout.rules_file));
+  if (!existsSync(path)) return 0;
+  const [, block] = splitManagedBlock(fsx.readText(path));
+  return ruleBulletInText(block, pattern).replace(/\s+$/, "").length;
+}
+
 /** Why a rule write into this world would refuse, checked read-only.
  *
  * Mirrors `writeRule`'s three guards exactly. Running the writer itself to find

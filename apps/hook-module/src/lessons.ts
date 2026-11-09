@@ -8,6 +8,7 @@
 
 import { posixBasename, posixJoin } from "@sil/core/layout";
 import { formatLesson, LESSON_ARCHIVE_AT_DELIVERIES, rulesBlockFrom, rulesInjectable, selectLessons } from "@sil/core/lessons";
+import { claudeMdImportsRules, MAX_CLAUDE_MD_BYTES } from "@sil/core/rules-import";
 import type { LessonCandidate } from "@sil/core/lessons";
 import type { EngineInterface } from "claude-code";
 import { listDirIfPresent, readText, readTextIfPresent, statPath, statPathIfPresent, writeText } from "./io.ts";
@@ -141,4 +142,18 @@ export async function deliverLessons(
   }
 
   return chosen.map((c) => formatLesson(c.obj));
+}
+
+/** Whether the CLAUDE.md Claude Code loaded already imports `rulesFile`.
+ *
+ * The effective config dir, not the world's configured one: a session running
+ * with a different CLAUDE_CONFIG_DIR has not loaded the world's managed import,
+ * so injection is still right. Any read problem reads as "not imported". */
+export async function rulesImportedByClaudeMd($: EngineInterface, state: SessionState, rulesFile: string): Promise<boolean> {
+  const claudeMd = posixJoin(state.layout.claudeConfigDir(), "CLAUDE.md");
+  const st = await statPathIfPresent($, claudeMd);
+  if (!st || st.kind !== "file" || st.size > MAX_CLAUDE_MD_BYTES) return false;
+  const text = await readText($, claudeMd);
+  if (text === null) return false;
+  return claudeMdImportsRules(text, claudeMd, rulesFile);
 }

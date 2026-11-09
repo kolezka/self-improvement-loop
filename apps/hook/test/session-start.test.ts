@@ -5,7 +5,9 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import * as paths from "@sil/core/paths";
+import { rulesImportBlock } from "@sil/core/rules-import";
 import { closeState, readRecords } from "@sil/statedb";
 import { cleanupHookEnv, createLoopState, makeHookEnv, runHook } from "./helpers.ts";
 import type { HookEnv } from "./helpers.ts";
@@ -106,6 +108,51 @@ describe("SessionStart", () => {
     writeFileSync(`${hookEnv.root}/RULES.md`, "<!--loop-rules:start-->\n- Rule one. <!--rule:alpha-rule-->\n<!--loop-rules:end-->\n");
     runHook(MAIN_TS, hookEnv, { session_id: "sess-start-5", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root });
     expect(readRecords("usage_events", "strict").records.filter((e) => e["kind"] === "rule").length).toBe(0);
+  });
+
+  // The import is the delivery: Claude Code already loaded RULES.md from
+  // CLAUDE.md before SessionStart ran, so injecting it again would put the
+  // same bytes in context twice.
+  test("does not repeat the rules block when the effective CLAUDE.md imports it, and still records uses", () => {
+    writeSnapshot();
+    const rulesFile = `${hookEnv.root}/RULES.md`;
+    writeFileSync(rulesFile, "before\n<!--loop-rules:start-->\n- Rule one. <!--rule:alpha-rule-->\n<!--loop-rules:end-->\nafter\n");
+    const claudeDir = join(hookEnv.root, "claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "CLAUDE.md"), `${rulesImportBlock(rulesFile)}\n`);
+    writeLesson("lesson-import");
+
+    const payload = { session_id: "sess-start-import", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
+    const result = runHook(MAIN_TS, hookEnv, payload, { CLAUDE_CONFIG_DIR: claudeDir });
+    expect(result.exitCode).toBe(0);
+    const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
+
+    expect(text).not.toContain("Promoted rules for world default");
+    expect(text).not.toContain("Rule one.");
+    // Positive control: the rest of SessionStart still ran.
+    expect(text).toContain("a useful lesson");
+    expect(text).toContain("self-improvement-loop is active");
+
+    const rules = readRecords("usage_events", "strict").records.filter((e) => e["kind"] === "rule");
+    expect(rules.map((e) => e["ref"])).toEqual(["rule:alpha-rule"]);
+  });
+
+  // An import that names another file is not this world's import. Falling
+  // back to injection costs context, but silently dropping the rules costs
+  // the behavior the loop exists for.
+  test("still injects when CLAUDE.md imports a different rules file", () => {
+    writeSnapshot();
+    const rulesFile = `${hookEnv.root}/RULES.md`;
+    writeFileSync(rulesFile, "<!--loop-rules:start-->\n- Rule one. <!--rule:alpha-rule-->\n<!--loop-rules:end-->\n");
+    const claudeDir = join(hookEnv.root, "claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "CLAUDE.md"), `${rulesImportBlock(`${hookEnv.root}/OTHER.md`)}\n`);
+
+    const payload = { session_id: "sess-start-stale", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
+    const result = runHook(MAIN_TS, hookEnv, payload, { CLAUDE_CONFIG_DIR: claudeDir });
+    const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
+    expect(text).toContain("Promoted rules for world default:");
+    expect(text).toContain("Rule one.");
   });
 
   test("writes start.json with cwd, world, and git_head", () => {

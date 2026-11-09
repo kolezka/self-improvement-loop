@@ -28,6 +28,7 @@ import { cmdQueueRequeue } from "./commands/queue.ts";
 import { cmdReflect } from "./commands/reflect.ts";
 import { cmdReflectionsList, cmdReflectionsShow } from "./commands/reflections.ts";
 import { cmdReviewAccept, cmdReviewDelete, cmdReviewList, cmdReviewRehome, cmdReviewReject, cmdReviewRetire, cmdReviewShow } from "./commands/review.ts";
+import { cmdRulesLink } from "./commands/rules.ts";
 import { cmdScheduleInstall, cmdScheduleShow, cmdScheduleUninstall } from "./commands/schedule.ts";
 import { cmdStateExport, cmdStateMigrate, cmdStateQuarantine, cmdStateStatus } from "./commands/state.ts";
 import { cmdStatus } from "./commands/status.ts";
@@ -226,6 +227,13 @@ function buildProgram(deps: Deps, onExit: (code: number) => void, onRun: () => v
     .command("lessons")
     .option("--world <name>")
     .action(wire((opts) => cmdLessons(opts)));
+
+  program
+    .command("rules")
+    .command("link")
+    .option("--world <name>")
+    .option("--dry-run")
+    .action(wire((opts) => cmdRulesLink(opts)));
 
   const llm = program.command("llm");
   llm

@@ -5,6 +5,7 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { Config, Endpoint, fsx, LlmConfig, loadConfig, loadLlm, paths, saveConfig, saveLlm, targetRoot, World, writeHookSnapshot } from "@sil/core";
 import { ensureRulesFile, git } from "@sil/curriculum";
 import * as schedule from "../schedule.ts";
+import { rulesLinkOutcomes } from "./rules.ts";
 
 // The operator's LiteLLM route for every role unless --model says otherwise.
 // Only used when --llm-base-url asks for a litellm endpoint at all.
@@ -22,10 +23,10 @@ export interface InitOptions {
 export function cmdInit(opts: InitOptions): number {
   const cfgPath = paths.configFile();
   let cfg: Config;
-  if (fsx.exists(cfgPath)) {
-    cfg = loadConfig();
-    console.log(`config.yaml already exists at ${cfgPath}, leaving it as is`);
-  } else {
+  // Whether this run is a setup or a repeat is decided before anything is
+  // printed for the existing files, because it changes what init does.
+  const freshSetup = !fsx.exists(cfgPath);
+  if (freshSetup) {
     const world = World.parse({
       name: opts.world || "default",
       target: opts.target ? paths.expandHome(opts.target) : null,
@@ -33,6 +34,9 @@ export function cmdInit(opts: InitOptions): number {
     cfg = Config.parse({ worlds: [world] });
     saveConfig(cfg);
     console.log(`wrote ${cfgPath}`);
+  } else {
+    cfg = loadConfig();
+    console.log(`config.yaml already exists at ${cfgPath}, leaving it as is`);
   }
 
   const llmPath = paths.llmFile();
@@ -88,6 +92,10 @@ export function cmdInit(opts: InitOptions): number {
 
   const snap = writeHookSnapshot(cfg);
   console.log(`wrote hook snapshot at ${snap}`);
+  // Only on a fresh setup. An existing install is not an installation, and a
+  // repeat init must never rewrite a CLAUDE.md the operator may have edited
+  // (e.g. after moving the data directory). Those runs use `sil rules link`.
+  if (freshSetup) linkRulesOnInstall();
   // The next steps below say `sil`, and a plugin install puts nothing on PATH.
   const shimLinked = schedule.isSymlink(schedule.shimPath());
   const shim = schedule.installShim();
@@ -98,6 +106,7 @@ export function cmdInit(opts: InitOptions): number {
   }
   console.log();
   console.log("Next steps:");
+  console.log("  sil rules link                          import the learned rules into CLAUDE.md instead of hook injection");
   console.log("  sil status                              check worker and provider status");
   console.log("  sil llm list                            show endpoints and which one serves each role");
   if (litellmPresent) {
@@ -115,6 +124,32 @@ export function cmdInit(opts: InitOptions): number {
   console.log("  sil web                                 open the review UI");
   console.log("  sil schedule install --web              run the worker and web UI on a schedule");
   return 0;
+}
+
+/** Import the learned rules into the CLAUDE.md Claude Code loads, so the same
+ * text stops travelling as SessionStart additionalContext on every session.
+ *
+ * Runs during a fresh setup, the install the operator is present for. A plugin
+ * installed from the marketplace never runs `sil init` by itself;
+ * `commands/loop.md` triggers it on first use, and that path ends up here too.
+ * Without it the injection is paid on every session forever.
+ *
+ * A failure here must not fail the setup: the hook still injects when the
+ * import is absent, so the rules arrive either way. */
+function linkRulesOnInstall(): void {
+  try {
+    for (const outcome of rulesLinkOutcomes()) {
+      if (outcome.action === "write" || outcome.action === "update") {
+        console.log(`imported rules into ${outcome.where} (world ${outcome.world})`);
+      }
+      // "already", "skipped" and "none" change nothing: the import is there, the
+      // CLAUDE.md belongs to another world, or the world opted in to injection.
+    }
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    console.warn(`warning: could not import the learned rules into CLAUDE.md: ${why}`);
+    console.warn("  the rules stay in SessionStart injection until `sil rules link` succeeds");
+  }
 }
 
 /** Create this world's rules file when the loop owns it (the built-in

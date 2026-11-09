@@ -11,10 +11,14 @@ const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sil-init-"));
-  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "HOME", "PATH"]) saved[k] = process.env[k];
+  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "HOME", "PATH", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
   for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"]) process.env[k] = join(tmp, k.toLowerCase());
   // init writes ~/.local/bin/sil, so never let it reach the real home.
   process.env["HOME"] = join(tmp, "home");
+  // init also imports the learned rules into the CLAUDE.md Claude Code loads.
+  // homedir() ignores HOME, so without this every case here would write the
+  // managed block into the operator's own ~/.claude/CLAUDE.md.
+  process.env["CLAUDE_CONFIG_DIR"] = join(tmp, "home", ".claude");
 });
 
 afterEach(() => {
@@ -66,6 +70,76 @@ describe("sil init", () => {
     expect(second).toBe(0);
     const after = readFileSync(paths.configFile(), "utf8");
     expect(after).toBe(before);
+  });
+
+  // The install is the only moment the operator is guaranteed to be present, so
+  // the import has to land here. Without it RULES.md travels as SessionStart
+  // additionalContext on every session instead of riding the cached CLAUDE.md.
+  //
+  // CLAUDE_CONFIG_DIR is what the world resolves against, and it is the only
+  // knob that moves this write: `~/.claude` below is the real home, because
+  // homedir() does not follow the HOME env var. Without the override the
+  // install writes into the operator's own CLAUDE.md.
+  test("imports the learned rules into CLAUDE.md on install", async () => {
+    const cfgDir = join(tmp, "claude-config");
+    mkdirSync(cfgDir, { recursive: true });
+    process.env["CLAUDE_CONFIG_DIR"] = cfgDir;
+
+    expect(await run(["init"])).toBe(0);
+
+    const claudeMd = join(cfgDir, "CLAUDE.md");
+    expect(existsSync(claudeMd)).toBe(true);
+    const text = readFileSync(claudeMd, "utf8");
+
+    const cfg = loadConfig();
+    const world = worldNamed(cfg, "default");
+    // targetRoot already ends in learned/, so the rules file is learned/RULES.md.
+    const rulesFile = join(targetRoot(world), world.layout.rules_file);
+    expect(text).toContain("<!--loop-rules-import:start-->");
+    expect(text).toContain(`@${rulesFile}`);
+    // Exactly one managed pair: two would make the hook distrust both.
+    expect(text.split("<!--loop-rules-import:start-->").length - 1).toBe(1);
+  });
+
+  test("a repeat init does not rewrite an existing CLAUDE.md", async () => {
+    const cfgDir = join(tmp, "claude-config");
+    mkdirSync(cfgDir, { recursive: true });
+    process.env["CLAUDE_CONFIG_DIR"] = cfgDir;
+    const claudeMd = join(cfgDir, "CLAUDE.md");
+    writeFileSync(claudeMd, "# my own notes\n\nkeep me\n");
+
+    expect(await run(["init"])).toBe(0);
+    const first = readFileSync(claudeMd, "utf8");
+    expect(first).toContain("<!--loop-rules-import:start-->");
+
+    // The second run is not an install. It must leave the file byte-identical,
+    // so an operator who edited it after moving the data dir is not rolled back.
+    expect(await run(["init"])).toBe(0);
+    expect(readFileSync(claudeMd, "utf8")).toBe(first);
+    // The operator's own text survives both runs.
+    expect(first).toContain("# my own notes");
+    expect(first).toContain("keep me");
+  });
+
+  // A stale import keeps the hook from injecting, so it would deliver nothing.
+  // `sil rules link` is the repair, and it has to run inside the same setup.
+  test("sil rules link repairs a stale import left by a moved data directory", async () => {
+    const cfgDir = join(tmp, "claude-config");
+    mkdirSync(cfgDir, { recursive: true });
+    process.env["CLAUDE_CONFIG_DIR"] = cfgDir;
+    expect(await run(["init"])).toBe(0);
+
+    // Simulate the data directory having moved: the import still names the old
+    // path, so the hook distrusts it and falls back to injecting.
+    const claudeMd = join(cfgDir, "CLAUDE.md");
+    writeFileSync(claudeMd, "<!--loop-rules-import:start-->\n@/nowhere/learned/RULES.md\n<!--loop-rules-import:end-->\n");
+
+    expect(await run(["rules", "link"])).toBe(0);
+    const text = readFileSync(claudeMd, "utf8");
+
+    const world = worldNamed(loadConfig(), "default");
+    expect(text).toContain(`@${join(targetRoot(world), world.layout.rules_file)}`);
+    expect(text).not.toContain("/nowhere/");
   });
 
   test("--model fills in llm.yaml models", async () => {

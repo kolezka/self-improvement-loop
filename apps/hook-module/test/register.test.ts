@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { RULE_END, RULE_START } from "@sil/core/consts";
 import { notInitializedLine } from "@sil/core/hook-snapshot";
+import { rulesImportBlock } from "@sil/core/rules-import";
 import { register, resetForTests } from "../src/register.ts";
 import { peekState } from "../src/state.ts";
 import { FakeEngine } from "./fake-engine.ts";
@@ -314,6 +315,61 @@ describe("classic.SessionStart", () => {
     expect(text).toContain("Lesson (second): remember second");
     expect(text).not.toContain("remember oldest");
     expect(text).toContain("self-improvement-loop is active:");
+    cleanup();
+  });
+
+  // The module path has to honour the import too: otherwise a user on the
+  // in-process hooks gets the 22 KB twice while the command hook never does.
+  test("does not repeat the rules block when CLAUDE.md imports it, and still spools uses", async () => {
+    const f = fixture();
+    writeSnapshot(f);
+    writeRules(f, "- always check twice <!--rule:check-twice-->");
+    const claudeMd = join(f.root, ".claude", "CLAUDE.md");
+    mkdirSync(dirname(claudeMd), { recursive: true });
+    writeFileSync(claudeMd, `${rulesImportBlock(rulesPath(f))}\n`);
+
+    const result = await f.engine.fire("classic.SessionStart", sessionStart(f), {});
+    const text = contextOf(result).join("\n");
+    expect(text).not.toContain("Promoted rules for world default:");
+    expect(text).not.toContain("always check twice");
+    // Positive control: SessionStart still delivered its status line.
+    expect(text).toContain("self-improvement-loop is active:");
+
+    const spool = await drainSpool(f);
+    const rules = linesFor(spool, "usage-events").filter((line) => line["kind"] === "rule");
+    expect(rules.map((line) => line["ref"])).toEqual(["rule:check-twice"]);
+    cleanup();
+  });
+
+  test("honours CLAUDE_CONFIG_DIR when deciding whether the import is live", async () => {
+    const f = fixture();
+    const claudeDir = mkdtempSync(join(tmpdir(), "sil-mr-claude-"));
+    fixtures.push(claudeDir);
+    f.engine.env["CLAUDE_CONFIG_DIR"] = claudeDir;
+    writeSnapshot(f);
+    writeRules(f, "- always check twice <!--rule:check-twice-->");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "CLAUDE.md"), `${rulesImportBlock(rulesPath(f))}\n`);
+
+    const result = await f.engine.fire("classic.SessionStart", sessionStart(f), {});
+    const text = contextOf(result).join("\n");
+    expect(text).not.toContain("Promoted rules for world default:");
+    expect(text).toContain("self-improvement-loop is active:");
+    cleanup();
+  });
+
+  test("still injects when the import points at a different rules file", async () => {
+    const f = fixture();
+    writeSnapshot(f);
+    writeRules(f, "- always check twice <!--rule:check-twice-->");
+    const claudeMd = join(f.root, ".claude", "CLAUDE.md");
+    mkdirSync(dirname(claudeMd), { recursive: true });
+    writeFileSync(claudeMd, `${rulesImportBlock(join(f.root, "other", "RULES.md"))}\n`);
+
+    const result = await f.engine.fire("classic.SessionStart", sessionStart(f), {});
+    const text = contextOf(result).join("\n");
+    expect(text).toContain("Promoted rules for world default:");
+    expect(text).toContain("always check twice");
     cleanup();
   });
 

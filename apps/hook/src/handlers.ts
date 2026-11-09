@@ -14,7 +14,7 @@ import { log, nowIso } from "./log.ts";
 import { snapshotPresent as hookSnapshotWasRead } from "./snapshot.ts";
 import type { HookSnapshot, HookWorld } from "./snapshot.ts";
 import { gitHead } from "./worlds.ts";
-import { formatLesson, pendingLessons, rulesBlock } from "./lessons.ts";
+import { formatLesson, pendingLessons, rulesBlock, rulesImportedByClaudeMd } from "./lessons.ts";
 import { maybeKickWorker } from "./kick.ts";
 import { hasTranscript, markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
 import { scanTranscript } from "./scan.ts";
@@ -171,7 +171,13 @@ function handleSessionStart(payload: Record<string, unknown>, world: HookWorld, 
   const parts: string[] = [];
 
   const rulesText = rulesBlock(world);
-  if (rulesText) parts.push(`Promoted rules for world ${worldName}:\n${rulesText}`);
+  // The import is the delivery: when the effective CLAUDE.md already named the
+  // rules file, Claude Code loaded it before this hook ran. Injecting again
+  // would put the same bytes in context twice. A stale or missing import falls
+  // back to injection, so a broken link is loud in cost but never silent in
+  // loss.
+  const rulesImported = rulesText !== "" && world.rules_file ? rulesImportedByClaudeMd(world.rules_file) : false;
+  if (rulesText && !rulesImported) parts.push(`Promoted rules for world ${worldName}:\n${rulesText}`);
 
   const lessons = pendingLessons(worldName, sessionId, cwd, 3);
   if (lessons.length > 0) parts.push(lessons.map(formatLesson).join("\n"));

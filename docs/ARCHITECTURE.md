@@ -236,7 +236,7 @@ worlds:
       rules_file: RULES.md
       ledger: promotions.json
     remote: none                   # none | push | pr   (accept side effects)
-    rules_inject: true             # SessionStart injects the managed rules block
+    rules_inject: true             # false disables rules; true serves them (import or fallback)
 promotion:
   threshold: 3
   per_run_cap: 3                   # stagings per run; a gated-out pattern frees its slot
@@ -346,7 +346,7 @@ next Stop or SessionEnd of any session, once it is 30 minutes old.
 
 | Event | Action |
 |---|---|
-| SessionStart | Inject: managed rules block of the world (if `rules_inject`), up to 3 undelivered inbox lessons for the world, one-line loop status. Kick the worker (detached) only when `sil init` has written the hook snapshot, no live worker holds the lock, the last kick is older than 15 minutes, and there is queued work or the curriculum interval elapsed. Record session start. |
+| SessionStart | Serve: managed rules block of the world (if `rules_inject`), through the `@` import in the effective `CLAUDE.md` when `sil rules link` wired one, else injected as context; up to 3 undelivered inbox lessons for the world, one-line loop status. Kick the worker (detached) only when `sil init` has written the hook snapshot, no live worker holds the lock, the last kick is older than 15 minutes, and there is queued work or the curriculum interval elapsed. Record session start. |
 | UserPromptSubmit | Deliver inbox lessons that arrived since session start (once each). Nudge dispatch. |
 | PreToolUse | Record one payload sample for the world: tool name plus `tool_input.command` (credential values blanked) and `tool_input.file_path`, the two keys a gate can read; never `description`, `old_string`, `content` or a prompt. Nudge dispatch. |
 | PostToolUse | Record usage for `Skill` (skill name) and `Agent` (subagent_type, model). Nudge dispatch. |
@@ -838,15 +838,20 @@ Review, Artifacts, Loop, Models, Worlds, Logs.
 | Signal | Source | Artifact types |
 |---|---|---|
 | invocation | PostToolUse `Skill` / `Agent` | skill, agent |
-| injection | SessionStart rules block, once per session per rule | rule |
+| delivery | SessionStart rules block, once per session per rule, whether imported or injected | rule |
 | fire | nudge fire log | hook |
 | hook run | transcript `attachment` records (hookName, exitCode, durationMs) | hook |
 | helpful / misfire | critic answer per session | all |
 | human vote | `/feedback <type>:<name> good|bad [note]` | all |
 | relevance | critic marks a rule as relevant to the session | rule |
 
-An inline rule lives in a `CLAUDE.md` that Claude Code loads itself, outside the
-rules block the loop injects, so its uses are not counted. Inline skills, agents
+An inline rule lives in a `CLAUDE.md` outside the managed rules block, so its
+uses are not counted. The managed block is different: `sil rules link` puts a
+managed `@<rules file>` import into the world's `CLAUDE.md`, so Claude Code loads
+the rules itself before SessionStart. The hook then skips the context injection
+but still records a delivery per tagged rule. When the import is missing, stale,
+or points at another file, the hook falls back to injecting the block, so a
+world never silently loses its rules. Inline skills, agents
 and nudges are counted like loop ones, which is why their names must equal the
 pattern slug.
 
@@ -863,7 +868,7 @@ count grows past the ledger snapshot by `max(threshold, half the snapshot)`, and
 not within 7 days of the snapshot's `snapshot_at`, which stage and reject stamp.
 
 `uses_30d` counts every way an artifact is served: skill and agent invocations,
-rule injections, and hook fires. `fires_30d` keeps the hook-only count, so a
+rule deliveries, and hook fires. `fires_30d` keeps the hook-only count, so a
 hook fire adds to both. Counting only skill and agent invocations left every
 promoted rule and hook at 0 uses, which read as "nothing is running".
 

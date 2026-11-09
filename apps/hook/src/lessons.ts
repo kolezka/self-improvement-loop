@@ -11,6 +11,7 @@ import { join } from "node:path";
 import * as paths from "@sil/core/paths";
 import { LESSON_ARCHIVE_AT_DELIVERIES, rulesBlockFrom, rulesInjectable, selectLessons } from "@sil/core/lessons";
 import type { Lesson, LessonCandidate } from "@sil/core/lessons";
+import { claudeMdImportsRules, MAX_CLAUDE_MD_BYTES } from "@sil/core/rules-import";
 import { atomicWrite } from "@sil/core/fsx";
 import { cwdUnder } from "./worlds.ts";
 
@@ -193,4 +194,29 @@ export function rulesBlock(world: { rules_inject?: boolean; rules_file?: string 
     return "";
   }
   return rulesBlockFrom(text);
+}
+
+/** Whether the CLAUDE.md Claude Code is loading already imports `rulesFile`.
+ *
+ * Checks the effective config dir (`CLAUDE_CONFIG_DIR` or `~/.claude`), not
+ * the world's configured one: if a session runs with a different config dir,
+ * the world's managed import is not in its context and injecting is correct.
+ * Unreadable, oversized or malformed reads as "not imported", so the rules
+ * are never silently lost. */
+export function rulesImportedByClaudeMd(rulesFile: string): boolean {
+  const claudeMd = join(paths.claudeConfigDir(), "CLAUDE.md");
+  let st: ReturnType<typeof statSync>;
+  try {
+    st = statSync(claudeMd);
+  } catch {
+    return false;
+  }
+  if (!st.isFile() || st.size > MAX_CLAUDE_MD_BYTES) return false;
+  let text: string;
+  try {
+    text = readFileSync(claudeMd, "utf8");
+  } catch {
+    return false;
+  }
+  return claudeMdImportsRules(text, claudeMd, rulesFile);
 }

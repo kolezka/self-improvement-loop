@@ -5,7 +5,7 @@ import * as paths from "../src/paths.ts";
 import { expandHomeWith, isWithin, layout, posixBasename, posixDirname, posixJoin, safeComponent } from "../src/layout.ts";
 import type { LayoutEnv } from "../src/layout.ts";
 
-const ENV_KEYS = ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"];
+const ENV_KEYS = ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "CLAUDE_CONFIG_DIR"];
 const ORIGINAL: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -162,6 +162,7 @@ describe("paths.ts and layout() agree", () => {
     { SIL_CONFIG_DIR: "/tmp/sil-eq/config", SIL_STATE_DIR: "/tmp/sil-eq/state", SIL_DATA_DIR: "/tmp/sil-eq/data" },
     { XDG_CONFIG_HOME: "/tmp/sil-eq/xdg-config", XDG_STATE_HOME: "/tmp/sil-eq/xdg-state", XDG_DATA_HOME: "/tmp/sil-eq/xdg-data" },
     { SIL_STATE_DIR: "~/tilde-state", XDG_DATA_HOME: "~/tilde-data" },
+    { CLAUDE_CONFIG_DIR: "~/tilde-claude" },
     {},
   ];
 
@@ -176,6 +177,7 @@ describe("paths.ts and layout() agree", () => {
         configDir: l.configDir(),
         stateDir: l.stateDir(),
         dataDir: l.dataDir(),
+        claudeConfigDir: l.claudeConfigDir(),
         queueDir: l.queueDir("failed"),
         usageEventsFile: l.usageEventsFile(),
         hookRunsFile: l.hookRunsFile(),
@@ -193,6 +195,7 @@ describe("paths.ts and layout() agree", () => {
         configDir: paths.configDir(),
         stateDir: paths.stateDir(),
         dataDir: paths.dataDir(),
+        claudeConfigDir: paths.claudeConfigDir(),
         queueDir: paths.queueDir("failed"),
         usageEventsFile: paths.usageEventsFile(),
         hookRunsFile: paths.hookRunsFile(),

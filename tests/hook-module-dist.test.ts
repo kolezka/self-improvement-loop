@@ -151,6 +151,7 @@ describe("apps/hook-module sources", () => {
       "@sil/core/lesson-curation-ui",
       "@sil/core/lesson-curation-wire",
       "@sil/core/lessons",
+      "@sil/core/rules-import",
       "@sil/core/samples",
       "@sil/core/sensitive-text",
       "@sil/core/spool",

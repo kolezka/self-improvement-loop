@@ -14,6 +14,7 @@
     "./fs-probe": "./src/fs-probe.ts",
     "./samples": "./src/samples.ts",
     "./layout": "./src/layout.ts",
+    "./rules-import": "./src/rules-import.ts",
     "./lessons": "./src/lessons.ts",
     "./hook-snapshot": "./src/hook-snapshot.ts",
     "./spool": "./src/spool.ts",

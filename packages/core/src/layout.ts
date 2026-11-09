@@ -18,6 +18,7 @@ export interface Layout {
   configDir(): string;
   stateDir(): string;
   dataDir(): string;
+  claudeConfigDir(): string;
   queueDir(bucket: "pending" | "done" | "failed"): string;
   usageEventsFile(): string;
   reflectRunsFile(): string;
@@ -146,12 +147,16 @@ export function layout(env: LayoutEnv): Layout {
     envPath(env, "SIL_STATE_DIR", posixJoin(envPath(env, "XDG_STATE_HOME", posixJoin(env.home, ".local", "state")), "self-improvement-loop"));
   const dataDir = (): string =>
     envPath(env, "SIL_DATA_DIR", posixJoin(envPath(env, "XDG_DATA_HOME", posixJoin(env.home, ".local", "share")), "self-improvement-loop"));
+  // The directory Claude Code reads memory files from for this session. The
+  // hooks module needs it to find the CLAUDE.md that may import the rules.
+  const claudeConfigDir = (): string => envPath(env, "CLAUDE_CONFIG_DIR", posixJoin(env.home, ".claude"));
   const worldDir = (world: string): string => posixJoin(dataDir(), "worlds", safeComponent(world));
 
   return {
     configDir,
     stateDir,
     dataDir,
+    claudeConfigDir,
     worldDir,
     queueDir: (bucket) => posixJoin(stateDir(), "queue", bucket),
     usageEventsFile: () => posixJoin(stateDir(), "usage", "events.jsonl"),

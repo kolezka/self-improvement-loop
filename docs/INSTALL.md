@@ -142,9 +142,31 @@ scripts/sil status
 `sil init` also installs the `sil` shim at `~/.local/bin/sil` and warns when
 that directory is not on `PATH`, so the commands below work in a plain shell.
 It creates (or finds) `learned/RULES.md` and prints its path.
-Promoted rules live in the marked block inside that file, and the SessionStart
-hook injects them into every session on its own; there is nothing to add to
-your own CLAUDE.md.
+Promoted rules live in the marked block inside that file.
+
+A fresh setup imports that block into the CLAUDE.md Claude Code already reads,
+so the rules ride the cached prompt prefix instead of being sent again as
+SessionStart context on every session. Init reports `imported rules into
+<path>` when it does this. A repeat init does not touch a CLAUDE.md, because it
+is no longer an install, so an operator who edited the file is not rolled back.
+
+Run `sil rules link` to change the import afterwards, or to repair it:
+
+```
+sil rules link
+```
+
+That writes a managed `@<absolute path to RULES.md>` block into the world's
+`CLAUDE.md` (the `claude_config_dir` from `config.yaml`, else `~/.claude`). It
+is idempotent, keeps your own text, writes through symlinks, and accepts
+`--world <name>` or `--dry-run`. It also removes the block from a world with
+`rules_inject: false` (unless a served world shares that CLAUDE.md), and it
+refuses a rules path containing whitespace, which Claude Code does not expand.
+Without the import, SessionStart still injects
+the block as context, so rules are never lost; with it, the hook only records
+uses. Re-run `sil rules link` after moving the data directory, because the
+imported path is absolute. Two worlds that share one `CLAUDE.md` but point at
+different rules files are refused: give each its own `claude_config_dir`.
 
 Then run `sil import payloads --days 30` once, so the curriculum router has a
 corpus of real tool calls to test drafted hook gates against from the start

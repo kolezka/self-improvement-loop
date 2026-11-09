@@ -3,6 +3,12 @@
 // Managed rules block. Same literals as V1 so a dotfiles CLAUDE.md keeps working.
 export const RULE_START = "<!--loop-rules:start-->";
 export const RULE_END = "<!--loop-rules:end-->";
+
+// Managed block in the user's CLAUDE.md that imports the rules file with `@`.
+// When this block points at the configured rules file, SessionStart stops
+// injecting the block into additionalContext: Claude Code loaded it already.
+export const RULES_IMPORT_START = "<!--loop-rules-import:start-->";
+export const RULES_IMPORT_END = "<!--loop-rules-import:end-->";
 export const ruleTag = (pattern: string): string => `<!--rule:${pattern}-->`;
 // One rule bullet in the managed block, tag included. `promotion.max_rule_chars`
 // overrides it; the drafter is told the budget net of the tag.

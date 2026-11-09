@@ -169,8 +169,8 @@ function inlineLoadLocation(world: World, artifactType: ArtifactType, pattern: s
  * `inlineLoadLocation`). Everything else is checked the way the loop itself
  * would make it live: a skill or agent by its symlink into the Claude config
  * directory, a hook by its file being present and passing the nudge lint, a
- * rule by `rules_inject` and the size cap both allowing injection and its
- * tagged bullet being inside the managed block. */
+ * rule by `rules_inject` and the size cap both allowing it to be served and
+ * its tagged bullet being inside the managed block. */
 export function checkLive(world: World, artifactType: ArtifactType, pattern: string, externalPath: string | null = null): LiveCheck {
   if (externalPath) {
     if (!existsSync(externalPath)) {
@@ -218,7 +218,7 @@ export function checkLive(world: World, artifactType: ArtifactType, pattern: str
       const reason = world.rules_inject === false
         ? "rules_inject is false for this world"
         : `the file is ${stat.size} bytes, over the ${MAX_RULES_BYTES} byte injection cap`;
-      return { live: false, detail: `${rel} exists but the hook would never inject it: ${reason}` };
+      return { live: false, detail: `${rel} exists but the loop would never serve it: ${reason}` };
     }
     const bullet = artifacts.ruleBulletInManagedBlock(world, pattern);
     return bullet

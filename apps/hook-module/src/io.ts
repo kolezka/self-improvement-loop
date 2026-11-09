@@ -93,13 +93,14 @@ export interface LayoutVars {
  * names is refused at load, and `claude plugin validate` lists exactly the
  * names that appear here. */
 export async function readLayoutVars($: EngineInterface): Promise<LayoutVars> {
-  const [silConfig, silState, silData, xdgConfig, xdgState, xdgData, home] = await Promise.all([
+  const [silConfig, silState, silData, xdgConfig, xdgState, xdgData, claudeConfig, home] = await Promise.all([
     $.env.get("SIL_CONFIG_DIR"),
     $.env.get("SIL_STATE_DIR"),
     $.env.get("SIL_DATA_DIR"),
     $.env.get("XDG_CONFIG_HOME"),
     $.env.get("XDG_STATE_HOME"),
     $.env.get("XDG_DATA_HOME"),
+    $.env.get("CLAUDE_CONFIG_DIR"),
     $.env.get("HOME"),
   ]);
   const vars: Record<string, string> = {};
@@ -109,6 +110,7 @@ export async function readLayoutVars($: EngineInterface): Promise<LayoutVars> {
   if (xdgConfig) vars["XDG_CONFIG_HOME"] = xdgConfig;
   if (xdgState) vars["XDG_STATE_HOME"] = xdgState;
   if (xdgData) vars["XDG_DATA_HOME"] = xdgData;
+  if (claudeConfig) vars["CLAUDE_CONFIG_DIR"] = claudeConfig;
   if (home) vars["HOME"] = home;
   return { vars, home: home ?? "" };
 }

@@ -27,7 +27,7 @@ import { serializeSpool, SPOOL_FILE_NAME } from "@sil/core/spool";
 import type { EngineInterface, On } from "claude-code";
 import { gitHead, pathExists, runCommand, writeText } from "./io.ts";
 import { maybeKickWorker } from "./kick.ts";
-import { deliverLessons, recordRuleUses, rulesBlock, sessionStartMtime } from "./lessons.ts";
+import { deliverLessons, recordRuleUses, rulesBlock, rulesImportedByClaudeMd, sessionStartMtime } from "./lessons.ts";
 import { dispatchNudges } from "./nudges.ts";
 import { endConsoleSession, registerUi, resetUiForTests } from "./ui/register.ts";
 import {
@@ -207,7 +207,19 @@ export function register(on: On): void {
 
       try {
         rulesText = await rulesBlock($, state);
-        if (rulesText) parts.push(`Promoted rules for world ${state.worldName}:\n${rulesText}`);
+        // The import is the delivery: when the effective CLAUDE.md already
+        // named the rules file, Claude Code loaded it before this hook ran.
+        // Injecting again would duplicate the bytes. A detection failure falls
+        // back to injecting, never to dropping the rules.
+        let rulesImported = false;
+        if (rulesText && state.world.rules_file) {
+          try {
+            rulesImported = await rulesImportedByClaudeMd($, state, state.world.rules_file);
+          } catch (err) {
+            errors.push(errorSummary(err));
+          }
+        }
+        if (rulesText && !rulesImported) parts.push(`Promoted rules for world ${state.worldName}:\n${rulesText}`);
       } catch (err) {
         errors.push(errorSummary(err));
       }

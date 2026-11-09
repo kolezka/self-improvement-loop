@@ -21,8 +21,12 @@ function useRoots(prefix: string): void {
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sil-bundle-"));
-  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"]) saved[k] = process.env[k];
+  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
   useRoots("hostA");
+  // A fresh `sil init` imports the learned rules into the CLAUDE.md Claude Code
+  // loads, and homedir() ignores HOME. Without this the suite writes the managed
+  // block into the operator's own ~/.claude/CLAUDE.md.
+  process.env["CLAUDE_CONFIG_DIR"] = join(tmp, "claude-config");
 });
 
 afterEach(() => {

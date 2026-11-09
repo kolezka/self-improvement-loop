@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { run } from "../src/main.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..", "..", "..");
-const ENV_KEYS = ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "OPENCLAW_CONFIG_DIR", "OPENCLAW_WORKSPACE_DIR", "CLAUDE_PLUGIN_ROOT"];
+const ENV_KEYS = ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_CONFIG_DIR", "OPENCLAW_CONFIG_DIR", "OPENCLAW_WORKSPACE_DIR", "CLAUDE_PLUGIN_ROOT"];
 
 let tmp: string;
 let ocDir: string;
@@ -16,7 +16,9 @@ const realLog = console.log;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sil-cli-openclaw-"));
   for (const k of ENV_KEYS) saved[k] = process.env[k];
-  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"]) process.env[k] = join(tmp, k.toLowerCase());
+  // CLAUDE_CONFIG_DIR: a fresh init imports the learned rules into the
+  // CLAUDE.md Claude Code loads, and homedir() ignores HOME.
+  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_CONFIG_DIR"]) process.env[k] = join(tmp, k.toLowerCase());
   process.env["CLAUDE_PLUGIN_ROOT"] = REPO_ROOT;
   delete process.env["OPENCLAW_WORKSPACE_DIR"];
   ocDir = join(tmp, "openclaw");

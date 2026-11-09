@@ -10,7 +10,9 @@ const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sil-errors-"));
-  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR"]) {
+  // CLAUDE_CONFIG_DIR: a fresh init imports the learned rules into the
+  // CLAUDE.md Claude Code loads, and homedir() ignores HOME.
+  for (const k of ["SIL_CONFIG_DIR", "SIL_STATE_DIR", "SIL_DATA_DIR", "CLAUDE_CONFIG_DIR"]) {
     saved[k] = process.env[k];
     process.env[k] = join(tmp, k.toLowerCase());
   }

@@ -1,0 +1,25 @@
+{
+  "name": "@kolezka/self-improvement-loop-dsh",
+  "version": "1.6.1",
+  "private": true,
+  "description": "DeepSeek Harness adapter for the self-improvement-loop Claude Code plugin",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "bun.lock",
+    "cordis.patch.yml",
+    "locale/*.json"
+  ],
+  "dependencies": {
+    "claude-plugin-dsh": "0.1.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

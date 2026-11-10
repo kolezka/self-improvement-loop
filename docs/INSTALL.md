@@ -41,6 +41,48 @@ run moves to the newest release commit. Only those commits carry the prebuilt
 zip attached to the release with an `archive` source; the release notes carry the
 URL and its `sha256`. See `docs/RELEASE.md`.
 
+## DeepSeek Harness
+
+`dsh/` is a DeepSeek Harness bundle for the same plugin tree. Its entry,
+`dsh/index.js`, imports `createPlugin` and `rootFrom` from the published npm
+package `claude-plugin-dsh`, pinned to exactly `0.1.0` in `dsh/package.json`
+with `dsh/bun.lock`. No runtime copy is kept in this repo. Claude Code never
+reads `dsh/`, so the Claude Code install above is unchanged.
+
+Install the adapter's dependencies first. DSH does not do it for you:
+
+```sh
+cd /absolute/path/to/self-improvement-loop/dsh && bun install --frozen-lockfile
+# or, from anywhere:
+bun install --cwd /absolute/path/to/self-improvement-loop/dsh --frozen-lockfile
+```
+
+The hooks run `dist/hook.js`, so use a release checkout (the `release` branch or
+a `v<version>` tag, which carry `dist/`), or run `bun install` and
+`bun run build` at the repo root of a `main` checkout. Then add the bundle:
+
+```sh
+dsh plugin --profile web add file:/absolute/path/to/self-improvement-loop/dsh
+```
+
+To check what the adapter registers without touching a profile:
+
+```sh
+bun x claude-plugin-dsh@0.1.0 inspect /absolute/path/to/self-improvement-loop
+```
+
+It lists the `self-improvement-loop` skill, the `/sil-*` commands and the hook
+events. Function hooks (the `hooks.json` `modules` entry) and the native `/sil`
+console are not mapped, so in DSH the guarded command hooks run instead.
+The plugin has no MCP servers, so the bundle patch adds no `dsh-mcp-client`
+rows. The marketplace tracks `release`, so this adapter reaches marketplace
+installs only after a later release.
+
+To move to a newer runtime, change the exact version in `dsh/package.json`, run
+`bun install` in `dsh/` and commit `dsh/bun.lock`. Do not run the CLI's `sync`
+or `scaffold` on this adapter: in `0.1.0` they write a vendored
+`claude-compat.js`, which this adapter does not use.
+
 ## Standalone install from a checkout
 
 To use the loop without installing a Claude Code plugin:

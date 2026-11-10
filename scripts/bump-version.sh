@@ -4,7 +4,8 @@
 # Usage: scripts/bump-version.sh <new-version> [--no-build]
 #
 # Touches: root package.json, every workspace package.json under packages/ and
-# apps/, .claude-plugin/plugin.json, and SIL_VERSION in the health handler.
+# apps/, .claude-plugin/plugin.json, the DSH adapter's dsh/package.json, and
+# SIL_VERSION in the health handler.
 # dist/ is untracked but embeds SIL_VERSION, and the release workflow commits
 # the built dist/ on the tag, so a rebuild is part of the bump.
 # Nothing is committed; the script prints the commit command at the end.
@@ -41,7 +42,7 @@ HEALTH="packages/ops/src/handlers/health.ts"
 PLUGIN=".claude-plugin/plugin.json"
 
 # JSON manifests, edited via jq so formatting stays stable.
-manifests=(package.json "$PLUGIN")
+manifests=(package.json "$PLUGIN" dsh/package.json)
 while IFS= read -r f; do manifests+=("$f"); done < <(ls packages/*/package.json apps/*/package.json)
 
 for f in "${manifests[@]}"; do

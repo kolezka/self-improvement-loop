@@ -28,6 +28,7 @@ describe("scripts/bump-version.sh", () => {
       expect(run.stderr.toString()).not.toContain("still present in");
       expect(run.exitCode).toBe(0);
       expect(JSON.parse(readFileSync(join(tmp, "package.json"), "utf8")).version).toBe(next);
+      expect(JSON.parse(readFileSync(join(tmp, "dsh", "package.json"), "utf8")).version).toBe(next);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -45,7 +45,7 @@ URL and its `sha256`. See `docs/RELEASE.md`.
 
 `dsh/` is a DeepSeek Harness bundle for the same plugin tree. Its entry,
 `dsh/index.js`, imports `createPlugin` and `rootFrom` from the published npm
-package `claude-plugin-dsh`, pinned to exactly `0.1.0` in `dsh/package.json`
+package `claude-plugin-dsh`, pinned to exactly `0.2.0` in `dsh/package.json`
 with `dsh/bun.lock`. No runtime copy is kept in this repo. Claude Code never
 reads `dsh/`, so the Claude Code install above is unchanged.
 
@@ -68,7 +68,7 @@ dsh plugin --profile web add file:/absolute/path/to/self-improvement-loop/dsh
 To check what the adapter registers without touching a profile:
 
 ```sh
-bun x claude-plugin-dsh@0.1.0 inspect /absolute/path/to/self-improvement-loop
+bun x claude-plugin-dsh@0.2.0 inspect /absolute/path/to/self-improvement-loop
 ```
 
 It lists the `self-improvement-loop` skill, the `/sil-*` commands and the hook
@@ -80,7 +80,7 @@ installs only after a later release.
 
 To move to a newer runtime, change the exact version in `dsh/package.json`, run
 `bun install` in `dsh/` and commit `dsh/bun.lock`. Do not run the CLI's `sync`
-or `scaffold` on this adapter: in `0.1.0` they write a vendored
+or `scaffold` on this adapter: in `0.2.0` they write a vendored
 `claude-compat.js`, which this adapter does not use.
 
 ## Standalone install from a checkout

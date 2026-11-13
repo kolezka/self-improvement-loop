@@ -11,7 +11,7 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const DSH = join(ROOT, "dsh");
 const RUNTIME = "claude-plugin-dsh";
-const RUNTIME_VERSION = "0.1.0";
+const RUNTIME_VERSION = "0.2.0";
 
 // Files the adapter reads at load time. The rest of the repo is not needed.
 const PLUGIN_PARTS = [".claude-plugin", "skills", "commands", "hooks", "scripts/hook"];

@@ -17,4 +17,11 @@ if ! command -v bun >/dev/null 2>&1; then
   exit 1
 fi
 
-exec bun "$(dirname -- "$0")/../dist/hook.js"
+root="$(dirname -- "$0")/.."
+if [ -f "$root/dist/hook.js" ]; then
+  exec bun "$root/dist/hook.js"
+fi
+
+# Dev checkout with no build yet, such as a DSH adapter loaded straight from
+# the repo: run the hook from source, as scripts/sil does for the CLI.
+exec bun "$root/apps/hook/src/main.ts"

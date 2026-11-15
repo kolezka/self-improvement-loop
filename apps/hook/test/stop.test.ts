@@ -258,3 +258,39 @@ describe("SessionEnd", () => {
     expect(entry["stops"]).toBe(1);
   });
 });
+
+// claude-plugin-dsh deletes its transcript export when the agent is disposed,
+// right after SessionEnd. The queue must point at a copy the worker can read.
+describe("DeepSeek Harness transcripts", () => {
+  const toolUse = (id: string) =>
+    JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: {} }] } });
+
+  test("Stop and SessionEnd queue a copy that survives the harness deleting its export", () => {
+    writeSnapshot();
+    const sessionId = "session-dsh-1";
+    const exported = `${hookEnv.root}/dsh-export.jsonl`;
+    writeFileSync(exported, `${toolUse("t1")}\n`);
+    const dsh = { CLAUDE_HARNESS: "dsh" };
+    const base = { session_id: sessionId, transcript_path: exported, cwd: hookEnv.root };
+
+    runHook(MAIN_TS, hookEnv, { ...base, hook_event_name: "Stop", stop_hook_active: false }, dsh);
+    writeFileSync(exported, `${toolUse("t1")}\n${toolUse("t2")}\n`);
+    runHook(MAIN_TS, hookEnv, { ...base, hook_event_name: "SessionEnd" }, dsh);
+    rmSync(exported);
+
+    const entry = queueEntry(sessionId);
+    const kept = entry["transcript_path"] as string;
+    expect(kept).not.toBe(exported);
+    expect(kept.startsWith(paths.sessionDir(sessionId))).toBe(true);
+    expect(entry["ended"]).toBe(true);
+    expect(readFileSync(kept, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  test("leaves Claude Code transcripts where they are", () => {
+    writeSnapshot();
+    const exported = `${hookEnv.root}/claude.jsonl`;
+    writeFileSync(exported, `${toolUse("t1")}\n`);
+    runHook(MAIN_TS, hookEnv, { session_id: "sess-cc", transcript_path: exported, cwd: hookEnv.root, hook_event_name: "Stop", stop_hook_active: false });
+    expect(queueEntry("sess-cc")["transcript_path"]).toBe(exported);
+  });
+});

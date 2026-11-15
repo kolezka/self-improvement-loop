@@ -75,7 +75,7 @@ function session(storage: MemoryStorage, clock: { now: number } | null = null): 
     world: fx.world,
     fetch: fetchServer,
     headers,
-    origin,
+    base: origin + "/",
     storage: () => storage as unknown as Storage,
     hash: () => location.hash,
     replaceHash: (hash) => (location.hash = hash),
@@ -272,7 +272,7 @@ test("real server: a location-origin I record never appends J history at the sam
     }
     return fetchServer(input, init);
   }) as typeof fetch;
-  const s = new CuratedSession({ world: fx.world, fetch: tracked, headers, origin, storage: () => storage as unknown as Storage,
+  const s = new CuratedSession({ world: fx.world, fetch: tracked, headers, base: origin + "/", storage: () => storage as unknown as Storage,
     hash: () => location.hash, replaceHash: (next) => { location.hash = next; }, toast: () => {}, requestLeave: (proceed) => proceed(),
     setWorld: () => {}, openReview: () => {}, uuid: () => crypto.randomUUID(), timeoutMs: 10_000, now: () => Date.now() });
   async function write(binding: CurationMutation["binding"], key: CurationMutation["key"], revision: number, text: string): Promise<string> {

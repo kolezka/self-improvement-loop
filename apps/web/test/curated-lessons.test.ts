@@ -162,16 +162,16 @@ describe("strict decoding", () => {
 describe("typed reads", () => {
   test("errors keep their code; transport and malformed bodies are their own codes", async () => {
     const mismatch = fakeFetch(() => json(409, { detail: "different SIL installation", code: "INSTALLATION_MISMATCH" }));
-    await expect(curationRead("lessons.locate", { key: "k", binding: `installation:${I}` }, (v) => v, { fetch: mismatch.fn, headers: HEADERS, origin: "http://x" })).rejects.toMatchObject({
+    await expect(curationRead("lessons.locate", { key: "k", binding: `installation:${I}` }, (v) => v, { fetch: mismatch.fn, headers: HEADERS, base: "http://x/" })).rejects.toMatchObject({
       code: "INSTALLATION_MISMATCH",
       status: 409,
     });
     expect(mismatch.calls[0]!.url).toBe(`http://x/api/lessons/locate?key=k&binding=installation%3A${I}`);
     expect(mismatch.calls[0]!.init?.headers).toEqual(HEADERS);
     const down = fakeFetch(() => Promise.reject(new TypeError("Failed to fetch")));
-    await expect(curationRead("lessons.store", {}, (v) => v, { fetch: down.fn, headers: HEADERS, origin: "http://x" })).rejects.toMatchObject({ code: "TRANSPORT" });
+    await expect(curationRead("lessons.store", {}, (v) => v, { fetch: down.fn, headers: HEADERS, base: "http://x/" })).rejects.toMatchObject({ code: "TRANSPORT" });
     const garbled = fakeFetch(() => new Response("<html>", { status: 200 }));
-    await expect(curationRead("lessons.store", {}, (v) => v, { fetch: garbled.fn, headers: HEADERS, origin: "http://x" })).rejects.toMatchObject({ code: "MALFORMED" });
+    await expect(curationRead("lessons.store", {}, (v) => v, { fetch: garbled.fn, headers: HEADERS, base: "http://x/" })).rejects.toMatchObject({ code: "MALFORMED" });
   });
 });
 
@@ -183,7 +183,7 @@ describe("mutation outcome mapping", () => {
     const f = fakeFetch(() => json(200, { version: 1, requestId: REQ, receipt, store: { locationId: LOCATION, installationId: I } }));
     const out = await sendCurationMutation(prepared(), null, deps(f.fn));
     expect(out).toEqual({ completion: { kind: "success", store: { locationId: LOCATION, installationId: I }, receipt }, conflictRevision: null });
-    expect(f.calls[0]!.url).toBe("/api/lessons/setImportant");
+    expect(f.calls[0]!.url).toBe("api/lessons/setImportant");
     expect(f.calls[0]!.init?.method).toBe("POST");
     expect(f.calls[0]!.init?.body).toBe(encodeCurationMutationRequest(prepared(), null));
     expect(f.calls[0]!.init?.headers).toEqual({ ...HEADERS, "Content-Type": "application/json" });

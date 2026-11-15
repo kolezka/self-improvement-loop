@@ -14,7 +14,7 @@ const RUNTIME = "claude-plugin-dsh";
 const RUNTIME_VERSION = "0.2.0";
 
 // Files the adapter reads at load time. The rest of the repo is not needed.
-const PLUGIN_PARTS = [".claude-plugin", "skills", "commands", "hooks", "scripts/hook"];
+const PLUGIN_PARTS = [".claude-plugin", "skills", "commands", "hooks", "scripts/hook", "scripts/sil"];
 
 const CHILD = `
 import { createRequire } from "node:module";
@@ -79,7 +79,8 @@ describe("dsh/ dependency contract", () => {
   test("index.js imports the package by name and resolves the root itself", () => {
     const src = readFileSync(join(DSH, "index.js"), "utf8");
     expect(src).toContain(`import { createPlugin, rootFrom } from '${RUNTIME}'`);
-    expect(src).toContain("root: rootFrom(import.meta.url)");
+    expect(src).toContain("const root = rootFrom(import.meta.url)");
+    expect(src).toContain("createPlugin({ root, commands: { prefix: 'sil' } })");
     expect(src).not.toMatch(/claude-compat/);
   });
 });

@@ -81,7 +81,7 @@ export function dropReloadParam(): void {
 
 async function loadOpsMeta(): Promise<Map<string, OpMeta>> {
   if (opsMeta) return opsMeta;
-  const res = await fetch("/api/ops", {
+  const res = await fetch(apiUrl("api/ops"), {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`could not load /api/ops: HTTP ${res.status}`);
@@ -90,8 +90,15 @@ async function loadOpsMeta(): Promise<Map<string, OpMeta>> {
   return opsMeta;
 }
 
+/** An API path resolved against the page, not the site root, so the console
+ * also works below a path prefix (the DeepSeek Harness tab serves it under
+ * /self-improvement-loop/). Paths here carry no leading slash. */
+export function apiUrl(path: string): URL {
+  return new URL(path, window.location.href);
+}
+
 function pathFor(name: string): string {
-  return "/api/" + name.replace(/\./g, "/");
+  return "api/" + name.replace(/\./g, "/");
 }
 
 interface ErrorBody {
@@ -109,13 +116,13 @@ export async function call(name: string, payload: Record<string, unknown> = {}):
   const headers = authHeaders();
   let res: Response;
   if (op.tier === "read") {
-    const url = new URL(pathFor(name), window.location.origin);
+    const url = apiUrl(pathFor(name));
     for (const [k, v] of Object.entries(payload)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
     }
     res = await fetch(url, { headers });
   } else {
-    res = await fetch(pathFor(name), {
+    res = await fetch(apiUrl(pathFor(name)), {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify(payload),

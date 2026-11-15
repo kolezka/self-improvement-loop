@@ -1,7 +1,7 @@
 // Reads GET /api/logs/stream. EventSource cannot send the X-SIL-* headers the
 // server guard requires, so the SSE body is read through fetch instead.
 
-import { authHeaders } from "./api.ts";
+import { apiUrl, authHeaders } from "./api.ts";
 
 /** Parses an SSE body into events. Feed raw chunks; complete events come out. */
 export function createSseParser(onEvent: (event: string, data: string) => void): (chunk: string) => void {
@@ -37,7 +37,7 @@ export interface StreamHandlers {
 /** Streams one engine log. Resolves when the server ends the stream, rejects on
  * an HTTP error or an abort through `signal`. */
 export async function streamLog(name: string, handlers: StreamHandlers, signal: AbortSignal): Promise<void> {
-  const url = new URL("/api/logs/stream", window.location.origin);
+  const url = apiUrl("api/logs/stream");
   url.searchParams.set("name", name);
   const res = await fetch(url, { headers: authHeaders(), signal });
   if (!res.ok || !res.body) throw new Error(`log stream: HTTP ${res.status}`);

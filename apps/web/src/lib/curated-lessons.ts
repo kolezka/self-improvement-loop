@@ -76,14 +76,16 @@ type Rec = Record<string, unknown>;
 export interface ReadDeps {
   fetch: typeof fetch;
   headers: Record<string, string>;
-  origin: string;
+  /** The page URL the API paths resolve against. */
+  base: string;
 }
 
-const pathFor = (op: string): string => `/api/${op.replace(/\./g, "/")}`;
+// No leading slash: resolved against the page, which may sit below a path prefix.
+const pathFor = (op: string): string => `api/${op.replace(/\./g, "/")}`;
 
 /** One typed GET. Never the generic `call`, which drops the host code. */
 export async function curationRead<T>(op: string, args: Record<string, string>, decode: (value: unknown) => T, deps: ReadDeps): Promise<T> {
-  const url = new URL(pathFor(op), deps.origin);
+  const url = new URL(pathFor(op), deps.base);
   for (const [k, v] of Object.entries(args)) url.searchParams.set(k, v);
   let res: Response;
   try {

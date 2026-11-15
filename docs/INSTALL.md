@@ -78,6 +78,26 @@ The plugin has no MCP servers, so the bundle patch adds no `dsh-mcp-client`
 rows. The marketplace tracks `release`, so this adapter reaches marketplace
 installs only after a later release.
 
+### Right sidebar tab
+
+In the DSH web app the adapter adds a **Self-improvement loop** tab to the right
+sidebar. Open it from the sidebar guide page. It shows the same console as
+`sil web`: overview, queue, review, artifacts, logs.
+
+You do not start `sil web` for this tab. The adapter starts its own `sil web` on
+a free `127.0.0.1` port the first time the tab asks for it, and stops it five
+minutes after the last request. It runs this plugin tree's `scripts/sil`, so it
+needs `bun` on the `PATH` of the DSH host process. A scheduled `sil web` on port
+8766 is not touched.
+
+DSH forwards `/self-improvement-loop/` to that process, behind the same login as
+the rest of the app, so the tab also works when you use DSH from another
+machine. Only the console's own headers are forwarded; DSH cookies stay in DSH.
+
+The tab needs `dist/web`. A release checkout has it; on a `main` checkout run
+`bun install && bun run build` at the repo root, or the tab shows those steps
+instead of the console.
+
 To move to a newer runtime, change the exact version in `dsh/package.json`, run
 `bun install` in `dsh/` and commit `dsh/bun.lock`. Do not run the CLI's `sync`
 or `scaffold` on this adapter: in `0.2.0` they write a vendored

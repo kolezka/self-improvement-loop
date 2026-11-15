@@ -16,7 +16,7 @@ import type { HookSnapshot, HookWorld } from "./snapshot.ts";
 import { gitHead } from "./worlds.ts";
 import { formatLesson, pendingLessons, rulesBlock, rulesImportedByClaudeMd } from "./lessons.ts";
 import { maybeKickWorker } from "./kick.ts";
-import { hasTranscript, markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
+import { hasTranscript, keepHarnessTranscript, markQueueEnded, sessionLock, upsertStopQueue } from "./queue.ts";
 import { scanTranscript } from "./scan.ts";
 import { ingestSpool, ORPHAN_SPOOL_OLDER_THAN_MS, ORPHAN_SPOOL_SWEEP_LIMIT, sweepOrphanSpools } from "./spool-ingest.ts";
 import { appendHookRun, appendUsageEvent } from "./usage-log.ts";
@@ -289,8 +289,9 @@ function handleStop(payload: Record<string, unknown>, world: HookWorld): string 
         log(`Stop not queued for ${sessionId}: transcript not on disk (session not persisted)`);
         return;
       }
-      upsertStopQueue(payload, worldName, sessionId);
-      scanTranscript(payload, sessionId, (kind, ref, detail) => {
+      const kept = keepHarnessTranscript(payload, sessionId);
+      upsertStopQueue(kept, worldName, sessionId);
+      scanTranscript(kept, sessionId, (kind, ref, detail) => {
         const event = { ts: nowIso(), session_id: sessionId, world: worldName, kind, ref, detail };
         if (kind === "hook_run") appendHookRun(event);
         else appendUsageEvent(event);
@@ -352,7 +353,7 @@ function handleSessionEnd(payload: Record<string, unknown>, world: HookWorld): s
         log(`SessionEnd not queued for ${sessionId}: transcript not on disk (session not persisted)`);
         return;
       }
-      markQueueEnded(payload, worldName, sessionId);
+      markQueueEnded(keepHarnessTranscript(payload, sessionId), worldName, sessionId);
     },
     SESSION_END_LOCK_MS,
   );

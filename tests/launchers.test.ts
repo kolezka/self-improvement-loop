@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -50,5 +50,21 @@ describe.each(["hook", "sil"])("scripts/%s", (script) => {
     const r = run(script, { SIL_PLUGIN_ROOT: ROOT });
     expect(r.exitCode).toBe(0);
     expect(existsSync(log)).toBe(true);
+  });
+});
+
+// DSH loads the adapter straight from a checkout, where main carries no dist/.
+describe("scripts/hook without a build", () => {
+  test("runs the hook from source", () => {
+    const root = join(tmp, "plugin");
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    copyFileSync(join(ROOT, "scripts", "hook"), join(root, "scripts", "hook"));
+    const log = fakeBun(join(home, ".bun", "bin"));
+    const r = Bun.spawnSync(["/bin/sh", join(root, "scripts", "hook")], {
+      env: { HOME: home, PATH: "/usr/bin:/bin" },
+      stdin: new TextEncoder().encode("{}"),
+    });
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(log, "utf8").trim()).toBe(`${join(root, "scripts")}/../apps/hook/src/main.ts`);
   });
 });

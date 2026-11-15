@@ -3,7 +3,7 @@
 // sil/hook.py's _queue_path, _start_git_head, _upsert_stop_queue,
 // _bump_tool_uses, _session_lock.
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import * as paths from "@sil/core/paths";
 import { atomicWrite } from "@sil/core/fsx";
 import { withDirLock } from "@sil/nudges";
@@ -151,6 +151,21 @@ export function markQueueEnded(payload: Record<string, unknown>, worldName: stri
         };
   obj["ended"] = true;
   writeQueueEntry(qpath, obj);
+}
+
+/** DeepSeek Harness (claude-plugin-dsh) exports a Claude-shaped transcript but
+ * deletes it once the agent is disposed, right after SessionEnd, so the
+ * worker would find nothing. Keep a copy in the session dir, which the worker
+ * reaps with the queue entry, and point the payload at it. The export only
+ * appends, so the copy keeps scan offsets valid. */
+export function keepHarnessTranscript(payload: Record<string, unknown>, sessionId: string): Record<string, unknown> {
+  if (process.env["CLAUDE_HARNESS"] !== "dsh") return payload;
+  const source = truthyStr(payload["transcript_path"]);
+  if (source === null || !existsSync(source)) return payload;
+  const copy = `${paths.sessionDir(sessionId)}/transcript.jsonl`;
+  mkdirSync(paths.sessionDir(sessionId), { recursive: true });
+  copyFileSync(source, copy);
+  return { ...payload, transcript_path: copy };
 }
 
 /** Excludes concurrent Stop handlers for the same session across the queue

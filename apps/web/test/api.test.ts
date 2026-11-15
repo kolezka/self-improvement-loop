@@ -3,7 +3,7 @@
 // location.href, location.replace and history.replaceState.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { authHeaders, dropReloadParam, reloadForBuild, tokenFromFragment } from "../src/lib/api.ts";
+import { apiUrl, authHeaders, dropReloadParam, reloadForBuild, tokenFromFragment } from "../src/lib/api.ts";
 
 interface Stub {
   replaced: string[];
@@ -102,5 +102,19 @@ describe("authHeaders", () => {
   test("reads the token from the fragment when nothing captured it yet", () => {
     stubBrowser("http://127.0.0.1:8799/#tok-first-load");
     expect(authHeaders()["X-SIL-Token"]).toBe("tok-first-load");
+  });
+});
+
+describe("apiUrl", () => {
+  // DeepSeek Harness serves the console at /self-improvement-loop/ inside its
+  // own origin. A root-relative /api path would reach DSH, not the console.
+  test("resolves below the page's path, not the site root", () => {
+    stubBrowser("http://dsh.local:3080/self-improvement-loop/?theme=dark#/review");
+    expect(apiUrl("api/ops").toString()).toBe("http://dsh.local:3080/self-improvement-loop/api/ops");
+  });
+
+  test("stays at the root when the console is served there", () => {
+    stubBrowser("http://127.0.0.1:8766/#/queue");
+    expect(apiUrl("api/review/list").toString()).toBe("http://127.0.0.1:8766/api/review/list");
   });
 });

@@ -14,7 +14,7 @@
     world,
     fetch: ((input, init) => window.fetch(input, init)) as typeof fetch,
     headers: authHeaders,
-    origin: window.location.origin,
+    base: window.location.href,
     storage: () => window.sessionStorage,
     hash: () => window.location.hash,
     replaceHash: (hash) => history.replaceState(null, "", hash),

@@ -17,7 +17,7 @@ export interface SessionDeps {
   world: string;
   fetch: typeof fetch;
   headers: () => Record<string, string>;
-  origin: string;
+  base: string;
   storage: () => Storage;
   /** The current URL fragment, including "#". */
   hash: () => string;
@@ -209,7 +209,7 @@ export class CuratedSession {
   }
 
   #readDeps(): cl.ReadDeps {
-    return { fetch: this.#deps.fetch, headers: this.#deps.headers(), origin: this.#deps.origin };
+    return { fetch: this.#deps.fetch, headers: this.#deps.headers(), base: this.#deps.base };
   }
 
   /** Re-read the controller's projection and save its opaque snapshot, if this mount still owns it. */

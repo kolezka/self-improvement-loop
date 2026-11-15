@@ -49,7 +49,7 @@ function harness(host: FakeHost, storage: MemoryStorage, hash = "#/artifacts", s
     world: WORLD,
     fetch: fetchOverride ?? host.fetch,
     headers: () => ({}),
-    origin: "http://host",
+    base: "http://host/",
     storage: () => storage as unknown as Storage,
     hash: () => location.hash,
     replaceHash: (next) => {

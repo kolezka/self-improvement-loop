@@ -2,6 +2,7 @@
 // Run `bun install --frozen-lockfile` in this directory before loading it.
 import { createPlugin, rootFrom } from 'claude-plugin-dsh'
 import { serveConsole } from './console.js'
+import { serveLearned } from './learned.js'
 
 const root = rootFrom(import.meta.url)
 const plugin = createPlugin({ root, commands: { prefix: 'sil' } })
@@ -10,6 +11,7 @@ export const name = plugin.name
 
 export function apply(ctx, config) {
   serveConsole(ctx, root)
+  if (!new Set(config?.disable ?? []).has('learned')) serveLearned(ctx)
   return plugin.apply(ctx, config)
 }
 

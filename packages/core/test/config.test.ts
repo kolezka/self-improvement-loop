@@ -115,6 +115,9 @@ describe("hook snapshot", () => {
     const snap = JSON.parse(readFileSync(p, "utf8"));
     expect(snap.worlds[0].nudges_dir).toBe(join(paths.defaultTarget("default"), "nudges"));
     expect(snap.worlds[0].rules_file).toBe(join(paths.defaultTarget("default"), "RULES.md"));
+    // The DeepSeek Harness adapter serves accepted skills and agents from these.
+    expect(snap.worlds[0].skills_dir).toBe(join(paths.defaultTarget("default"), "skills"));
+    expect(snap.worlds[0].agents_dir).toBe(join(paths.defaultTarget("default"), "agents"));
     expect(snap.worker.auto_kick).toBe(true);
   });
 });

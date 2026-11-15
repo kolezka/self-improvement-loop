@@ -15,6 +15,10 @@ export interface HookWorld {
   nudges_dir: string;
   rules_file: string;
   rules_inject: boolean;
+  /** Accepted skills and agents. Only the DeepSeek Harness adapter reads
+   * these: Claude Code finds them through the symlinks review makes. */
+  skills_dir?: string;
+  agents_dir?: string;
 }
 
 export interface WorkerConfig {

@@ -12,6 +12,7 @@
   "files": [
     "index.js",
     "console.js",
+    "learned.js",
     "client.js",
     "bun.lock",
     "cordis.patch.yml",

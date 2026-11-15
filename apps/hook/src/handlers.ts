@@ -175,8 +175,11 @@ function handleSessionStart(payload: Record<string, unknown>, world: HookWorld, 
   // rules file, Claude Code loaded it before this hook ran. Injecting again
   // would put the same bytes in context twice. A stale or missing import falls
   // back to injection, so a broken link is loud in cost but never silent in
-  // loss.
-  const rulesImported = rulesText !== "" && world.rules_file ? rulesImportedByClaudeMd(world.rules_file) : false;
+  // loss. DeepSeek Harness does not expand `@` imports, so there the import
+  // delivers nothing and the hook must inject.
+  const importsExpand = process.env["CLAUDE_HARNESS"] !== "dsh";
+  const rulesImported =
+    importsExpand && rulesText !== "" && world.rules_file ? rulesImportedByClaudeMd(world.rules_file) : false;
   if (rulesText && !rulesImported) parts.push(`Promoted rules for world ${worldName}:\n${rulesText}`);
 
   const lessons = pendingLessons(worldName, sessionId, cwd, 3);

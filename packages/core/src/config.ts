@@ -245,6 +245,8 @@ export function writeHookSnapshot(cfg: Config = loadConfig()): string {
         nudges_dir: join(root, w.layout.nudges_dir),
         rules_file: join(root, w.layout.rules_file),
         rules_inject: w.rules_inject,
+        skills_dir: join(root, w.layout.skills_dir),
+        agents_dir: join(root, w.layout.agents_dir),
       };
     }),
     worker: cfg.worker,

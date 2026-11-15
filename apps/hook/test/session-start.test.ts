@@ -137,6 +137,23 @@ describe("SessionStart", () => {
     expect(rules.map((e) => e["ref"])).toEqual(["rule:alpha-rule"]);
   });
 
+  // DeepSeek Harness reads CLAUDE.md as plain text and never expands `@`
+  // imports, so the import there delivers nothing.
+  test("injects the rules under DeepSeek Harness even when CLAUDE.md imports them", () => {
+    writeSnapshot();
+    const rulesFile = `${hookEnv.root}/RULES.md`;
+    writeFileSync(rulesFile, "<!--loop-rules:start-->\n- Rule one. <!--rule:alpha-rule-->\n<!--loop-rules:end-->\n");
+    const claudeDir = join(hookEnv.root, "claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "CLAUDE.md"), `${rulesImportBlock(rulesFile)}\n`);
+
+    const payload = { session_id: "sess-start-dsh", hook_event_name: "SessionStart", source: "startup", cwd: hookEnv.root };
+    const result = runHook(MAIN_TS, hookEnv, payload, { CLAUDE_CONFIG_DIR: claudeDir, CLAUDE_HARNESS: "dsh" });
+    const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
+    expect(text).toContain("Promoted rules for world default:");
+    expect(text).toContain("Rule one.");
+  });
+
   // An import that names another file is not this world's import. Falling
   // back to injection costs context, but silently dropping the rules costs
   // the behavior the loop exists for.

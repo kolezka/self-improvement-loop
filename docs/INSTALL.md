@@ -98,6 +98,25 @@ The tab needs `dist/web`. A release checkout has it; on a `main` checkout run
 `bun install && bun run build` at the repo root, or the tab shows those steps
 instead of the console.
 
+### Learned skills, agents and rules
+
+What the loop accepts reaches DSH sessions as well as Claude Code ones:
+
+- **Skills and agents.** Review links them into `~/.claude/skills` and
+  `~/.claude/agents`, which DSH does not read. The adapter serves them straight
+  from the world's `learned/skills` and `learned/agents` instead, through a skill
+  provider named `self-improvement-loop-learned`. An agent shows up as the skill
+  `self-improvement-loop-agent-<name>`: a role brief to pass to `subagent` or
+  `spawn_teammate`. The world is picked from the session's working directory, the
+  same way the hooks pick it. Accepting, rejecting or retiring an artifact shows
+  in DSH without a restart. To turn this off, add `learned` to the row's
+  `disable` list.
+- **Rules.** Claude Code loads `RULES.md` through the `@` import in `CLAUDE.md`.
+  DSH does not expand that import, so under DSH the SessionStart hook injects the
+  rules itself.
+- **Hooks (nudges).** Nothing extra: the hooks read the world's nudges directory
+  in both harnesses.
+
 To move to a newer runtime, change the exact version in `dsh/package.json`, run
 `bun install` in `dsh/` and commit `dsh/bun.lock`. Do not run the CLI's `sync`
 or `scaffold` on this adapter: in `0.2.0` they write a vendored

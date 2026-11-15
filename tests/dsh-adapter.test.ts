@@ -4,7 +4,7 @@
 // dependencies installed by a frozen Bun install inside dsh/.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -55,11 +55,65 @@ function makeFixture(): string {
   return dir;
 }
 
+// Drives only the learned-artifact provider: lists for each cwd, loads every
+// body, then retires one skill and waits for the watcher to invalidate.
+const LEARNED_CHILD = `
+const { apply } = await import(new URL("./dsh/index.js", import.meta.url).href);
+const { rmSync } = await import("node:fs");
+const [cwdA, cwdB, retire] = JSON.parse(process.argv[2]);
+const providers = [];
+let invalidated = 0;
+const ac = new AbortController();
+const ctx = {
+  logger: { warn() {} },
+  skills: { registerProvider: (create) => providers.push(create({ signal: ac.signal, invalidate: () => { invalidated++; } })) },
+  commands: { register() {} },
+  systemPrompt: { section() {} },
+  webServer: { register() {} },
+  inject: (_services, callback) => callback(ctx),
+  effect() {},
+  on() {},
+};
+await apply(ctx, { disable: ["skills", "agents", "commands", "instructions", "hooks"] });
+const learned = providers.find((p) => p.name === "self-improvement-loop-learned");
+const view = async (cwd) => {
+  const out = {};
+  for (const c of await learned.list({ cwd })) out[c.name] = (await learned.get(c, { cwd }))?.content ?? "";
+  return out;
+};
+const a = await view(cwdA), b = await view(cwdB);
+rmSync(retire);
+for (let i = 0; i < 40 && invalidated === 0; i++) await new Promise((r) => setTimeout(r, 50));
+const after = Object.keys(await view(cwdA));
+ac.abort();
+console.log(JSON.stringify({ providers: providers.map((p) => p.name), a, b, after, invalidated }));
+process.exit(0);
+`;
+
 // --no-install: Bun otherwise auto-installs a missing package from its global
-// cache, which would hide a broken or missing dsh/node_modules.
-function runChild(dir: string) {
-  const run = Bun.spawnSync([process.execPath, "--no-install", "child.mjs"], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+// cache, which would hide a broken or missing dsh/node_modules. The state dir
+// is pinned so the user's real loop never leaks into a run.
+function runChild(dir: string, script = "child.mjs", args: string[] = [], env: Record<string, string> = {}) {
+  const run = Bun.spawnSync([process.execPath, "--no-install", script, ...args], {
+    cwd: dir,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, SIL_STATE_DIR: join(dir, "empty-state"), ...env },
+  });
   return { code: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
+}
+
+function writeWorld(root: string, name: string, skills: string[], agents: string[]) {
+  const learned = join(root, "worlds", name, "learned");
+  for (const s of skills) {
+    mkdirSync(join(learned, "skills", s), { recursive: true });
+    writeFileSync(join(learned, "skills", s, "SKILL.md"), `---\nname: ${s}\ndescription: Use when ${s} applies.\n---\n\nBody of ${s}.\n`);
+  }
+  mkdirSync(join(learned, "agents"), { recursive: true });
+  for (const a of agents) {
+    writeFileSync(join(learned, "agents", `${a}.md`), `---\nname: ${a}\ndescription: Use for ${a}.\ntools: Read, Grep\n---\n\nRole of ${a}.\n`);
+  }
+  return learned;
 }
 
 describe("dsh/ dependency contract", () => {
@@ -136,6 +190,45 @@ describe("dsh/ adapter in a standalone copy", () => {
     expect(out.events).toEqual(expect.arrayContaining([
       "agent/created", "agent/pre-step", "tools/pre-execute", "tools/post-execute", "agent/turn-stopping", "agent/disposed",
     ]));
+  }, 60_000);
+
+  // DSH does not read ~/.claude/skills or ~/.claude/agents, where review links
+  // accepted artifacts. The adapter must serve them from the world itself,
+  // pick the world the way the hook does, and drop a retired one live.
+  test("serves the loop's accepted skills and agents for the cwd's world", () => {
+    const state = join(fixture, "learned-state");
+    const repo = join(fixture, "work-repo");
+    mkdirSync(repo, { recursive: true });
+    const def = writeWorld(fixture, "default", ["alpha-skill", "beta-skill"], ["checker"]);
+    const work = writeWorld(fixture, "work", ["work-skill"], []);
+    // A retired skill keeps its directory but loses SKILL.md: not live.
+    mkdirSync(join(def, "skills", "retired-skill"), { recursive: true });
+    mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, "hook-config.json"), JSON.stringify({
+      version: 1,
+      worlds: [
+        { name: "default", repos: [], nudges_dir: join(def, "nudges"), rules_file: join(def, "RULES.md"), rules_inject: true },
+        { name: "work", repos: [repo], nudges_dir: join(work, "nudges"), rules_file: join(work, "RULES.md"), rules_inject: true,
+          skills_dir: join(work, "skills"), agents_dir: join(work, "agents") },
+      ],
+    }));
+    writeFileSync(join(fixture, "learned-child.mjs"), LEARNED_CHILD);
+
+    const args = [JSON.stringify([tmpdir(), repo, join(def, "skills", "beta-skill", "SKILL.md")])];
+    const run = runChild(fixture, "learned-child.mjs", args, { SIL_STATE_DIR: state });
+    expect(run.stderr).toBe("");
+    expect(run.code).toBe(0);
+    const out = JSON.parse(run.stdout);
+
+    expect(out.providers).toEqual(["self-improvement-loop-learned"]);
+    // Older snapshots carry no skills_dir: the directories next to RULES.md.
+    expect(Object.keys(out.a)).toEqual(["alpha-skill", "beta-skill", "self-improvement-loop-agent-checker"]);
+    expect(out.a["alpha-skill"]).toContain("Body of alpha-skill.");
+    expect(out.a["self-improvement-loop-agent-checker"]).toContain("Role of checker.");
+    expect(out.a["self-improvement-loop-agent-checker"]).toContain("Original tool allowlist: Read, Grep.");
+    expect(Object.keys(out.b)).toEqual(["work-skill"]);
+    expect(out.invalidated).toBeGreaterThan(0);
+    expect(out.after).toEqual(["alpha-skill", "self-improvement-loop-agent-checker"]);
   }, 60_000);
 
   test("fails loudly when dsh/ dependencies are not installed", () => {

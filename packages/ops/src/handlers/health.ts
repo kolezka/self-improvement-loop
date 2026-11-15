@@ -4,7 +4,7 @@ import { fsx, loadConfig, paths, StateReadError } from "@sil/core";
 import type { NoArgs } from "../args.ts";
 import { deps } from "../deps.ts";
 
-const SIL_VERSION = "1.6.1";
+const SIL_VERSION = "1.7.0";
 
 /** Which build is on disk now, and whether the running server predates it.
  *

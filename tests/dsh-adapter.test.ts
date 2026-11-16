@@ -11,7 +11,7 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const DSH = join(ROOT, "dsh");
 const RUNTIME = "claude-plugin-dsh";
-const RUNTIME_VERSION = "0.2.0";
+const RUNTIME_VERSION = JSON.parse(readFileSync(join(DSH, "package.json"), "utf8")).dependencies[RUNTIME];
 
 // Files the adapter reads at load time. The rest of the repo is not needed.
 const PLUGIN_PARTS = [".claude-plugin", "skills", "commands", "hooks", "scripts/hook", "scripts/sil"];
@@ -121,13 +121,15 @@ describe("dsh/ dependency contract", () => {
   const root = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
   test("depends on the exact published runtime and ships no vendored copy", () => {
+    expect(RUNTIME_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
     expect(pkg.dependencies).toEqual({ [RUNTIME]: RUNTIME_VERSION });
     expect(pkg.version).toBe(root.version);
     expect(pkg.files).toContain("bun.lock");
     expect(pkg.files).not.toContain("claude-compat.js");
     expect(existsSync(join(DSH, "claude-compat.js"))).toBe(false);
     const lock = readFileSync(join(DSH, "bun.lock"), "utf8");
-    expect(lock).toContain(`"${RUNTIME}@${RUNTIME_VERSION}"`);
+    const lockEntry = lock.split("\n").find((line) => line.trimStart().startsWith(`"${RUNTIME}": [`));
+    expect(lockEntry).toContain(`"${RUNTIME}@${RUNTIME_VERSION}"`);
   });
 
   test("index.js imports the package by name and resolves the root itself", () => {

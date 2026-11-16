@@ -9,6 +9,7 @@ import type { ProjectDescriptor } from "@sil/core/curation-read";
 import { CurationError, UUID_RE, decodeLessonKey, encodeLessonKey, type LessonKey, type ProjectScope } from "@sil/core/lesson-curation";
 import { encodeCurationMutationRequest, curationOpFor, type PreparedCurationMutation } from "@sil/core/lesson-curation-wire";
 import type { LessonAttemptOutcome, LessonAttemptSuccess, LessonEditorSnapshot } from "@sil/core/lesson-curation-ui";
+import { uuid } from "./uuid.ts";
 
 /** Same budget as the control transport. Bounds waiting, never server work. */
 export const MUTATION_TIMEOUT_MS = 10_000;
@@ -159,7 +160,7 @@ export async function sendCurationMutation(prepared: PreparedCurationMutation, p
 }
 
 
-export const newRequestId = (): string => `lc_${crypto.randomUUID()}`;
+export const newRequestId = (): string => `lc_${uuid()}`;
 
 // --- session storage -------------------------------------------------------
 

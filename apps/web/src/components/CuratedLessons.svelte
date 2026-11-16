@@ -4,6 +4,7 @@
   import { onMount, tick } from "svelte";
   import type { CaptureSource, LessonView } from "@sil/core/lesson-curation";
   import { authHeaders } from "../lib/api.ts";
+  import { uuid } from "../lib/uuid.ts";
   import { appState, leaveGuards, toast } from "../lib/state.svelte.ts";
   import * as cl from "../lib/curated-lessons.ts";
   import { CuratedSession, errorText, sameKey, sameProject, type SessionView } from "../lib/curated-session.ts";
@@ -27,7 +28,7 @@
       appState.openReviewPattern = pattern;
       window.location.hash = "#/review";
     },
-    uuid: () => crypto.randomUUID(),
+    uuid,
     timeoutMs: cl.MUTATION_TIMEOUT_MS,
     now: () => Date.now(),
   });

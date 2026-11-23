@@ -222,7 +222,8 @@ export function hookShape(pattern: string): string {
     "file_path_matches and prompt_matches cannot see an MCP tool's own " +
     "arguments, only the Bash command, file path or prompt a built-in tool " +
     "call carries. " +
-    "'once_per', either 'session' or 'always'; " +
+    "'once_per', 'session'; 'always' is accepted only on SessionStart, since " +
+    "on any other event it repeats the same text on every match; " +
     "'text', the nudge shown to the agent: imperative, specific, under 400 " +
     "characters, naming the actual commands or checks the lessons name."
   );

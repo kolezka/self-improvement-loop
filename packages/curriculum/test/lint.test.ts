@@ -141,6 +141,15 @@ describe("hooks", () => {
     expect(problems).toContain("gate fires unconditionally");
   });
 
+  test("a new hook may not repeat on every firing of a high-frequency event", () => {
+    // A narrow gate still matches many Bash calls: one promoted nudge with
+    // once_per 'always' repeated 577 times in a week of sessions.
+    const payload = { ...hookBody("verify-callsites"), once_per: "always" };
+    expect(lint("hook", payload, "verify-callsites", SOURCES).some((p) => p.includes("once_per"))).toBe(true);
+    const sessionStart = { ...payload, event: "SessionStart", matcher: undefined };
+    expect(lint("hook", sessionStart, "verify-callsites", SOURCES)).toEqual([]);
+  });
+
   test("a hook payload that is not an object is refused", () => {
     expect(lint("hook", "not json", "p", SOURCES)).toEqual(["hook artifact must be a JSON object"]);
   });

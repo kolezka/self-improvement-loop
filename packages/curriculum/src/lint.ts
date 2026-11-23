@@ -10,6 +10,7 @@
 
 import { DEFAULT_MAX_RULE_CHARS, RULE_END, RULE_START, ruleTag, SECTIONS } from "@sil/core";
 import { SECRET_RE } from "@sil/core/sensitive-text";
+import { LOW_FREQUENCY_EVENTS } from "@sil/nudges";
 import { nudges } from "./deps.ts";
 
 export const MAX_DESCRIPTION = 500;
@@ -261,11 +262,21 @@ export function lintHook(payload: unknown): string[] {
   }
   const fn = nudges().lintNudge;
   if (!fn) return ["nudge dispatcher unavailable, cannot lint a hook"];
+  let problems: string[];
   try {
-    return [...fn(payload)];
+    problems = [...fn(payload)];
   } catch (e) {
     return [`nudge dispatcher unavailable, cannot lint a hook: ${(e as Error).message}`];
   }
+  // Promotion only: the loader keeps accepting existing 'always' nudges.
+  const { event, once_per: oncePer } = payload as Record<string, unknown>;
+  if (oncePer === "always" && typeof event === "string" && !LOW_FREQUENCY_EVENTS.has(event)) {
+    problems.push(
+      `once_per is "always" on ${event}, which fires many times per session, so ` +
+        `the same text would repeat on every match. Set once_per to "session".`,
+    );
+  }
+  return problems;
 }
 
 export interface LintOptions {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_WORKER,
   SESSION_START_ACTIVE_LINE,
+  SESSION_START_ACTIVE_LINE_DSH,
   coerceSnapshot,
   cwdUnder,
   defaultWorldFor,
@@ -167,6 +168,17 @@ describe("sessionStartStatusLine", () => {
   test("is the active line once the snapshot exists", () => {
     expect(sessionStartStatusLine(true, "/plugin")).toBe(SESSION_START_ACTIVE_LINE);
     expect(sessionStartStatusLine(true, null)).toBe(SESSION_START_ACTIVE_LINE);
+    expect(sessionStartStatusLine(true, "/plugin", "claude")).toBe(SESSION_START_ACTIVE_LINE);
+  });
+
+  test("names the DSH slash commands when the harness is dsh", () => {
+    const text = sessionStartStatusLine(true, "/plugin", "dsh");
+    expect(text).toBe(SESSION_START_ACTIVE_LINE_DSH);
+    expect(text).toContain("/sil-reflect");
+    expect(text).toContain("/sil-loop");
+    expect(text).toContain("/sil-feedback");
+    expect(text).not.toContain("/reflect ");
+    expect(text).not.toContain("/loop ");
   });
 
   test("hints at init, naming the exact command, before the snapshot exists", () => {

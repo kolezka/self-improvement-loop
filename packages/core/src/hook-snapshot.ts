@@ -47,6 +47,13 @@ export const SESSION_START_ACTIVE_LINE =
   "background reflection, /loop shows status, /feedback <type>:<name> " +
   "good|bad rates an artifact.";
 
+// DeepSeek Harness registers the same command files as /sil-* (the adapter
+// prefix). Naming /reflect there points at a command that does not exist.
+export const SESSION_START_ACTIVE_LINE_DSH =
+  "self-improvement-loop is active: /sil-reflect queues this session for " +
+  "background reflection, /sil-loop shows status, /sil-feedback <type>:<name> " +
+  "good|bad rates an artifact.";
+
 /** The SessionStart line for a session where `sil init` has never run: no
  * hook snapshot on disk, so nothing is queued or reflected yet. `pluginRoot`
  * expands the literal `${CLAUDE_PLUGIN_ROOT}` to a real path when the caller
@@ -65,8 +72,13 @@ export function notInitializedLine(pluginRoot: string | null): string {
  * apps/hook-module cannot drift on the wording or the gate; both already
  * decide `snapshotPresent` the way `maybeKickWorker` does (hook-config.json
  * readable), so this just renders the result. */
-export function sessionStartStatusLine(snapshotPresent: boolean, pluginRoot: string | null): string {
-  return snapshotPresent ? SESSION_START_ACTIVE_LINE : notInitializedLine(pluginRoot);
+export function sessionStartStatusLine(
+  snapshotPresent: boolean,
+  pluginRoot: string | null,
+  harness: string | null = null,
+): string {
+  if (!snapshotPresent) return notInitializedLine(pluginRoot);
+  return harness === "dsh" ? SESSION_START_ACTIVE_LINE_DSH : SESSION_START_ACTIVE_LINE;
 }
 
 export function defaultWorldFor(defaultTarget: string): HookWorld {

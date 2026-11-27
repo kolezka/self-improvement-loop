@@ -1,6 +1,6 @@
 {
   "name": "@kolezka/self-improvement-loop-dsh",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "private": true,
   "description": "DeepSeek Harness adapter for the self-improvement-loop Claude Code plugin",
   "type": "module",

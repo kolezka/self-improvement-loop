@@ -152,6 +152,9 @@ describe("SessionStart", () => {
     const text = JSON.parse(result.stdout.trim()).hookSpecificOutput.additionalContext as string;
     expect(text).toContain("Promoted rules for world default:");
     expect(text).toContain("Rule one.");
+    expect(text).toContain("/sil-reflect");
+    expect(text).toContain("/sil-loop");
+    expect(text).not.toContain("/reflect ");
   });
 
   // An import that names another file is not this world's import. Falling

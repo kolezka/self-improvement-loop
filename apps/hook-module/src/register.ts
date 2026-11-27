@@ -231,7 +231,8 @@ export function register(on: On): void {
         errors.push(errorSummary(err));
       }
 
-      parts.push(sessionStartStatusLine(state.snapshotPresent, state.pluginRoot));
+      // The function-hook module is Claude Code only. DSH runs the command hooks.
+      parts.push(sessionStartStatusLine(state.snapshotPresent, state.pluginRoot, null));
 
       try {
         const nudgeText = await dispatchNudges($, state, payloadOf(e, state));

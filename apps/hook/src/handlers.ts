@@ -190,7 +190,7 @@ function handleSessionStart(payload: Record<string, unknown>, world: HookWorld, 
   // init'ed", matching apps/hook-module's state.snapshotPresent (set from
   // whether its own read succeeded), not maybeKickWorker's cheaper
   // existsSync-only gate below.
-  parts.push(sessionStartStatusLine(hookSnapshotWasRead(), snapshot.plugin_root || null));
+  parts.push(sessionStartStatusLine(hookSnapshotWasRead(), snapshot.plugin_root || null, process.env["CLAUDE_HARNESS"] ?? null));
 
   const nudgeText = dispatchNudge(payload, world, sessionId);
   if (nudgeText) parts.push(nudgeText);
